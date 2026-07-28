@@ -46,7 +46,10 @@
       "icon": null,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "identity": null
+      "identity": null,
+      "signIgnore": [
+        "server_backend"
+      ]
     },
     "dmg": {
       "title": "${productName} ${version}",
@@ -71,11 +74,9 @@
         }
       ],
       "icon": null,
-      "publish": {
-        "provider": "github",
-        "owner": "asklins223",
-        "repo": "word-tts-desktop"
-      }
+      "signIgnore": [
+        "server_backend"
+      ]
     },
     "nsis": {
       "oneClick": false,

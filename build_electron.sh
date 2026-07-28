@@ -181,11 +181,13 @@ build_electron_app() {
 
     log "构建产物: $app_path"
 
-    # ---- ad-hoc 签名 ----
+    # ---- ad-hoc 签名（从内到外）----
     log "对 .app 进行 ad-hoc 签名..."
     xattr -cr "$app_path" 2>/dev/null || true
 
-    # 先签 server_backend 内部（从内到外）
+    local fw_dir="$app_path/Contents/Frameworks"
+
+    # 1. 签 server_backend 内部的动态库和可执行文件
     local backend_dir="$app_path/Contents/Resources/server_backend"
     if [ -d "$backend_dir" ]; then
         find "$backend_dir" -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.pyd" \) \
@@ -193,16 +195,40 @@ build_electron_app() {
         codesign --force --sign - "$backend_dir/server_backend" 2>/dev/null || true
     fi
 
-    # 签名 Electron Frameworks
-    if [ -d "$app_path/Contents/Frameworks" ]; then
-        find "$app_path/Contents/Frameworks" -name "*.app" -exec codesign --force --sign - {} \; 2>/dev/null || true
-        find "$app_path/Contents/Frameworks" -type f ! -name "*.app" -exec codesign --force --sign - {} \; 2>/dev/null || true
+    # 2. 签 Frameworks 内的叶子二进制文件（.dylib，但不签 framework bundle 内部的文件）
+    if [ -d "$fw_dir" ]; then
+        find "$fw_dir" -type f -name "*.dylib" \
+            -not -path "*/Electron Framework.framework/*" \
+            -exec codesign --force --sign - {} \; 2>/dev/null || true
     fi
 
-    # 签名主应用
+    # 3. 签 Framework bundle（整体签名，不破坏 seal）
+    if [ -d "$fw_dir/Electron Framework.framework" ]; then
+        codesign --force --sign - \
+            "$fw_dir/Electron Framework.framework" 2>/dev/null || true
+    fi
+    for fw in "$fw_dir"/*.framework; do
+        [ -d "$fw" ] && [ "$(basename "$fw")" != "Electron Framework.framework" ] && \
+            codesign --force --sign - "$fw" 2>/dev/null || true
+    done
+
+    # 4. 签 Helper apps
+    if [ -d "$fw_dir" ]; then
+        find "$fw_dir" -maxdepth 1 -name "*.app" -type d \
+            -exec codesign --force --sign - {} \; 2>/dev/null || true
+    fi
+
+    # 5. 签主应用
     codesign --force --sign - "$app_path" 2>/dev/null || true
     xattr -cr "$app_path" 2>/dev/null || true
     echo "  ad-hoc 签名完成 ✓"
+
+    # 验证签名
+    if codesign --verify --deep --strict "$app_path" 2>/dev/null; then
+        echo "  签名验证通过 ✓"
+    else
+        warn "签名验证未通过（ad-hoc 签名可能被 Gatekeeper 拦截）"
+    fi
 
     # ---- 手动创建 DMG（绕过 electron-builder 的 dmgbuild bug） ----
     log "创建 DMG 安装包..."
