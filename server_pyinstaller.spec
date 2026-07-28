@@ -15,7 +15,18 @@ Electron 应用启动时 spawn 此可执行文件，无需用户安装 Python。
 """
 
 import sys
+import os
 from PyInstaller.utils.hooks import collect_all
+
+# ============================================================================
+# 辅助函数：安全添加数据目录（目录不存在时跳过，不报错）
+# ============================================================================
+def safe_dir(src_dir, dest_dir):
+    """如果源目录存在则添加到 datas，否则跳过。"""
+    if os.path.isdir(src_dir):
+        return [(src_dir, dest_dir)]
+    print(f"[spec] 跳过不存在的目录: {src_dir}")
+    return []
 
 # ============================================================================
 # 数据文件（资源）
@@ -27,10 +38,11 @@ datas = [
     ('word_parser/word_parser_app.py', 'word_parser'),
     # 788 音色匹配
     ('edge_tts/voice_match_788.py', 'edge_tts'),
-    ('edge_tts/voice_profiles/', 'edge_tts/voice_profiles/'),
-    # 背景音乐
-    ('edge_tts/bgm/', 'edge_tts/bgm/'),
 ]
+
+# 安全添加可选目录（目录可能为空或不存在）
+datas += safe_dir('edge_tts/voice_profiles/', 'edge_tts/voice_profiles/')
+datas += safe_dir('edge_tts/bgm/', 'edge_tts/bgm/')
 
 binaries = []
 hiddenimports = [
