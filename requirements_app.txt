@@ -1,0 +1,10 @@
+# Edge TTS WebUI / Word 文档解析工具 — 运行依赖
+# 安装: pip install -r requirements_app.txt
+# 另外需要系统安装 FFmpeg（788 实时匹配、音频解码与导出使用）
+
+gradio>=5.0.0,<6.0.0
+edge-tts>=7.2.0
+pydub>=0.25.1
+python-docx>=1.0.0
+pywebview>=5.0.0
+pyinstaller>=6.0.0

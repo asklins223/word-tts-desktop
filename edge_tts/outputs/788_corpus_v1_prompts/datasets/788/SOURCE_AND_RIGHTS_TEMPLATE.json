@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "provided_by": "",
+  "provided_at": "",
+  "source_provider": "",
+  "voice_name": "Alfie",
+  "voice_id": "788",
+  "training_authorized": false,
+  "deployment_authorized": null,
+  "authorization_basis": "",
+  "native_audio": {
+    "format": "",
+    "sample_rate_hz": null,
+    "bitrate_bps": null
+  },
+  "synthesis_settings": {
+    "rate": "default",
+    "pitch": "default",
+    "volume": "default",
+    "style": "default"
+  },
+  "postprocessed": false,
+  "known_problem_ids": [],
+  "signer": "",
+  "signed_at": "",
+  "notes": ""
+}

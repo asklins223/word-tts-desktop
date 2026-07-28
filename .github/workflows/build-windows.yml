@@ -1,0 +1,151 @@
+# ============================================================================
+# Word → TTS — Windows 自动构建
+# ============================================================================
+# 在 Windows runner 上构建 WordTTS-Setup-x.x.x.exe 安装包
+#
+# 触发方式:
+#   1. 手动触发 (Actions → Build Windows → Run workflow)
+#   2. 推送 tag v* 时自动触发
+#
+# 产物:
+#   WordTTS-Setup-<version>.exe (NSIS 安装包)
+# ============================================================================
+
+name: Build Windows
+
+on:
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空则从 package.json 读取）'
+        required: false
+        default: ''
+
+  # 推送 tag 时自动触发
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      # ======================================================================
+      # 1. 检出代码
+      # ======================================================================
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ======================================================================
+      # 2. 安装 Python 3.11
+      # ======================================================================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ======================================================================
+      # 3. 安装 Node.js
+      # ======================================================================
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: electron/package.json
+
+      # ======================================================================
+      # 4. 安装 Python 依赖
+      # ======================================================================
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_electron.txt
+
+      # ======================================================================
+      # 5. 安装 Electron 依赖
+      # ======================================================================
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm install
+
+      # ======================================================================
+      # 6. PyInstaller 打包后端
+      # ======================================================================
+      - name: Build Python backend
+        run: |
+          pyinstaller server_pyinstaller.spec `
+            --noconfirm `
+            --distpath electron/server_backend_build `
+            --workpath electron/server_backend_build_tmp
+
+      - name: Verify backend artifact
+        run: |
+          if (-not (Test-Path "electron/server_backend_build/server_backend/server_backend.exe")) {
+            Write-Error "PyInstaller 打包失败：未找到 server_backend.exe"
+            exit 1
+          }
+          Write-Host "后端打包成功"
+          Get-ChildItem -Path "electron/server_backend_build/server_backend" | Select-Object Name, Length | Format-Table
+
+      # ======================================================================
+      # 7. electron-builder 打包 Windows 应用
+      # ======================================================================
+      - name: Build Electron app
+        working-directory: electron
+        run: npx electron-builder --win
+        env:
+          # CI 环境中跳过代码签名
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ======================================================================
+      # 8. 上传构建产物
+      # ======================================================================
+      - name: Find installer
+        id: find-installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "electron/release" -Filter "WordTTS-Setup-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($installer) {
+            Write-Host "找到安装包: $($installer.FullName)"
+            Write-Host "大小: $([math]::Round($installer.Length / 1MB, 2)) MB"
+            echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+            echo "installer_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "未找到 NSIS 安装包，检查 win-unpacked..."
+            $unpacked = "electron/release/win-unpacked/WordTTS.exe"
+            if (Test-Path $unpacked) {
+              Write-Host "找到 unpacked 目录"
+              echo "installer_path=$unpacked" >> $env:GITHUB_OUTPUT
+              echo "installer_name=WordTTS.exe" >> $env:GITHUB_OUTPUT
+            } else {
+              Write-Error "未找到任何构建产物"
+              exit 1
+            }
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordTTS-Windows
+          path: |
+            electron/release/WordTTS-Setup-*.exe
+            electron/release/win-unpacked/
+          retention-days: 30
+
+      # ======================================================================
+      # 9. （可选）发布 Release
+      # ======================================================================
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.find-installer.outputs.installer_path }}
+          name: WordTTS ${{ github.ref_name }}
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,32 @@
+.text-area {
+    height: 586px;
+}
+
+/* Gradio 6 新音频播放器含可视化波形+底部传输栏，约 182px 高，
+   不能再用固定 height+overflow:hidden 裁剪，否则播放按钮被裁掉 */
+.audio {
+    min-height: 190px;
+}
+.example{
+    min-height: 190px;
+}
+#submit-btn {
+    color: #fff;
+    background: #409eff;
+    border-color: #409eff;
+}
+#submit-btn:hover{
+    background: #66b1ff;
+    border-color: #66b1ff;
+    color: #fff;
+}
+#clear-btn {
+    color: #fff;
+    background: #e6a23c;
+    border-color: #e6a23c;
+}
+#clear-btn:hover {
+    color: #fff;
+    background: #ebb563;
+    border-color: #ebb563;
+}

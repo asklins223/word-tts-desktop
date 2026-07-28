@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Word → TTS</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+
+        <!-- ===== 顶部工具栏 ===== -->
+        <header id="toolbar">
+            <div class="toolbar-left">
+                <div class="brand">
+                    <span class="brand-mark">W</span>
+                    <span class="brand-text">Word → TTS</span>
+                </div>
+            </div>
+            <div class="toolbar-right">
+                <button id="restart-btn" class="btn-ghost btn-restart" title="重新开始">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    重新开始
+                </button>
+            </div>
+        </header>
+
+        <!-- ===== 步骤指示器 ===== -->
+        <nav id="stepper">
+            <div class="step-indicator" data-step="1">
+                <div class="step-circle"><span class="step-num">1</span></div>
+                <span class="step-label">上传文档</span>
+            </div>
+            <div class="step-line" data-line="1"></div>
+            <div class="step-indicator" data-step="2">
+                <div class="step-circle"><span class="step-num">2</span></div>
+                <span class="step-label">声音配置</span>
+            </div>
+            <div class="step-line" data-line="2"></div>
+            <div class="step-indicator" data-step="3">
+                <div class="step-circle"><span class="step-num">3</span></div>
+                <span class="step-label">生成音频</span>
+            </div>
+            <div class="step-line" data-line="3"></div>
+            <div class="step-indicator" data-step="4">
+                <div class="step-circle"><span class="step-num">4</span></div>
+                <span class="step-label">完成下载</span>
+            </div>
+        </nav>
+
+        <!-- ===== 主体区域 ===== -->
+        <main id="content">
+
+            <!-- ========== Step 1: 上传文档 ========== -->
+            <section class="step-page active" id="page-1">
+                <div class="page-center">
+                    <div class="upload-hero">
+                        <div class="hero-icon">
+                            <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/>
+                                <line x1="12" y1="18" x2="12" y2="12"/>
+                                <polyline points="9 15 12 12 15 15"/>
+                            </svg>
+                        </div>
+                        <h1 class="hero-title">上传 Word 文档</h1>
+                        <p class="hero-subtitle">选择 .docx 文件，自动解析题型并生成语音</p>
+
+                        <div class="upload-zone-large" id="upload-zone">
+                            <div class="upload-icon-large">
+                                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                            </div>
+                            <div class="upload-text-large">点击选择或拖拽 .docx 文件到此处</div>
+                            <div class="upload-hint">支持 .docx 格式</div>
+                        </div>
+
+                        <div class="upload-divider">
+                            <span>已保存的配置</span>
+                        </div>
+
+                        <div class="preset-list" id="step1-preset-list">
+                            <div class="preset-empty">暂无保存的配置</div>
+                        </div>
+
+                        <div class="upload-divider">
+                            <span>或者</span>
+                        </div>
+
+                        <button class="btn-secondary btn-quick" id="quick-start-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                            使用默认配置快速开始
+                        </button>
+                        <p class="quick-hint">跳过配置步骤，使用默认参数直接生成</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== Step 2: 声音配置 ========== -->
+            <section class="step-page" id="page-2">
+                <div class="page-scroll">
+                    <div class="config-container">
+                        <div class="config-header">
+                            <h2 class="page-title">声音配置</h2>
+                            <p class="page-subtitle">调整音频参数，或加载已保存的配置</p>
+                        </div>
+
+                        <!-- 配置预设管理 -->
+                        <div class="config-card preset-bar-card">
+                            <div class="preset-bar">
+                                <select id="preset-select" class="preset-select" title="选择已保存的配置">
+                                    <option value="">-- 选择配置 --</option>
+                                </select>
+                                <button class="btn-ghost btn-sm" id="apply-preset-btn" title="应用到当前表单">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                    应用
+                                </button>
+                                <button class="btn-ghost btn-sm" id="save-preset-btn" title="保存当前配置">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                    保存
+                                </button>
+                                <button class="btn-ghost btn-sm btn-danger-ghost" id="delete-preset-btn" title="删除选中配置">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 音色说明 -->
+                        <div class="config-card">
+                            <h3 class="card-title">音色规则</h3>
+                            <div class="voice-rules">
+                                <div class="voice-rule-item">
+                                    <span class="voice-badge voice-female">女声</span>
+                                    <span class="voice-name">JennyNeural</span>
+                                    <span class="voice-desc">w/W 标识 → 女声 · 无标识默认女声</span>
+                                </div>
+                                <div class="voice-rule-item">
+                                    <span class="voice-badge voice-male">男声</span>
+                                    <span class="voice-name">RemyMultilingual</span>
+                                    <span class="voice-desc">m/M 标识 → 男声 · 自动去除标识</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 音频参数 -->
+                        <div class="config-card">
+                            <h3 class="card-title">音频参数</h3>
+                            <div class="config-grid">
+                                <div class="config-field">
+                                    <label class="field-label">
+                                        语速
+                                        <span class="field-value" id="rate-val">0%</span>
+                                    </label>
+                                    <input type="range" id="rate" min="-100" max="100" step="1" value="0">
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">
+                                        音量
+                                        <span class="field-value" id="volume-val">0%</span>
+                                    </label>
+                                    <input type="range" id="volume" min="-100" max="100" step="1" value="0">
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">
+                                        音调
+                                        <span class="field-value" id="pitch-val">0Hz</span>
+                                    </label>
+                                    <input type="range" id="pitch" min="-50" max="50" step="1" value="0">
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">
+                                        段落停顿
+                                        <span class="field-value" id="pause-val">0.5s</span>
+                                    </label>
+                                    <input type="range" id="pause" min="0" max="5" step="0.1" value="0.5">
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">音频格式</label>
+                                    <select id="format">
+                                        <option value="mp3" selected>MP3</option>
+                                        <option value="ogg">OGG</option>
+                                        <option value="aac">AAC</option>
+                                        <option value="opus">OPUS</option>
+                                        <option value="wav">WAV</option>
+                                    </select>
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">音频质量</label>
+                                    <select id="quality">
+                                        <option value="48 kbps（低）">48 kbps（低）</option>
+                                        <option value="128 kbps（标准）" selected>128 kbps（标准）</option>
+                                        <option value="192 kbps（高）">192 kbps（高）</option>
+                                        <option value="320 kbps（极高）">320 kbps（极高）</option>
+                                        <option value="无损（仅 wav 生效）">无损（仅 wav）</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 高级选项 -->
+                        <div class="config-card">
+                            <h3 class="card-title">高级选项</h3>
+                            <div class="config-grid">
+                                <div class="config-field-checkbox">
+                                    <label class="checkbox-row">
+                                        <input type="checkbox" id="preview">
+                                        <div class="checkbox-custom"></div>
+                                        <span class="checkbox-label">试听模式</span>
+                                        <span class="checkbox-hint">仅生成前 3 条</span>
+                                    </label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <label class="checkbox-row">
+                                        <input type="checkbox" id="match-788">
+                                        <div class="checkbox-custom"></div>
+                                        <span class="checkbox-label">788 音色匹配</span>
+                                        <span class="checkbox-hint" id="match-788-hint">针对男声 Remy 校准</span>
+                                    </label>
+                                </div>
+                                <div class="config-field" id="match-strength-row">
+                                    <label class="field-label">
+                                        匹配强度
+                                        <span class="field-value" id="match-strength-val">100</span>
+                                    </label>
+                                    <input type="range" id="match-strength" min="0" max="100" step="1" value="100">
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">代理地址（可选）</label>
+                                    <input type="text" id="proxy" placeholder="如 http://127.0.0.1:7890">
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">背景音乐</label>
+                                    <select id="bgm-select">
+                                        <option value="none" selected>无（纯人声）</option>
+                                    </select>
+                                </div>
+                                <div class="config-field">
+                                    <label class="field-label">
+                                        音乐音量
+                                        <span class="field-value" id="bgm-vol-val">30%</span>
+                                    </label>
+                                    <input type="range" id="bgm-vol" min="0" max="100" step="1" value="30">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 操作按钮 -->
+                        <div class="config-actions">
+                            <button class="btn-ghost" id="skip-config-btn">跳过，使用默认</button>
+                            <button class="btn-primary" id="start-generate-btn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                开始生成
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== Step 3: 生成中 ========== -->
+            <section class="step-page" id="page-3">
+                <div class="page-center">
+                    <div class="generate-container">
+                        <!-- 动画 + 进度 -->
+                        <div class="generate-hero">
+                            <div class="generate-animation" id="gen-animation">
+                                <div class="eq-bars">
+                                    <span class="eq-bar"></span>
+                                    <span class="eq-bar"></span>
+                                    <span class="eq-bar"></span>
+                                    <span class="eq-bar"></span>
+                                    <span class="eq-bar"></span>
+                                    <span class="eq-bar"></span>
+                                    <span class="eq-bar"></span>
+                                </div>
+                                <div class="gen-done-icon">
+                                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="20 6 9 17 4 12"/>
+                                    </svg>
+                                </div>
+                            </div>
+                            <h2 class="generate-title" id="gen-title">正在生成音频...</h2>
+                            <div class="progress-bar-wrapper">
+                                <div class="progress-bar-track">
+                                    <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
+                                </div>
+                                <div class="progress-stats" id="progress-stats">准备中...</div>
+                            </div>
+                        </div>
+
+                        <!-- 按题型统计 -->
+                        <div class="type-stats" id="type-stats"></div>
+
+                        <!-- 日志 -->
+                        <div class="log-panel">
+                            <div class="log-header">
+                                <span class="log-title">处理日志</span>
+                                <span class="log-count" id="log-count">0 条</span>
+                            </div>
+                            <div class="log-body" id="progress-log">
+                                <div class="log-empty">等待开始...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== Step 4: 完成下载 ========== -->
+            <section class="step-page" id="page-4">
+                <div class="page-scroll">
+                    <div class="result-container">
+                        <!-- 完成横幅 -->
+                        <div class="result-header">
+                            <div class="result-success-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                                    <polyline points="22 4 12 14.01 9 11.01"/>
+                                </svg>
+                            </div>
+                            <h2 class="result-title">生成完成！</h2>
+                            <p class="result-summary" id="result-summary"></p>
+                        </div>
+
+                        <!-- ZIP 下载卡片 -->
+                        <div class="zip-card" id="zip-card">
+                            <div class="zip-icon">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 8v13H3V8"/>
+                                    <path d="M1 3h22v5H1z"/>
+                                    <path d="M10 12h4"/>
+                                </svg>
+                            </div>
+                            <div class="zip-info">
+                                <div class="zip-name">全部音频（ZIP 压缩包）</div>
+                                <div class="zip-desc" id="zip-desc">包含所有生成的音频文件</div>
+                            </div>
+                            <button class="btn-primary btn-download" id="download-zip-btn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                下载 ZIP
+                            </button>
+                        </div>
+
+                        <!-- 音频列表 -->
+                        <div class="audio-list-section">
+                            <div class="audio-list-header">
+                                <h3 class="section-heading">音频预览</h3>
+                                <span class="audio-count" id="audio-count">0 个文件</span>
+                            </div>
+                            <div class="audio-list" id="audio-list">
+                                <div class="audio-empty">暂无音频文件</div>
+                            </div>
+                        </div>
+
+                        <!-- 重新开始 -->
+                        <div class="result-actions">
+                            <button class="btn-primary btn-new-file" id="new-file-btn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+                                上传新文件
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- ===== 底部状态栏 ===== -->
+        <footer id="statusbar">
+            <div class="status-left">
+                <span id="status-text">就绪</span>
+            </div>
+            <div class="status-right" id="stats-bar"></div>
+        </footer>
+
+    </div>
+
+    <input type="file" id="hidden-file-input" accept=".docx" style="display:none">
+    <script src="vendor/wavesurfer.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

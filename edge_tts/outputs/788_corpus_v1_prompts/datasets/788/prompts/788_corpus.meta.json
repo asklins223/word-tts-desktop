@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "prompt_file": "788_corpus.tsv",
+  "sha256": "52639e76f3447afe7b060f5561527110b24c4718c8f21f0a4f98a2f8cef0c9be",
+  "prompt_count": 480,
+  "split_counts": {
+    "test": 40,
+    "train": 400,
+    "validation": 40
+  },
+  "category_counts": {
+    "conversation": 60,
+    "expressive": 30,
+    "held_out": 80,
+    "neutral": 100,
+    "numbers": 60,
+    "phonetic": 40,
+    "questions": 40,
+    "short_status": 20,
+    "technical": 50
+  },
+  "word_count": 6672,
+  "estimated_minutes_at_130_wpm": 51.3,
+  "estimated_minutes_at_160_wpm": 41.7,
+  "naming_rule": "<id>.<wav|flac|mp3|m4a|aac|ogg|opus>",
+  "warning": "Validation and test utterances are locked holdouts. Never copy them into the training split."
+}

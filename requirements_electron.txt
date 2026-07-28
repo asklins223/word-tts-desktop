@@ -1,0 +1,49 @@
+# Electron 打包专用依赖（不含 gradio / pywebview）
+# 用于 PyInstaller 打包 server.py → server_backend
+# 安装: pip install -r requirements_electron.txt
+
+# ---- 后端框架 ----
+fastapi>=0.115.0
+uvicorn>=0.30.0
+starlette
+anyio
+h11
+pydantic>=2.0.0
+pydantic-core
+httpx
+certifi
+Jinja2
+
+# ---- TTS 核心 ----
+edge-tts>=7.2.0
+aiohttp
+aiosignal
+frozenlist
+multidict
+yarl
+aiofiles>=23.0.0
+
+# ---- 文档解析 ----
+python-docx>=1.0.0
+lxml>=5.0.0
+Pillow
+numpy>=1.24.0
+
+# ---- 音频处理 ----
+pydub>=0.25.1
+imageio-ffmpeg>=0.5.1
+ffmpy>=0.3.0
+
+# ---- 其他（PyInstaller collect_all 需要）----
+markdown-it-py
+mdit-py-plugins
+safehttpx
+sniffio
+idna
+httpcore
+click
+typing_extensions
+python-multipart
+
+# ---- 打包工具 ----
+pyinstaller>=6.0.0
