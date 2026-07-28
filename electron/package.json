@@ -3,6 +3,12 @@
   "version": "1.0.0",
   "description": "Word → TTS 一体化桌面工具",
   "main": "main.js",
+  "author": "asklins223",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/asklins223/word-tts-desktop.git"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
@@ -64,7 +70,12 @@
           "arch": ["x64"]
         }
       ],
-      "icon": null
+      "icon": null,
+      "publish": {
+        "provider": "github",
+        "owner": "asklins223",
+        "repo": "word-tts-desktop"
+      }
     },
     "nsis": {
       "oneClick": false,
