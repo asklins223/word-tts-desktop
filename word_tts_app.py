@@ -68,14 +68,50 @@ import edge_tts
 from pydub import AudioSegment
 
 # ---- 配置 pydub 使用 imageio-ffmpeg 自带的静态 ffmpeg ----
-try:
-    import imageio_ffmpeg
-    _ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+def _find_ffmpeg():
+    """查找 ffmpeg 可执行文件路径，兼容 PyInstaller 打包环境。"""
+    # 方式 1：imageio_ffmpeg.get_ffmpeg_exe()
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.isfile(exe):
+            return exe
+    except Exception as e:
+        print(f"[ffmpeg] imageio_ffmpeg.get_ffmpeg_exe() 失败: {e}", file=sys.stderr)
+
+    # 方式 2：在 PyInstaller 的 _MEIPASS 中手动搜索 binaries 目录
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        binaries_dir = os.path.join(meipass, 'imageio_ffmpeg', 'binaries')
+        if os.path.isdir(binaries_dir):
+            for name in os.listdir(binaries_dir):
+                if name.lower().startswith('ffmpeg') and (
+                    name.lower().endswith('.exe') or
+                    not name.lower().endswith(('.md', '.txt', '.py'))
+                ):
+                    candidate = os.path.join(binaries_dir, name)
+                    if os.path.isfile(candidate):
+                        return candidate
+
+    # 方式 3：系统 PATH 中的 ffmpeg
+    import shutil
+    system_ff = shutil.which('ffmpeg')
+    if system_ff:
+        return system_ff
+
+    return None
+
+_ffmpeg_path = _find_ffmpeg()
+if _ffmpeg_path:
     AudioSegment.converter = _ffmpeg_path
-    # 同时设置环境变量，供 voice_match_788 等模块的 ffmpeg_binary() 使用
-    os.environ.setdefault("FFMPEG_BINARY", _ffmpeg_path)
-except Exception:
-    pass
+    os.environ["FFMPEG_BINARY"] = _ffmpeg_path
+    # 将 ffmpeg 所在目录加入 PATH，供其他模块（如 ffmpy）使用
+    ff_dir = os.path.dirname(_ffmpeg_path)
+    if ff_dir not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = ff_dir + os.pathsep + os.environ.get('PATH', '')
+    print(f"[ffmpeg] 使用: {_ffmpeg_path}", file=sys.stderr)
+else:
+    print("[ffmpeg] 警告: 未找到 ffmpeg，音频处理将失败", file=sys.stderr)
 
 from word_parser import parse_document_auto, PARSER_MAP
 
