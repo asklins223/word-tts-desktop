@@ -113,6 +113,25 @@ if _ffmpeg_path:
 else:
     print("[ffmpeg] 警告: 未找到 ffmpeg，音频处理将失败", file=sys.stderr)
 
+# ---- pydub ffprobe 兼容 ----
+# pydub 的 mediainfo_json() 会调用 ffprobe（独立可执行文件），
+# 但 imageio_ffmpeg 只提供 ffmpeg，不包含 ffprobe。
+# 在打包环境中 ffprobe 不存在会导致 WinError 2。
+# 解决：monkey-patch mediainfo_json，当 ffprobe 不可用时返回 None，
+# 让 pydub 走纯 ffmpeg 路径。
+import pydub.utils as _pydub_utils
+_orig_mediainfo_json = _pydub_utils.mediainfo_json
+
+def _safe_mediainfo_json(filepath, read_ahead_limit=-1):
+    """如果 ffprobe 不可用，返回 None 而不是抛出 FileNotFoundError。"""
+    try:
+        return _orig_mediainfo_json(filepath, read_ahead_limit)
+    except (FileNotFoundError, OSError):
+        print("[pydub] ffprobe 不可用，跳过 mediainfo", file=sys.stderr)
+        return None
+
+_pydub_utils.mediainfo_json = _safe_mediainfo_json
+
 from word_parser import parse_document_auto, PARSER_MAP
 
 import math
@@ -367,7 +386,7 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
         )
         await communicate.save(tmp_path)
         if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-            return AudioSegment.from_file(tmp_path, format="mp3")
+            return AudioSegment.from_file(tmp_path, format="mp3", codec="mp3")
         else:
             raise RuntimeError("未生成有效音频")
     finally:
