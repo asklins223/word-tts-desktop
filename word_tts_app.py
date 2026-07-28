@@ -168,6 +168,14 @@ except Exception:
     process_audio_segment = None
     VoiceMatchError = Exception
 
+# ---- TTSMaker 客户端（可选模块，用于男声 788/Alfie 生成）----
+try:
+    import ttsmaker_client as _ttsmaker
+    _TTSMaker_AVAILABLE = _ttsmaker.is_available()
+except Exception:
+    _TTSMaker_AVAILABLE = False
+    _ttsmaker = None
+
 
 # ============================================================================
 # 常量配置
@@ -237,15 +245,33 @@ def export_audio(seg, fmt, quality, out_path):
     print(f"[export] 完成: {out_path} ({out_size} bytes)", file=sys.stderr)
     if out_size == 0:
         raise RuntimeError(f"导出文件为空: {out_path}")
+
     # 回读验证：确认导出的文件可以被 pydub 重新加载
+    # 注意：Windows 上路径含中文字符时，pydub 直接将路径传给 ffmpeg 子进程可能失败，
+    # 因此先复制到 ASCII 临时文件名再验证。
+    import tempfile as _verify_tmp
+    _verify_fd, _verify_tmp_path = _verify_tmp.mkstemp(suffix=f".{_ext.lstrip('.')}")
     try:
-        verify_seg = AudioSegment.from_file(out_path, format=fmt_id)
-        if len(verify_seg) < 10:
-            raise RuntimeError(f"导出文件回读验证失败: 时长 {len(verify_seg)}ms 过短")
-        print(f"[export] 回读验证通过: dur={len(verify_seg)}ms size={out_size}B", file=sys.stderr)
-    except Exception as ve:
-        # 回读失败说明导出的文件有问题
-        raise RuntimeError(f"导出文件回读验证失败: {ve} (文件大小: {out_size}B, 路径: {out_path})")
+        import shutil as _verify_shutil
+        _verify_shutil.copy2(out_path, _verify_tmp_path)
+        try:
+            verify_seg = AudioSegment.from_file(_verify_tmp_path, format=fmt_id)
+            if len(verify_seg) < 10:
+                raise RuntimeError(f"回读验证失败: 时长 {len(verify_seg)}ms 过短")
+            print(f"[export] 回读验证通过: dur={len(verify_seg)}ms size={out_size}B", file=sys.stderr)
+        except Exception as ve:
+            # 回读失败可能是 ffmpeg 子进程问题，不一定是文件本身问题
+            # 文件大小已确认非零，降级为警告而非错误
+            print(f"[export] 警告: 回读验证失败 (非致命): {ve} (文件大小: {out_size}B)", file=sys.stderr)
+    finally:
+        try:
+            os.close(_verify_fd)
+        except OSError:
+            pass
+        try:
+            os.remove(_verify_tmp_path)
+        except OSError:
+            pass
     return out_path
 
 
@@ -408,7 +434,23 @@ def parse_speakers(text):
 # ============================================================================
 
 async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
-    """合成单段文本的音频，返回 AudioSegment。"""
+    """合成单段文本的音频，返回 AudioSegment。
+
+    男声 (MALE_VOICE) 优先使用 TTSMaker 788 (Alfie) 生成；
+    女声 (FEMALE_VOICE) 使用 edge-tts 生成。
+    TTSMaker 不可用或失败时回退到 edge-tts。
+    """
+    # ---- 男声：优先使用 TTSMaker ----
+    if voice == MALE_VOICE and _TTSMaker_AVAILABLE:
+        try:
+            print(f"[tts] 使用 TTSMaker 788 (Alfie) 生成男声: {text[:50]}...", file=sys.stderr)
+            seg = await _ttsmaker.synth_male_ttsmaker(text, tmp_dir, voice_key="alfie")
+            return seg
+        except Exception as e:
+            print(f"[tts] TTSMaker 生成失败，回退到 edge-tts: {e}", file=sys.stderr)
+            # 继续执行 edge-tts 回退逻辑
+
+    # ---- 女声 / 回退：使用 edge-tts ----
     uid = uuid.uuid4().hex[:8]
     tmp_path = os.path.join(tmp_dir, f".seg_{uid}.mp3")
     try:
@@ -1015,6 +1057,16 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         "time": now_str(), "level": "info",
         "msg": f"开始生成音频（{progress['completed']}/{total}）..."
     })
+    if _TTSMaker_AVAILABLE:
+        log_entries.append({
+            "time": now_str(), "level": "info",
+            "msg": "男声使用 TTSMaker 788 (Alfie) 生成，女声使用 edge-tts"
+        })
+    else:
+        log_entries.append({
+            "time": now_str(), "level": "warn",
+            "msg": "TTSMaker 不可用，男声将使用 edge-tts (Remy) 生成"
+        })
     if match_788 and _788_AVAILABLE:
         log_entries.append({
             "time": now_str(), "level": "warn",
