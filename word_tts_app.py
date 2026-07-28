@@ -34,7 +34,15 @@ from datetime import datetime
 # ============================================================================
 # ---- PyInstaller 兼容：将打包资源路径加入 sys.path ----
 if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
+    # 打包模式：BASE_DIR 指向用户数据目录（可写、持久化），
+    # 避免写入 .app 包内部（代码签名后只读，App Translocation 后只读）。
+    if sys.platform == 'darwin':
+        BASE_DIR = os.path.join(os.path.expanduser('~'), 'Library', 'Application Support', 'WordTTS')
+    elif sys.platform == 'win32':
+        BASE_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'WordTTS')
+    else:
+        BASE_DIR = os.path.join(os.path.expanduser('~'), '.wordtts')
+    os.makedirs(BASE_DIR, exist_ok=True)
     _RESOURCE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
     if _RESOURCE_DIR not in sys.path:
         sys.path.insert(0, _RESOURCE_DIR)
@@ -110,6 +118,17 @@ if _ffmpeg_path:
     if ff_dir not in os.environ.get('PATH', ''):
         os.environ['PATH'] = ff_dir + os.pathsep + os.environ.get('PATH', '')
     print(f"[ffmpeg] 使用: {_ffmpeg_path}", file=sys.stderr)
+    # 验证 ffmpeg 可执行
+    try:
+        import subprocess as _sp
+        _r = _sp.run([_ffmpeg_path, '-version'], capture_output=True, timeout=10)
+        if _r.returncode == 0:
+            _ver_line = _r.stdout.decode('utf-8', errors='replace').split('\n')[0]
+            print(f"[ffmpeg] 验证通过: {_ver_line}", file=sys.stderr)
+        else:
+            print(f"[ffmpeg] 验证失败: returncode={_r.returncode}", file=sys.stderr)
+    except Exception as _e:
+        print(f"[ffmpeg] 验证异常: {_e}", file=sys.stderr)
 else:
     print("[ffmpeg] 警告: 未找到 ffmpeg，音频处理将失败", file=sys.stderr)
 
@@ -210,7 +229,12 @@ def export_audio(seg, fmt, quality, out_path):
     br = QUALITY_BITRATE.get(quality)
     if br and fmt in ("mp3", "aac", "opus"):
         kwargs["bitrate"] = br
+    print(f"[export] 导出: {out_path} fmt={fmt_id} dur={len(seg)}ms", file=sys.stderr)
     seg.export(out_path, **kwargs)
+    out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+    print(f"[export] 完成: {out_path} ({out_size} bytes)", file=sys.stderr)
+    if out_size == 0:
+        raise RuntimeError(f"导出文件为空: {out_path}")
     return out_path
 
 
@@ -385,10 +409,14 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
             proxy=proxy or None,
         )
         await communicate.save(tmp_path)
-        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-            return AudioSegment.from_file(tmp_path, format="mp3", codec="mp3")
+        fsize = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+        print(f"[tts] edge_tts 保存完成: {tmp_path} ({fsize} bytes)", file=sys.stderr)
+        if fsize > 0:
+            seg = AudioSegment.from_file(tmp_path, format="mp3", codec="mp3")
+            print(f"[tts] pydub 解码完成: duration={len(seg)}ms channels={seg.channels}", file=sys.stderr)
+            return seg
         else:
-            raise RuntimeError("未生成有效音频")
+            raise RuntimeError(f"未生成有效音频 (文件大小: {fsize})")
     finally:
         if os.path.exists(tmp_path):
             try:

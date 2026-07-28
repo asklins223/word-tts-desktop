@@ -35,7 +35,12 @@ from docx import Document
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORD_DIR = os.path.join(BASE_DIR, "word")
 OUTPUT_DIR = os.path.join(BASE_DIR, "word_parsed")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# OUTPUT_DIR 仅在 __main__ 独立运行时使用；打包模式下 .app 内部只读，
+# 跳过创建以避免 PermissionError 导致 import 失败。
+try:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+except (PermissionError, OSError):
+    pass
 
 
 # ============================================================================
