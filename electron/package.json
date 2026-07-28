@@ -74,9 +74,7 @@
         }
       ],
       "icon": null,
-      "signIgnore": [
-        "server_backend"
-      ]
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
