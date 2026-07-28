@@ -222,9 +222,14 @@ function createWindow() {
         windowOptions.titleBarStyle = 'hidden';
         windowOptions.trafficLightPosition = { x: 16, y: 18 };
     } else if (isWin) {
-        // Windows: 隐藏标题栏但保留原生窗口控件（最小化/最大化/关闭）
-        // 不使用 frame: false，否则 Windows 上没有窗口控件按钮
+        // Windows: 使用 hidden + overlay 保留原生窗口控件（最小化/最大化/关闭）
+        // titleBarOverlay 让 Windows 渲染原生控件按钮在右上角
         windowOptions.titleBarStyle = 'hidden';
+        windowOptions.titleBarOverlay = {
+            color: '#faf9f7',
+            symbolColor: '#4a4a4a',
+            height: 40,
+        };
         windowOptions.autoHideMenuBar = true;
     } else {
         // Linux: 使用原生框架
