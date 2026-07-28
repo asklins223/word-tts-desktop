@@ -289,36 +289,45 @@ function registerIpcHandlers() {
             allowedRoots.push(path.resolve(__dirname, '..'));
         }
         const resolvedSource = path.resolve(sourcePath);
-        const isAllowed = allowedRoots.some(root =>
-            resolvedSource === root || resolvedSource.startsWith(root + path.sep)
-        );
+
+        // Windows 路径校验需要大小写不敏感
+        const isAllowed = allowedRoots.some(root => {
+            const resolvedRoot = path.resolve(root);
+            const isExactMatch = resolvedSource.toLowerCase() === resolvedRoot.toLowerCase();
+            const isSubPath = resolvedSource.toLowerCase().startsWith(resolvedRoot.toLowerCase() + path.sep.toLowerCase());
+            return isExactMatch || isSubPath;
+        });
+
         if (!isAllowed) {
             console.error('[main] 拒绝复制允许目录外的文件:', sourcePath);
-            return false;
+            console.error('[main] resolvedSource:', resolvedSource);
+            console.error('[main] allowedRoots:', allowedRoots);
+            return { success: false, reason: 'path-check-failed' };
         }
 
         // 安全校验：源文件必须存在
         try {
             if (!fs.existsSync(sourcePath)) {
                 console.error('[main] 源文件不存在:', sourcePath);
-                return false;
+                return { success: false, reason: 'file-not-found' };
             }
         } catch (err) {
             console.error('[main] 检查源文件失败:', err);
-            return false;
+            return { success: false, reason: 'file-check-error' };
         }
 
         const result = await dialog.showSaveDialog(mainWindow, {
             title: '保存文件',
             defaultPath: suggestedName,
         });
-        if (result.canceled || !result.filePath) return false;
+        if (result.canceled || !result.filePath) return { success: false, reason: 'user-cancelled' };
         try {
             fs.copyFileSync(sourcePath, result.filePath);
-            return true;
+            console.log('[main] 文件复制成功:', sourcePath, '->', result.filePath);
+            return { success: true };
         } catch (err) {
             console.error('[main] 复制文件失败:', err);
-            return false;
+            return { success: false, reason: 'copy-error', error: err.message };
         }
     });
 

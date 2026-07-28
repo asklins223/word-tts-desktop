@@ -377,6 +377,20 @@
     </div>
 
     <input type="file" id="hidden-file-input" accept=".docx" style="display:none">
+
+    <!-- 自定义输入对话框（替代 Electron 不支持的 window.prompt） -->
+    <div class="prompt-overlay" id="prompt-overlay">
+        <div class="prompt-dialog">
+            <div class="prompt-title" id="prompt-title">提示</div>
+            <div class="prompt-message" id="prompt-message"></div>
+            <input type="text" class="prompt-input" id="prompt-input">
+            <div class="prompt-actions">
+                <button class="btn-ghost btn-sm" id="prompt-cancel">取消</button>
+                <button class="btn-primary btn-sm" id="prompt-ok">确定</button>
+            </div>
+        </div>
+    </div>
+
     <script src="vendor/wavesurfer.min.js"></script>
     <script src="app.js"></script>
 </body>

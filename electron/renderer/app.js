@@ -63,6 +63,55 @@ function savePresets(presets) {
 }
 
 /**
+ * 自定义输入对话框（替代 Electron 不支持的 window.prompt）。
+ * @param {string} title - 对话框标题
+ * @param {string} message - 提示文字
+ * @param {string} defaultValue - 输入框默认值
+ * @returns {Promise<string|null>} 用户输入的值，取消时返回 null
+ */
+function showPromptDialog(title, message, defaultValue = '') {
+    return new Promise((resolve) => {
+        const overlay = $('prompt-overlay');
+        const titleEl = $('prompt-title');
+        const messageEl = $('prompt-message');
+        const input = $('prompt-input');
+        const okBtn = $('prompt-ok');
+        const cancelBtn = $('prompt-cancel');
+
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+        input.value = defaultValue;
+
+        overlay.classList.add('active');
+        // 延迟聚焦以确保 transition 完成
+        setTimeout(() => { input.focus(); input.select(); }, 50);
+
+        let resolved = false;
+        const done = (value) => {
+            if (resolved) return;
+            resolved = true;
+            overlay.classList.remove('active');
+            // 清理事件监听器（一次性）
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            input.removeEventListener('keydown', onKeydown);
+            resolve(value);
+        };
+
+        const onOk = () => done(input.value);
+        const onCancel = () => done(null);
+        const onKeydown = (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); done(input.value); }
+            else if (e.key === 'Escape') { e.preventDefault(); done(null); }
+        };
+
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        input.addEventListener('keydown', onKeydown);
+    });
+}
+
+/**
  * 生成预设描述文字。
  */
 function presetSummary(config) {
@@ -183,9 +232,9 @@ function refreshPresetUI() {
 /**
  * 保存当前表单配置为预设。
  */
-function handleSavePreset() {
+async function handleSavePreset() {
     const config = collectConfig(false);
-    const name = window.prompt('请输入配置名称：', `配置 ${new Date().toLocaleDateString('zh-CN')}`);
+    const name = await showPromptDialog('保存配置', '请输入配置名称：', `配置 ${new Date().toLocaleDateString('zh-CN')}`);
     if (!name || !name.trim()) return;
 
     const presets = loadPresets();
@@ -1243,9 +1292,23 @@ async function downloadZip() {
                 if (data.path) {
                     // 使用源文件名作为 ZIP 下载文件名
                     const sourceName = currentSession.source_filename.replace(/\.docx$/i, '');
-                    const saved = await window.electronAPI.saveFileByPath(data.path, `${sourceName}_tts.zip`);
-                    if (saved) showToast('下载成功');
-                    else showToast('已取消');
+                    const result = await window.electronAPI.saveFileByPath(data.path, `${sourceName}_tts.zip`);
+                    if (result && result.success) {
+                        showToast('下载成功');
+                    } else {
+                        const reason = result?.reason || 'unknown';
+                        if (reason === 'user-cancelled') {
+                            showToast('已取消');
+                        } else if (reason === 'path-check-failed') {
+                            showToast('下载失败：文件路径不在允许范围内');
+                        } else if (reason === 'file-not-found') {
+                            showToast('下载失败：ZIP 文件不存在');
+                        } else if (reason === 'copy-error') {
+                            showToast('下载失败：无法复制文件');
+                        } else {
+                            showToast(`下载失败 (${reason})`);
+                        }
+                    }
                 } else {
                     showToast('ZIP 文件不存在');
                 }
@@ -1253,6 +1316,7 @@ async function downloadZip() {
                 showToast('下载失败：文件不存在或会话已过期');
             }
         } catch (err) {
+            console.error('下载异常:', err);
             showToast('下载失败');
         }
     } else {
@@ -1269,9 +1333,23 @@ async function downloadFile(filename) {
             if (resp.ok) {
                 const data = await resp.json();
                 if (data.path) {
-                    const saved = await window.electronAPI.saveFileByPath(data.path, filename);
-                    if (saved) showToast('下载成功');
-                    else showToast('已取消');
+                    const result = await window.electronAPI.saveFileByPath(data.path, filename);
+                    if (result && result.success) {
+                        showToast('下载成功');
+                    } else {
+                        const reason = result?.reason || 'unknown';
+                        if (reason === 'user-cancelled') {
+                            showToast('已取消');
+                        } else if (reason === 'path-check-failed') {
+                            showToast('下载失败：文件路径不在允许范围内');
+                        } else if (reason === 'file-not-found') {
+                            showToast('下载失败：源文件不存在');
+                        } else if (reason === 'copy-error') {
+                            showToast('下载失败：无法复制文件');
+                        } else {
+                            showToast(`下载失败 (${reason})`);
+                        }
+                    }
                 } else {
                     showToast('文件不存在');
                 }
@@ -1279,6 +1357,7 @@ async function downloadFile(filename) {
                 showToast('下载失败：文件不存在或会话已过期');
             }
         } catch (err) {
+            console.error('下载异常:', err);
             showToast('下载失败');
         }
     } else {

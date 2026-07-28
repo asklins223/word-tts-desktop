@@ -224,17 +224,28 @@ def fmt_hz(v):
 
 def export_audio(seg, fmt, quality, out_path):
     """按指定格式与码率导出音频。"""
+    if len(seg) < 50:
+        raise RuntimeError(f"音频时长过短 ({len(seg)}ms)，无法导出")
     fmt_id, _ext = FORMAT_MAP[fmt]
     kwargs = {"format": fmt_id}
     br = QUALITY_BITRATE.get(quality)
     if br and fmt in ("mp3", "aac", "opus"):
         kwargs["bitrate"] = br
-    print(f"[export] 导出: {out_path} fmt={fmt_id} dur={len(seg)}ms", file=sys.stderr)
+    print(f"[export] 导出: {out_path} fmt={fmt_id} dur={len(seg)}ms bitrate={br}", file=sys.stderr)
     seg.export(out_path, **kwargs)
     out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
     print(f"[export] 完成: {out_path} ({out_size} bytes)", file=sys.stderr)
     if out_size == 0:
         raise RuntimeError(f"导出文件为空: {out_path}")
+    # 回读验证：确认导出的文件可以被 pydub 重新加载
+    try:
+        verify_seg = AudioSegment.from_file(out_path, format=fmt_id)
+        if len(verify_seg) < 10:
+            raise RuntimeError(f"导出文件回读验证失败: 时长 {len(verify_seg)}ms 过短")
+        print(f"[export] 回读验证通过: dur={len(verify_seg)}ms size={out_size}B", file=sys.stderr)
+    except Exception as ve:
+        # 回读失败说明导出的文件有问题
+        raise RuntimeError(f"导出文件回读验证失败: {ve} (文件大小: {out_size}B, 路径: {out_path})")
     return out_path
 
 
@@ -411,12 +422,17 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
         await communicate.save(tmp_path)
         fsize = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
         print(f"[tts] edge_tts 保存完成: {tmp_path} ({fsize} bytes)", file=sys.stderr)
-        if fsize > 0:
-            seg = AudioSegment.from_file(tmp_path, format="mp3", codec="mp3")
-            print(f"[tts] pydub 解码完成: duration={len(seg)}ms channels={seg.channels}", file=sys.stderr)
-            return seg
-        else:
-            raise RuntimeError(f"未生成有效音频 (文件大小: {fsize})")
+        if fsize < 100:
+            # 小于 100 字节几乎不可能是有效音频
+            raise RuntimeError(f"edge_tts 返回的音频过小 ({fsize} bytes)，可能网络异常")
+        seg = AudioSegment.from_file(tmp_path, format="mp3", codec="mp3")
+        dur_ms = len(seg)
+        print(f"[tts] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}", file=sys.stderr)
+        if dur_ms < 50:
+            raise RuntimeError(f"解码后音频时长过短 ({dur_ms}ms)，可能 edge_tts 返回了空音频")
+        if seg.channels == 0 or seg.frame_rate == 0:
+            raise RuntimeError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
+        return seg
     finally:
         if os.path.exists(tmp_path):
             try:

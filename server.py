@@ -457,6 +457,91 @@ async def get_config():
     }
 
 
+@app.get("/api/diagnose")
+async def diagnose():
+    """返回诊断信息（用于调试）。"""
+    import shutil
+    import subprocess
+    import platform
+    
+    diagnose_info = {
+        "platform": platform.system(),
+        "platform_version": platform.version(),
+        "python_version": platform.python_version(),
+        "is_frozen": getattr(sys, "frozen", False),
+        "resource_dir": RESOURCE_DIR,
+        "base_dir": BASE_DIR,
+        "output_base": core.OUTPUT_BASE,
+        "ffmpeg": {},
+        "ffprobe": {},
+    }
+    
+    # 检查 ffmpeg
+    ffmpeg_path = getattr(core, "_ffmpeg_path", None)
+    diagnose_info["ffmpeg"]["path"] = ffmpeg_path
+    
+    if ffmpeg_path and os.path.isfile(ffmpeg_path):
+        try:
+            result = subprocess.run(
+                [ffmpeg_path, "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                version_line = result.stderr.split("\n")[0] if result.stderr else result.stdout.split("\n")[0]
+                diagnose_info["ffmpeg"]["version"] = version_line.strip()
+                diagnose_info["ffmpeg"]["status"] = "ok"
+            else:
+                diagnose_info["ffmpeg"]["status"] = f"failed (exit code {result.returncode})"
+                diagnose_info["ffmpeg"]["error"] = result.stderr[:200] if result.stderr else result.stdout[:200]
+        except Exception as e:
+            diagnose_info["ffmpeg"]["status"] = "error"
+            diagnose_info["ffmpeg"]["error"] = str(e)
+    else:
+        diagnose_info["ffmpeg"]["status"] = "not_found"
+    
+    # 检查 ffprobe
+    ffprobe_path = shutil.which("ffprobe")
+    diagnose_info["ffprobe"]["path"] = ffprobe_path
+    if ffprobe_path:
+        try:
+            result = subprocess.run(
+                [ffprobe_path, "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            diagnose_info["ffprobe"]["status"] = "ok" if result.returncode == 0 else "failed"
+        except Exception as e:
+            diagnose_info["ffprobe"]["status"] = "error"
+            diagnose_info["ffprobe"]["error"] = str(e)
+    else:
+        diagnose_info["ffprobe"]["status"] = "not_found"
+    
+    # 检查 imageio_ffmpeg
+    try:
+        import imageio_ffmpeg
+        try:
+            ie_path = imageio_ffmpeg.get_ffmpeg_exe()
+            diagnose_info["imageio_ffmpeg"] = {
+                "version": imageio_ffmpeg.__version__,
+                "get_ffmpeg_exe": ie_path,
+            }
+        except Exception as e:
+            diagnose_info["imageio_ffmpeg"] = {
+                "version": imageio_ffmpeg.__version__,
+                "error": str(e),
+            }
+    except ImportError:
+        diagnose_info["imageio_ffmpeg"] = {"status": "not_installed"}
+    
+    # 检查 pydub
+    diagnose_info["pydub"] = {"converter": getattr(core.AudioSegment, "converter", "not_set")}
+    
+    return diagnose_info
+
+
 @app.post("/api/parse")
 async def parse_document_endpoint(req: ParseRequest):
     """解析 Word 文档，返回解析结果和会话信息。"""

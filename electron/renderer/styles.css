@@ -1395,6 +1395,64 @@ select {
     to { transform: rotate(360deg); }
 }
 
+/* ===== 自定义输入对话框 ===== */
+.prompt-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.35);
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(2px);
+}
+.prompt-overlay.active {
+    display: flex;
+}
+.prompt-dialog {
+    background: var(--panel);
+    border-radius: var(--r-xl);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    padding: 24px;
+    width: 360px;
+    max-width: 90vw;
+}
+.prompt-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+.prompt-message {
+    font-size: 13px;
+    color: var(--text-sub);
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+.prompt-input {
+    width: 100%;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+    box-sizing: border-box;
+}
+.prompt-input:focus {
+    border-color: var(--accent);
+}
+.prompt-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}
+
 /* ===== Responsive ===== */
 @media (max-width: 720px) {
     .config-grid {
