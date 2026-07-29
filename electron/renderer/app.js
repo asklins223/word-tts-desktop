@@ -117,13 +117,10 @@ function showPromptDialog(title, message, defaultValue = '') {
 function presetSummary(config) {
     if (!config) return '配置数据缺失';
     const parts = [];
-    const rate = config.rate ?? 0;
-    const pitch = config.pitch ?? 0;
-    parts.push(`语速 ${rate > 0 ? '+' : ''}${rate}%`);
-    parts.push(`音调 ${pitch > 0 ? '+' : ''}${pitch}Hz`);
+    parts.push(`语速 ${config.rate ?? 1.0}x`);
+    parts.push(`音量 ${Math.round((config.volume ?? 1) * 100)}%`);
+    parts.push(`音调 ${config.pitch ?? 1}x`);
     parts.push((config.format || 'mp3').toUpperCase());
-    if (config.match_788) parts.push('788匹配');
-    if (config.bgm_select && config.bgm_select !== 'none') parts.push('背景音乐');
     return parts.join(' · ');
 }
 
@@ -197,28 +194,46 @@ function renderStep2PresetSelect() {
 }
 
 /**
+ * 安全设置 <select> 的值。
+ *
+ * JavaScript 中 String(1.0) === "1"，但 <option value="1.0"> 的值是 "1.0"，
+ * 直接赋值会匹配失败。此函数先尝试精确匹配，再回退到数值匹配。
+ */
+function setSelectValue(selectEl, value, defaultValue) {
+    const str = String(value ?? defaultValue);
+    // 精确匹配
+    for (const opt of selectEl.options) {
+        if (opt.value === str) {
+            selectEl.value = str;
+            return;
+        }
+    }
+    // 数值匹配（处理 1.0 → "1" vs "1.0" 等情况）
+    const num = parseFloat(str);
+    if (!isNaN(num)) {
+        for (const opt of selectEl.options) {
+            if (parseFloat(opt.value) === num) {
+                selectEl.value = opt.value;
+                return;
+            }
+        }
+    }
+}
+
+/**
  * 将配置应用到 Step 2 表单。
  */
 function applyConfigToForm(config) {
     if (!config) return;
-    $('rate').value = config.rate ?? 0;
-    $('volume').value = config.volume ?? 0;
-    $('pitch').value = config.pitch ?? 0;
-    $('pause').value = config.pause ?? 0.5;
-    $('format').value = config.format ?? 'mp3';
-    $('quality').value = config.quality ?? '128 kbps（标准）';
+    setSelectValue($('rate'), config.rate, 1.0);
+    setSelectValue($('volume'), config.volume, 1);
+    setSelectValue($('pitch'), config.pitch, 1);
+    setSelectValue($('pause'), config.pause, 0);
+    setSelectValue($('format'), config.format, 'mp3');
+    setSelectValue($('quality'), config.quality, '128 kbps（标准）');
     $('proxy').value = config.proxy ?? '';
     $('preview').checked = !!config.preview;
-    $('match-788').checked = !!config.match_788;
-    $('match-strength').value = config.match_strength ?? 100;
-    $('bgm-select').value = config.bgm_select ?? 'none';
-    $('bgm-vol').value = config.bgm_vol ?? 30;
-
-    // 触发所有滑块的 input 事件以更新显示值
-    ['rate', 'volume', 'pitch', 'pause', 'match-strength', 'bgm-vol'].forEach(id => {
-        const el = $(id);
-        if (el) el.dispatchEvent(new Event('input'));
-    });
+    updateConfigSummary();
 }
 
 /**
@@ -313,9 +328,11 @@ async function startProcessing(useDefaults, presetConfig) {
     lastDownloadEvent = null;
     sseRetryCount = 0;
     generationResult = null;
+    updateSessionLabels(currentSession.source_filename);
 
     // 重置生成页面 UI
     $('progress-bar').style.width = '0%';
+    $('progress-bar').parentElement?.setAttribute('aria-valuenow', '0');
     $('progress-stats').textContent = '准备中...';
     $('gen-title').textContent = '正在生成音频...';
     $('gen-animation').classList.remove('done');
@@ -364,6 +381,89 @@ async function startProcessing(useDefaults, presetConfig) {
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+const STEP_TITLES = {
+    1: '01 / 导入文档',
+    2: '02 / 配置声音',
+    3: '03 / 生成音频',
+    4: '04 / 交付结果',
+};
+
+function setServiceState(state, label) {
+    const service = $('service-state');
+    if (!service) return;
+    service.classList.remove('is-ready', 'is-warning', 'is-error');
+    if (state) service.classList.add(`is-${state}`);
+    const labelEl = service.querySelector('.service-label');
+    if (labelEl) labelEl.textContent = label;
+}
+
+function updateSessionLabels(filename = '') {
+    const displayName = filename || '已导入的 Word 文档';
+    const sourceName = $('source-file-name');
+    const generationName = $('generation-file-name');
+    if (sourceName) sourceName.textContent = displayName;
+    if (generationName) {
+        generationName.textContent = filename
+            ? `正在处理「${displayName}」，请保持应用开启。`
+            : 'WordTTS 正在准备当前文档，请保持应用开启。';
+    }
+}
+
+function setUploadParsing(parsing) {
+    const uploadZone = $('upload-zone');
+    if (!uploadZone) return;
+    uploadZone.classList.toggle('is-processing', parsing);
+    uploadZone.setAttribute('aria-busy', parsing ? 'true' : 'false');
+}
+
+function selectedOptionLabel(id) {
+    const select = $(id);
+    return select && select.selectedOptions.length
+        ? select.selectedOptions[0].textContent.trim()
+        : '';
+}
+
+function updateConfigSummary() {
+    const mapping = [
+        ['summary-rate', 'rate'],
+        ['summary-volume', 'volume'],
+        ['summary-pitch', 'pitch'],
+        ['summary-pause', 'pause'],
+    ];
+    mapping.forEach(([targetId, selectId]) => {
+        const target = $(targetId);
+        const label = selectedOptionLabel(selectId);
+        if (target && label) target.textContent = label;
+    });
+
+    const output = $('summary-output');
+    if (output) {
+        const format = $('format') ? $('format').value.toUpperCase() : 'MP3';
+        const quality = $('quality') ? $('quality').value : '128 kbps（标准）';
+        const qualityShort = quality.match(/^(\d+\s*kbps|无损)/)?.[1] || quality;
+        output.textContent = `${format} · ${qualityShort}`;
+    }
+
+    const scope = $('summary-scope');
+    if (scope) scope.textContent = $('preview')?.checked ? '试听前 3 条' : '完整文档';
+}
+
+function enforceOutputCompatibility(changedControl) {
+    const format = $('format');
+    const quality = $('quality');
+    if (!format || !quality) return;
+
+    const isLossless = quality.value.startsWith('无损');
+    if (changedControl === quality && isLossless && format.value !== 'wav') {
+        format.value = 'wav';
+        showToast('无损质量仅适用于 WAV，已自动切换格式');
+    } else if (changedControl === format && format.value !== 'wav' && isLossless) {
+        setSelectValue(quality, '128 kbps（标准）', '128 kbps（标准）');
+        showToast('当前格式不支持无损质量，已恢复为 128 kbps');
+    }
+    updateConfigSummary();
+}
+
 // ============================================================================
 // 初始化
 // ============================================================================
@@ -382,26 +482,36 @@ async function init() {
 
     // 等待服务器就绪
     if (isElectron) {
+        setServiceState('', '正在连接服务');
         showToast('正在启动后端服务...');
         const ready = await window.electronAPI.serverReady();
         if (!ready) {
+            setServiceState('error', '服务连接失败');
             showToast('后端服务启动失败，请检查 Python 环境');
             return;
         }
     }
 
-    await loadConfig();
+    const configLoaded = await loadConfig();
+    setServiceState(configLoaded ? 'ready' : 'warning', configLoaded ? '服务已连接' : '服务状态异常');
     updateStepper();
+    updateConfigSummary();
     showToast('就绪');
 }
 
 function bindEvents() {
     // 重新开始按钮（工具栏）
-    $('restart-btn').addEventListener('click', () => restart());
+    $('restart-btn').addEventListener('click', requestRestart);
 
     // Step 1: 上传
     const uploadZone = $('upload-zone');
     uploadZone.addEventListener('click', selectFile);
+    uploadZone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            selectFile();
+        }
+    });
     uploadZone.addEventListener('dragover', (e) => {
         e.preventDefault();
         uploadZone.classList.add('dragover');
@@ -415,6 +525,8 @@ function bindEvents() {
         const file = e.dataTransfer.files[0];
         if (file && file.name.endsWith('.docx')) {
             handleFileSelected(file);
+        } else {
+            showToast('请选择 .docx 格式的 Word 文档');
         }
     });
 
@@ -426,31 +538,33 @@ function bindEvents() {
         e.target.value = '';
     });
 
-    // 快速开始
-    $('quick-start-btn').addEventListener('click', () => {
-        if (!currentSession) {
-            showToast('请先上传文档');
-            return;
-        }
-        goToStep(3);
-        startProcessing(true); // 使用默认配置
-    });
+    // 兼容旧版首页上的快速开始入口（新版流程已收敛到配置页）
+    const quickStartBtn = $('quick-start-btn');
+    if (quickStartBtn) {
+        quickStartBtn.addEventListener('click', () => {
+            if (!currentSession) {
+                showToast('请先上传文档');
+                return;
+            }
+            goToStep(3);
+            startProcessing(true);
+        });
+    }
 
     // Step 2: 预设管理
     $('save-preset-btn').addEventListener('click', handleSavePreset);
     $('apply-preset-btn').addEventListener('click', handleApplyPreset);
     $('delete-preset-btn').addEventListener('click', handleDeletePreset);
-    $('preset-select').addEventListener('change', () => {
-        const select = $('preset-select');
-        const presetId = select.value;
-        if (presetId) {
-            const presets = loadPresets();
-            const preset = presets.find(p => p.id === presetId);
-            if (preset) applyConfigToForm(preset.config);
-        }
-    });
 
     // Step 2: 配置
+    ['rate', 'volume', 'pitch', 'pause'].forEach(id => {
+        $(id).addEventListener('change', updateConfigSummary);
+    });
+    $('format').addEventListener('change', (e) => enforceOutputCompatibility(e.currentTarget));
+    $('quality').addEventListener('change', (e) => enforceOutputCompatibility(e.currentTarget));
+    $('preview').addEventListener('change', updateConfigSummary);
+    $('change-file-btn').addEventListener('click', () => restart());
+    $('back-to-upload-btn').addEventListener('click', () => restart());
     $('skip-config-btn').addEventListener('click', () => {
         goToStep(3);
         startProcessing(true);
@@ -463,14 +577,6 @@ function bindEvents() {
     // Step 4: 下载
     $('download-zip-btn').addEventListener('click', downloadZip);
     $('new-file-btn').addEventListener('click', () => restart());
-
-    // 滑块值显示
-    bindSliderDisplay($('rate'), $('rate-val'), (v) => `${v > 0 ? '+' : ''}${v}%`);
-    bindSliderDisplay($('volume'), $('volume-val'), (v) => `${v > 0 ? '+' : ''}${v}%`);
-    bindSliderDisplay($('pitch'), $('pitch-val'), (v) => `${v > 0 ? '+' : ''}${v}Hz`);
-    bindSliderDisplay($('pause'), $('pause-val'), (v) => `${v}s`);
-    bindSliderDisplay($('match-strength'), $('match-strength-val'), (v) => v);
-    bindSliderDisplay($('bgm-vol'), $('bgm-vol-val'), (v) => `${v}%`);
 }
 
 function bindSliderDisplay(slider, display, formatter) {
@@ -492,26 +598,20 @@ async function loadConfig() {
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             currentConfig = await resp.json();
 
-            // 填充背景音乐选项
-            const bgmChoices = currentConfig.bgm_choices || [];
-            const bgmSelect = $('bgm-select');
-            bgmSelect.innerHTML = '';
-            bgmChoices.forEach(([label, value]) => {
-                const opt = document.createElement('option');
-                opt.value = value;
-                opt.textContent = label;
-                bgmSelect.appendChild(opt);
-            });
-
-            // 788 匹配可用性
-            if (!currentConfig.match_788_available) {
-                $('match-788').disabled = true;
-                $('match-788-hint').textContent = '模块未加载';
-                $('match-strength-row').style.opacity = '0.4';
-                $('match-strength').disabled = true;
+            // 男声引擎显示（TTSMaker 或 edge-tts）
+            const maleNameEl = $('voice-male-name');
+            const maleDescEl = $('voice-male-desc');
+            if (maleNameEl && maleDescEl) {
+                if (currentConfig.ttsmaker_available) {
+                    maleNameEl.textContent = 'TTSMaker 788 Alfie';
+                    maleDescEl.textContent = 'm/M 标识 → 男声 · 通过 TTSMaker 网站生成';
+                } else {
+                    maleNameEl.textContent = 'RemyMultilingual (edge-tts)';
+                    maleDescEl.textContent = 'm/M 标识 → 男声 · TTSMaker 不可用，回退到 edge-tts';
+                }
             }
 
-            return;  // 成功，退出重试
+            return true;  // 成功，退出重试
         } catch (err) {
             console.error(`加载配置失败 (尝试 ${attempt}/${maxRetries}):`, err);
             if (attempt < maxRetries) {
@@ -521,6 +621,7 @@ async function loadConfig() {
             }
         }
     }
+    return false;
 }
 
 // ============================================================================
@@ -545,10 +646,12 @@ function updateStepper() {
     $$('.step-indicator').forEach(el => {
         const step = parseInt(el.dataset.step);
         el.classList.remove('active', 'completed');
+        el.removeAttribute('aria-current');
         if (step < currentStep) {
             el.classList.add('completed');
         } else if (step === currentStep) {
             el.classList.add('active');
+            el.setAttribute('aria-current', 'step');
         }
     });
 
@@ -556,6 +659,9 @@ function updateStepper() {
         const line = parseInt(el.dataset.line);
         el.classList.toggle('active', line < currentStep);
     });
+
+    const toolbarStep = $('toolbar-step');
+    if (toolbarStep) toolbarStep.textContent = STEP_TITLES[currentStep] || '';
 }
 
 // ============================================================================
@@ -691,33 +797,25 @@ async function uploadFile(file) {
 function collectConfig(useDefaults) {
     if (useDefaults) {
         return {
-            rate: 0,
-            volume: 0,
-            pitch: 0,
-            pause: 0.5,
+            rate: 1.0,
+            volume: 1,
+            pitch: 1,
+            pause: 0,
             format: 'mp3',
             quality: '128 kbps（标准）',
             proxy: '',
             preview: false,
-            match_788: false,
-            match_strength: 100,
-            bgm_select: 'none',
-            bgm_vol: 30,
         };
     }
     return {
-        rate: parseInt($('rate').value),
-        volume: parseInt($('volume').value),
-        pitch: parseInt($('pitch').value),
-        pause: parseFloat($('pause').value),
+        rate: parseFloat($('rate').value),
+        volume: parseFloat($('volume').value),
+        pitch: parseFloat($('pitch').value),
+        pause: parseInt($('pause').value),
         format: $('format').value,
         quality: $('quality').value,
         proxy: $('proxy').value || '',
         preview: $('preview').checked,
-        match_788: $('match-788').checked,
-        match_strength: parseInt($('match-strength').value),
-        bgm_select: $('bgm-select').value,
-        bgm_vol: parseInt($('bgm-vol').value),
     };
 }
 

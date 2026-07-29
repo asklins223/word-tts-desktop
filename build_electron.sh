@@ -98,6 +98,19 @@ check_environment() {
         pip3 install imageio-ffmpeg
     }
 
+    # Playwright + ddddocr（TTSMaker 男声生成依赖）
+    python3 -c "import playwright, ddddocr, onnxruntime" 2>/dev/null || {
+        warn "TTSMaker 依赖未安装，正在安装 playwright + ddddocr..."
+        pip3 install playwright ddddocr onnxruntime greenlet pyee
+    }
+
+    # Playwright Chromium 浏览器二进制（打包内置必须先下载）
+    _pw_cache="$(python3 -c "import os; print(os.path.join(os.path.expanduser('~'), 'Library', 'Caches', 'ms-playwright'))" 2>/dev/null)"
+    if [ -z "$_pw_cache" ] || ! ls "$_pw_cache"/chromium-* 1>/dev/null 2>&1; then
+        warn "Playwright Chromium 未下载，正在安装..."
+        python3 -m playwright install chromium
+    fi
+
     echo "  环境检查通过 ✓"
 }
 
@@ -148,7 +161,7 @@ build_electron_app() {
 
     # 清理上次失败构建可能残留的挂载点
     log "清理残留挂载点..."
-    for vol in "/Volumes/WordTTS" "/Volumes/WordTTS 1.0.0" "/Volumes/WordTTS-${version}"; do
+    for vol in "/Volumes/WordTTS" "/Volumes/WordTTS 1.0.0" "/Volumes/WordTTS-1.0.0"; do
         hdiutil detach -force "$vol" 2>/dev/null || true
     done
     # 清理旧的 release 目录

@@ -61,7 +61,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
+import copy
 import uvicorn
+from uvicorn.config import LOGGING_CONFIG as _UVICORN_DEFAULT_LOG_CONFIG
 
 # ============================================================================
 # 会话与进度管理
@@ -272,27 +274,48 @@ async def generate_audio_stream(
         core.save_progress(session_dir, progress)
 
         total = progress["total_items"]
-        pause_ms = int(float(config.get("pause", 0.5)) * 1000)
-        rate = config.get("rate", 0)
-        volume = config.get("volume", 0)
-        pitch = config.get("pitch", 0)
+        rate = config.get("rate", 1.0)
+        volume = config.get("volume", 1)
+        pitch = config.get("pitch", 1)
+        pause = config.get("pause", 0)
         proxy = config.get("proxy", "")
         fmt = config.get("format", "mp3")
         quality = config.get("quality", "128 kbps（标准）")
-        match_788 = config.get("match_788", False)
-        match_strength = config.get("match_strength", 100)
-        bgm_select = config.get("bgm_select", "none")
-        bgm_vol = config.get("bgm_vol", 30)
 
         log("info", f"开始生成音频（{progress['completed']}/{total}）...")
-        if match_788 and core._788_AVAILABLE:
-            log("warn", "788 音色匹配已启用（针对男声 Remy 校准，女声音效可能不理想）")
-        if bgm_select and bgm_select != "none":
-            log("info", f"背景音乐已选择：{bgm_select}（音量 {int(bgm_vol)}%）")
+        if core._TTSMaker_AVAILABLE:
+            log("info", "男声使用 TTSMaker 788 (Alfie) 生成，女声使用 edge-tts")
+        else:
+            log("warn", "TTSMaker 不可用，男声将使用 edge-tts (Remy) 生成")
 
         emit_stats(progress)
         emit_status(f"生成中 — {progress['completed']}/{total}")
         emit_download(progress, core.get_completed_file_list(progress))
+
+        # ---- 检查是否有男声数据，决定是否需要启动 TTSMaker ----
+        has_male_voice = False
+        if core._TTSMaker_AVAILABLE:
+            for item in progress["items"]:
+                if item["status"] == "done":
+                    continue
+                raw_item = item.get("raw_item", {})
+                text = raw_item.get("text", "")
+                if text.strip():
+                    speakers = core.parse_speakers(text)
+                    if any(v == core.MALE_VOICE for v, _ in speakers):
+                        has_male_voice = True
+                        break
+
+        # ---- TTSMaker 登录（仅有男声数据时才唤起浏览器）----
+        if core._TTSMaker_AVAILABLE and has_male_voice:
+            log("warn", "检测到男声数据，正在启动 TTSMaker 浏览器（首次需扫码登录，后续自动复用登录状态）")
+            try:
+                await core._ttsmaker.ensure_session(voice_key="alfie")
+                log("success", "TTSMaker 登录成功，开始生成音频")
+            except Exception as login_err:
+                log("error", f"TTSMaker 登录失败: {login_err}，男声将回退到 edge-tts")
+        elif core._TTSMaker_AVAILABLE and not has_male_voice:
+            log("info", "未检测到男声数据，跳过 TTSMaker 浏览器启动")
 
         # ---- 逐条生成 ----
         for item in progress["items"]:
@@ -334,19 +357,8 @@ async def generate_audio_stream(
 
             try:
                 audio_seg = await core._synth_item(
-                    text, rate, volume, pitch, pause_ms, proxy, tmp_dir
+                    text, rate, volume, pitch, pause, proxy, tmp_dir
                 )
-                if match_788 and core._788_AVAILABLE:
-                    try:
-                        audio_seg = await asyncio.to_thread(
-                            core.process_audio_segment, audio_seg, match_strength
-                        )
-                    except Exception as e:
-                        log("warn", f"{item_id} 788 匹配失败: {e}，使用原始音频")
-                if bgm_select and bgm_select != "none":
-                    audio_seg = await asyncio.to_thread(
-                        core.mix_bgm, audio_seg, bgm_select, bgm_vol
-                    )
                 out_path = os.path.join(audio_dir, item["filename"])
                 await asyncio.to_thread(core.export_audio, audio_seg, fmt, quality, out_path)
 
@@ -395,6 +407,13 @@ async def generate_audio_stream(
         log("error", f"处理异常: {e}")
         push_event(session, {"type": "error", "msg": str(e)})
     finally:
+        # 无论成功/失败/取消，都关闭 TTSMaker 浏览器会话，防止进程泄漏
+        if core._TTSMaker_AVAILABLE and has_male_voice:
+            try:
+                await core._ttsmaker.close_session()
+                log("info", "TTSMaker 浏览器已关闭")
+            except Exception as close_err:
+                log("warn", f"关闭 TTSMaker 浏览器异常: {close_err}")
         push_event(session, {"type": "end"})
 
 
@@ -448,10 +467,9 @@ async def get_config():
     return {
         "formats": list(core.FORMAT_MAP.keys()),
         "qualities": list(core.QUALITY_BITRATE.keys()),
-        "bgm_choices": core.get_bgm_choices(),
         "supported_types": list(core.PARSER_MAP.keys()),
         "type_colors": core.TYPE_COLORS,
-        "match_788_available": core._788_AVAILABLE,
+        "ttsmaker_available": core._TTSMaker_AVAILABLE,
         "female_voice": core.FEMALE_VOICE,
         "male_voice": core.MALE_VOICE,
     }
@@ -894,4 +912,8 @@ PORT = 7863
 
 if __name__ == "__main__":
     print(f"[server] 启动 FastAPI 服务器: http://127.0.0.1:{PORT}")
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    # 将 uvicorn 默认日志从 stderr 改为 stdout，
+    # 避免 Electron 控制台中所有日志都显示为 [python:err]
+    _log_config = copy.deepcopy(_UVICORN_DEFAULT_LOG_CONFIG)
+    _log_config["handlers"]["default"]["stream"] = "ext://sys.stdout"
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning", log_config=_log_config)

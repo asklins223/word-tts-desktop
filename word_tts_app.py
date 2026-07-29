@@ -85,7 +85,7 @@ def _find_ffmpeg():
         if exe and os.path.isfile(exe):
             return exe
     except Exception as e:
-        print(f"[ffmpeg] imageio_ffmpeg.get_ffmpeg_exe() 失败: {e}", file=sys.stderr)
+        print(f"[ffmpeg] imageio_ffmpeg.get_ffmpeg_exe() 失败: {e}", file=sys.stdout)
 
     # 方式 2：在 PyInstaller 的 _MEIPASS 中手动搜索 binaries 目录
     meipass = getattr(sys, '_MEIPASS', None)
@@ -117,20 +117,20 @@ if _ffmpeg_path:
     ff_dir = os.path.dirname(_ffmpeg_path)
     if ff_dir not in os.environ.get('PATH', ''):
         os.environ['PATH'] = ff_dir + os.pathsep + os.environ.get('PATH', '')
-    print(f"[ffmpeg] 使用: {_ffmpeg_path}", file=sys.stderr)
+    print(f"[ffmpeg] 使用: {_ffmpeg_path}", file=sys.stdout)
     # 验证 ffmpeg 可执行
     try:
         import subprocess as _sp
         _r = _sp.run([_ffmpeg_path, '-version'], capture_output=True, timeout=10)
         if _r.returncode == 0:
             _ver_line = _r.stdout.decode('utf-8', errors='replace').split('\n')[0]
-            print(f"[ffmpeg] 验证通过: {_ver_line}", file=sys.stderr)
+            print(f"[ffmpeg] 验证通过: {_ver_line}", file=sys.stdout)
         else:
-            print(f"[ffmpeg] 验证失败: returncode={_r.returncode}", file=sys.stderr)
+            print(f"[ffmpeg] 验证失败: returncode={_r.returncode}", file=sys.stdout)
     except Exception as _e:
-        print(f"[ffmpeg] 验证异常: {_e}", file=sys.stderr)
+        print(f"[ffmpeg] 验证异常: {_e}", file=sys.stdout)
 else:
-    print("[ffmpeg] 警告: 未找到 ffmpeg，音频处理将失败", file=sys.stderr)
+    print("[ffmpeg] 警告: 未找到 ffmpeg，音频处理将失败", file=sys.stdout)
 
 # ---- pydub ffprobe 兼容 ----
 # pydub 的 mediainfo_json() 会调用 ffprobe（独立可执行文件），
@@ -146,27 +146,12 @@ def _safe_mediainfo_json(filepath, read_ahead_limit=-1):
     try:
         return _orig_mediainfo_json(filepath, read_ahead_limit)
     except (FileNotFoundError, OSError):
-        print("[pydub] ffprobe 不可用，跳过 mediainfo", file=sys.stderr)
+        print("[pydub] ffprobe 不可用，跳过 mediainfo", file=sys.stdout)
         return None
 
 _pydub_utils.mediainfo_json = _safe_mediainfo_json
 
 from word_parser import parse_document_auto, PARSER_MAP
-
-import math
-
-# ---- 788 音色匹配（可选模块）----
-try:
-    _EDGE_TTS_DIR = os.path.join(_RESOURCE_DIR, "edge_tts")
-    if _EDGE_TTS_DIR not in sys.path:
-        sys.path.insert(0, _EDGE_TTS_DIR)
-    from voice_match_788 import process_audio_segment, VoiceMatchError, load_profile
-    _788_PROFILE = load_profile()
-    _788_AVAILABLE = True
-except Exception:
-    _788_AVAILABLE = False
-    process_audio_segment = None
-    VoiceMatchError = Exception
 
 # ---- TTSMaker 客户端（可选模块，用于男声 788/Alfie 生成）----
 try:
@@ -183,8 +168,6 @@ except Exception:
 
 OUTPUT_BASE = os.path.join(BASE_DIR, "tts_output")
 os.makedirs(OUTPUT_BASE, exist_ok=True)
-
-BGM_DIR = os.path.join(_RESOURCE_DIR, "edge_tts", "bgm")
 
 # 音色配置
 FEMALE_VOICE = "en-US-JennyNeural"
@@ -230,6 +213,11 @@ def fmt_hz(v):
     return ("+" if v >= 0 else "") + str(int(v)) + "Hz"
 
 
+def ttsmaker_to_edge_pct(multiplier):
+    """将 TTSMaker 倍率 (1.5) 转换为 edge-tts 百分比 (+50)。"""
+    return int(round((float(multiplier) - 1.0) * 100))
+
+
 def export_audio(seg, fmt, quality, out_path):
     """按指定格式与码率导出音频。"""
     if len(seg) < 50:
@@ -239,10 +227,10 @@ def export_audio(seg, fmt, quality, out_path):
     br = QUALITY_BITRATE.get(quality)
     if br and fmt in ("mp3", "aac", "opus"):
         kwargs["bitrate"] = br
-    print(f"[export] 导出: {out_path} fmt={fmt_id} dur={len(seg)}ms bitrate={br}", file=sys.stderr)
+    print(f"[export] 导出: {out_path} fmt={fmt_id} dur={len(seg)}ms bitrate={br}", file=sys.stdout)
     seg.export(out_path, **kwargs)
     out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
-    print(f"[export] 完成: {out_path} ({out_size} bytes)", file=sys.stderr)
+    print(f"[export] 完成: {out_path} ({out_size} bytes)", file=sys.stdout)
     if out_size == 0:
         raise RuntimeError(f"导出文件为空: {out_path}")
 
@@ -258,11 +246,11 @@ def export_audio(seg, fmt, quality, out_path):
             verify_seg = AudioSegment.from_file(_verify_tmp_path, format=fmt_id)
             if len(verify_seg) < 10:
                 raise RuntimeError(f"回读验证失败: 时长 {len(verify_seg)}ms 过短")
-            print(f"[export] 回读验证通过: dur={len(verify_seg)}ms size={out_size}B", file=sys.stderr)
+            print(f"[export] 回读验证通过: dur={len(verify_seg)}ms size={out_size}B", file=sys.stdout)
         except Exception as ve:
             # 回读失败可能是 ffmpeg 子进程问题，不一定是文件本身问题
             # 文件大小已确认非零，降级为警告而非错误
-            print(f"[export] 警告: 回读验证失败 (非致命): {ve} (文件大小: {out_size}B)", file=sys.stderr)
+            print(f"[export] 警告: 回读验证失败 (非致命): {ve} (文件大小: {out_size}B)", file=sys.stdout)
     finally:
         try:
             os.close(_verify_fd)
@@ -273,52 +261,6 @@ def export_audio(seg, fmt, quality, out_path):
         except OSError:
             pass
     return out_path
-
-
-# ----------------------------------------------------------------------------
-# 背景音乐
-# ----------------------------------------------------------------------------
-
-BGM_EXTS = (".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus", ".flac", ".wma")
-
-
-def list_bgm_files():
-    """列出可用的背景音乐文件。"""
-    if not os.path.isdir(BGM_DIR):
-        return []
-    return sorted(f for f in os.listdir(BGM_DIR) if f.lower().endswith(BGM_EXTS))
-
-
-def get_bgm_choices():
-    """返回背景音乐下拉选项列表。"""
-    files = list_bgm_files()
-    return [("无（纯人声）", "none")] + [(f, f) for f in files]
-
-
-def mix_bgm(voice_seg, bgm_choice, bgm_vol):
-    """将背景音乐混入人声音频。"""
-    if not bgm_choice or bgm_choice == "none":
-        return voice_seg
-    path = os.path.join(BGM_DIR, bgm_choice)
-    if not os.path.exists(path):
-        return voice_seg
-    try:
-        bgm = AudioSegment.from_file(path)
-    except Exception:
-        return voice_seg
-    bgm = bgm.set_channels(voice_seg.channels).set_frame_rate(voice_seg.frame_rate)
-    vol = int(bgm_vol)
-    if vol <= 0:
-        return voice_seg
-    if vol > 100:
-        vol = 100
-    gain_db = 20 * math.log10(vol / 100.0)
-    bgm = bgm.apply_gain(gain_db)
-    if len(bgm) < len(voice_seg):
-        loops = len(voice_seg) // len(bgm) + 1
-        bgm = bgm * loops
-    bgm = bgm[:len(voice_seg)]
-    return voice_seg.overlay(bgm)
 
 
 def _get_filepath(file_obj):
@@ -439,37 +381,53 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
     男声 (MALE_VOICE) 优先使用 TTSMaker 788 (Alfie) 生成；
     女声 (FEMALE_VOICE) 使用 edge-tts 生成。
     TTSMaker 不可用或失败时回退到 edge-tts。
+
+    段落间的停顿由 _synth_item 统一用 AudioSegment.silent 插入，
+    本函数只负责生成单段干净音频（不含尾部静音）。
+
+    rate/volume/pitch: TTSMaker 格式 (float 倍率, 如 1.5)
     """
     # ---- 男声：优先使用 TTSMaker ----
     if voice == MALE_VOICE and _TTSMaker_AVAILABLE:
         try:
-            print(f"[tts] 使用 TTSMaker 788 (Alfie) 生成男声: {text[:50]}...", file=sys.stderr)
-            seg = await _ttsmaker.synth_male_ttsmaker(text, tmp_dir, voice_key="alfie")
+            print(f"[tts] 使用 TTSMaker 788 (Alfie) 生成男声: {text[:50]}...", file=sys.stdout)
+            # pause=-1：让 TTSMaker 不在音频内部加段落停顿，
+            # 段落间静音统一由 _synth_item 用 AudioSegment.silent 插入，
+            # 避免 TTSMaker 内部停顿 + _synth_item 显式静音 = 双重停顿
+            seg = await _ttsmaker.synth_male_ttsmaker(
+                text, tmp_dir, voice_key="alfie",
+                rate=rate, volume=volume, pitch=pitch, pause=-1,
+            )
             return seg
         except Exception as e:
-            print(f"[tts] TTSMaker 生成失败，回退到 edge-tts: {e}", file=sys.stderr)
+            print(f"[tts] TTSMaker 生成失败，回退到 edge-tts: {e}", file=sys.stdout)
             # 继续执行 edge-tts 回退逻辑
 
     # ---- 女声 / 回退：使用 edge-tts ----
+    # 将 TTSMaker 倍率格式转换为 edge-tts 百分比格式
+    edge_rate = fmt_pct(ttsmaker_to_edge_pct(rate))
+    edge_volume = fmt_pct(ttsmaker_to_edge_pct(volume))
+    edge_pitch = fmt_hz(ttsmaker_to_edge_pct(pitch))
+
     uid = uuid.uuid4().hex[:8]
     tmp_path = os.path.join(tmp_dir, f".seg_{uid}.mp3")
     try:
         communicate = edge_tts.Communicate(
             text, voice,
-            rate=fmt_pct(rate),
-            volume=fmt_pct(volume),
-            pitch=fmt_hz(pitch),
+            rate=edge_rate,
+            volume=edge_volume,
+            pitch=edge_pitch,
             proxy=proxy or None,
         )
         await communicate.save(tmp_path)
         fsize = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
-        print(f"[tts] edge_tts 保存完成: {tmp_path} ({fsize} bytes)", file=sys.stderr)
+        print(f"[tts] edge_tts 保存完成: {tmp_path} ({fsize} bytes)", file=sys.stdout)
         if fsize < 100:
             # 小于 100 字节几乎不可能是有效音频
             raise RuntimeError(f"edge_tts 返回的音频过小 ({fsize} bytes)，可能网络异常")
         seg = AudioSegment.from_file(tmp_path, format="mp3", codec="mp3")
         dur_ms = len(seg)
-        print(f"[tts] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}", file=sys.stderr)
+        print(f"[tts] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}", file=sys.stdout)
         if dur_ms < 50:
             raise RuntimeError(f"解码后音频时长过短 ({dur_ms}ms)，可能 edge_tts 返回了空音频")
         if seg.channels == 0 or seg.frame_rate == 0:
@@ -483,14 +441,26 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
                 pass
 
 
-async def _synth_item(text, rate, volume, pitch, pause_ms, proxy, tmp_dir):
+async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir):
     """
     为一条解析结果生成完整音频。
     自动处理 w/m 说话人切换，段落间插入停顿。
+
+    rate/volume/pitch: TTSMaker 格式 (float 倍率)
+    pause: TTSMaker 格式 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
     """
     segments = parse_speakers(text)
     if not segments:
         raise ValueError("文本为空")
+
+    # 将 TTSMaker pause 值转换为实际毫秒数用于插入静音
+    pause_val = int(float(pause))
+    if pause_val == -1:
+        pause_ms = 0
+    elif pause_val == 0:
+        pause_ms = 300
+    else:
+        pause_ms = pause_val
 
     audio_parts = []
     for voice, seg_text in segments:
@@ -503,16 +473,16 @@ async def _synth_item(text, rate, volume, pitch, pause_ms, proxy, tmp_dir):
     if not audio_parts:
         raise RuntimeError("合成失败，未生成任何音频")
 
-    silence = AudioSegment.silent(duration=max(0, int(pause_ms)))
+    silence = AudioSegment.silent(duration=max(0, pause_ms))
     full = audio_parts[0]
     for seg in audio_parts[1:]:
         full = full + silence + seg
     return full
 
 
-def generate_item_audio(text, rate, volume, pitch, pause_ms, proxy, tmp_dir):
+def generate_item_audio(text, rate, volume, pitch, pause, proxy, tmp_dir):
     """同步包装：为一条文本生成音频。"""
-    return asyncio.run(_synth_item(text, rate, volume, pitch, pause_ms, proxy, tmp_dir))
+    return asyncio.run(_synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir))
 
 
 # ============================================================================
@@ -881,7 +851,7 @@ def get_supported_types_html():
 # ============================================================================
 
 def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
-                     preview, match_788, match_strength, bgm_select, bgm_vol):
+                     preview):
     """
     主处理函数（生成器）：
     1. 解析 Word 文档
@@ -917,10 +887,6 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         "quality": quality,
         "proxy": proxy or "",
         "preview": preview,
-        "match_788": match_788,
-        "match_strength": match_strength,
-        "bgm_select": bgm_select,
-        "bgm_vol": bgm_vol,
     }
 
     log_entries = []
@@ -940,10 +906,6 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             or old_config.get("format") != fmt
             or old_config.get("quality") != quality
             or old_config.get("preview") != preview
-            or old_config.get("match_788") != match_788
-            or old_config.get("match_strength") != match_strength
-            or old_config.get("bgm_select") != bgm_select
-            or old_config.get("bgm_vol") != bgm_vol
         )
 
         if config_changed or not has_raw_item:
@@ -1051,8 +1013,6 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
     save_progress(session_dir, progress)
 
     total = progress["total_items"]
-    pause_ms = int(float(pause) * 1000)
-
     log_entries.append({
         "time": now_str(), "level": "info",
         "msg": f"开始生成音频（{progress['completed']}/{total}）..."
@@ -1062,20 +1022,14 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             "time": now_str(), "level": "info",
             "msg": "男声使用 TTSMaker 788 (Alfie) 生成，女声使用 edge-tts"
         })
+        log_entries.append({
+            "time": now_str(), "level": "warn",
+            "msg": "正在启动 TTSMaker 浏览器（首次需扫码登录，后续自动复用登录状态）"
+        })
     else:
         log_entries.append({
             "time": now_str(), "level": "warn",
             "msg": "TTSMaker 不可用，男声将使用 edge-tts (Remy) 生成"
-        })
-    if match_788 and _788_AVAILABLE:
-        log_entries.append({
-            "time": now_str(), "level": "warn",
-            "msg": "788 音色匹配已启用（针对男声 Remy 校准，女声音效可能不理想）"
-        })
-    if bgm_select and bgm_select != "none":
-        log_entries.append({
-            "time": now_str(), "level": "info",
-            "msg": f"背景音乐已选择：{bgm_select}（音量 {int(bgm_vol)}%）"
         })
     yield (
         build_progress_log_html(log_entries),
@@ -1085,94 +1039,45 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
     )
 
-    # ---- 逐条生成音频 ----
-    for item in progress["items"]:
-        if item["status"] == "done":
-            continue
+    # ---- 检查是否有男声数据，决定是否需要启动 TTSMaker ----
+    has_male_voice = False
+    if _TTSMaker_AVAILABLE:
+        for item in progress["items"]:
+            if item["status"] == "done":
+                continue
+            raw_item = item.get("raw_item", {})
+            text = raw_item.get("text", "")
+            if text.strip():
+                speakers = parse_speakers(text)
+                if any(v == MALE_VOICE for v, _ in speakers):
+                    has_male_voice = True
+                    break
 
-        item_id = item["id"]
-        raw_item = item["raw_item"]
-        text = raw_item.get("text", "")
-        if not text.strip():
-            item["status"] = "error"
-            item["error"] = "文本为空"
-            progress["failed"] += 1
+    # ---- TTSMaker 登录（仅有男声数据时才唤起浏览器）----
+    if _TTSMaker_AVAILABLE and has_male_voice:
+        try:
+            asyncio.run(_ttsmaker.ensure_session(voice_key="alfie"))
             log_entries.append({
-                "time": now_str(), "level": "warn",
-                "msg": f"{item_id} — 文本为空，跳过"
+                "time": now_str(), "level": "success",
+                "msg": "TTSMaker 登录成功，开始生成音频"
             })
-            save_progress(session_dir, progress)
-            yield (
-                build_progress_log_html(log_entries),
-                build_download_html(progress, get_completed_file_list(progress)),
-                build_stats_bar(progress),
-                f"生成中 — {progress['completed']}/{total}",
-                gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
-            )
-            continue
-
-        speakers = parse_speakers(text)
-        speaker_info = ""
-        if len(speakers) > 1 or speakers[0][0] != FEMALE_VOICE:
-            voices_used = set(v for v, _ in speakers)
-            if voices_used == {FEMALE_VOICE, MALE_VOICE}:
-                speaker_info = " [混合音色]"
-            elif MALE_VOICE in voices_used:
-                speaker_info = " [男声]"
-            else:
-                speaker_info = " [女声]"
-
-        log_entries.append({
-            "time": now_str(), "level": "progress",
-            "msg": f"正在生成: {item_id}{speaker_info}..."
-        })
+        except Exception as login_err:
+            log_entries.append({
+                "time": now_str(), "level": "error",
+                "msg": f"TTSMaker 登录失败: {login_err}，男声将回退到 edge-tts"
+            })
         yield (
             build_progress_log_html(log_entries),
             build_download_html(progress, get_completed_file_list(progress)),
             build_stats_bar(progress),
-            f"生成中 — {progress['completed']}/{total} — {item_id}",
+            f"生成中 — {progress['completed']}/{total}",
             gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
         )
-
-        try:
-            audio_seg = generate_item_audio(
-                text, rate, volume, pitch, pause_ms, proxy, tmp_dir
-            )
-            # 788 音色匹配
-            if match_788 and _788_AVAILABLE:
-                try:
-                    audio_seg = process_audio_segment(audio_seg, match_strength)
-                except Exception as e:
-                    log_entries.append({
-                        "time": now_str(), "level": "warn",
-                        "msg": f"{item_id} 788 匹配失败: {e}，使用原始音频"
-                    })
-            # 背景音乐混音
-            if bgm_select and bgm_select != "none":
-                audio_seg = mix_bgm(audio_seg, bgm_select, bgm_vol)
-            out_path = os.path.join(audio_dir, item["filename"])
-            export_audio(audio_seg, fmt, quality, out_path)
-
-            item["status"] = "done"
-            item["output_path"] = out_path
-            item["error"] = None
-            progress["completed"] += 1
-
-            log_entries.append({
-                "time": now_str(), "level": "success",
-                "msg": f"{item_id} 完成 ({progress['completed']}/{total})"
-            })
-        except Exception as e:
-            item["status"] = "error"
-            item["error"] = str(e)
-            progress["failed"] += 1
-            log_entries.append({
-                "time": now_str(), "level": "error",
-                "msg": f"{item_id} 失败: {e}"
-            })
-
-        save_progress(session_dir, progress)
-
+    elif _TTSMaker_AVAILABLE and not has_male_voice:
+        log_entries.append({
+            "time": now_str(), "level": "info",
+            "msg": "未检测到男声数据，跳过 TTSMaker 浏览器启动"
+        })
         yield (
             build_progress_log_html(log_entries),
             build_download_html(progress, get_completed_file_list(progress)),
@@ -1181,57 +1086,156 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
         )
 
-    # ---- 清理临时目录 ----
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    try:
+        # ---- 逐条生成音频 ----
+        for item in progress["items"]:
+            if item["status"] == "done":
+                continue
 
-    # ---- 打包 ZIP ----
-    progress["status"] = "packaging"
-    save_progress(session_dir, progress)
+            item_id = item["id"]
+            raw_item = item["raw_item"]
+            text = raw_item.get("text", "")
+            if not text.strip():
+                item["status"] = "error"
+                item["error"] = "文本为空"
+                progress["failed"] += 1
+                log_entries.append({
+                    "time": now_str(), "level": "warn",
+                    "msg": f"{item_id} — 文本为空，跳过"
+                })
+                save_progress(session_dir, progress)
+                yield (
+                    build_progress_log_html(log_entries),
+                    build_download_html(progress, get_completed_file_list(progress)),
+                    build_stats_bar(progress),
+                    f"生成中 — {progress['completed']}/{total}",
+                    gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
+                )
+                continue
 
-    log_entries.append({
-        "time": now_str(), "level": "info",
-        "msg": "正在打包 ZIP..."
-    })
-    yield (
-        build_progress_log_html(log_entries),
-        build_download_html(progress, get_completed_file_list(progress)),
-        build_stats_bar(progress),
-        "正在打包...",
-        gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
-    )
+            speakers = parse_speakers(text)
+            speaker_info = ""
+            if len(speakers) > 1 or speakers[0][0] != FEMALE_VOICE:
+                voices_used = set(v for v, _ in speakers)
+                if voices_used == {FEMALE_VOICE, MALE_VOICE}:
+                    speaker_info = " [混合音色]"
+                elif MALE_VOICE in voices_used:
+                    speaker_info = " [男声]"
+                else:
+                    speaker_info = " [女声]"
 
-    zip_path = create_zip(session_dir, progress)
+            log_entries.append({
+                "time": now_str(), "level": "progress",
+                "msg": f"正在生成: {item_id}{speaker_info}..."
+            })
+            yield (
+                build_progress_log_html(log_entries),
+                build_download_html(progress, get_completed_file_list(progress)),
+                build_stats_bar(progress),
+                f"生成中 — {progress['completed']}/{total} — {item_id}",
+                gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
+            )
 
-    progress["status"] = "done"
-    save_progress(session_dir, progress)
+            try:
+                audio_seg = generate_item_audio(
+                    text, rate, volume, pitch, pause, proxy, tmp_dir
+                )
+                out_path = os.path.join(audio_dir, item["filename"])
+                export_audio(audio_seg, fmt, quality, out_path)
 
-    done = progress["completed"]
-    failed = progress["failed"]
-    log_entries.append({
-        "time": now_str(), "level": "success",
-        "msg": f"全部完成！成功 {done}/{total}" + (f"，失败 {failed}" if failed > 0 else "")
-    })
+                item["status"] = "done"
+                item["output_path"] = out_path
+                item["error"] = None
+                progress["completed"] += 1
 
-    # 构建文件下拉列表
-    file_list = get_completed_file_list(progress)
-    dropdown_choices = [(f["filename"], f["path"]) for f in file_list]
-    dropdown_value = file_list[0]["path"] if file_list else None
+                log_entries.append({
+                    "time": now_str(), "level": "success",
+                    "msg": f"{item_id} 完成 ({progress['completed']}/{total})"
+                })
+            except Exception as e:
+                item["status"] = "error"
+                item["error"] = str(e)
+                progress["failed"] += 1
+                log_entries.append({
+                    "time": now_str(), "level": "error",
+                    "msg": f"{item_id} 失败: {e}"
+                })
 
-    status_text = f"完成 — 成功 {done}/{total}"
-    if failed > 0:
-        status_text += f"，失败 {failed}"
+            save_progress(session_dir, progress)
 
-    has_files = bool(file_list)
-    yield (
-        build_progress_log_html(log_entries),
-        build_download_html(progress, file_list, zip_path=zip_path if has_files else None),
-        build_stats_bar(progress),
-        status_text,
-        gr.update(value=zip_path if has_files else None, visible=has_files),
-        gr.update(choices=dropdown_choices, value=dropdown_value, visible=has_files),
-        gr.update(value=dropdown_value),
-        filepath,
-    )
+            yield (
+                build_progress_log_html(log_entries),
+                build_download_html(progress, get_completed_file_list(progress)),
+                build_stats_bar(progress),
+                f"生成中 — {progress['completed']}/{total}",
+                gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
+            )
+
+        # ---- 清理临时目录 ----
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        # ---- 打包 ZIP ----
+        progress["status"] = "packaging"
+        save_progress(session_dir, progress)
+
+        log_entries.append({
+            "time": now_str(), "level": "info",
+            "msg": "正在打包 ZIP..."
+        })
+        yield (
+            build_progress_log_html(log_entries),
+            build_download_html(progress, get_completed_file_list(progress)),
+            build_stats_bar(progress),
+            "正在打包...",
+            gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
+        )
+
+        zip_path = create_zip(session_dir, progress)
+
+        progress["status"] = "done"
+        save_progress(session_dir, progress)
+
+        done = progress["completed"]
+        failed = progress["failed"]
+        log_entries.append({
+            "time": now_str(), "level": "success",
+            "msg": f"全部完成！成功 {done}/{total}" + (f"，失败 {failed}" if failed > 0 else "")
+        })
+
+        # 构建文件下拉列表
+        file_list = get_completed_file_list(progress)
+        dropdown_choices = [(f["filename"], f["path"]) for f in file_list]
+        dropdown_value = file_list[0]["path"] if file_list else None
+
+        status_text = f"完成 — 成功 {done}/{total}"
+        if failed > 0:
+            status_text += f"，失败 {failed}"
+
+        has_files = bool(file_list)
+        yield (
+            build_progress_log_html(log_entries),
+            build_download_html(progress, file_list, zip_path=zip_path if has_files else None),
+            build_stats_bar(progress),
+            status_text,
+            gr.update(value=zip_path if has_files else None, visible=has_files),
+            gr.update(choices=dropdown_choices, value=dropdown_value, visible=has_files),
+            gr.update(value=dropdown_value),
+            filepath,
+        )
+    finally:
+        # 无论成功/失败/取消，都关闭 TTSMaker 浏览器会话
+        if _TTSMaker_AVAILABLE and has_male_voice:
+            try:
+                asyncio.run(_ttsmaker.close_session())
+                log_entries.append({
+                    "time": now_str(), "level": "info",
+                    "msg": "TTSMaker 浏览器已关闭"
+                })
+            except Exception as close_err:
+                log_entries.append({
+                    "time": now_str(), "level": "warn",
+                    "msg": f"关闭 TTSMaker 浏览器异常: {close_err}"
+                })
 
 
 # ============================================================================
@@ -1251,10 +1255,6 @@ def clear_all():
         None,
         # 高级选项重置
         gr.update(value=False),  # preview
-        gr.update(value=False),  # match_788
-        gr.update(value=100),    # match_strength
-        gr.update(value="none"), # bgm_select
-        gr.update(value=30),     # bgm_vol
     )
 
 
@@ -2005,7 +2005,7 @@ body.dark #start-btn { color: #0c0a09 !important; }
 # 界面
 # ============================================================================
 
-with gr.Blocks(title="Word → TTS 一体化工具", theme=CUSTOM_THEME, css=CUSTOM_CSS) as app:
+with gr.Blocks(title="Word → TTS 一体化工具") as app:
 
     # ===== 顶部工具栏 =====
     with gr.Row(elem_id="toolbar"):
@@ -2047,19 +2047,72 @@ with gr.Blocks(title="Word → TTS 一体化工具", theme=CUSTOM_THEME, css=CUS
             with gr.Group(elem_id="sidebar-config"):
                 gr.HTML('<div class="sidebar-section"><div class="sidebar-section-title">音频配置</div></div>')
 
-                with gr.Group(elem_classes="config-slider"):
-                    rate = gr.Slider(-100, 100, step=1, value=0,
-                                     label="语速增减", info="加快或减慢语速（%）")
-                with gr.Group(elem_classes="config-slider"):
-                    volume = gr.Slider(-100, 100, step=1, value=0,
-                                       label="音量增减", info="加大或减小音量（%）")
-                with gr.Group(elem_classes="config-slider"):
-                    pitch = gr.Slider(-50, 50, step=1, value=0,
-                                      label="音调增减", info="升高或降低音调（Hz）")
-                with gr.Group(elem_classes="config-slider"):
-                    pause = gr.Slider(0, 5, step=0.1, value=0.5,
-                                      label="段落停顿时间",
-                                      info="每个换行段落之间的停顿时长（秒）")
+                with gr.Group(elem_classes="config-dropdown"):
+                    rate = gr.Dropdown(
+                        choices=[
+                            ("0.5x 降速", "0.5"), ("0.6x 降速", "0.6"),
+                            ("0.7x 降速", "0.7"), ("0.8x 降速", "0.8"),
+                            ("0.85x 降速", "0.85"), ("0.9x 降速", "0.9"),
+                            ("0.95x 降速", "0.95"), ("1.0x (默认语速)", "1.0"),
+                            ("1.05x 加速", "1.05"), ("1.1x 加速", "1.1"),
+                            ("1.15x 加速", "1.15"), ("1.2x 加速", "1.2"),
+                            ("1.3x 加速", "1.3"), ("1.4x 加速", "1.4"),
+                            ("1.5x 加速", "1.5"), ("2.0x 加速", "2.0"),
+                        ],
+                        value="1.0",
+                        label="语速",
+                        info="调节语音播放速度",
+                    )
+                with gr.Group(elem_classes="config-dropdown"):
+                    volume = gr.Dropdown(
+                        choices=[
+                            ("10% 降低音量", "0.1"), ("20% 降低音量", "0.2"),
+                            ("50% 降低音量", "0.5"), ("80% 降低音量", "0.8"),
+                            ("100% (默认音量)", "1"),
+                            ("120% 提升音量", "1.2"), ("150% 提升音量", "1.5"),
+                            ("180% 提升音量", "1.8"), ("200% 提升音量 (可能破音)", "2.0"),
+                        ],
+                        value="1",
+                        label="音量",
+                        info="调节语音音量大小",
+                    )
+                with gr.Group(elem_classes="config-dropdown"):
+                    pitch = gr.Dropdown(
+                        choices=[
+                            ("0.5x 重度降低 (-50%)", "0.5"),
+                            ("0.75x 中度降低 (-25%)", "0.75"),
+                            ("0.9x 轻微降低 (-10%)", "0.9"),
+                            ("0.95x 微微降低 (-5%)", "0.95"),
+                            ("1.0x (默认)", "1"),
+                            ("1.05x 微微升高 (+5%)", "1.05"),
+                            ("1.1x 轻度升高 (+10%)", "1.1"),
+                            ("1.25x 中度升高 (+25%)", "1.25"),
+                            ("1.5x 重度升高 (+50%)", "1.5"),
+                            ("2.0x 超级升高 (+100%)", "2.0"),
+                        ],
+                        value="1",
+                        label="音调",
+                        info="调节语音音调高低",
+                    )
+                with gr.Group(elem_classes="config-dropdown"):
+                    pause = gr.Dropdown(
+                        choices=[
+                            ("0s (消除停顿，段落连读不停顿)", "-1"),
+                            ("50ms 紧凑", "50"), ("100ms 紧凑", "100"),
+                            ("200ms 紧凑", "200"),
+                            ("300ms (默认，听感最自然)", "0"),
+                            ("500ms", "500"), ("600ms", "600"),
+                            ("800ms", "800"), ("1000ms (1s)", "1000"),
+                            ("1200ms", "1200"), ("1500ms", "1500"),
+                            ("1800ms", "1800"), ("2000ms (2s)", "2000"),
+                            ("2500ms", "2500"), ("3000ms (3s)", "3000"),
+                            ("4000ms", "4000"), ("5000ms (5s)", "5000"),
+                            ("10000ms (10s)", "10000"),
+                        ],
+                        value="0",
+                        label="段落停顿时间",
+                        info="调节每一个段落（换行）的停顿时间",
+                    )
                 with gr.Group(elem_classes="config-dropdown"):
                     fmt = gr.Dropdown(
                         choices=["mp3", "ogg", "aac", "opus", "wav"],
@@ -2091,48 +2144,21 @@ with gr.Blocks(title="Word → TTS 一体化工具", theme=CUSTOM_THEME, css=CUS
                         value=False,
                         info="仅生成前 3 条用于快速预览效果",
                     )
-                with gr.Group(elem_classes="config-checkbox"):
-                    match_788 = gr.Checkbox(
-                        label="启用 788 音色匹配",
-                        value=False,
-                        info="应用校准后的流式频谱处理（针对男声 Remy 校准）",
-                        interactive=_788_AVAILABLE,
-                    )
-                if not _788_AVAILABLE:
-                    gr.HTML('<div style="padding:2px 16px; font-size:10px; color:var(--c-text-muted);">'
-                            '⚠ 788 匹配模块未加载，该功能不可用</div>')
-                with gr.Group(elem_classes="config-slider"):
-                    match_strength = gr.Slider(
-                        0, 100, step=1, value=100,
-                        label="788 匹配强度",
-                        info="100=完整校准曲线；降低可减少处理痕迹",
-                    )
-                with gr.Group(elem_classes="config-dropdown"):
-                    bgm_select = gr.Dropdown(
-                        choices=get_bgm_choices(),
-                        value="none",
-                        label="背景音乐",
-                        info="为生成的音频混入背景音乐",
-                        interactive=True,
-                    )
-                with gr.Group(elem_classes="config-slider"):
-                    bgm_vol = gr.Slider(
-                        0, 100, step=1, value=30,
-                        label="背景音乐音量",
-                        info="0=静音，100=原始音量",
-                    )
 
             # 音色说明
             gr.HTML(
                 '<div class="voice-info">'
                 '<strong>音色自动分配规则：</strong><br>'
-                '<span class="voice-female">● 女声</span>：en-US-JennyNeural<br>'
+                '<span class="voice-female">● 女声</span>：en-US-JennyNeural (edge-tts)<br>'
                 '　└ w/W 标识 → 女声<br>'
                 '　└ 无标识 → 默认女声<br>'
-                '<span class="voice-male">● 男声</span>：fr-FR-RemyMultilingualNeural<br>'
+                '<span class="voice-male">● 男声</span>：'
+                + ('TTSMaker 788 Alfie' if _TTSMaker_AVAILABLE else 'fr-FR-RemyMultilingualNeural (edge-tts)')
+                + '<br>'
                 '　└ m/M 标识 → 男声<br>'
                 '<em style="font-size:10px; color:var(--c-text-muted);">'
-                '生成音频时自动去除 w/m 标识</em>'
+                + ('男声通过 TTSMaker 网站生成，需要 Playwright + Chrome' if _TTSMaker_AVAILABLE else 'TTSMaker 不可用，男声回退到 edge-tts')
+                + ' · 生成音频时自动去除 w/m 标识</em>'
                 '</div>'
             )
 
@@ -2238,7 +2264,7 @@ with gr.Blocks(title="Word → TTS 一体化工具", theme=CUSTOM_THEME, css=CUS
     start_btn.click(
         fn=process_document,
         inputs=[file_input, rate, volume, pitch, pause, fmt, quality, proxy,
-                preview, match_788, match_strength, bgm_select, bgm_vol],
+                preview],
         outputs=[
             progress_output,    # log_html
             download_html,      # download_html
@@ -2266,17 +2292,7 @@ with gr.Blocks(title="Word → TTS 一体化工具", theme=CUSTOM_THEME, css=CUS
             single_file,
             current_file_path,
             preview,
-            match_788,
-            match_strength,
-            bgm_select,
-            bgm_vol,
         ],
-    )
-
-    # 页面加载时刷新背景音乐列表
-    app.load(
-        fn=lambda: gr.update(choices=get_bgm_choices()),
-        outputs=bgm_select,
     )
 
 
@@ -2298,6 +2314,8 @@ if __name__ == "__main__":
             server_port=PORT,
             show_error=True,
             prevent_thread_lock=False,
+            theme=CUSTOM_THEME,
+            css=CUSTOM_CSS,
         )
 
     server_thread = threading.Thread(target=_run_server, daemon=True)

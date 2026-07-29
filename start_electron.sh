@@ -50,6 +50,16 @@ python3 -c "import fastapi, uvicorn" 2>/dev/null || {
     echo "  安装 FastAPI 和 uvicorn..."
     pip3 install fastapi uvicorn
 }
+python3 -c "import playwright, ddddocr, onnxruntime" 2>/dev/null || {
+    echo "  安装 TTSMaker 依赖 (playwright + ddddocr)..."
+    pip3 install playwright ddddocr onnxruntime greenlet pyee
+}
+# 开发模式下需要 Chromium 浏览器（打包后内置，开发时需手动安装）
+_pw_cache="$(python3 -c "import os; print(os.path.join(os.path.expanduser('~'), 'Library', 'Caches', 'ms-playwright'))" 2>/dev/null)"
+if [ -n "$_pw_cache" ] && ! ls "$_pw_cache"/chromium-* 1>/dev/null 2>&1; then
+    echo "  安装 Playwright Chromium 浏览器..."
+    python3 -m playwright install chromium
+fi
 echo "  Python 依赖就绪 ✓"
 
 # 6. 启动 — 关键：清除 ELECTRON_RUN_AS_NODE

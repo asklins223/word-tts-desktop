@@ -47,3 +47,13 @@ python-multipart
 
 # ---- 打包工具 ----
 pyinstaller>=6.0.0
+
+# ---- TTSMaker 男声生成（打包内置）----
+# Playwright: 浏览器自动化，操控 TTSMaker.cn 网站生成男声
+playwright>=1.50.0
+greenlet>=3.0.0
+pyee>=11.0.0
+
+# 验证码识别（登录后可能仍需验证码）
+ddddocr>=1.5.0
+onnxruntime>=1.18.0

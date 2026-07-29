@@ -69,14 +69,20 @@ jobs:
           pip install -r requirements_electron.txt
 
       # ======================================================================
-      # 5. 安装 Electron 依赖
+      # 5. 安装 Playwright Chromium 浏览器（TTSMaker 男声生成需要）
+      # ======================================================================
+      - name: Install Playwright browsers
+        run: playwright install chromium
+
+      # ======================================================================
+      # 6. 安装 Electron 依赖
       # ======================================================================
       - name: Install Electron dependencies
         working-directory: electron
         run: npm install
 
       # ======================================================================
-      # 6. PyInstaller 打包后端
+      # 7. PyInstaller 打包后端
       # ======================================================================
       - name: Build Python backend
         run: |

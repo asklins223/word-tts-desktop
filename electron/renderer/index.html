@@ -3,390 +3,544 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Word → TTS</title>
+    <meta name="color-scheme" content="light">
+    <title>WordTTS · 文档配音工作台</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div id="app">
-
-        <!-- ===== 顶部工具栏 ===== -->
-        <header id="toolbar">
-            <div class="toolbar-left">
-                <div class="brand">
-                    <span class="brand-mark">W</span>
-                    <span class="brand-text">Word → TTS</span>
-                </div>
+        <aside id="sidebar" aria-label="任务导航">
+            <div class="sidebar-brand">
+                <span class="brand-mark" aria-hidden="true">
+                    <span class="brand-wave"></span>
+                    <span class="brand-wave"></span>
+                    <span class="brand-wave"></span>
+                </span>
+                <span class="brand-copy">
+                    <strong>WordTTS</strong>
+                    <small>文档配音工作台</small>
+                </span>
             </div>
-            <div class="toolbar-right">
-                <button id="restart-btn" class="btn-ghost btn-restart" title="重新开始">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                    重新开始
-                </button>
-            </div>
-        </header>
 
-        <!-- ===== 步骤指示器 ===== -->
-        <nav id="stepper">
-            <div class="step-indicator" data-step="1">
-                <div class="step-circle"><span class="step-num">1</span></div>
-                <span class="step-label">上传文档</span>
-            </div>
-            <div class="step-line" data-line="1"></div>
-            <div class="step-indicator" data-step="2">
-                <div class="step-circle"><span class="step-num">2</span></div>
-                <span class="step-label">声音配置</span>
-            </div>
-            <div class="step-line" data-line="2"></div>
-            <div class="step-indicator" data-step="3">
-                <div class="step-circle"><span class="step-num">3</span></div>
-                <span class="step-label">生成音频</span>
-            </div>
-            <div class="step-line" data-line="3"></div>
-            <div class="step-indicator" data-step="4">
-                <div class="step-circle"><span class="step-num">4</span></div>
-                <span class="step-label">完成下载</span>
-            </div>
-        </nav>
-
-        <!-- ===== 主体区域 ===== -->
-        <main id="content">
-
-            <!-- ========== Step 1: 上传文档 ========== -->
-            <section class="step-page active" id="page-1">
-                <div class="page-center">
-                    <div class="upload-hero">
-                        <div class="hero-icon">
-                            <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                                <polyline points="14 2 14 8 20 8"/>
-                                <line x1="12" y1="18" x2="12" y2="12"/>
-                                <polyline points="9 15 12 12 15 15"/>
-                            </svg>
-                        </div>
-                        <h1 class="hero-title">上传 Word 文档</h1>
-                        <p class="hero-subtitle">选择 .docx 文件，自动解析题型并生成语音</p>
-
-                        <div class="upload-zone-large" id="upload-zone">
-                            <div class="upload-icon-large">
-                                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                    <polyline points="17 8 12 3 7 8"/>
-                                    <line x1="12" y1="3" x2="12" y2="15"/>
-                                </svg>
-                            </div>
-                            <div class="upload-text-large">点击选择或拖拽 .docx 文件到此处</div>
-                            <div class="upload-hint">支持 .docx 格式</div>
-                        </div>
-
-                        <div class="upload-divider">
-                            <span>已保存的配置</span>
-                        </div>
-
-                        <div class="preset-list" id="step1-preset-list">
-                            <div class="preset-empty">暂无保存的配置</div>
-                        </div>
-
-                        <div class="upload-divider">
-                            <span>或者</span>
-                        </div>
-
-                        <button class="btn-secondary btn-quick" id="quick-start-btn">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                            使用默认配置快速开始
-                        </button>
-                        <p class="quick-hint">跳过配置步骤，使用默认参数直接生成</p>
+            <div class="workflow-label">任务流程</div>
+            <nav id="stepper" aria-label="音频生成进度">
+                <div class="step-indicator" data-step="1">
+                    <div class="step-circle"><span class="step-num">1</span></div>
+                    <div class="step-copy">
+                        <span class="step-label">导入文档</span>
+                        <span class="step-meta">选择 Word 源文件</span>
                     </div>
                 </div>
-            </section>
+                <div class="step-line" data-line="1"></div>
+                <div class="step-indicator" data-step="2">
+                    <div class="step-circle"><span class="step-num">2</span></div>
+                    <div class="step-copy">
+                        <span class="step-label">配置声音</span>
+                        <span class="step-meta">确认音色与输出</span>
+                    </div>
+                </div>
+                <div class="step-line" data-line="2"></div>
+                <div class="step-indicator" data-step="3">
+                    <div class="step-circle"><span class="step-num">3</span></div>
+                    <div class="step-copy">
+                        <span class="step-label">生成音频</span>
+                        <span class="step-meta">自动处理文档内容</span>
+                    </div>
+                </div>
+                <div class="step-line" data-line="3"></div>
+                <div class="step-indicator" data-step="4">
+                    <div class="step-circle"><span class="step-num">4</span></div>
+                    <div class="step-copy">
+                        <span class="step-label">交付结果</span>
+                        <span class="step-meta">试听并下载文件</span>
+                    </div>
+                </div>
+            </nav>
 
-            <!-- ========== Step 2: 声音配置 ========== -->
-            <section class="step-page" id="page-2">
-                <div class="page-scroll">
-                    <div class="config-container">
-                        <div class="config-header">
-                            <h2 class="page-title">声音配置</h2>
-                            <p class="page-subtitle">调整音频参数，或加载已保存的配置</p>
+            <div class="sidebar-footnote">
+                <span class="privacy-icon" aria-hidden="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </span>
+                <span><strong>本地任务空间</strong><small>文档与结果仅在本机处理</small></span>
+            </div>
+        </aside>
+
+        <div class="app-main">
+            <header id="toolbar">
+                <div class="toolbar-left">
+                    <span class="toolbar-kicker">当前任务</span>
+                    <span class="toolbar-divider" aria-hidden="true"></span>
+                    <span id="toolbar-step">01 / 导入文档</span>
+                </div>
+                <div class="toolbar-right">
+                    <span class="service-state" id="service-state"><span class="service-dot"></span><span class="service-label">正在连接服务</span></span>
+                    <button type="button" id="restart-btn" class="btn-ghost btn-restart" title="清空当前任务并重新开始">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                        新建任务
+                    </button>
+                </div>
+            </header>
+
+            <main id="content">
+                <!-- Step 1: 导入文档 -->
+                <section class="step-page active" id="page-1" aria-labelledby="upload-title">
+                    <div class="page-scroll">
+                        <div class="upload-workspace">
+                            <div class="page-heading page-heading-wide">
+                                <div>
+                                    <span class="eyebrow">新建配音任务</span>
+                                    <h1 id="upload-title">把 Word 文档变成可直接交付的音频</h1>
+                                    <p>导入教学文档后，WordTTS 会识别内容结构、分配男女声，并按题型整理输出文件。</p>
+                                </div>
+                                <span class="format-badge">DOCX</span>
+                            </div>
+
+                            <div class="upload-layout">
+                                <div class="surface-card upload-card">
+                                    <div class="card-heading-row">
+                                        <div>
+                                            <span class="section-index">01</span>
+                                            <h2>选择源文档</h2>
+                                        </div>
+                                        <span class="required-badge">必需</span>
+                                    </div>
+
+                                    <div class="upload-zone-large" id="upload-zone" role="button" tabindex="0" aria-label="选择或拖入 Word 文档">
+                                        <div class="upload-visual" aria-hidden="true">
+                                            <div class="upload-file-icon">
+                                                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h8M8 17h5"/></svg>
+                                            </div>
+                                            <span class="upload-arrow">
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+                                            </span>
+                                        </div>
+                                        <div class="upload-text-large">拖拽文档到这里，或点击选择</div>
+                                        <div class="upload-hint">支持 .docx 文件 · 选择后会自动解析</div>
+                                        <span class="upload-cta">选择 Word 文档</span>
+                                    </div>
+
+                                    <div class="upload-pipeline" aria-label="处理流程说明">
+                                        <div class="pipeline-item">
+                                            <span>1</span>
+                                            <div><strong>解析结构</strong><small>识别题型与段落</small></div>
+                                        </div>
+                                        <div class="pipeline-separator"></div>
+                                        <div class="pipeline-item">
+                                            <span>2</span>
+                                            <div><strong>配置声音</strong><small>校对音色与节奏</small></div>
+                                        </div>
+                                        <div class="pipeline-separator"></div>
+                                        <div class="pipeline-item">
+                                            <span>3</span>
+                                            <div><strong>导出音频</strong><small>试听或打包下载</small></div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <aside class="surface-card checklist-card">
+                                    <span class="eyebrow">导入须知</span>
+                                    <h2>开始前确认</h2>
+                                    <ul class="checklist">
+                                        <li>
+                                            <span class="check-icon">✓</span>
+                                            <div><strong>使用 .docx 格式</strong><small>暂不支持旧版 .doc 文档</small></div>
+                                        </li>
+                                        <li>
+                                            <span class="check-icon">✓</span>
+                                            <div><strong>保留段落结构</strong><small>换行会用于控制语音停顿</small></div>
+                                        </li>
+                                        <li>
+                                            <span class="check-icon">✓</span>
+                                            <div><strong>按标记自动分配音色</strong><small>w / W 为女声，m / M 为男声</small></div>
+                                        </li>
+                                    </ul>
+                                    <div class="default-profile">
+                                        <div class="profile-icon" aria-hidden="true">
+                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                                        </div>
+                                        <div><small>推荐输出</small><strong>自然语速 · MP3 · 128 kbps</strong></div>
+                                    </div>
+                                </aside>
+                            </div>
                         </div>
+                    </div>
+                </section>
 
-                        <!-- 配置预设管理 -->
-                        <div class="config-card preset-bar-card">
-                            <div class="preset-bar">
-                                <select id="preset-select" class="preset-select" title="选择已保存的配置">
-                                    <option value="">-- 选择配置 --</option>
-                                </select>
-                                <button class="btn-ghost btn-sm" id="apply-preset-btn" title="应用到当前表单">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                                    应用
+                <!-- Step 2: 声音配置 -->
+                <section class="step-page" id="page-2" aria-labelledby="config-title">
+                    <div class="page-scroll">
+                        <div class="config-container">
+                            <div class="page-heading config-page-heading">
+                                <div>
+                                    <span class="eyebrow">声音与输出</span>
+                                    <h1 id="config-title">确认这次任务的生成方式</h1>
+                                    <p>推荐设置适合大多数教学场景；需要时再调整节奏、格式或试听范围。</p>
+                                </div>
+                                <button type="button" class="source-file-chip" id="change-file-btn" title="更换源文档">
+                                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                    <span><small>当前文档</small><strong id="source-file-name">已导入的 Word 文档</strong></span>
+                                    <svg class="chip-action" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 0 15 6.7L21 16"/><path d="M21 21v-5h-5"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M8 8H3V3"/></svg>
                                 </button>
-                                <button class="btn-ghost btn-sm" id="save-preset-btn" title="保存当前配置">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                                    保存
+                            </div>
+
+                            <div class="config-layout">
+                                <div class="config-main">
+                                    <section class="surface-card config-section preset-section">
+                                        <div class="section-heading-row">
+                                            <div>
+                                                <span class="section-index">方案</span>
+                                                <div><h2>配置方案</h2><p>加载常用设置，或保存当前参数供下次使用。</p></div>
+                                            </div>
+                                        </div>
+                                        <div class="preset-bar">
+                                            <select id="preset-select" class="preset-select" title="选择已保存的配置">
+                                                <option value="">选择已保存的配置</option>
+                                            </select>
+                                            <button type="button" class="btn-secondary btn-sm" id="apply-preset-btn" title="应用到当前表单">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                                应用
+                                            </button>
+                                            <button type="button" class="btn-ghost btn-sm" id="save-preset-btn" title="保存当前配置">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                                保存
+                                            </button>
+                                            <button type="button" class="btn-icon btn-danger-ghost" id="delete-preset-btn" title="删除选中配置" aria-label="删除选中的配置">
+                                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                            </button>
+                                        </div>
+                                    </section>
+
+                                    <section class="surface-card config-section">
+                                        <div class="section-heading-row">
+                                            <div>
+                                                <span class="section-index">01</span>
+                                                <div><h2>角色与音色</h2><p>文档中的标记会自动匹配到对应声音。</p></div>
+                                            </div>
+                                            <span class="auto-badge"><span></span>自动匹配</span>
+                                        </div>
+                                        <div class="voice-rules">
+                                            <div class="voice-rule-item voice-female-card">
+                                                <div class="voice-avatar">W</div>
+                                                <div class="voice-info">
+                                                    <span class="voice-badge voice-female">女声</span>
+                                                    <strong class="voice-name" id="voice-female-name">JennyNeural (edge-tts)</strong>
+                                                    <small class="voice-desc">w / W 标识，以及未标记内容</small>
+                                                </div>
+                                                <span class="voice-status">默认</span>
+                                            </div>
+                                            <div class="voice-rule-item voice-male-card">
+                                                <div class="voice-avatar">M</div>
+                                                <div class="voice-info">
+                                                    <span class="voice-badge voice-male">男声</span>
+                                                    <strong class="voice-name" id="voice-male-name">加载中...</strong>
+                                                    <small class="voice-desc" id="voice-male-desc">m / M 标识，生成时自动移除标记</small>
+                                                </div>
+                                                <span class="voice-status">自动</span>
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                    <section class="surface-card config-section">
+                                        <div class="section-heading-row">
+                                            <div>
+                                                <span class="section-index">02</span>
+                                                <div><h2>声音节奏</h2><p>控制朗读速度、响度和段落之间的呼吸感。</p></div>
+                                            </div>
+                                        </div>
+                                        <div class="config-grid">
+                                            <label class="config-field">
+                                                <span class="field-label">语速<small>朗读快慢</small></span>
+                                                <select id="rate">
+                                                    <option value="0.5">0.5x · 很慢</option>
+                                                    <option value="0.6">0.6x · 较慢</option>
+                                                    <option value="0.7">0.7x · 慢速</option>
+                                                    <option value="0.8">0.8x · 稍慢</option>
+                                                    <option value="0.85">0.85x · 稍慢</option>
+                                                    <option value="0.9">0.9x · 舒缓</option>
+                                                    <option value="0.95">0.95x · 自然偏慢</option>
+                                                    <option value="1.0" selected>1.0x · 自然语速</option>
+                                                    <option value="1.05">1.05x · 自然偏快</option>
+                                                    <option value="1.1">1.1x · 稍快</option>
+                                                    <option value="1.15">1.15x · 稍快</option>
+                                                    <option value="1.2">1.2x · 快速</option>
+                                                    <option value="1.3">1.3x · 较快</option>
+                                                    <option value="1.4">1.4x · 很快</option>
+                                                    <option value="1.5">1.5x · 倍速</option>
+                                                    <option value="2.0">2.0x · 两倍速</option>
+                                                </select>
+                                            </label>
+                                            <label class="config-field">
+                                                <span class="field-label">音量<small>输出响度</small></span>
+                                                <select id="volume">
+                                                    <option value="0.1">10% · 极低</option>
+                                                    <option value="0.2">20% · 很低</option>
+                                                    <option value="0.5">50% · 较低</option>
+                                                    <option value="0.8">80% · 柔和</option>
+                                                    <option value="1" selected>100% · 标准音量</option>
+                                                    <option value="1.2">120% · 增强</option>
+                                                    <option value="1.5">150% · 较强</option>
+                                                    <option value="1.8">180% · 很强</option>
+                                                    <option value="2.0">200% · 可能破音</option>
+                                                </select>
+                                            </label>
+                                            <label class="config-field">
+                                                <span class="field-label">音调<small>声音高低</small></span>
+                                                <select id="pitch">
+                                                    <option value="0.5">0.5x · 大幅降低</option>
+                                                    <option value="0.75">0.75x · 中度降低</option>
+                                                    <option value="0.9">0.9x · 轻微降低</option>
+                                                    <option value="0.95">0.95x · 略微降低</option>
+                                                    <option value="1" selected>1.0x · 原始音调</option>
+                                                    <option value="1.05">1.05x · 略微升高</option>
+                                                    <option value="1.1">1.1x · 轻微升高</option>
+                                                    <option value="1.25">1.25x · 中度升高</option>
+                                                    <option value="1.5">1.5x · 大幅升高</option>
+                                                    <option value="2.0">2.0x · 极高</option>
+                                                </select>
+                                            </label>
+                                            <label class="config-field">
+                                                <span class="field-label">段落停顿<small>换行间隔</small></span>
+                                                <select id="pause">
+                                                    <option value="-1">0 秒 · 连续朗读</option>
+                                                    <option value="50">50 毫秒 · 极紧凑</option>
+                                                    <option value="100">100 毫秒 · 紧凑</option>
+                                                    <option value="200">200 毫秒 · 较紧凑</option>
+                                                    <option value="0" selected>约 300 毫秒 · 自然</option>
+                                                    <option value="500">500 毫秒</option>
+                                                    <option value="600">600 毫秒</option>
+                                                    <option value="800">800 毫秒</option>
+                                                    <option value="1000">1 秒</option>
+                                                    <option value="1200">1.2 秒</option>
+                                                    <option value="1500">1.5 秒</option>
+                                                    <option value="1800">1.8 秒</option>
+                                                    <option value="2000">2 秒</option>
+                                                    <option value="2500">2.5 秒</option>
+                                                    <option value="3000">3 秒</option>
+                                                    <option value="4000">4 秒</option>
+                                                    <option value="5000">5 秒</option>
+                                                    <option value="10000">10 秒</option>
+                                                </select>
+                                            </label>
+                                        </div>
+                                    </section>
+
+                                    <section class="surface-card config-section">
+                                        <div class="section-heading-row">
+                                            <div>
+                                                <span class="section-index">03</span>
+                                                <div><h2>输出文件</h2><p>选择兼容性与文件体积之间的平衡。</p></div>
+                                            </div>
+                                        </div>
+                                        <div class="config-grid output-grid">
+                                            <label class="config-field">
+                                                <span class="field-label">音频格式<small>推荐 MP3</small></span>
+                                                <select id="format">
+                                                    <option value="mp3" selected>MP3 · 通用格式</option>
+                                                    <option value="ogg">OGG · 开放格式</option>
+                                                    <option value="aac">AAC · 高压缩率</option>
+                                                    <option value="opus">OPUS · 语音优化</option>
+                                                    <option value="wav">WAV · 无压缩</option>
+                                                </select>
+                                            </label>
+                                            <label class="config-field">
+                                                <span class="field-label">音频质量<small>影响文件体积</small></span>
+                                                <select id="quality">
+                                                    <option value="48 kbps（低）">48 kbps · 小体积</option>
+                                                    <option value="128 kbps（标准）" selected>128 kbps · 标准</option>
+                                                    <option value="192 kbps（高）">192 kbps · 高质量</option>
+                                                    <option value="320 kbps（极高）">320 kbps · 极高质量</option>
+                                                    <option value="无损（仅 wav 生效）">无损 · 仅 WAV 生效</option>
+                                                </select>
+                                            </label>
+                                        </div>
+                                    </section>
+
+                                    <details class="surface-card advanced-section">
+                                        <summary>
+                                            <span class="advanced-icon">
+                                                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.54 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>
+                                            </span>
+                                            <span><strong>高级选项</strong><small>试听范围与网络代理</small></span>
+                                            <svg class="summary-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                        </summary>
+                                        <div class="advanced-content">
+                                            <label class="preview-option">
+                                                <input type="checkbox" id="preview">
+                                                <span class="toggle-control"></span>
+                                                <span><strong>试听模式</strong><small>仅生成前 3 条内容，用于快速确认效果</small></span>
+                                            </label>
+                                            <label class="config-field proxy-field">
+                                                <span class="field-label">代理地址<small>可选</small></span>
+                                                <input type="text" id="proxy" placeholder="例如 http://127.0.0.1:7890" autocomplete="off">
+                                            </label>
+                                        </div>
+                                    </details>
+                                </div>
+
+                                <aside class="config-aside">
+                                    <div class="surface-card output-summary-card">
+                                        <div class="summary-card-head">
+                                            <span class="summary-icon" aria-hidden="true">
+                                                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                                            </span>
+                                            <div><small>本次输出</small><strong>生成设置摘要</strong></div>
+                                        </div>
+                                        <dl class="summary-list">
+                                            <div><dt>语速</dt><dd id="summary-rate">1.0x · 自然语速</dd></div>
+                                            <div><dt>音量</dt><dd id="summary-volume">100% · 标准音量</dd></div>
+                                            <div><dt>音调</dt><dd id="summary-pitch">1.0x · 原始音调</dd></div>
+                                            <div><dt>段落停顿</dt><dd id="summary-pause">约 300 毫秒 · 自然</dd></div>
+                                            <div><dt>输出</dt><dd id="summary-output">MP3 · 128 kbps</dd></div>
+                                            <div><dt>生成范围</dt><dd id="summary-scope">完整文档</dd></div>
+                                        </dl>
+                                        <div class="summary-note">
+                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                                            生成期间请保持应用开启
+                                        </div>
+                                        <button type="button" class="btn-primary btn-generate" id="start-generate-btn">
+                                            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                            开始生成音频
+                                        </button>
+                                        <button type="button" class="btn-secondary btn-defaults" id="skip-config-btn">使用推荐设置生成</button>
+                                        <button type="button" class="btn-text" id="back-to-upload-btn">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                                            返回并更换文档
+                                        </button>
+                                    </div>
+                                </aside>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Step 3: 生成中 -->
+                <section class="step-page" id="page-3" aria-labelledby="gen-title">
+                    <div class="page-scroll">
+                        <div class="generate-container">
+                            <div class="page-heading process-heading">
+                                <div>
+                                    <span class="eyebrow">正在处理</span>
+                                    <h1 id="gen-title">正在生成音频</h1>
+                                    <p id="generation-file-name">WordTTS 正在准备当前文档，请保持应用开启。</p>
+                                </div>
+                                <span class="processing-badge"><span></span>任务进行中</span>
+                            </div>
+
+                            <div class="generation-layout">
+                                <div class="surface-card generation-card">
+                                    <div class="generate-animation" id="gen-animation" aria-hidden="true">
+                                        <div class="eq-bars">
+                                            <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
+                                            <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
+                                        </div>
+                                        <div class="gen-done-icon">
+                                            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                        </div>
+                                    </div>
+                                    <div class="progress-copy">
+                                        <span>总体进度</span>
+                                        <strong id="progress-stats" aria-live="polite">准备中...</strong>
+                                    </div>
+                                    <div class="progress-bar-track" role="progressbar" aria-label="生成进度" aria-valuemin="0" aria-valuemax="100">
+                                        <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
+                                    </div>
+                                    <div class="type-stats" id="type-stats"></div>
+                                    <div class="processing-tip">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                        已生成的文件会自动保存在当前任务中
+                                    </div>
+                                </div>
+
+                                <div class="log-panel surface-card">
+                                    <div class="log-header">
+                                        <div><span class="log-live-dot"></span><span class="log-title">实时处理记录</span></div>
+                                        <span class="log-count" id="log-count">0 条</span>
+                                    </div>
+                                    <div class="log-body" id="progress-log" aria-live="polite">
+                                        <div class="log-empty">等待任务开始...</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Step 4: 结果 -->
+                <section class="step-page" id="page-4" aria-labelledby="result-title">
+                    <div class="page-scroll">
+                        <div class="result-container">
+                            <div class="result-header">
+                                <div class="result-heading-copy">
+                                    <div class="result-success-icon">
+                                        <svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                    </div>
+                                    <div>
+                                        <span class="eyebrow">任务已完成</span>
+                                        <h1 id="result-title">音频已经准备好了</h1>
+                                        <p class="result-summary" id="result-summary"></p>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn-secondary" id="new-file-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+                                    处理新文档
                                 </button>
-                                <button class="btn-ghost btn-sm btn-danger-ghost" id="delete-preset-btn" title="删除选中配置">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            </div>
+
+                            <div class="zip-card" id="zip-card">
+                                <div class="zip-icon">
+                                    <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
+                                </div>
+                                <div class="zip-info">
+                                    <span class="zip-kicker">推荐交付方式</span>
+                                    <div class="zip-name">下载全部音频</div>
+                                    <div class="zip-desc" id="zip-desc">ZIP 压缩包包含本次任务的所有文件</div>
+                                </div>
+                                <button type="button" class="btn-primary btn-download" id="download-zip-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    下载 ZIP
                                 </button>
                             </div>
-                        </div>
 
-                        <!-- 音色说明 -->
-                        <div class="config-card">
-                            <h3 class="card-title">音色规则</h3>
-                            <div class="voice-rules">
-                                <div class="voice-rule-item">
-                                    <span class="voice-badge voice-female">女声</span>
-                                    <span class="voice-name">JennyNeural</span>
-                                    <span class="voice-desc">w/W 标识 → 女声 · 无标识默认女声</span>
+                            <section class="audio-list-section surface-card">
+                                <div class="audio-list-header">
+                                    <div>
+                                        <span class="eyebrow">逐条检查</span>
+                                        <h2 class="section-heading">试听与单独下载</h2>
+                                    </div>
+                                    <span class="audio-count" id="audio-count">0 个文件</span>
                                 </div>
-                                <div class="voice-rule-item">
-                                    <span class="voice-badge voice-male">男声</span>
-                                    <span class="voice-name">RemyMultilingual</span>
-                                    <span class="voice-desc">m/M 标识 → 男声 · 自动去除标识</span>
+                                <div class="audio-list" id="audio-list">
+                                    <div class="audio-empty">暂无音频文件</div>
                                 </div>
-                            </div>
-                        </div>
-
-                        <!-- 音频参数 -->
-                        <div class="config-card">
-                            <h3 class="card-title">音频参数</h3>
-                            <div class="config-grid">
-                                <div class="config-field">
-                                    <label class="field-label">
-                                        语速
-                                        <span class="field-value" id="rate-val">0%</span>
-                                    </label>
-                                    <input type="range" id="rate" min="-100" max="100" step="1" value="0">
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">
-                                        音量
-                                        <span class="field-value" id="volume-val">0%</span>
-                                    </label>
-                                    <input type="range" id="volume" min="-100" max="100" step="1" value="0">
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">
-                                        音调
-                                        <span class="field-value" id="pitch-val">0Hz</span>
-                                    </label>
-                                    <input type="range" id="pitch" min="-50" max="50" step="1" value="0">
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">
-                                        段落停顿
-                                        <span class="field-value" id="pause-val">0.5s</span>
-                                    </label>
-                                    <input type="range" id="pause" min="0" max="5" step="0.1" value="0.5">
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">音频格式</label>
-                                    <select id="format">
-                                        <option value="mp3" selected>MP3</option>
-                                        <option value="ogg">OGG</option>
-                                        <option value="aac">AAC</option>
-                                        <option value="opus">OPUS</option>
-                                        <option value="wav">WAV</option>
-                                    </select>
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">音频质量</label>
-                                    <select id="quality">
-                                        <option value="48 kbps（低）">48 kbps（低）</option>
-                                        <option value="128 kbps（标准）" selected>128 kbps（标准）</option>
-                                        <option value="192 kbps（高）">192 kbps（高）</option>
-                                        <option value="320 kbps（极高）">320 kbps（极高）</option>
-                                        <option value="无损（仅 wav 生效）">无损（仅 wav）</option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 高级选项 -->
-                        <div class="config-card">
-                            <h3 class="card-title">高级选项</h3>
-                            <div class="config-grid">
-                                <div class="config-field-checkbox">
-                                    <label class="checkbox-row">
-                                        <input type="checkbox" id="preview">
-                                        <div class="checkbox-custom"></div>
-                                        <span class="checkbox-label">试听模式</span>
-                                        <span class="checkbox-hint">仅生成前 3 条</span>
-                                    </label>
-                                </div>
-                                <div class="config-field-checkbox">
-                                    <label class="checkbox-row">
-                                        <input type="checkbox" id="match-788">
-                                        <div class="checkbox-custom"></div>
-                                        <span class="checkbox-label">788 音色匹配</span>
-                                        <span class="checkbox-hint" id="match-788-hint">针对男声 Remy 校准</span>
-                                    </label>
-                                </div>
-                                <div class="config-field" id="match-strength-row">
-                                    <label class="field-label">
-                                        匹配强度
-                                        <span class="field-value" id="match-strength-val">100</span>
-                                    </label>
-                                    <input type="range" id="match-strength" min="0" max="100" step="1" value="100">
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">代理地址（可选）</label>
-                                    <input type="text" id="proxy" placeholder="如 http://127.0.0.1:7890">
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">背景音乐</label>
-                                    <select id="bgm-select">
-                                        <option value="none" selected>无（纯人声）</option>
-                                    </select>
-                                </div>
-                                <div class="config-field">
-                                    <label class="field-label">
-                                        音乐音量
-                                        <span class="field-value" id="bgm-vol-val">30%</span>
-                                    </label>
-                                    <input type="range" id="bgm-vol" min="0" max="100" step="1" value="30">
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 操作按钮 -->
-                        <div class="config-actions">
-                            <button class="btn-ghost" id="skip-config-btn">跳过，使用默认</button>
-                            <button class="btn-primary" id="start-generate-btn">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                                开始生成
-                            </button>
+                            </section>
                         </div>
                     </div>
+                </section>
+            </main>
+
+            <footer id="statusbar">
+                <div class="status-left">
+                    <span class="status-dot" aria-hidden="true"></span>
+                    <span id="status-text" aria-live="polite">就绪</span>
                 </div>
-            </section>
-
-            <!-- ========== Step 3: 生成中 ========== -->
-            <section class="step-page" id="page-3">
-                <div class="page-center">
-                    <div class="generate-container">
-                        <!-- 动画 + 进度 -->
-                        <div class="generate-hero">
-                            <div class="generate-animation" id="gen-animation">
-                                <div class="eq-bars">
-                                    <span class="eq-bar"></span>
-                                    <span class="eq-bar"></span>
-                                    <span class="eq-bar"></span>
-                                    <span class="eq-bar"></span>
-                                    <span class="eq-bar"></span>
-                                    <span class="eq-bar"></span>
-                                    <span class="eq-bar"></span>
-                                </div>
-                                <div class="gen-done-icon">
-                                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                        <polyline points="20 6 9 17 4 12"/>
-                                    </svg>
-                                </div>
-                            </div>
-                            <h2 class="generate-title" id="gen-title">正在生成音频...</h2>
-                            <div class="progress-bar-wrapper">
-                                <div class="progress-bar-track">
-                                    <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
-                                </div>
-                                <div class="progress-stats" id="progress-stats">准备中...</div>
-                            </div>
-                        </div>
-
-                        <!-- 按题型统计 -->
-                        <div class="type-stats" id="type-stats"></div>
-
-                        <!-- 日志 -->
-                        <div class="log-panel">
-                            <div class="log-header">
-                                <span class="log-title">处理日志</span>
-                                <span class="log-count" id="log-count">0 条</span>
-                            </div>
-                            <div class="log-body" id="progress-log">
-                                <div class="log-empty">等待开始...</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ========== Step 4: 完成下载 ========== -->
-            <section class="step-page" id="page-4">
-                <div class="page-scroll">
-                    <div class="result-container">
-                        <!-- 完成横幅 -->
-                        <div class="result-header">
-                            <div class="result-success-icon">
-                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                                    <polyline points="22 4 12 14.01 9 11.01"/>
-                                </svg>
-                            </div>
-                            <h2 class="result-title">生成完成！</h2>
-                            <p class="result-summary" id="result-summary"></p>
-                        </div>
-
-                        <!-- ZIP 下载卡片 -->
-                        <div class="zip-card" id="zip-card">
-                            <div class="zip-icon">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M21 8v13H3V8"/>
-                                    <path d="M1 3h22v5H1z"/>
-                                    <path d="M10 12h4"/>
-                                </svg>
-                            </div>
-                            <div class="zip-info">
-                                <div class="zip-name">全部音频（ZIP 压缩包）</div>
-                                <div class="zip-desc" id="zip-desc">包含所有生成的音频文件</div>
-                            </div>
-                            <button class="btn-primary btn-download" id="download-zip-btn">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                下载 ZIP
-                            </button>
-                        </div>
-
-                        <!-- 音频列表 -->
-                        <div class="audio-list-section">
-                            <div class="audio-list-header">
-                                <h3 class="section-heading">音频预览</h3>
-                                <span class="audio-count" id="audio-count">0 个文件</span>
-                            </div>
-                            <div class="audio-list" id="audio-list">
-                                <div class="audio-empty">暂无音频文件</div>
-                            </div>
-                        </div>
-
-                        <!-- 重新开始 -->
-                        <div class="result-actions">
-                            <button class="btn-primary btn-new-file" id="new-file-btn">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
-                                上传新文件
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-        </main>
-
-        <!-- ===== 底部状态栏 ===== -->
-        <footer id="statusbar">
-            <div class="status-left">
-                <span id="status-text">就绪</span>
-            </div>
-            <div class="status-right" id="stats-bar"></div>
-        </footer>
-
+                <div class="status-right" id="stats-bar"></div>
+            </footer>
+        </div>
     </div>
 
-    <input type="file" id="hidden-file-input" accept=".docx" style="display:none">
+    <input type="file" id="hidden-file-input" accept=".docx" hidden>
 
-    <!-- 自定义输入对话框（替代 Electron 不支持的 window.prompt） -->
-    <div class="prompt-overlay" id="prompt-overlay">
+    <div class="prompt-overlay" id="prompt-overlay" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
         <div class="prompt-dialog">
-            <div class="prompt-title" id="prompt-title">提示</div>
+            <div class="prompt-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            </div>
+            <div class="prompt-title" id="prompt-title">保存配置</div>
             <div class="prompt-message" id="prompt-message"></div>
-            <input type="text" class="prompt-input" id="prompt-input">
+            <input type="text" class="prompt-input" id="prompt-input" autocomplete="off">
             <div class="prompt-actions">
-                <button class="btn-ghost btn-sm" id="prompt-cancel">取消</button>
-                <button class="btn-primary btn-sm" id="prompt-ok">确定</button>
+                <button type="button" class="btn-ghost btn-sm" id="prompt-cancel">取消</button>
+                <button type="button" class="btn-primary btn-sm" id="prompt-ok">保存</button>
             </div>
         </div>
     </div>

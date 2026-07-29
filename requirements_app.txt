@@ -1,6 +1,7 @@
 # Edge TTS WebUI / Word 文档解析工具 — 运行依赖
 # 安装: pip install -r requirements_app.txt
-# 另外需要系统安装 FFmpeg（788 实时匹配、音频解码与导出使用）
+# FFmpeg 已通过 imageio-ffmpeg 内置打包，无需额外安装
+# Playwright + Chromium 浏览器也打包内置，开箱即用
 
 gradio>=5.0.0,<6.0.0
 edge-tts>=7.2.0
@@ -8,3 +9,18 @@ pydub>=0.25.1
 python-docx>=1.0.0
 pywebview>=5.0.0
 pyinstaller>=6.0.0
+imageio-ffmpeg>=0.5.1
+ffmpy>=0.3.0
+
+# ---- TTSMaker 男声生成（打包内置）----
+# Playwright: 浏览器自动化，操控 TTSMaker.cn 网站生成男声
+playwright>=1.50.0
+greenlet>=3.0.0
+pyee>=11.0.0
+
+# 验证码识别（登录后可能仍需验证码）
+ddddocr>=1.5.0
+onnxruntime>=1.18.0
+
+# 打包前需运行: playwright install chromium
+# 这会下载 Chromium 浏览器二进制，打包时自动包含

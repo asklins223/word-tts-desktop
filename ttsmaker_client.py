@@ -9,15 +9,21 @@ TTSMaker 客户端 — 男声 (788/Alfie) 音频生成
   - 女声 (FEMALE_VOICE) → edge-tts (不变)
   - TTSMaker 不可用时（打包模式/缺依赖）→ 回退到 edge-tts
 
-依赖（仅开发模式需要）:
-  pip install playwright ddddocr
-  playwright install chromium
+持久化会话模式:
+  - 启动时调用 login()，打开可见浏览器让用户扫码登录
+  - 每条男声调用 synth_male_ttsmaker()，浏览器保持开启
+  - 全部完成后调用 close_session() 关闭浏览器
+
+依赖:
+  开发模式: pip install playwright ddddocr && playwright install chromium
+  打包模式: Playwright + Chromium 已内置打包，无需额外安装
 """
 
 import os
 import sys
 import uuid
 import asyncio
+import threading
 
 # ============================================================================
 # 路径设置
@@ -27,25 +33,54 @@ if getattr(sys, 'frozen', False):
 else:
     _RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 尝试将 ttsmaker/ 目录加入 sys.path
-_TTSMAKER_DIR = os.path.join(_RESOURCE_DIR, "ttsmaker")
-if _TTSMAKER_DIR not in sys.path:
-    sys.path.insert(0, _TTSMAKER_DIR)
+# 确保 _RESOURCE_DIR 在 sys.path 中（用于 namespace package 导入）
+if _RESOURCE_DIR not in sys.path:
+    sys.path.insert(0, _RESOURCE_DIR)
+
+# ============================================================================
+# Playwright 浏览器路径设置（PyInstaller 打包环境）
+# ============================================================================
+# 在打包环境中，Chromium 浏览器二进制被打包到 _MEIPASS/playwright_browsers/
+# 需要设置 PLAYWRIGHT_BROWSERS_PATH 环境变量让 Playwright 找到它
+if getattr(sys, 'frozen', False):
+    _bundled_browsers = os.path.join(_RESOURCE_DIR, 'playwright_browsers')
+    if os.path.isdir(_bundled_browsers):
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = _bundled_browsers
+        print(f"[ttsmaker] 使用打包内置的 Playwright 浏览器: {_bundled_browsers}", file=sys.stderr)
+    else:
+        print("[ttsmaker] 未找到打包的 Playwright 浏览器，将使用系统 Chrome", file=sys.stderr)
+else:
+    # 开发模式：如果本地安装了 Playwright 浏览器，确保路径正确
+    # 不设置环境变量，让 Playwright 使用默认缓存路径
+    pass
 
 # ============================================================================
 # 可选导入 TTSMaker 核心模块
 # ============================================================================
 _TTSMAKER_AVAILABLE = False
-_ttsmaker_generate = None
+_TTSMakerSession = None
+_ttsmaker_output_dir = None
 
 try:
-    from ttsmaker.ttsmaker import generate as _ttsmaker_generate_sync
+    from ttsmaker.ttsmaker import TTSMakerSession as _TTSMakerSession, OUTPUT_DIR as _ttsmaker_output_dir
     _TTSMAKER_AVAILABLE = True
-    print("[ttsmaker] TTSMaker 模块加载成功，男声将使用 TTSMaker 788 (Alfie)", file=sys.stderr)
+    print("[ttsmaker] TTSMaker 模块加载成功，男声将使用 TTSMaker 788 (Alfie)", file=sys.stdout)
 except ImportError as e:
-    print(f"[ttsmaker] TTSMaker 模块不可用: {e}，男声将回退到 edge-tts", file=sys.stderr)
+    print(f"[ttsmaker] TTSMaker 模块不可用: {e}，男声将回退到 edge-tts", file=sys.stdout)
 except Exception as e:
-    print(f"[ttsmaker] TTSMaker 模块加载异常: {e}，男声将回退到 edge-tts", file=sys.stderr)
+    print(f"[ttsmaker] TTSMaker 模块加载异常: {e}，男声将回退到 edge-tts", file=sys.stdout)
+
+
+# ============================================================================
+# 持久化会话管理
+# ============================================================================
+# 注意: 不能用 asyncio.Lock()，因为 word_tts_app.py 通过 asyncio.run() 多次调用
+# ensure_session/close_session，每次 asyncio.run() 创建新的事件循环，
+# 而 asyncio.Lock 会绑定到第一次使用时的循环，第二次调用时抛出
+# "bound to a different event loop" 异常。
+# threading.Lock 不受事件循环限制，通过 asyncio.to_thread 在线程中获取即可。
+_session = None
+_session_lock = threading.Lock()
 
 
 def is_available():
@@ -53,27 +88,67 @@ def is_available():
     return _TTSMAKER_AVAILABLE
 
 
-def _generate_sync(text, output_path, voice_key="alfie", max_retries=8, show_browser=False):
-    """同步调用 TTSMaker 生成音频。"""
+async def ensure_session(voice_key="alfie"):
+    """
+    确保 TTSMaker 浏览器会话已登录。
+    如果会话不存在，则创建并打开浏览器等待用户登录。
+    如果会话已存在且已登录，则直接返回。
+
+    Returns: TTSMakerSession 实例
+    Raises: RuntimeError 如果 TTSMaker 不可用或登录失败
+    """
+    global _session
+
     if not _TTSMAKER_AVAILABLE:
-        raise RuntimeError("TTSMaker 模块不可用")
-    return _ttsmaker_generate_sync(
-        text,
-        voice_key=voice_key,
-        output_name=os.path.basename(output_path),
-        max_retries=max_retries,
-        show_browser=show_browser,
-    )
+        raise RuntimeError("TTSMaker 模块不可用，请安装 playwright 和 ddddocr")
+
+    if _session is not None:
+        return _session
+
+    # 在线程中获取 threading.Lock（避免阻塞事件循环），
+    # 同时支持跨 asyncio.run() 调用（不绑定到特定事件循环）
+    def _locked_create():
+        with _session_lock:
+            # 双重检查
+            if _session is not None:
+                return _session
+            return _create_and_login_session(voice_key)
+
+    _session = await asyncio.to_thread(_locked_create)
+    return _session
 
 
-async def synth_male_ttsmaker(text, tmp_dir, voice_key="alfie"):
+def _create_and_login_session(voice_key="alfie"):
+    """同步创建并登录 TTSMaker 会话。"""
+    session = _TTSMakerSession(voice_key=voice_key)
+    try:
+        session.login(login_timeout=300)
+    except Exception:
+        # 登录失败时关闭浏览器，防止进程泄漏和 profile 目录锁定
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise
+    return session
+
+
+async def synth_male_ttsmaker(
+    text, tmp_dir, voice_key="alfie",
+    rate=1.0, volume=1, pitch=1, pause=0,
+):
     """
     用 TTSMaker 生成男声音频，返回 pydub.AudioSegment。
+    使用持久化会话：首次调用会触发登录，后续调用复用同一浏览器。
 
     Args:
         text: 要合成的文本
-        tmp_dir: 临时目录路径
+        tmp_dir: 临时目录路径（用于存放中间文件）
         voice_key: TTSMaker 音色 key（默认 "alfie" = 788 男声）
+        rate: 语速倍率 (TTSMaker 格式, 1.0=正常, 1.5=加速50%)
+        volume: 音量倍率 (TTSMaker 格式, 1=正常, 1.5=增大50%)
+        pitch: 音调倍率 (TTSMaker 格式, 1=正常, 1.1=升高10%)
+        pause: 段落停顿 (TTSMaker 格式, -1=不停顿, 0=默认300ms, N=N ms)
 
     Returns:
         pydub.AudioSegment 音频段
@@ -84,23 +159,37 @@ async def synth_male_ttsmaker(text, tmp_dir, voice_key="alfie"):
     if not _TTSMAKER_AVAILABLE:
         raise RuntimeError("TTSMaker 模块不可用，请安装 playwright 和 ddddocr")
 
-    # 生成临时输出路径
+    # 参数已经是 TTSMaker 格式，直接转为字符串
+    ttsmaker_speed = str(rate)
+    ttsmaker_volume = str(volume)
+    ttsmaker_pitch = str(pitch)
+    ttsmaker_pause = str(int(float(pause)))
+
+    print(
+        f"[ttsmaker] 参数: speed={ttsmaker_speed} volume={ttsmaker_volume} "
+        f"pitch={ttsmaker_pitch} pause={ttsmaker_pause}",
+        file=sys.stdout,
+    )
+
+    # 确保会话已登录
+    session = await ensure_session(voice_key)
+
+    # 生成唯一的输出文件名
     uid = uuid.uuid4().hex[:8]
-    output_filename = f".ttsmaker_{uid}.mp3"
-    output_path = os.path.join(tmp_dir, output_filename)
+    output_name = f".ttsmaker_{uid}.mp3"
 
-    # 检查环境变量是否要求显示浏览器
-    show_browser = os.environ.get("TTSMAKER_SHOW_BROWSER", "").lower() in {"1", "true", "yes"}
-
+    result_path = None
     try:
-        # 在线程中运行同步的 Playwright 代码
+        # 在线程中运行同步的 Playwright 生成代码
         result_path = await asyncio.to_thread(
-            _generate_sync,
+            session.synth_one,
             text,
-            output_path,
-            voice_key,
+            output_name,
             8,  # max_retries
-            show_browser,
+            ttsmaker_speed,
+            ttsmaker_volume,
+            ttsmaker_pitch,
+            ttsmaker_pause,
         )
 
         if not result_path or not os.path.exists(result_path):
@@ -108,7 +197,7 @@ async def synth_male_ttsmaker(text, tmp_dir, voice_key="alfie"):
 
         # 检查文件大小
         fsize = os.path.getsize(result_path)
-        print(f"[ttsmaker] 生成完成: {result_path} ({fsize} bytes)", file=sys.stderr)
+        print(f"[ttsmaker] 生成完成: {result_path} ({fsize} bytes)", file=sys.stdout)
         if fsize < 100:
             raise RuntimeError(f"TTSMaker 返回的音频过小 ({fsize} bytes)，可能生成失败")
 
@@ -116,7 +205,7 @@ async def synth_male_ttsmaker(text, tmp_dir, voice_key="alfie"):
         from pydub import AudioSegment
         seg = AudioSegment.from_file(result_path, format="mp3", codec="mp3")
         dur_ms = len(seg)
-        print(f"[ttsmaker] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}", file=sys.stderr)
+        print(f"[ttsmaker] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}", file=sys.stdout)
         if dur_ms < 50:
             raise RuntimeError(f"解码后音频时长过短 ({dur_ms}ms)，可能 TTSMaker 返回了空音频")
         if seg.channels == 0 or seg.frame_rate == 0:
@@ -124,9 +213,22 @@ async def synth_male_ttsmaker(text, tmp_dir, voice_key="alfie"):
         return seg
 
     finally:
-        # 清理临时文件
-        if os.path.exists(output_path):
+        # 清理 TTSMaker 生成的临时文件（在 ttsmaker_output/ 目录中）
+        # 注意：不关闭浏览器会话，保持待机等待下一条
+        if result_path and os.path.exists(result_path):
             try:
-                os.remove(output_path)
+                os.remove(result_path)
             except OSError:
                 pass
+
+
+async def close_session():
+    """
+    关闭 TTSMaker 浏览器会话。
+    应在所有男声生成完成后调用。
+    """
+    global _session
+    if _session is not None:
+        await asyncio.to_thread(_session.close)
+        _session = None
+        print("[ttsmaker] 浏览器会话已关闭", file=sys.stdout)
