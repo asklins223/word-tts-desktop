@@ -1,14 +1,14 @@
 # ============================================================================
-# Word → TTS — Windows 自动构建
+# 小猪wordTTS — Windows 自动构建
 # ============================================================================
-# 在 Windows runner 上构建 WordTTS-Setup-x.x.x-x64.exe 安装包
+# 在 Windows runner 上构建小猪wordTTS-Setup-x.x.x-x64.exe 安装包
 #
 # 触发方式:
 #   1. 手动触发 (Actions → Build Windows → Run workflow)
 #   2. 推送 tag v* 时自动触发
 #
 # 产物:
-#   WordTTS-Setup-<version>-x64.exe (NSIS 安装包)
+#   小猪wordTTS-Setup-<version>-x64.exe (NSIS 安装包)
 # ============================================================================
 
 name: Build Windows
@@ -107,6 +107,10 @@ jobs:
         working-directory: electron
         run: npm ci
 
+      - name: Test Electron native file dialogs
+        working-directory: electron
+        run: npm test
+
       - name: Audit packaged runtime dependencies
         working-directory: electron
         run: npm audit --omit=dev --audit-level=high
@@ -192,7 +196,7 @@ jobs:
       - name: Smoke test unpacked desktop app
         shell: pwsh
         run: |
-          $exe = Resolve-Path "electron/release/win-unpacked/WordTTS.exe"
+          $exe = Resolve-Path "electron/release/win-unpacked/小猪wordTTS.exe"
           $backend = Resolve-Path "electron/release/win-unpacked/resources/server_backend/server_backend.exe"
           $previousNodePath = $env:PLAYWRIGHT_NODEJS_PATH
           $previousElectronNodeMode = $env:ELECTRON_RUN_AS_NODE
@@ -218,7 +222,7 @@ jobs:
             Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($process.ExitCode)"
             exit 1
           }
-          Write-Host "Electron 桌面端到端冒烟测试通过"
+          Write-Host "Electron 桌面界面端到端冒烟测试通过"
 
       # ======================================================================
       # 8. 上传构建产物
@@ -234,27 +238,19 @@ jobs:
             echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
             echo "installer_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "未找到 NSIS 安装包，检查 win-unpacked..."
-            $unpacked = "electron/release/win-unpacked/WordTTS.exe"
-            if (Test-Path $unpacked) {
-              Write-Host "找到 unpacked 目录"
-              echo "installer_path=$unpacked" >> $env:GITHUB_OUTPUT
-              echo "installer_name=WordTTS.exe" >> $env:GITHUB_OUTPUT
-            } else {
-              Write-Error "未找到任何构建产物"
-              exit 1
-            }
+            Write-Error "未找到 NSIS 安装包；拒绝发布脱离 resources 目录后无法独立运行的 unpacked 可执行文件"
+            exit 1
           }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WordTTS-Windows
+          name: 小猪wordTTS-Windows
           path: |
             electron/release/*.exe
             electron/release/*.blockmap
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       # ======================================================================
       # 9. （tag 触发）发布 GitHub Release
@@ -265,10 +261,10 @@ jobs:
         with:
           files: |
             ${{ steps.find-installer.outputs.installer_path }}
-            electron/release/*.exe
             electron/release/*.blockmap
-          name: WordTTS ${{ github.ref_name }}
+          name: 小猪wordTTS ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
+          body_path: CHANGELOG.md
           draft: false
           prerelease: false
         env:

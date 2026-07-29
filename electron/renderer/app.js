@@ -1,5 +1,5 @@
 /**
- * Word → TTS — Frontend Logic v2
+ * 小猪wordTTS — Frontend Logic v2
  * =================================
  * 四步向导式流程：上传 → 配置 → 生成 → 结果
  */
@@ -13,6 +13,7 @@ const platform = isElectron ? window.electronAPI.platform : 'web';
 const backendConfig = isElectron ? window.electronAPI.backend : null;
 const API_BASE = backendConfig?.url || 'http://127.0.0.1:7863';
 const API_TOKEN = backendConfig?.token || '';
+const PRODUCT_NAME = '小猪wordTTS';
 
 function apiUrl(path) {
     if (!API_TOKEN) return `${API_BASE}${path}`;
@@ -104,69 +105,35 @@ function savePresets(presets) {
     }
 }
 
-/**
- * 自定义输入对话框（替代 Electron 不支持的 window.prompt）。
- * @param {string} title - 对话框标题
- * @param {string} message - 提示文字
- * @param {string} defaultValue - 输入框默认值
- * @returns {Promise<string|null>} 用户输入的值，取消时返回 null
- */
 function showPromptDialog(title, message, defaultValue = '') {
-    return new Promise((resolve) => {
-        const overlay = $('prompt-overlay');
-        const titleEl = $('prompt-title');
-        const messageEl = $('prompt-message');
-        const input = $('prompt-input');
-        const okBtn = $('prompt-ok');
-        const cancelBtn = $('prompt-cancel');
-        const previousFocus = document.activeElement;
+    return window.WordTTSUI.prompt({
+        title,
+        message,
+        defaultValue,
+        inputLabel: '配置名称',
+        confirmLabel: '保存配置',
+    });
+}
 
-        titleEl.textContent = title;
-        messageEl.textContent = message;
-        input.value = defaultValue;
+function showConfirmDialog(options) {
+    return window.WordTTSUI.confirm(options);
+}
 
-        $('app').setAttribute('inert', '');
-        overlay.setAttribute('aria-hidden', 'false');
-        overlay.classList.add('active');
-        // 延迟聚焦以确保 transition 完成
-        setTimeout(() => { input.focus(); input.select(); }, 50);
+function showAlertDialog(options) {
+    return window.WordTTSUI.alert(options);
+}
 
-        let resolved = false;
-        const done = (value) => {
-            if (resolved) return;
-            resolved = true;
-            overlay.classList.remove('active');
-            overlay.setAttribute('aria-hidden', 'true');
-            $('app').removeAttribute('inert');
-            // 清理事件监听器（一次性）
-            okBtn.removeEventListener('click', onOk);
-            cancelBtn.removeEventListener('click', onCancel);
-            overlay.removeEventListener('keydown', onKeydown);
-            if (previousFocus && typeof previousFocus.focus === 'function') {
-                requestAnimationFrame(() => previousFocus.focus());
-            }
-            resolve(value);
-        };
-
-        const onOk = () => done(input.value);
-        const onCancel = () => done(null);
-        const onKeydown = (e) => {
-            if (e.key === 'Enter' && e.target === input) { e.preventDefault(); done(input.value); }
-            else if (e.key === 'Escape') { e.preventDefault(); done(null); }
-            else if (e.key === 'Tab') {
-                const focusable = [input, cancelBtn, okBtn];
-                const currentIndex = focusable.indexOf(document.activeElement);
-                const nextIndex = e.shiftKey
-                    ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
-                    : (currentIndex >= focusable.length - 1 ? 0 : currentIndex + 1);
-                e.preventDefault();
-                focusable[nextIndex].focus();
-            }
-        };
-
-        okBtn.addEventListener('click', onOk);
-        cancelBtn.addEventListener('click', onCancel);
-        overlay.addEventListener('keydown', onKeydown);
+function bindNativeAppNotices() {
+    if (!isElectron || typeof window.electronAPI?.onAppNotice !== 'function') return;
+    window.electronAPI.onAppNotice((notice = {}) => {
+        showAlertDialog({
+            kicker: notice.kicker || '应用消息',
+            title: notice.title || `${PRODUCT_NAME} 提示`,
+            message: notice.message || '应用遇到一个需要处理的问题。',
+            detail: notice.detail || '',
+            tone: notice.tone || 'danger',
+            confirmLabel: notice.confirmLabel || '知道了',
+        });
     });
 }
 
@@ -250,6 +217,7 @@ function renderStep2PresetSelect() {
         opt.textContent = `${p.name} (${presetSummary(p.config)})`;
         select.appendChild(opt);
     });
+    window.WordTTSUI?.syncSelect(select);
 }
 
 /**
@@ -264,6 +232,7 @@ function setSelectValue(selectEl, value, defaultValue) {
     for (const opt of selectEl.options) {
         if (opt.value === str) {
             selectEl.value = str;
+            window.WordTTSUI?.syncSelect(selectEl);
             return;
         }
     }
@@ -273,10 +242,12 @@ function setSelectValue(selectEl, value, defaultValue) {
         for (const opt of selectEl.options) {
             if (parseFloat(opt.value) === num) {
                 selectEl.value = opt.value;
+                window.WordTTSUI?.syncSelect(selectEl);
                 return;
             }
         }
     }
+    window.WordTTSUI?.syncSelect(selectEl);
 }
 
 /**
@@ -324,7 +295,10 @@ async function handleSavePreset() {
 
     // 选中新保存的预设
     const select = $('preset-select');
-    if (select) select.value = preset.id;
+    if (select) {
+        select.value = preset.id;
+        window.WordTTSUI?.syncSelect(select);
+    }
 
     showToast(`已保存配置「${preset.name}」`);
 }
@@ -352,7 +326,7 @@ function handleApplyPreset() {
 /**
  * 删除选中的预设。
  */
-function handleDeletePreset() {
+async function handleDeletePreset() {
     const select = $('preset-select');
     const presetId = select ? select.value : '';
     if (!presetId) {
@@ -366,7 +340,15 @@ function handleDeletePreset() {
         return;
     }
 
-    if (!window.confirm(`确定删除配置「${preset.name}」吗？`)) return;
+    const confirmed = await showConfirmDialog({
+        kicker: '配置管理',
+        title: '删除这个配置？',
+        message: `「${preset.name}」将从已保存配置中移除。`,
+        detail: '此操作不会影响已经生成的音频，但删除后无法恢复。',
+        tone: 'danger',
+        confirmLabel: '删除配置',
+    });
+    if (!confirmed) return;
 
     const filtered = presets.filter(p => p.id !== presetId);
     if (!savePresets(filtered)) return;
@@ -554,7 +536,7 @@ function updateSessionLabels(filename = '', parseResults = currentSession?.parse
     if (generationName) {
         generationName.textContent = filename
             ? `正在处理「${displayName}」${generationDescriptor ? ` · ${generationDescriptor}` : ''}，请保持应用开启。`
-            : 'WordTTS 正在准备当前文档，请保持应用开启。';
+            : `${PRODUCT_NAME} 正在准备当前文档，请保持应用开启。`;
     }
 }
 
@@ -646,6 +628,8 @@ function enforceOutputCompatibility(changedControl) {
         quality.disabled = false;
         quality.title = '';
     }
+    window.WordTTSUI?.syncSelect(format);
+    window.WordTTSUI?.syncSelect(quality);
     updateConfigSummary();
 }
 
@@ -875,7 +859,12 @@ async function connectService(showToastOnStart = false) {
     if (showToastOnStart) showToast('正在连接生成服务...');
 
     if (isElectron) {
-        const ready = await window.electronAPI.serverReady();
+        let ready = false;
+        try {
+            ready = await window.electronAPI.serverReady();
+        } catch (error) {
+            console.error('检查生成服务状态失败:', error);
+        }
         if (!ready) {
             setServiceState('error', '服务连接失败');
             if (retryButton) retryButton.hidden = false;
@@ -919,10 +908,12 @@ async function init() {
         document.body.classList.add('platform-win32');
     }
 
+    bindNativeAppNotices();
     bindEvents();
 
     // 初始化预设 UI
     refreshPresetUI();
+    window.WordTTSUI?.enhanceSelects(document);
 
     const connected = await connectService(isElectron);
     updateStepper();
@@ -1438,7 +1429,15 @@ async function deleteHistoryRecord(record, button) {
     if (!record?.id || isRestarting) return;
     const filename = record.source_filename || '未命名文档';
     const fileCount = Math.max(0, Number(record.available_files) || 0);
-    if (!window.confirm(`删除「${filename}」及其 ${fileCount} 个音频文件？\n删除后无法恢复。`)) return;
+    const confirmed = await showConfirmDialog({
+        kicker: '历史记录',
+        title: '删除这条生成记录？',
+        message: `将删除「${filename}」及其 ${fileCount} 个音频文件。`,
+        detail: '文件会从本机历史记录与输出目录中移除，删除后无法恢复。',
+        tone: 'danger',
+        confirmLabel: '删除记录',
+    });
+    if (!confirmed) return;
     historyRequestToken++;
     if (button) button.disabled = true;
     try {
@@ -1484,9 +1483,28 @@ async function deleteHistoryRecord(record, button) {
 async function selectFile() {
     if (isParsing || isRestarting || $('upload-zone')?.getAttribute('aria-disabled') === 'true') return;
     if (isElectron) {
-        const filePath = await window.electronAPI.selectFile();
-        if (filePath) {
-            handleFilePath(filePath);
+        try {
+            const result = await window.electronAPI.selectFile();
+            // 兼容旧主进程直接返回字符串的格式，避免开发热重载时前后端版本错位。
+            const filePath = typeof result === 'string'
+                ? result
+                : result?.success === true && typeof result.filePath === 'string'
+                    ? result.filePath
+                    : '';
+            if (filePath) {
+                handleFilePath(filePath);
+            } else if (result != null && result?.reason !== 'user-cancelled') {
+                await showNativeFileDialogError('选择 Word 文档失败', result?.reason ? result : {
+                    reason: result?.success === true ? 'dialog-error' : 'ipc-error',
+                    error: '主进程未返回有效的 Word 文件路径',
+                });
+            }
+        } catch (error) {
+            console.error('打开 Word 文件选择框失败:', error);
+            await showNativeFileDialogError('选择 Word 文档失败', {
+                reason: 'ipc-error',
+                error: error?.message,
+            });
         }
     } else {
         $('hidden-file-input').click();
@@ -2511,6 +2529,7 @@ function prepareAudioFilters(files) {
             option.textContent = type;
             typeFilter.appendChild(option);
         });
+    window.WordTTSUI?.syncSelect(typeFilter);
 }
 
 function filterAudioItems() {
@@ -3130,6 +3149,59 @@ function createWaveSurfer(container, media, color, canvasWrap, onReady = null, o
 // 下载
 // ============================================================================
 
+function nativeFileFailureMessage(reason) {
+    const messages = {
+        'window-unavailable': '当前应用窗口不可用，请重新打开应用后再试。',
+        'untrusted-sender': '当前页面没有访问本机文件的权限。',
+        'path-check-failed': '待保存文件不在应用的安全目录中。',
+        'file-not-found': '待保存文件已经不存在，可能已被清理。',
+        'file-check-error': '无法检查待保存文件。',
+        'dialog-error': '系统文件对话框未能打开。',
+        'copy-error': '无法把文件复制到所选位置。',
+        'ipc-error': '桌面文件服务暂时没有响应。',
+    };
+    return messages[reason] || '文件操作没有完成。';
+}
+
+async function showNativeFileDialogError(title, result = {}) {
+    const reason = result?.reason || 'ipc-error';
+    const diagnostic = result?.error ? `\n技术信息：${result.error}` : '';
+    await showAlertDialog({
+        kicker: '本机文件',
+        title,
+        message: nativeFileFailureMessage(reason),
+        detail: `请稍后重试；如果问题持续存在，请重新启动应用。${diagnostic}`,
+        tone: 'danger',
+        confirmLabel: '知道了',
+    });
+}
+
+async function saveNativeFile(sourcePath, suggestedName) {
+    try {
+        const result = await window.electronAPI.saveFileByPath(sourcePath, suggestedName);
+        if (result?.success) {
+            showToast('下载成功');
+            return true;
+        }
+        if (result?.reason === 'user-cancelled') {
+            showToast('已取消');
+            return false;
+        }
+        await showNativeFileDialogError('下载文件失败', result || {
+            reason: 'ipc-error',
+            error: '主进程未返回文件操作结果',
+        });
+        return false;
+    } catch (error) {
+        console.error('调用系统保存框失败:', error);
+        await showNativeFileDialogError('下载文件失败', {
+            reason: 'ipc-error',
+            error: error?.message,
+        });
+        return false;
+    }
+}
+
 async function downloadZip(context = activeResultContext) {
     const target = context || (currentSession ? {
         mode: 'current',
@@ -3152,24 +3224,8 @@ async function downloadZip(context = activeResultContext) {
                 const data = await resp.json();
                 if (data.path) {
                     // 使用源文件名作为 ZIP 下载文件名
-                    const sourceName = String(target.sourceFilename || 'WordTTS').replace(/\.docx$/i, '');
-                    const result = await window.electronAPI.saveFileByPath(data.path, `${sourceName}_tts.zip`);
-                    if (result && result.success) {
-                        showToast('下载成功');
-                    } else {
-                        const reason = result?.reason || 'unknown';
-                        if (reason === 'user-cancelled') {
-                            showToast('已取消');
-                        } else if (reason === 'path-check-failed') {
-                            showToast('下载失败：文件路径不在允许范围内');
-                        } else if (reason === 'file-not-found') {
-                            showToast('下载失败：ZIP 文件不存在');
-                        } else if (reason === 'copy-error') {
-                            showToast('下载失败：无法复制文件');
-                        } else {
-                            showToast(`下载失败 (${reason})`);
-                        }
-                    }
+                    const sourceName = String(target.sourceFilename || PRODUCT_NAME).replace(/\.docx$/i, '');
+                    await saveNativeFile(data.path, `${sourceName}_tts.zip`);
                 } else {
                     showToast('ZIP 文件不存在');
                 }
@@ -3205,23 +3261,7 @@ async function downloadFile(filename, context = activeResultContext) {
             if (resp.ok) {
                 const data = await resp.json();
                 if (data.path) {
-                    const result = await window.electronAPI.saveFileByPath(data.path, filename);
-                    if (result && result.success) {
-                        showToast('下载成功');
-                    } else {
-                        const reason = result?.reason || 'unknown';
-                        if (reason === 'user-cancelled') {
-                            showToast('已取消');
-                        } else if (reason === 'path-check-failed') {
-                            showToast('下载失败：文件路径不在允许范围内');
-                        } else if (reason === 'file-not-found') {
-                            showToast('下载失败：源文件不存在');
-                        } else if (reason === 'copy-error') {
-                            showToast('下载失败：无法复制文件');
-                        } else {
-                            showToast(`下载失败 (${reason})`);
-                        }
-                    }
+                    await saveNativeFile(data.path, filename);
                 } else {
                     showToast('文件不存在');
                 }
@@ -3250,15 +3290,42 @@ function resetGenerateState() {
 async function requestRestart() {
     if (isRestarting) return;
     if (currentSession) {
-        let message = '更换文档会结束当前未完成任务，确定继续吗？';
+        let confirmation = {
+            kicker: '当前任务',
+            title: '更换当前文档？',
+            message: '当前文档会话将结束，随后可以导入新的 Word 文档。',
+            detail: '尚未保存到历史记录的临时结果会被清理。',
+            tone: 'warning',
+            confirmLabel: '更换文档',
+        };
         if (isGenerating) {
-            message = '当前音频仍在生成。新建任务会中止处理并清理本次结果，确定继续吗？';
+            confirmation = {
+                kicker: '生成任务进行中',
+                title: '中止并新建任务？',
+                message: '当前音频仍在生成，新建任务会立即中止本次处理。',
+                detail: '本次尚未完成的结果会被清理，此操作无法撤销。',
+                tone: 'danger',
+                confirmLabel: '中止并新建',
+            };
         } else if (generatedFiles.length > 0 || currentStep === 4) {
-            message = latestCurrentResultEvent?.history_id
-                ? '本次结果已保存到历史记录。确定开始新任务吗？'
-                : '本次结果未能保存到历史记录。新建任务会清理当前结果，请先确认已完成下载。确定继续吗？';
+            confirmation = latestCurrentResultEvent?.history_id
+                ? {
+                    kicker: '结果已保存',
+                    title: '开始一个新任务？',
+                    message: '本次结果已经保存在历史记录中，可以安全开始新任务。',
+                    tone: 'info',
+                    confirmLabel: '开始新任务',
+                }
+                : {
+                    kicker: '结果尚未保存',
+                    title: '仍要开始新任务？',
+                    message: '本次结果未能保存到历史记录，新建任务会清理当前结果。',
+                    detail: '请先确认需要的音频已经下载到本机。',
+                    tone: 'danger',
+                    confirmLabel: '清理并新建',
+                };
         }
-        if (!window.confirm(message)) return;
+        if (!await showConfirmDialog(confirmation)) return;
     }
     setRestartingUI(true);
     try {

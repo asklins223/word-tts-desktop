@@ -4,20 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light">
-    <title>WordTTS · 文档配音工作台</title>
+    <title>小猪wordTTS · 文档配音工作台</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div id="app">
         <aside id="sidebar" aria-label="任务导航">
             <div class="sidebar-brand">
-                <span class="brand-mark" aria-hidden="true">
-                    <span class="brand-wave"></span>
-                    <span class="brand-wave"></span>
-                    <span class="brand-wave"></span>
-                </span>
+                <img class="brand-logo" src="assets/app-icon.png" alt="" width="40" height="40" draggable="false" aria-hidden="true">
                 <span class="brand-copy">
-                    <strong>WordTTS</strong>
+                    <strong>小猪wordTTS</strong>
                     <small>文档配音工作台</small>
                 </span>
             </div>
@@ -248,9 +244,9 @@
                                             </div>
                                         </div>
                                         <div class="config-grid">
-                                            <label class="config-field">
+                                            <div class="config-field">
                                                 <span class="field-label">语速<small>朗读快慢</small></span>
-                                                <select id="rate">
+                                                <select id="rate" aria-label="语速">
                                                     <option value="0.5">0.5x · 很慢</option>
                                                     <option value="0.6">0.6x · 较慢</option>
                                                     <option value="0.7">0.7x · 慢速</option>
@@ -268,10 +264,10 @@
                                                     <option value="1.5">1.5x · 倍速</option>
                                                     <option value="2.0">2.0x · 两倍速</option>
                                                 </select>
-                                            </label>
-                                            <label class="config-field">
+                                            </div>
+                                            <div class="config-field">
                                                 <span class="field-label">段落停顿<small>换行间隔</small></span>
-                                                <select id="pause">
+                                                <select id="pause" aria-label="段落停顿">
                                                     <option value="-1">0 秒 · 连续朗读</option>
                                                     <option value="50">50 毫秒 · 极紧凑</option>
                                                     <option value="100">100 毫秒 · 紧凑</option>
@@ -291,7 +287,7 @@
                                                     <option value="5000">5 秒</option>
                                                     <option value="10000">10 秒</option>
                                                 </select>
-                                            </label>
+                                            </div>
                                         </div>
                                     </section>
 
@@ -303,26 +299,26 @@
                                             </div>
                                         </div>
                                         <div class="config-grid output-grid">
-                                            <label class="config-field">
+                                            <div class="config-field">
                                                 <span class="field-label">音频格式<small>推荐 MP3</small></span>
-                                                <select id="format">
+                                                <select id="format" aria-label="音频格式">
                                                     <option value="mp3" selected>MP3 · 通用格式</option>
                                                     <option value="ogg">OGG · 开放格式</option>
                                                     <option value="aac">AAC · 高压缩率</option>
                                                     <option value="opus">OPUS · 语音优化</option>
                                                     <option value="wav">WAV · 无压缩</option>
                                                 </select>
-                                            </label>
-                                            <label class="config-field">
+                                            </div>
+                                            <div class="config-field">
                                                 <span class="field-label">音频质量<small>影响文件体积</small></span>
-                                                <select id="quality">
+                                                <select id="quality" aria-label="音频质量">
                                                     <option value="48 kbps（低）">48 kbps · 小体积</option>
                                                     <option value="128 kbps（标准）" selected>128 kbps · 标准</option>
                                                     <option value="192 kbps（高）">192 kbps · 高质量</option>
                                                     <option value="320 kbps（极高）">320 kbps · 极高质量</option>
                                                     <option value="无损（仅 wav 生效）">无损 · 仅 WAV 生效</option>
                                                 </select>
-                                            </label>
+                                            </div>
                                         </div>
                                     </section>
 
@@ -335,9 +331,9 @@
                                             <svg class="summary-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
                                         </summary>
                                         <div class="advanced-content">
-                                            <label class="config-field">
+                                            <div class="config-field">
                                                 <span class="field-label">音量<small>输出响度</small></span>
-                                                <select id="volume">
+                                                <select id="volume" aria-label="音量">
                                                     <option value="0.1">10% · 极低</option>
                                                     <option value="0.2">20% · 很低</option>
                                                     <option value="0.5">50% · 较低</option>
@@ -348,10 +344,10 @@
                                                     <option value="1.8">180% · 很强</option>
                                                     <option value="2.0">200% · 可能破音</option>
                                                 </select>
-                                            </label>
-                                            <label class="config-field">
+                                            </div>
+                                            <div class="config-field">
                                                 <span class="field-label">音调<small>声音高低</small></span>
-                                                <select id="pitch">
+                                                <select id="pitch" aria-label="音调">
                                                     <option value="0.5">0.5x · 大幅降低</option>
                                                     <option value="0.75">0.75x · 中度降低</option>
                                                     <option value="0.9">0.9x · 轻微降低</option>
@@ -363,7 +359,7 @@
                                                     <option value="1.5">1.5x · 大幅升高</option>
                                                     <option value="2.0">2.0x · 极高</option>
                                                 </select>
-                                            </label>
+                                            </div>
                                             <label class="config-field proxy-field">
                                                 <span class="field-label">代理地址<small>可选</small></span>
                                                 <input type="text" id="proxy" placeholder="例如 http://127.0.0.1:7890" autocomplete="off">
@@ -423,7 +419,7 @@
                                 <div>
                                     <span class="eyebrow">正在处理</span>
                                     <h1 id="gen-title" tabindex="-1">正在生成音频</h1>
-                                    <p id="generation-file-name">WordTTS 正在准备当前文档，请保持应用开启。</p>
+                                    <p id="generation-file-name">小猪wordTTS 正在准备当前文档，请保持应用开启。</p>
                                 </div>
                                 <span class="processing-badge" id="processing-badge"><span></span><span id="processing-badge-label">任务进行中</span></span>
                             </div>
@@ -678,23 +674,28 @@
 
     <input type="file" id="hidden-file-input" accept=".docx" hidden>
 
-    <div class="prompt-overlay" id="prompt-overlay" aria-hidden="true">
-        <div class="prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="prompt-title" aria-describedby="prompt-message">
-            <div class="prompt-icon" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-            </div>
-            <div class="prompt-title" id="prompt-title">保存配置</div>
-            <div class="prompt-message" id="prompt-message"></div>
-            <label class="sr-only" for="prompt-input">配置名称</label>
-            <input type="text" class="prompt-input" id="prompt-input" autocomplete="off">
-            <div class="prompt-actions">
-                <button type="button" class="btn-ghost btn-sm" id="prompt-cancel">取消</button>
-                <button type="button" class="btn-primary btn-sm" id="prompt-ok">保存</button>
+    <dialog class="app-dialog" id="app-dialog" aria-modal="true" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message">
+        <div class="app-dialog-heading">
+            <span class="app-dialog-icon" aria-hidden="true"><span id="app-dialog-icon-symbol">i</span></span>
+            <div>
+                <span class="app-dialog-kicker" id="app-dialog-kicker">需要确认</span>
+                <h2 class="app-dialog-title" id="app-dialog-title">确认操作</h2>
             </div>
         </div>
-    </div>
+        <p class="app-dialog-message" id="app-dialog-message"></p>
+        <div class="app-dialog-detail" id="app-dialog-detail" hidden></div>
+        <label class="app-dialog-field" id="app-dialog-field" for="app-dialog-input" hidden>
+            <span id="app-dialog-input-label">名称</span>
+            <input type="text" class="app-dialog-input" id="app-dialog-input" autocomplete="off">
+        </label>
+        <div class="app-dialog-actions">
+            <button type="button" class="btn-ghost btn-sm" id="app-dialog-cancel">取消</button>
+            <button type="button" class="btn-primary btn-sm app-dialog-confirm" id="app-dialog-confirm">继续</button>
+        </div>
+    </dialog>
 
     <script src="vendor/wavesurfer.min.js"></script>
+    <script src="ui-components.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

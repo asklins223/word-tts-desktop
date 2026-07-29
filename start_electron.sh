@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Word → TTS Electron 启动脚本
+# 小猪wordTTS Electron 启动脚本
 # 用法: ./start_electron.sh
 # ============================================================
 
@@ -10,7 +10,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ELECTRON_DIR="$PROJECT_DIR/electron"
 
 echo "=========================================="
-echo "  Word → TTS Electron 应用启动"
+echo "  小猪wordTTS Electron 应用启动"
 echo "=========================================="
 
 # 1. 检查 Node.js

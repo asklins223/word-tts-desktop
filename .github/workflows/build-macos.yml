@@ -75,6 +75,10 @@ jobs:
         working-directory: electron
         run: npm ci
 
+      - name: Test Electron native file dialogs
+        working-directory: electron
+        run: npm test
+
       - name: Audit packaged runtime dependencies
         working-directory: electron
         run: npm audit --omit=dev --audit-level=high
@@ -95,12 +99,12 @@ jobs:
           else
             output_dir="mac"
           fi
-          app_path="electron/release/$output_dir/WordTTS.app"
+          app_path="electron/release/$output_dir/小猪wordTTS.app"
           backend="$app_path/Contents/Resources/server_backend/server_backend"
           test -x "$backend"
-          test -x "$app_path/Contents/MacOS/WordTTS"
+          test -x "$app_path/Contents/MacOS/小猪wordTTS"
           file "$backend"
-          file "$app_path/Contents/MacOS/WordTTS"
+          file "$app_path/Contents/MacOS/小猪wordTTS"
 
           port="$(python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
           token="$(python -c 'import secrets; print(secrets.token_hex(32))')"
@@ -122,17 +126,17 @@ jobs:
           wait "$backend_pid" 2>/dev/null || true
           test "$ready" -eq 1
 
-          PLAYWRIGHT_NODEJS_PATH="$app_path/Contents/MacOS/WordTTS" \
+          PLAYWRIGHT_NODEJS_PATH="$app_path/Contents/MacOS/小猪wordTTS" \
             ELECTRON_RUN_AS_NODE=1 \
             "$backend" --smoke-playwright
 
-          "$app_path/Contents/MacOS/WordTTS" --smoke-test
+          "$app_path/Contents/MacOS/小猪wordTTS" --smoke-test
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WordTTS-macOS
-          path: electron/release/WordTTS-*.dmg
+          name: 小猪wordTTS-macOS
+          path: electron/release/小猪wordTTS-*.dmg
           retention-days: 30
           if-no-files-found: error
 
@@ -140,9 +144,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: electron/release/WordTTS-*.dmg
-          name: WordTTS ${{ github.ref_name }}
+          files: electron/release/小猪wordTTS-*.dmg
+          name: 小猪wordTTS ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
+          body_path: CHANGELOG.md
           draft: false
           prerelease: false
         env:

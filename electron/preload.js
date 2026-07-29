@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 服务器
     backend: ipcRenderer.sendSync('backend-config'),
     serverReady: () => ipcRenderer.invoke('server-ready'),
+    onAppNotice: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const handler = (_event, notice) => callback(notice);
+        ipcRenderer.on('app-notice', handler);
+        return () => ipcRenderer.removeListener('app-notice', handler);
+    },
 
     // 平台信息
     platform: process.platform,

@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================================
-# Word → TTS — Electron 混合打包脚本
+# 小猪wordTTS — Electron 混合打包脚本
 # ============================================================================
-# 产出: electron/release/WordTTS-<version>-<arch>.dmg
+# 产出: electron/release/小猪wordTTS-<version>-<arch>.dmg
 #
 # 流程:
 #   1. PyInstaller 打包 server.py → server_backend/
@@ -23,6 +23,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ELECTRON_DIR="$SCRIPT_DIR/electron"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements_electron.txt"
+PRODUCT_NAME="小猪wordTTS"
 
 case "$(uname -m)" in
     arm64)
@@ -220,7 +221,7 @@ build_electron_app() {
 
     # 清理上次失败构建可能残留的挂载点
     log "清理残留挂载点..."
-    for vol in "/Volumes/WordTTS" "/Volumes/WordTTS 1.0.0" "/Volumes/WordTTS-1.0.0"; do
+    for vol in "/Volumes/$PRODUCT_NAME" "/Volumes/$PRODUCT_NAME 1.0.0" "/Volumes/$PRODUCT_NAME-1.0.0" "/Volumes/WordTTS"; do
         hdiutil detach -force "$vol" 2>/dev/null || true
     done
     # 清理旧的 release 目录
@@ -281,10 +282,10 @@ build_electron_app() {
         -c.mac.minimumSystemVersion="$effective_macos_min"
 
     # 只接受本次目标架构对应的目录，禁止从旧目录误拿另一架构产物。
-    local app_path="$ELECTRON_DIR/release/$MAC_OUTPUT_DIR/WordTTS.app"
+    local app_path="$ELECTRON_DIR/release/$MAC_OUTPUT_DIR/$PRODUCT_NAME.app"
 
     if [ -z "$app_path" ] || [ ! -d "$app_path" ]; then
-        err "未找到构建产物 WordTTS.app"
+        err "未找到构建产物 $PRODUCT_NAME.app"
         exit 1
     fi
 
@@ -298,7 +299,7 @@ build_electron_app() {
     log "构建产物: $app_path"
 
     local app_info
-    app_info="$(file "$app_path/Contents/MacOS/WordTTS")"
+    app_info="$(file "$app_path/Contents/MacOS/$PRODUCT_NAME")"
     if [ "$BUILD_ARCH" = "arm64" ] && [[ "$app_info" != *"arm64"* ]]; then
         err "Electron 主程序架构不匹配: $app_info"
         exit 1
@@ -367,7 +368,7 @@ build_electron_app() {
     log "创建 DMG 安装包..."
     local package_version
     package_version="$(node -p "require('$ELECTRON_DIR/package.json').version")"
-    local dmg_path="$ELECTRON_DIR/release/WordTTS-${package_version}-${BUILD_ARCH}.dmg"
+    local dmg_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.dmg"
     rm -f "$dmg_path"
 
     # 创建临时 DMG 目录
@@ -379,7 +380,7 @@ build_electron_app() {
 
     # 创建 DMG
     hdiutil create \
-        -volname "WordTTS" \
+        -volname "$PRODUCT_NAME" \
         -srcfolder "$dmg_staging" \
         -ov -format UDZO \
         "$dmg_path" 2>/dev/null
@@ -403,10 +404,10 @@ build_electron_app() {
     echo "  ┌─────────────────────────────────────────────────────────────┐"
     echo "  │ ⚠ 分发提示：未签名应用会被 macOS Gatekeeper 拦截              │"
     echo "  │                                                             │"
-    echo "  │ 用户首次打开时，请右键点击 WordTTS.app → 选择「打开」         │"
+    echo "  │ 用户首次打开时，请右键点击 $PRODUCT_NAME.app → 选择「打开」   │"
     echo "  │ 在弹窗中点击「打开」即可绕过 Gatekeeper                       │"
     echo "  │                                                             │"
-    echo "  │ 或在终端运行: xattr -cr /Applications/WordTTS.app           │"
+    echo "  │ 或在终端运行: xattr -cr /Applications/$PRODUCT_NAME.app      │"
     echo "  └─────────────────────────────────────────────────────────────┘"
 }
 
@@ -416,7 +417,7 @@ build_electron_app() {
 main() {
     echo ""
     echo "=========================================="
-    echo "  Word → TTS — Electron 混合打包"
+    echo "  $PRODUCT_NAME — Electron 混合打包"
     echo "=========================================="
     echo ""
 

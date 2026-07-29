@@ -3,9 +3,9 @@ chcp 65001 >nul 2>&1
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 REM ============================================================================
-REM Word -> TTS -- Electron 混合打包脚本 (Windows)
+REM 小猪wordTTS -- Electron 混合打包脚本 (Windows)
 REM ============================================================================
-REM 产出: electron\release\WordTTS-Setup-<version>-x64.exe (NSIS 安装包)
+REM 产出: electron\release\小猪wordTTS-Setup-<version>-x64.exe (NSIS 安装包)
 REM
 REM 流程:
 REM   1. PyInstaller 打包 server.py -> server_backend\ (server_backend.exe)
@@ -27,6 +27,7 @@ set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "ELECTRON_DIR=%SCRIPT_DIR%\electron"
 set "REQUIREMENTS_FILE=%SCRIPT_DIR%\requirements_electron.txt"
+set "PRODUCT_NAME=小猪wordTTS"
 
 REM ============================================================================
 REM 颜色 / 日志
@@ -190,7 +191,7 @@ if not exist "%ELECTRON_DIR%\server_backend_build\server_backend\server_backend.
 REM 清理旧的 release 目录（仅清理 win 相关）
 call :log "清理旧构建产物..."
 if exist "%ELECTRON_DIR%\release\win-unpacked" rmdir /s /q "%ELECTRON_DIR%\release\win-unpacked"
-del /q "%ELECTRON_DIR%\release\WordTTS-Setup-*.exe" >nul 2>&1
+del /q "%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*.exe" >nul 2>&1
 
 pushd "%ELECTRON_DIR%"
 call npx electron-builder --win
@@ -204,14 +205,14 @@ if !BUILD_EXIT! neq 0 (
 
 REM 查找构建产物
 set "EXE_PATH="
-for %%f in ("%ELECTRON_DIR%\release\WordTTS-Setup-*-x64.exe") do (
+for %%f in ("%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*-x64.exe") do (
     if not defined EXE_PATH set "EXE_PATH=%%f"
 )
 
 if not defined EXE_PATH (
     REM 检查 win-unpacked 目录
-    if exist "%ELECTRON_DIR%\release\win-unpacked\WordTTS.exe" (
-        call :log "构建产物 (unpacked): %ELECTRON_DIR%\release\win-unpacked\WordTTS.exe"
+    if exist "%ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe" (
+        call :log "构建产物 (unpacked): %ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe"
         call :warn "未找到 NSIS 安装包，可直接使用 win-unpacked 目录"
     ) else (
         call :err "未找到构建产物"
@@ -228,7 +229,7 @@ echo   +-------------------------------------------------------------+
 echo   ^| 分发提示：NSIS 安装包可直接分发给 Windows 用户              ^|
 echo   ^|                                                             ^|
 echo   ^| 用户双击 .exe 安装包即可安装，无需安装 Python 或 Node.js    ^|
-echo   ^| 安装后从开始菜单启动 WordTTS                                ^|
+echo   ^| 安装后从开始菜单启动小猪wordTTS                              ^|
 echo   ^|                                                             ^|
 echo   ^| 如遇 SmartScreen 拦截：点击"更多信息" -> "仍要运行"         ^|
 echo   ^+-------------------------------------------------------------+
@@ -240,7 +241,7 @@ REM ============================================================================
 :main
 echo.
 echo ==========================================
-echo   Word -^> TTS -- Electron 混合打包 (Windows)
+echo   小猪wordTTS -- Electron 混合打包 (Windows)
 echo ==========================================
 echo.
 

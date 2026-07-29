@@ -13,6 +13,8 @@ const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
 const net = require('net');
+const { pathToFileURL } = require('url');
+const { createNativeFileDialogs } = require('./file-dialogs');
 
 let mainWindow = null;
 let pythonProcess = null;
@@ -21,7 +23,61 @@ let serverPort = null;
 let serverUrl = null;
 let serverToken = null;
 let serverInstance = null;
+let desktopServicesReady = false;
+let rendererReady = false;
+let rendererFatalShown = false;
+const pendingAppNotices = new Map();
 const isSmokeTest = process.argv.includes('--smoke-test');
+const PRODUCT_NAME = '小猪wordTTS';
+const RENDERER_ENTRY_PATH = path.join(__dirname, 'renderer', 'index.html');
+const RENDERER_ENTRY_URL = pathToFileURL(RENDERER_ENTRY_PATH).href;
+
+// Branding changed in 2.0, but existing history and preferences must continue
+// using the original on-disk directory instead of appearing to disappear.
+try {
+    const legacyUserDataPath = path.join(app.getPath('appData'), 'WordTTS');
+    fs.mkdirSync(legacyUserDataPath, { recursive: true });
+    app.setPath('userData', legacyUserDataPath);
+} catch (error) {
+    console.warn(`[main] 无法沿用旧用户数据目录，将使用系统默认目录: ${error.message}`);
+}
+
+function showRendererFatalError(title, detail) {
+    if (rendererFatalShown || isQuitting) return;
+    rendererFatalShown = true;
+    if (isSmokeTest) {
+        console.error(`[main] ${PRODUCT_NAME} ${title}: ${detail}`);
+        return;
+    }
+    dialog.showErrorBox(
+        `${PRODUCT_NAME} ${title}`,
+        `${detail}\n\n请重新启动应用；如果问题持续存在，请重新安装完整版本。`,
+    );
+}
+
+function showInAppNotice(id, notice) {
+    const payload = {
+        kicker: String(notice?.kicker || '应用消息'),
+        title: String(notice?.title || `${PRODUCT_NAME} 提示`),
+        message: String(notice?.message || '应用遇到一个需要处理的问题。'),
+        detail: String(notice?.detail || ''),
+        tone: ['info', 'success', 'warning', 'danger'].includes(notice?.tone) ? notice.tone : 'danger',
+        confirmLabel: String(notice?.confirmLabel || '知道了'),
+    };
+    if (rendererReady && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app-notice', payload);
+        return;
+    }
+    // Keep the earliest, most specific startup failure instead of replacing it
+    // with a later generic readiness timeout that reports the same incident.
+    if (!pendingAppNotices.has(id)) pendingAppNotices.set(id, payload);
+}
+
+function flushAppNotices() {
+    if (!rendererReady || !mainWindow || mainWindow.isDestroyed()) return;
+    pendingAppNotices.forEach(notice => mainWindow.webContents.send('app-notice', notice));
+    pendingAppNotices.clear();
+}
 
 // ============================================================================
 // Python 服务器管理
@@ -107,7 +163,13 @@ function startPythonServer() {
     if (app.isPackaged && !fs.existsSync(cmd)) {
         const msg = `后端可执行文件不存在:\n${cmd}\n\n应用可能已损坏，请重新安装。`;
         console.error(`[main] ${msg}`);
-        dialog.showErrorBox('后端启动失败', msg);
+        showInAppNotice('backend-start', {
+            kicker: '生成服务',
+            title: '后端启动失败',
+            message: '应用缺少生成服务组件，暂时无法处理 Word 文档。',
+            detail: `${cmd}\n请重新安装完整版本后再试。`,
+            tone: 'danger',
+        });
         return;
     }
 
@@ -137,7 +199,7 @@ function startPythonServer() {
         windowsHide: true,
     });
 
-        // 收集 stderr 输出，用于崩溃时显示错误详情
+    // 收集 stderr 输出，用于崩溃时显示错误详情
     let stderrBuffer = '';
     const MAX_ERR_LINES = 30;
 
@@ -154,9 +216,13 @@ function startPythonServer() {
 
     pythonProcess.on('error', (err) => {
         console.error(`[main] 无法启动后端进程: ${err.message}`);
-        dialog.showErrorBox('后端启动失败',
-            `无法启动后端服务器:\n${err.message}\n\n` +
-            `可执行文件: ${cmd}`);
+        showInAppNotice('backend-start', {
+            kicker: '生成服务',
+            title: '后端启动失败',
+            message: '无法启动本机生成服务，请确认应用安装完整后重试。',
+            detail: `${err.message}\n可执行文件：${cmd}`,
+            tone: 'danger',
+        });
     });
 
     pythonProcess.on('exit', (code) => {
@@ -167,9 +233,15 @@ function startPythonServer() {
             const errDetail = stderrBuffer.trim()
                 ? `\n\n--- 后端错误日志（最后 ${MAX_ERR_LINES} 行）---\n${stderrBuffer.trim()}`
                 : '';
-            dialog.showErrorBox('后端异常退出',
-                `后端服务器异常退出（代码 ${code}）。\n` +
-                `请查看日志获取更多信息，或重新启动应用。${errDetail}`);
+            showInAppNotice('backend-exit', {
+                kicker: '生成服务',
+                title: '后端异常退出',
+                message: `生成服务已停止（代码 ${code}），当前任务无法继续。`,
+                detail: errDetail
+                    ? `请重新连接或重启应用。${errDetail}`
+                    : '请尝试重新连接生成服务，或重启应用。',
+                tone: 'danger',
+            });
         }
     });
 }
@@ -245,7 +317,7 @@ function waitForServer(timeoutMs = 90000) {
                             completeAttempt(true);
                             return;
                         }
-                    } catch (e) { /* 服务尚未就绪或响应并非 WordTTS */ }
+                    } catch (e) { /* 服务尚未就绪或响应并非小猪wordTTS */ }
                     completeAttempt(false);
                 });
             });
@@ -272,6 +344,13 @@ function waitForServer(timeoutMs = 90000) {
 // ============================================================================
 
 function createWindow() {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        if (!mainWindow.isVisible()) mainWindow.show();
+        mainWindow.focus();
+        return mainWindow;
+    }
+
     const isWin = process.platform === 'win32';
     const isMac = process.platform === 'darwin';
 
@@ -280,6 +359,8 @@ function createWindow() {
         height: 860,
         minWidth: 900,
         minHeight: 600,
+        show: !isSmokeTest,
+        title: PRODUCT_NAME,
         transparent: false,
         backgroundColor: '#f8fafd',
         webPreferences: {
@@ -309,15 +390,80 @@ function createWindow() {
         windowOptions.frame = true;
     }
 
-    mainWindow = new BrowserWindow(windowOptions);
+    const win = new BrowserWindow(windowOptions);
+    mainWindow = win;
+    rendererReady = false;
+    rendererFatalShown = false;
 
-    mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    win.webContents.on('will-navigate', (event, navigationUrl) => {
+        if (navigationUrl === RENDERER_ENTRY_URL) return;
+        event.preventDefault();
+        console.warn(`[main] 已阻止界面导航到非本地地址: ${navigationUrl}`);
+    });
+    win.webContents.setWindowOpenHandler(({ url }) => {
+        console.warn(`[main] 已阻止界面打开新窗口: ${url}`);
+        return { action: 'deny' };
+    });
+    win.loadFile(RENDERER_ENTRY_PATH);
+    win.webContents.on('did-finish-load', () => {
+        if (mainWindow !== win) return;
+        rendererReady = true;
+        flushAppNotices();
+    });
+    win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+        if (!isMainFrame || code === -3) return;
+        if (mainWindow === win) rendererReady = false;
+        showRendererFatalError('界面加载失败', `${description}（错误代码 ${code}）\n${url || '本地界面'}`);
+    });
+    win.webContents.on('render-process-gone', (_event, details) => {
+        if (mainWindow === win) rendererReady = false;
+        if (details.reason === 'clean-exit') return;
+        showRendererFatalError('界面进程异常退出', `退出原因：${details.reason}`);
+    });
 
     if (process.argv.includes('--dev')) {
-        mainWindow.webContents.openDevTools({ mode: 'detach' });
+        win.webContents.openDevTools({ mode: 'detach' });
     }
 
-    mainWindow.on('closed', () => { mainWindow = null; });
+    win.on('closed', () => {
+        if (mainWindow !== win) return;
+        rendererReady = false;
+        mainWindow = null;
+    });
+
+    return win;
+}
+
+async function verifyRendererSmokeTest(win, timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastState = null;
+    while (Date.now() < deadline) {
+        if (!win || win.isDestroyed()) throw new Error('界面窗口在冒烟测试期间提前关闭');
+        try {
+            lastState = await win.webContents.executeJavaScript(`(() => ({
+                title: document.title,
+                nativeApi: Boolean(window.electronAPI),
+                backendUrl: window.electronAPI?.backend?.url || '',
+                backendToken: Boolean(window.electronAPI?.backend?.token),
+                uiComponents: Boolean(window.WordTTSUI),
+                serviceState: document.getElementById('service-state')?.textContent?.trim() || ''
+            }))()`);
+            if (
+                lastState.title.includes(PRODUCT_NAME)
+                && lastState.nativeApi
+                && lastState.backendUrl === serverUrl
+                && lastState.backendToken
+                && lastState.uiComponents
+                && lastState.serviceState === '服务已连接'
+            ) {
+                return lastState;
+            }
+        } catch (error) {
+            lastState = { error: error.message };
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error(`界面未在限定时间内就绪: ${JSON.stringify(lastState)}`);
 }
 
 // ============================================================================
@@ -362,61 +508,40 @@ function isAllowedFilePath(filePath) {
     }
 }
 
+function isTrustedRendererEvent(event) {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (!event?.sender || !event?.senderFrame) return false;
+    if (event.sender !== mainWindow.webContents) return false;
+    if (event.senderFrame !== mainWindow.webContents.mainFrame) return false;
+    return event.senderFrame.url === RENDERER_ENTRY_URL;
+}
+
 function registerIpcHandlers() {
+    const nativeFileDialogs = createNativeFileDialogs({
+        app,
+        BrowserWindow,
+        dialog,
+        fs,
+        isAllowedFilePath,
+        getMainWindow: () => mainWindow,
+        isTrustedSender: isTrustedRendererEvent,
+    });
+
     ipcMain.on('backend-config', (event) => {
-        event.returnValue = { url: serverUrl, token: serverToken };
+        event.returnValue = isTrustedRendererEvent(event)
+            ? { url: serverUrl, token: serverToken }
+            : null;
     });
 
     // 选择文件
-    ipcMain.handle('select-file', async () => {
-        if (!mainWindow) return null;
-        const result = await dialog.showOpenDialog(mainWindow, {
-            title: '选择 Word 文档',
-            filters: [{ name: 'Word 文档', extensions: ['docx'] }],
-            properties: ['openFile'],
-        });
-        if (result.canceled || result.filePaths.length === 0) return null;
-        return result.filePaths[0];
-    });
+    ipcMain.handle('select-file', nativeFileDialogs.selectFile);
 
     // 通过文件路径直接复制（校验源路径合法性）
-    ipcMain.handle('save-file-by-path', async (event, sourcePath, suggestedName) => {
-        if (!mainWindow) return false;
-
-        // 安全校验：源路径必须在允许的目录内，防止复制系统敏感文件
-        if (!isAllowedFilePath(sourcePath)) {
-            console.error('[main] 拒绝复制允许目录外的文件:', sourcePath);
-            return { success: false, reason: 'path-check-failed' };
-        }
-
-        // 安全校验：源文件必须存在
-        try {
-            if (!fs.existsSync(sourcePath)) {
-                console.error('[main] 源文件不存在:', sourcePath);
-                return { success: false, reason: 'file-not-found' };
-            }
-        } catch (err) {
-            console.error('[main] 检查源文件失败:', err);
-            return { success: false, reason: 'file-check-error' };
-        }
-
-        const result = await dialog.showSaveDialog(mainWindow, {
-            title: '保存文件',
-            defaultPath: suggestedName,
-        });
-        if (result.canceled || !result.filePath) return { success: false, reason: 'user-cancelled' };
-        try {
-            fs.copyFileSync(sourcePath, result.filePath);
-            console.log('[main] 文件复制成功:', sourcePath, '->', result.filePath);
-            return { success: true };
-        } catch (err) {
-            console.error('[main] 复制文件失败:', err);
-            return { success: false, reason: 'copy-error', error: err.message };
-        }
-    });
+    ipcMain.handle('save-file-by-path', nativeFileDialogs.saveFileByPath);
 
     // 检查服务器是否就绪
-    ipcMain.handle('server-ready', async () => {
+    ipcMain.handle('server-ready', async (event) => {
+        if (!isTrustedRendererEvent(event)) return false;
         if (!pythonProcess) return false;
         try {
             await waitForServer();
@@ -428,6 +553,7 @@ function registerIpcHandlers() {
 
     // 在 Finder 中显示
     ipcMain.handle('show-in-folder', async (event, filePath) => {
+        if (!isTrustedRendererEvent(event)) return false;
         if (isAllowedFilePath(filePath)) {
             shell.showItemInFolder(filePath);
             return true;
@@ -452,15 +578,26 @@ app.whenReady().then(async () => {
     console.log(`[main] 已分配独立后端地址: ${serverUrl}`);
 
     registerIpcHandlers();
+    desktopServicesReady = true;
     startPythonServer();
 
     try {
         console.log('[main] 等待 Python 服务器就绪...');
         await waitForServer();
         if (isSmokeTest) {
-            console.log('[main] 桌面端到端冒烟测试通过');
-            await stopPythonServerAsync();
-            app.exit(0);
+            const smokeWindow = createWindow();
+            try {
+                await verifyRendererSmokeTest(smokeWindow);
+                console.log('[main] 桌面界面端到端冒烟测试通过');
+                await stopPythonServerAsync();
+                if (!smokeWindow.isDestroyed()) smokeWindow.destroy();
+                app.exit(0);
+            } catch (error) {
+                console.error('[main] 桌面界面端到端冒烟测试失败:', error.message);
+                await stopPythonServerAsync();
+                if (!smokeWindow.isDestroyed()) smokeWindow.destroy();
+                app.exit(1);
+            }
             return;
         }
         console.log('[main] 服务器就绪，创建窗口');
@@ -472,14 +609,14 @@ app.whenReady().then(async () => {
             return;
         }
         // 服务器启动失败时仍然创建窗口，让用户能看到错误提示
+        showInAppNotice('backend-start', {
+            kicker: '生成服务',
+            title: '生成服务未能启动',
+            message: `${PRODUCT_NAME} 已打开，但本机生成服务暂时不可用。`,
+            detail: err.message,
+            tone: 'danger',
+        });
         createWindow();
-        if (mainWindow) {
-            mainWindow.webContents.on('did-finish-load', () => {
-                mainWindow.webContents.executeJavaScript(
-                    `showToast('后端服务启动失败，请检查应用是否完整');`
-                );
-            });
-        }
         return;
     }
 
@@ -503,6 +640,8 @@ app.on('will-quit', (event) => {
 });
 
 app.on('activate', () => {
+    // macOS 可能在端口分配和 IPC 注册完成前发出 activate；此时由启动流程稍后建窗。
+    if (!desktopServicesReady) return;
     if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
     }

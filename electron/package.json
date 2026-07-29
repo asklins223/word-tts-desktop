@@ -1,7 +1,7 @@
 {
   "name": "word-tts-desktop",
-  "version": "1.2.1",
-  "description": "Word → TTS 一体化桌面工具",
+  "version": "2.0.0",
+  "description": "小猪wordTTS 文档配音桌面工具",
   "main": "main.js",
   "author": "asklins223",
   "license": "MIT",
@@ -12,6 +12,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "test": "node --test test/*.test.js",
     "build:icons": "cd .. && node scripts/run_python.js scripts/build_app_icons.py",
     "build:python": "cd .. && pyinstaller server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp && node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend",
     "build": "npm run build:icons && npm run build:python && electron-builder",
@@ -20,7 +21,7 @@
   },
   "build": {
     "appId": "com.wordtts.desktop",
-    "productName": "WordTTS",
+    "productName": "小猪wordTTS",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -36,6 +37,7 @@
     ],
     "files": [
       "main.js",
+      "file-dialogs.js",
       "preload.js",
       "renderer/**/*"
     ],
@@ -86,7 +88,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "WordTTS",
+      "shortcutName": "小猪wordTTS",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",

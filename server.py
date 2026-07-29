@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FastAPI 后端服务器 — Word → TTS 一体化应用
+FastAPI 后端服务器 — 小猪wordTTS 一体化应用
 ============================================
 复用 word_tts_app.py 中的核心 TTS 逻辑，
 通过 REST API + SSE 提供服务，供 Electron 前端调用。
@@ -1588,9 +1588,9 @@ class ParseRequest(BaseModel):
 # FastAPI 应用
 # ============================================================================
 
-app = FastAPI(title="Word → TTS API")
+app = FastAPI(title="小猪wordTTS API")
 _API_TOKEN = os.environ.get("WORDTTS_API_TOKEN", "")
-APP_VERSION = os.environ.get("WORDTTS_VERSION", "1.2.1")
+APP_VERSION = os.environ.get("WORDTTS_VERSION", "2.0.0")
 
 
 @app.middleware("http")
@@ -2329,7 +2329,7 @@ def run_playwright_packaging_smoke_test():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="WordTTS local API server")
+    parser = argparse.ArgumentParser(description="小猪wordTTS local API server")
     parser.add_argument("--port", type=int, default=int(os.environ.get("WORDTTS_PORT", DEFAULT_PORT)))
     parser.add_argument("--token", default=os.environ.get("WORDTTS_API_TOKEN", ""))
     parser.add_argument(
