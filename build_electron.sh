@@ -267,6 +267,15 @@ build_electron_app() {
     fi
     log "本次产物最低系统版本: macOS ${effective_macos_min} (配置 ${configured_macos_min}, 内置二进制 ${backend_macos_min})"
 
+    # 清理空的签名环境变量，避免 electron-builder 将空 CSC_LINK
+    # 误解析为路径（指向当前目录）导致 "not a file" 错误
+    if [ -z "${CSC_LINK:-}" ]; then
+        unset CSC_LINK
+    fi
+    if [ -z "${CSC_KEY_PASSWORD:-}" ]; then
+        unset CSC_KEY_PASSWORD
+    fi
+
     cd "$ELECTRON_DIR"
     npx electron-builder --mac "$BUILDER_ARCH_FLAG" \
         -c.mac.minimumSystemVersion="$effective_macos_min"
