@@ -2,7 +2,6 @@
 """
 TTSMaker TTS 生成工具 v10
 后台系统 Chrome 建立真实浏览器会话，并在同一会话内调用 API。
-验证码: #UserInputCaptcha, 4位数字, data-captcha-key
 
 TTSMaker 的网页会把 JSON.stringify(...) 生成的原始 JSON 放进请求体，
 但 Content-Type 仍使用 application/x-www-form-urlencoded。这里必须保持
@@ -10,18 +9,15 @@ TTSMaker 的网页会把 JSON.stringify(...) 生成的原始 JSON 放进请求�
 """
 import os
 import sys
-import io
 import re
 import time
 import json
-import base64
 import pathlib
 import shutil
 import subprocess
 import tempfile
 import threading
 import urllib.request
-from PIL import Image
 from playwright.sync_api import sync_playwright
 
 # Windows 信号兼容层
@@ -80,7 +76,7 @@ VOICES = {
 
 
 def build_order_body(
-    uuid, text, lang_id, voice_id, captcha_text, captcha_key,
+    uuid, text, lang_id, voice_id,
     speed="1.0", volume="1", pitch="1", pause_time="0",
 ):
     """按网页 JSON.stringify 的格式构造请求体。
@@ -100,8 +96,6 @@ def build_order_body(
         "user_select_tts_setting_speed": str(speed),
         "user_select_tts_setting_volume": str(volume),
         "user_select_tts_setting_pitch": str(pitch),
-        "user_input_captcha_text": captcha_text,
-        "user_input_captcha_key": captcha_key,
         "user_input_paragraph_pause_time": str(pause_time),
         "user_select_tts_voice_high_quality": "0",
         "user_bgm_config": {},
@@ -430,30 +424,6 @@ def download_audio(url, output_path):
         return False
 
 
-def solve_captcha(img_bytes):
-    try:
-        import ddddocr
-        ocr = ddddocr.DdddOcr(show_ad=False)
-        text = ocr.classification(img_bytes)
-        if text:
-            d = re.sub(r'[^0-9]', '', text)
-            if len(d) == 4: return d
-            if len(d) > 4: return d[:4]
-    except: pass
-    try:
-        import pytesseract
-        img = Image.open(io.BytesIO(img_bytes)).convert("L")
-        w, h = img.size
-        img = img.resize((w*4, h*4)).point(lambda x: 0 if x<140 else 255)
-        for cfg in ["--psm 7 -c tessedit_char_whitelist=0123456789",
-                     "--psm 8 -c tessedit_char_whitelist=0123456789"]:
-            t = pytesseract.image_to_string(img, config=cfg).strip()
-            d = re.sub(r'[^0-9]', '', t)
-            if len(d) == 4: return d
-    except: pass
-    return None
-
-
 def generate(
     text,
     voice_key="alfie",
@@ -530,17 +500,13 @@ def generate(
                     "   隐藏 Chrome 启动失败，改用纯无头模式: "
                     f"{hidden_error}"
                 )
-                # Windows/Linux: 直接使用 Playwright Chromium（非 headless=True 时用内置 Chromium）
-                try:
-                    browser = p.chromium.launch(
-                        headless=True,
-                        args=launch_args,
-                    )
-                except Exception:
-                    browser = p.chromium.launch(
-                        headless=True,
-                        args=launch_args,
-                    )
+                # Windows/Linux: 使用完整 Chromium 的新版无头模式；不依赖
+                # Playwright 单独分发的 chromium-headless-shell。
+                browser = p.chromium.launch(
+                    channel="chromium",
+                    headless=True,
+                    args=launch_args,
+                )
                 ctx = create_isolated_context(browser)
                 browser_mode = "纯无头模式"
 
@@ -622,91 +588,11 @@ def generate(
             for attempt in range(1, max_retries + 1):
                 _log(f"\n2. 第 {attempt}/{max_retries} 次...")
 
-                cap = page.evaluate(
-                    """() => {
-                        const img = document.querySelector(
-                            '#VerifyCaptchaIMG'
-                        );
-                        const input = document.querySelector(
-                            '#UserInputCaptcha'
-                        );
-                        if (!img) return null;
-                        return {
-                            uuid: img.getAttribute('uuid') || '',
-                            src: img.src || '',
-                            key:
-                                input?.getAttribute('data-captcha-key')
-                                || img.getAttribute('data-captcha-key')
-                                || ''
-                        };
-                    }"""
-                )
-                if (
-                    not cap
-                    or not cap["uuid"]
-                    or not cap["key"]
-                    or not cap["src"]
-                ):
-                    _log("   验证码参数不完整，刷新页面...")
-                    if not reload_form():
-                        break
-                    continue
-
-                try:
-                    b64 = page.evaluate(
-                        """async url => {
-                            const response = await fetch(
-                                url,
-                                {cache: 'no-store'}
-                            );
-                            if (!response.ok) {
-                                throw new Error(
-                                    `captcha HTTP ${response.status}`
-                                );
-                            }
-                            const blob = await response.blob();
-                            return await new Promise((resolve, reject) => {
-                                const reader = new FileReader();
-                                reader.onload = () =>
-                                    resolve(reader.result);
-                                reader.onerror = reject;
-                                reader.readAsDataURL(blob);
-                            });
-                        }""",
-                        cap["src"],
-                    )
-                    img_bytes = base64.b64decode(b64.split(",", 1)[1])
-                except Exception as captcha_error:
-                    _log(f"   验证码下载失败: {captcha_error}")
-                    page.evaluate(
-                        'document.querySelector("#reVerify")?.click()'
-                    )
-                    page.wait_for_timeout(2000)
-                    continue
-
-                captcha_text = solve_captcha(img_bytes)
-                if not captcha_text:
-                    _log("   OCR 失败，刷新验证码...")
-                    page.evaluate(
-                        'document.querySelector("#reVerify")?.click()'
-                    )
-                    page.wait_for_timeout(2000)
-                    continue
-
-                _log(
-                    f"   OCR: '{captcha_text}', "
-                    f"key: '{cap['key']}', "
-                    f"uuid: '{cap['uuid'][:8]}...'"
-                )
-                page.locator("#UserInputCaptcha").fill(captcha_text)
-
                 body = build_order_body(
-                    cap["uuid"],
+                    cookie_uuid,
                     text,
                     lang_id,
                     voice_id,
-                    captcha_text,
-                    cap["key"],
                     speed=speed,
                     volume=volume,
                     pitch=pitch,
@@ -758,12 +644,6 @@ def generate(
                     elif str(status) == "444":
                         _log(f"   免费高速额度/队列限制: {info}")
                         break
-                    elif (
-                        "captcha" in info.lower()
-                        or "验证" in info
-                        or "verification" in info.lower()
-                    ):
-                        _log("   验证码错误，重试...")
                     else:
                         _log(f"   其他: {info or data_resp}")
                         break
@@ -778,9 +658,6 @@ def generate(
                         f"{response_text[:200] or result.get('error', '')}"
                     )
 
-                page.evaluate(
-                    'document.querySelector("#reVerify")?.click()'
-                )
                 page.wait_for_timeout(2000)
         finally:
             try:
@@ -796,7 +673,7 @@ def generate(
                 )
 
     _log("\n❌ 失败")
-    raise RuntimeError(f"TTSMaker 生成失败：已重试 {max_retries} 次仍未成功（可能是频率限制、验证码识别失败或网络问题）")
+    raise RuntimeError(f"TTSMaker 生成失败：已重试 {max_retries} 次仍未成功（可能是频率限制或网络问题）")
 
 
 # ============================================================================
@@ -1299,54 +1176,7 @@ class TTSMakerSession:
                 # 4. 清除上一次的音频结果
                 self._clear_previous_audio(page)
 
-                # 5. 验证码处理
-                #    登录后 JS 可能自动填入 8888，所以验证码可能不需要手动处理
-                cap = page.evaluate(
-                    """() => {
-                        const img = document.querySelector('#VerifyCaptchaIMG');
-                        const input = document.querySelector('#UserInputCaptcha');
-                        if (!img) return null;
-                        return {
-                            uuid: img.getAttribute('uuid') || '',
-                            src: img.src || '',
-                            key: input?.getAttribute('data-captcha-key')
-                                || img.getAttribute('data-captcha-key')
-                                || img.getAttribute('data-key')
-                                || ''
-                        };
-                    }"""
-                )
-                if cap and cap.get("uuid") and cap.get("src"):
-                    # 有验证码 — 下载并 OCR
-                    try:
-                        b64 = page.evaluate(
-                            """async url => {
-                                const response = await fetch(url, {cache: 'no-store'});
-                                if (!response.ok) throw new Error('captcha HTTP ' + response.status);
-                                const blob = await response.blob();
-                                return await new Promise((resolve, reject) => {
-                                    const reader = new FileReader();
-                                    reader.onload = () => resolve(reader.result);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(blob);
-                                });
-                            }""",
-                            cap["src"],
-                        )
-                        img_bytes = base64.b64decode(b64.split(",", 1)[1])
-                        captcha_text = solve_captcha(img_bytes)
-                        if captcha_text:
-                            _log(f"   OCR: '{captcha_text}'")
-                            page.locator("#UserInputCaptcha").fill(captcha_text)
-                            page.wait_for_timeout(200)
-                        else:
-                            _log("   OCR 失败，尝试直接提交")
-                    except Exception as cap_err:
-                        _log(f"   验证码处理失败: {cap_err}")
-                else:
-                    _log("   无验证码或已自动填入")
-
-                # 6. 点击转换按钮
+                # 5. 点击转换按钮
                 btn = page.locator("#tts_order_submit")
                 if btn.count() > 0:
                     btn.first.click()
@@ -1371,14 +1201,14 @@ class TTSMakerSession:
                             break
                         continue
 
-                # 7. 等待并下载
+                # 6. 等待并下载
                 found = self._wait_and_download(page, output_path, timeout=120)
                 if found and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                     size = os.path.getsize(output_path)
                     _log(f"\n🎉 生成成功! ({size:,} bytes)")
                     return output_path
 
-                # 8. 检查频率限制
+                # 7. 检查频率限制
                 try:
                     page_text = page.inner_text("body").lower()
                     if any(kw in page_text for kw in ["429", "rate limit", "频率", "限制", "稍后", "too many", "频繁", "排队"]):
@@ -1387,18 +1217,12 @@ class TTSMakerSession:
                         if not self._reload_page(page):
                             break
                         continue
-                    if any(kw in page_text for kw in ["captcha", "验证", "verification"]):
-                        _log("   验证码错误，重试...")
-                        page.evaluate('document.querySelector("#reVerify")?.click()')
-                        page.wait_for_timeout(2000)
-                        continue
                 except Exception:
                     pass
 
                 _log("   未获取到音频，刷新重试...")
                 if not self._reload_page(page):
                     break
-                page.evaluate('document.querySelector("#reVerify")?.click()')
                 page.wait_for_timeout(2000)
 
             except Exception as attempt_err:
@@ -1409,7 +1233,7 @@ class TTSMakerSession:
         _log("\n❌ 失败")
         raise RuntimeError(
             f"TTSMaker 生成失败：已重试 {max_retries} 次仍未成功"
-            f"（可能是频率限制、验证码识别失败或网络问题）"
+            f"（可能是频率限制或网络问题）"
         )
 
     def close(self):

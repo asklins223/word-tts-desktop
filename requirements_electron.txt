@@ -5,44 +5,25 @@
 # ---- 后端框架 ----
 fastapi>=0.115.0
 uvicorn>=0.30.0
-starlette
-anyio
-h11
 pydantic>=2.0.0
-pydantic-core
-httpx
-certifi
-Jinja2
 
 # ---- TTS 核心 ----
 edge-tts>=7.2.0
 aiohttp
-aiosignal
-frozenlist
-multidict
-yarl
-aiofiles>=23.0.0
 
 # ---- 文档解析 ----
 python-docx>=1.0.0
 lxml>=5.0.0
-Pillow
-numpy>=1.24.0
+# 仅供 scripts/build_app_icons.py 构建图标；固定版本确保 CI 生成的 PNG/ICNS/ICO 可复现。
+# PyInstaller 后端明确排除 PIL。
+Pillow==12.3.0
 
 # ---- 音频处理 ----
 pydub>=0.25.1
 imageio-ffmpeg>=0.5.1
-ffmpy>=0.3.0
 
-# ---- 其他（PyInstaller collect_all 需要）----
-markdown-it-py
-mdit-py-plugins
-safehttpx
-sniffio
-idna
-httpcore
-click
-typing_extensions
+# ---- 文件上传 ----
+# FastAPI 的 UploadFile/File 路由在运行时需要此包。
 python-multipart
 
 # ---- 打包工具 ----
@@ -50,10 +31,5 @@ pyinstaller>=6.0.0
 
 # ---- TTSMaker 男声生成（打包内置）----
 # Playwright: 浏览器自动化，操控 TTSMaker.cn 网站生成男声
-playwright>=1.50.0
-greenlet>=3.0.0
-pyee>=11.0.0
-
-# 验证码识别（登录后可能仍需验证码）
-ddddocr>=1.5.0
-onnxruntime>=1.18.0
+# 固定到已验证版本；Chromium revision 必须与它的 browsers.json 精确匹配。
+playwright==1.56.0

@@ -21,6 +21,12 @@ function apiUrl(path) {
 }
 
 let currentStep = 1;
+let currentView = 'workflow';    // 'workflow' | 'history' | 'history-result'
+let historyReturnStep = 1;       // 从历史中心返回工作流时恢复原步骤
+let historyRecords = [];
+let historyRequestToken = 0;     // 使较早的历史列表/详情请求失效
+let activeResultContext = null;  // 当前交付页对应当前任务或历史记录
+let latestCurrentResultEvent = null; // 从历史详情返回时恢复当前任务的交付页
 let currentSession = null;       // { session_id, source_filename, file_path, parse_results }
 let currentConfig = null;        // API 返回的配置
 let eventSource = null;          // SSE 连接
@@ -35,6 +41,15 @@ let generationAttemptId = 0;        // 使旧生成任务回调失效
 let resultNavigationTimer = null;   // 完成后跳转结果页的计时器
 let generatedFiles = [];         // 生成完成的文件列表
 let logEntryCount = 0;
+const logEntriesByKey = new Map(); // 稳定 key 对应一条可原地更新的时间线记录
+const logSeenSeq = new Set();
+let logFilter = 'all';
+let logAutoFollow = true;
+let logUnseenCount = 0;
+let logLocalSeq = 0;
+let logStageIndex = -1;
+const logStageStates = new Map();
+const LOG_DOM_LIMIT = 300;
 let lastStats = null;             // 最近一次 stats 事件数据
 let lastDownloadEvent = null;     // 最近一次 download 事件数据
 let sseRetryCount = 0;            // SSE 重连次数计数
@@ -111,6 +126,7 @@ function showPromptDialog(title, message, defaultValue = '') {
         input.value = defaultValue;
 
         $('app').setAttribute('inert', '');
+        overlay.setAttribute('aria-hidden', 'false');
         overlay.classList.add('active');
         // 延迟聚焦以确保 transition 完成
         setTimeout(() => { input.focus(); input.select(); }, 50);
@@ -120,6 +136,7 @@ function showPromptDialog(title, message, defaultValue = '') {
             if (resolved) return;
             resolved = true;
             overlay.classList.remove('active');
+            overlay.setAttribute('aria-hidden', 'true');
             $('app').removeAttribute('inert');
             // 清理事件监听器（一次性）
             okBtn.removeEventListener('click', onOk);
@@ -275,10 +292,7 @@ function applyConfigToForm(config) {
     setSelectValue($('quality'), config.quality, '128 kbps（标准）');
     $('proxy').value = config.proxy ?? '';
     $('preview').checked = !!config.preview;
-    if ($('format').value !== 'wav' && $('quality').value.startsWith('无损')) {
-        setSelectValue($('quality'), '128 kbps（标准）', '128 kbps（标准）');
-    }
-    updateConfigSummary();
+    enforceOutputCompatibility($('format'));
 }
 
 /**
@@ -383,6 +397,7 @@ async function startProcessing(useDefaults, presetConfig) {
     destroyWaveSurfers();
     clearSSEReconnectTimer();
     isGenerating = true;
+    if ($('history-nav-btn')) $('history-nav-btn').disabled = true;
     generatedFiles = [];
     logEntryCount = 0;
     lastStats = null;
@@ -407,8 +422,7 @@ async function startProcessing(useDefaults, presetConfig) {
     $('generation-live-status').textContent = '正在启动音频引擎';
     $('gen-title').textContent = '正在生成音频';
     $('gen-animation').classList.remove('done');
-    $('progress-log').innerHTML = '<div class="log-empty">等待任务开始...</div>';
-    $('log-count').textContent = '0 条';
+    resetLogTimeline('生成任务即将开始，正在等待第一条处理记录…');
     $('type-stats').innerHTML = '';
 
     lastGenerationConfig = { ...config };
@@ -446,11 +460,29 @@ async function startProcessing(useDefaults, presetConfig) {
         if (err.name === 'AbortError' || attemptId !== generationAttemptId) return;
         generateAbortController = null;
         generationResult = 'error';
+        const serviceUnavailable = err instanceof TypeError || /failed to fetch/i.test(err.message || '');
+        const failureMessage = serviceUnavailable
+            ? '无法连接生成服务，请重试连接后再次生成。'
+            : `启动失败：${err.message}`;
         $('gen-title').textContent = '任务未能启动';
-        $('status-text').textContent = `启动失败: ${err.message}`;
+        $('generation-file-name').textContent = `未能启动「${session.source_filename || '当前文档'}」；设置与解析结果仍会保留。`;
+        $('status-text').textContent = failureMessage;
+        if (serviceUnavailable) {
+            setServiceState('error', '服务连接中断');
+            $('retry-service-btn').hidden = false;
+        }
         setGenerationVisualState('error');
-        showGenerationRecovery(`启动失败：${err.message}`);
-        showToast(`启动失败: ${err.message}`);
+        addLogEntry({
+            level: 'error',
+            stage: 'complete',
+            kind: 'summary',
+            status: 'error',
+            key: 'task:summary',
+            title: '生成任务未能启动',
+            detail: failureMessage,
+        });
+        showGenerationRecovery(failureMessage);
+        showToast(failureMessage, 'error');
         resetGenerateState();
     }
 }
@@ -464,9 +496,9 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 const STEP_TITLES = {
     1: '01 / 导入文档',
-    2: '02 / 配置声音',
+    2: '02 / 核对与设置',
     3: '03 / 生成音频',
-    4: '04 / 交付结果',
+    4: '04 / 试听与下载',
 };
 
 function setServiceState(state, label) {
@@ -500,6 +532,7 @@ function updateSessionLabels(filename = '', parseResults = currentSession?.parse
     const generationName = $('generation-file-name');
     const summaryDocument = $('summary-document');
     const generateButtonLabel = $('generate-button-label');
+    const toolbarDocument = $('toolbar-document');
     if (sourceName) sourceName.textContent = displayName;
     if (sourceMeta) sourceMeta.textContent = filename
         ? (total > 0 ? `已识别 ${total} 条 · ${types.length} 种题型` : '文档解析完成')
@@ -507,9 +540,17 @@ function updateSessionLabels(filename = '', parseResults = currentSession?.parse
     if (summaryDocument) summaryDocument.textContent = total > 0
         ? `${total} 条 · ${types.length} 种题型`
         : '等待解析';
-    if (generateButtonLabel) generateButtonLabel.textContent = total > 0
-        ? `开始生成 ${total} 条音频`
-        : '开始生成音频';
+    if (generateButtonLabel) {
+        const previewEnabled = Boolean($('preview')?.checked && total > 3);
+        generateButtonLabel.textContent = previewEnabled
+            ? `先试听 ${Math.min(total, 3)} 条`
+            : (total > 0 ? `开始生成 ${total} 条音频` : '开始生成音频');
+    }
+    if (toolbarDocument) {
+        toolbarDocument.textContent = filename || '';
+        toolbarDocument.title = filename || '';
+        toolbarDocument.hidden = !filename;
+    }
     if (generationName) {
         generationName.textContent = filename
             ? `正在处理「${displayName}」${generationDescriptor ? ` · ${generationDescriptor}` : ''}，请保持应用开启。`
@@ -524,6 +565,31 @@ function setUploadParsing(parsing) {
     uploadZone.setAttribute('aria-busy', parsing ? 'true' : 'false');
     const restartBtn = $('restart-btn');
     if (restartBtn) restartBtn.disabled = parsing || isRestarting;
+    const historyNav = $('history-nav-btn');
+    if (historyNav) historyNav.disabled = parsing || isGenerating || isRestarting;
+}
+
+function setUploadFeedback(state = '', message = '') {
+    const feedback = $('upload-feedback');
+    const uploadZone = $('upload-zone');
+    if (!feedback || !uploadZone) return;
+    feedback.classList.remove('is-info', 'is-success', 'is-error');
+    uploadZone.classList.remove('has-error');
+    if (!message) {
+        feedback.hidden = true;
+        feedback.textContent = '';
+        feedback.setAttribute('role', 'status');
+        return;
+    }
+    feedback.hidden = false;
+    feedback.textContent = message;
+    if (state) feedback.classList.add(`is-${state}`);
+    if (state === 'error') {
+        uploadZone.classList.add('has-error');
+        feedback.setAttribute('role', 'alert');
+    } else {
+        feedback.setAttribute('role', 'status');
+    }
 }
 
 function selectedOptionLabel(id) {
@@ -556,6 +622,7 @@ function updateConfigSummary() {
 
     const scope = $('summary-scope');
     if (scope) scope.textContent = $('preview')?.checked ? '试听前 3 条' : '完整文档';
+    updateSessionLabels(currentSession?.source_filename || '', currentSession?.parse_results);
 }
 
 function enforceOutputCompatibility(changedControl) {
@@ -570,6 +637,14 @@ function enforceOutputCompatibility(changedControl) {
     } else if (changedControl === format && format.value !== 'wav' && isLossless) {
         setSelectValue(quality, '128 kbps（标准）', '128 kbps（标准）');
         showToast('当前格式不支持无损质量，已恢复为 128 kbps');
+    }
+    if (format.value === 'wav') {
+        setSelectValue(quality, '无损（仅 wav 生效）', '无损（仅 wav 生效）');
+        quality.disabled = true;
+        quality.title = 'WAV 使用无损输出，无需选择码率';
+    } else {
+        quality.disabled = false;
+        quality.title = '';
     }
     updateConfigSummary();
 }
@@ -654,7 +729,7 @@ function queueWaveformInitialization(item, prioritize = false) {
 }
 
 function activateResultWaveforms() {
-    if (currentStep !== 4 || waveformItems.length === 0) return;
+    if (!$('page-4')?.classList.contains('active') || waveformItems.length === 0) return;
     if (waveformObserver) waveformObserver.disconnect();
 
     const scrollRoot = $('page-4')?.querySelector('.page-scroll') || null;
@@ -778,6 +853,10 @@ function setRestartingUI(restarting) {
         'retry-service-btn',
         'retry-generation-btn',
         'return-config-btn',
+        'history-nav-btn',
+        'history-start-btn',
+        'history-back-btn',
+        'back-to-history-btn',
     ].forEach(id => {
         const button = $(id);
         if (button) button.disabled = restarting;
@@ -848,13 +927,43 @@ async function init() {
     const connected = await connectService(isElectron);
     updateStepper();
     updateConfigSummary();
-    if (connected) showToast('就绪');
+    if (connected) {
+        await refreshHistoryRecords({ showLoading: false });
+        showToast('就绪');
+    }
 }
 
 function bindEvents() {
     // 重新开始按钮（工具栏）
     $('restart-btn').addEventListener('click', requestRestart);
-    $('retry-service-btn').addEventListener('click', () => connectService(true));
+    $('retry-service-btn').addEventListener('click', async () => {
+        const connected = await connectService(true);
+        if (connected) await refreshHistoryRecords({ showLoading: currentView === 'history' });
+    });
+    $('history-nav-btn').addEventListener('click', () => showHistoryPage());
+    $('back-to-history-btn').addEventListener('click', () => showHistoryPage());
+    $('history-back-btn').addEventListener('click', returnToWorkflow);
+    $('history-start-btn').addEventListener('click', returnToWorkflow);
+
+    $$('[data-log-filter]').forEach(button => {
+        button.addEventListener('click', () => setLogFilter(button.dataset.logFilter || 'all'));
+    });
+    $('log-follow-btn').addEventListener('click', () => {
+        setLogAutoFollow(!logAutoFollow, { scrollToEnd: !logAutoFollow });
+    });
+    $('log-new-records-btn').addEventListener('click', () => {
+        setLogAutoFollow(true, { scrollToEnd: true });
+    });
+    $('log-toggle-btn').addEventListener('click', () => {
+        setLogDetailsExpanded($('log-panel').classList.contains('is-collapsed'));
+    });
+    $('progress-log').addEventListener('scroll', () => {
+        if (!logAutoFollow) return;
+        const body = $('progress-log');
+        if (body.scrollHeight - body.scrollTop - body.clientHeight > 64) {
+            setLogAutoFollow(false);
+        }
+    }, { passive: true });
 
     // Step 1: 上传
     const uploadZone = $('upload-zone');
@@ -881,7 +990,8 @@ function bindEvents() {
         if (file && file.name.toLowerCase().endsWith('.docx')) {
             handleFileSelected(file);
         } else {
-            showToast('请选择 .docx 格式的 Word 文档');
+            setUploadFeedback('error', '文件格式不支持，请重新选择 .docx 文档。');
+            showToast('请选择 .docx 格式的 Word 文档', 'error');
         }
     });
 
@@ -930,13 +1040,16 @@ function bindEvents() {
         }
     });
     $('skip-config-btn').addEventListener('click', () => {
-        goToStep(3);
-        startProcessing(true);
+        applyConfigToForm(collectConfig(true));
+        showToast('已恢复推荐设置');
     });
     $('start-generate-btn').addEventListener('click', () => {
         goToStep(3);
         startProcessing(false);
     });
+
+    $('audio-search-input').addEventListener('input', filterAudioItems);
+    $('audio-type-filter').addEventListener('change', filterAudioItems);
 
     // Step 4: 下载
     $('download-zip-btn').addEventListener('click', async () => {
@@ -998,10 +1111,10 @@ async function loadConfig() {
             const maleDescEl = $('voice-male-desc');
             if (maleNameEl && maleDescEl) {
                 if (currentConfig.ttsmaker_available) {
-                    maleNameEl.textContent = 'TTSMaker 788 Alfie';
+                    maleNameEl.textContent = 'Alfie · TTSMaker 788';
                     maleDescEl.textContent = 'm/M 标识 → 男声 · 通过 TTSMaker 网站生成';
                 } else {
-                    maleNameEl.textContent = 'RemyMultilingual (edge-tts)';
+                    maleNameEl.textContent = 'Remy · edge-tts';
                     maleDescEl.textContent = 'm/M 标识 → 男声 · TTSMaker 不可用，回退到 edge-tts';
                 }
             }
@@ -1024,7 +1137,14 @@ async function loadConfig() {
 // ============================================================================
 
 function goToStep(step) {
+    currentView = 'workflow';
     currentStep = step;
+
+    const historyNav = $('history-nav-btn');
+    historyNav?.classList.remove('active');
+    historyNav?.removeAttribute('aria-current');
+    const backToHistoryBtn = $('back-to-history-btn');
+    if (backToHistoryBtn) backToHistoryBtn.hidden = true;
 
     // 切换页面
     $$('.step-page').forEach(p => p.classList.remove('active'));
@@ -1052,7 +1172,7 @@ function updateStepper() {
         el.removeAttribute('aria-current');
         if (step < currentStep) {
             el.classList.add('completed');
-        } else if (step === currentStep) {
+        } else if (step === currentStep && currentView === 'workflow') {
             el.classList.add('active');
             el.setAttribute('aria-current', 'step');
         }
@@ -1064,7 +1184,297 @@ function updateStepper() {
     });
 
     const toolbarStep = $('toolbar-step');
-    if (toolbarStep) toolbarStep.textContent = STEP_TITLES[currentStep] || '';
+    if (toolbarStep) {
+        toolbarStep.textContent = currentView === 'workflow'
+            ? (STEP_TITLES[currentStep] || '')
+            : '历史记录';
+    }
+}
+
+function setHistoryNavActive(active) {
+    const historyNav = $('history-nav-btn');
+    if (!historyNav) return;
+    historyNav.classList.toggle('active', active);
+    if (active) historyNav.setAttribute('aria-current', 'page');
+    else historyNav.removeAttribute('aria-current');
+}
+
+function activateStandalonePage(pageId, view) {
+    currentView = view;
+    $$('.step-page').forEach(page => page.classList.remove('active'));
+    const page = $(pageId);
+    page?.classList.add('active');
+    setHistoryNavActive(true);
+    updateStepper();
+
+    const scrollPage = page?.querySelector('.page-scroll, .page-center');
+    if (scrollPage) scrollPage.scrollTop = 0;
+    const heading = page?.querySelector('h1');
+    if (heading) requestAnimationFrame(() => heading.focus({ preventScroll: true }));
+}
+
+function showHistoryPage({ refresh = true } = {}) {
+    if (isRestarting) return;
+    if (currentView === 'workflow') {
+        historyReturnStep = generationResult === 'done' && latestCurrentResultEvent ? 4 : currentStep;
+    }
+    destroyWaveSurfers();
+    activateStandalonePage('page-history', 'history');
+    const backToHistoryBtn = $('back-to-history-btn');
+    if (backToHistoryBtn) backToHistoryBtn.hidden = true;
+    const historyBackBtn = $('history-back-btn');
+    if (historyBackBtn) historyBackBtn.textContent = currentSession ? '← 返回当前任务' : '← 返回导入文档';
+    if (refresh) void refreshHistoryRecords();
+}
+
+function returnToWorkflow() {
+    const returnStep = currentSession ? historyReturnStep : 1;
+    if (returnStep === 4 && latestCurrentResultEvent && currentSession) {
+        buildResultPage(latestCurrentResultEvent);
+    }
+    goToStep(returnStep);
+}
+
+function setHistoryCounts(count) {
+    const safeCount = Math.max(0, Math.min(Number(count) || 0, 20));
+    if ($('history-nav-count')) $('history-nav-count').textContent = String(safeCount);
+    if ($('history-count')) $('history-count').textContent = `${safeCount} / 20`;
+}
+
+function historyDateLabel(value) {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return '完成时间未知';
+    return parsed.toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    });
+}
+
+function historyFormatLabel(record) {
+    return String(record?.format || 'mp3').toUpperCase();
+}
+
+function createHistoryAction(label, className, handler) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = label;
+    button.addEventListener('click', handler);
+    return button;
+}
+
+function renderHistoryRecords(records) {
+    const list = $('history-list');
+    const empty = $('history-empty');
+    if (!list || !empty) return;
+    list.replaceChildren();
+    empty.hidden = records.length > 0;
+    if (records.length === 0) return;
+
+    records.forEach(record => {
+        const availableCount = Math.max(0, Number(record.available_files) || 0);
+        const completed = Math.max(0, Number(record.completed) || availableCount);
+        const failed = Math.max(0, Number(record.failed) || 0);
+        const missingCount = Math.max(0, completed - availableCount);
+        const item = document.createElement('article');
+        item.className = 'history-item surface-card';
+
+        const icon = document.createElement('span');
+        icon.className = 'history-item-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = historyFormatLabel(record);
+
+        const main = document.createElement('div');
+        main.className = 'history-item-main';
+        const titleRow = document.createElement('div');
+        titleRow.className = 'history-item-title-row';
+        const title = document.createElement('h2');
+        title.className = 'history-item-title';
+        title.textContent = record.source_filename || '未命名文档.docx';
+        title.title = title.textContent;
+        const status = document.createElement('span');
+        status.className = `history-status-badge${failed > 0 || missingCount > 0 ? ' is-partial' : ''}`;
+        status.textContent = availableCount === 0
+            ? '文件缺失'
+            : (missingCount > 0 ? '部分缺失' : (failed > 0 ? '部分完成' : '已完成'));
+        titleRow.append(title, status);
+
+        const meta = document.createElement('div');
+        meta.className = 'history-item-meta';
+        const completedAt = document.createElement('span');
+        completedAt.textContent = historyDateLabel(record.completed_at);
+        const scope = document.createElement('span');
+        scope.textContent = record.preview ? '试听任务' : '完整任务';
+        meta.append(completedAt, scope);
+
+        const stats = document.createElement('div');
+        stats.className = 'history-item-stats';
+        const audioStat = document.createElement('span');
+        audioStat.className = 'history-stat';
+        const audioStrong = document.createElement('strong');
+        audioStrong.textContent = String(availableCount);
+        audioStat.append(audioStrong, document.createTextNode(' 个音频'));
+        const formatStat = document.createElement('span');
+        formatStat.className = 'history-stat';
+        const formatStrong = document.createElement('strong');
+        formatStrong.textContent = historyFormatLabel(record);
+        formatStat.append(formatStrong, document.createTextNode(' 格式'));
+        stats.append(audioStat, formatStat);
+        if (failed > 0) {
+            const failedStat = document.createElement('span');
+            failedStat.className = 'history-stat';
+            const failedStrong = document.createElement('strong');
+            failedStrong.textContent = String(failed);
+            failedStat.append(failedStrong, document.createTextNode(' 条失败'));
+            stats.appendChild(failedStat);
+        }
+
+        main.append(titleRow, meta, stats);
+
+        const actions = document.createElement('div');
+        actions.className = 'history-item-actions';
+        const viewBtn = createHistoryAction('查看结果', 'btn-primary', () => viewHistoryRecord(record.id));
+        viewBtn.disabled = availableCount === 0;
+        if (record.zip_available) {
+            const zipBtn = createHistoryAction('下载 ZIP', 'btn-ghost', async () => {
+                zipBtn.disabled = true;
+                try {
+                    await downloadZip({
+                        mode: 'history',
+                        recordId: record.id,
+                        sourceFilename: record.source_filename,
+                    });
+                } finally {
+                    zipBtn.disabled = false;
+                }
+            });
+            actions.appendChild(zipBtn);
+        }
+        const deleteBtn = createHistoryAction('删除', 'btn-ghost history-delete-btn', () => deleteHistoryRecord(record, deleteBtn));
+        actions.prepend(viewBtn);
+        actions.appendChild(deleteBtn);
+        item.append(icon, main, actions);
+        list.appendChild(item);
+    });
+}
+
+function renderHistoryMessage(message, className = 'history-loading') {
+    const list = $('history-list');
+    const empty = $('history-empty');
+    if (!list || !empty) return;
+    empty.hidden = true;
+    list.replaceChildren();
+    const notice = document.createElement('div');
+    notice.className = `${className} surface-card`;
+    notice.textContent = message;
+    list.appendChild(notice);
+}
+
+async function refreshHistoryRecords({ showLoading = true } = {}) {
+    const requestToken = ++historyRequestToken;
+    if (showLoading && currentView === 'history') renderHistoryMessage('正在读取本机历史记录…');
+    try {
+        const response = await fetch(apiUrl('/api/history'));
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (requestToken !== historyRequestToken) return historyRecords;
+        historyRecords = Array.isArray(data.records) ? data.records.slice(0, 20) : [];
+        setHistoryCounts(historyRecords.length);
+        if (currentView === 'history') renderHistoryRecords(historyRecords);
+        return historyRecords;
+    } catch (error) {
+        if (requestToken !== historyRequestToken) return historyRecords;
+        console.error('读取历史记录失败:', error);
+        if (currentView === 'history') renderHistoryMessage('历史记录暂时无法读取，请确认生成服务已连接后重试。', 'history-error');
+        return historyRecords;
+    }
+}
+
+async function viewHistoryRecord(historyId) {
+    if (!historyId || isRestarting) return;
+    const requestToken = ++historyRequestToken;
+    try {
+        const response = await fetch(apiUrl(`/api/history/${encodeURIComponent(historyId)}`));
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const record = await response.json();
+        if (requestToken !== historyRequestToken) return;
+        const context = {
+            mode: 'history',
+            recordId: record.id,
+            sourceFilename: record.source_filename,
+            files: Array.isArray(record.files) ? record.files.filter(file => file.available !== false) : [],
+            completed: Number(record.completed) || 0,
+            failed: Number(record.failed) || 0,
+            total: Number(record.total) || 0,
+            format: record.format || 'mp3',
+            preview: Boolean(record.preview),
+            zipAvailable: Boolean(record.zip_available),
+            failedItems: Array.isArray(record.failed_items) ? record.failed_items : [],
+        };
+        buildResultPage({
+            completed: context.completed,
+            failed: context.failed,
+            total: context.total,
+            failed_items: context.failedItems,
+            zip_path: context.zipAvailable ? 'history' : null,
+        }, context);
+        activateStandalonePage('page-4', 'history-result');
+        const backToHistoryBtn = $('back-to-history-btn');
+        if (backToHistoryBtn) backToHistoryBtn.hidden = false;
+        requestAnimationFrame(() => requestAnimationFrame(activateResultWaveforms));
+    } catch (error) {
+        if (requestToken !== historyRequestToken) return;
+        console.error('读取历史详情失败:', error);
+        showToast('这条历史记录暂时无法打开，可能文件已被移除');
+        await refreshHistoryRecords({ showLoading: false });
+    }
+}
+
+async function deleteHistoryRecord(record, button) {
+    if (!record?.id || isRestarting) return;
+    const filename = record.source_filename || '未命名文档';
+    const fileCount = Math.max(0, Number(record.available_files) || 0);
+    if (!window.confirm(`删除「${filename}」及其 ${fileCount} 个音频文件？\n删除后无法恢复。`)) return;
+    historyRequestToken++;
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch(apiUrl(`/api/history/${encodeURIComponent(record.id)}`), { method: 'DELETE' });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.detail || `HTTP ${response.status}`);
+        }
+        const deletedCurrentResult = latestCurrentResultEvent?.history_id === record.id;
+        historyRecords = historyRecords.filter(item => item.id !== record.id);
+        if (deletedCurrentResult) {
+            currentSession = null;
+            generatedFiles = [];
+            activeResultContext = null;
+            latestCurrentResultEvent = null;
+            historyReturnStep = 1;
+            const uploadZone = $('upload-zone');
+            uploadZone?.classList.remove('has-file', 'is-processing', 'dragover');
+            uploadZone?.setAttribute('aria-busy', 'false');
+            const uploadTitle = uploadZone?.querySelector('.upload-text-large');
+            const uploadHint = uploadZone?.querySelector('.upload-hint');
+            if (uploadTitle) uploadTitle.textContent = '拖拽文档到这里，或点击选择';
+            if (uploadHint) uploadHint.textContent = '支持 .docx 文件 · 选择后会自动解析';
+            updateSessionLabels();
+            if ($('stats-bar')) $('stats-bar').replaceChildren();
+            if ($('status-text')) $('status-text').textContent = '就绪';
+            if ($('history-back-btn')) $('history-back-btn').textContent = '← 返回导入文档';
+        }
+        setHistoryCounts(historyRecords.length);
+        if (currentView === 'history') renderHistoryRecords(historyRecords);
+        showToast(deletedCurrentResult ? '当前任务结果及历史记录已删除' : '历史记录已删除');
+    } catch (error) {
+        console.error('删除历史记录失败:', error);
+        showToast(`删除失败：${error.message || '请稍后重试'}`);
+        if (button) button.disabled = false;
+    }
 }
 
 // ============================================================================
@@ -1105,6 +1515,7 @@ async function handleFilePath(filePath) {
     const uploadZone = $('upload-zone');
     uploadZone.classList.add('has-file');
     setUploadParsing(true);
+    setUploadFeedback('info', '正在读取并核对文档结构，请稍候…');
     uploadZone.querySelector('.upload-text-large').textContent = filename;
     uploadZone.querySelector('.upload-hint').textContent = '正在解析文档结构...';
     $('status-text').textContent = `正在解析: ${filename}`;
@@ -1142,6 +1553,7 @@ async function handleFilePath(filePath) {
 
         updateSessionLabels(data.source_filename || filename, currentSession.parse_results);
         uploadZone.querySelector('.upload-hint').textContent = '解析完成，正在打开声音配置';
+        setUploadFeedback('success', `解析完成：已识别 ${summarizeParseResults(currentSession.parse_results).total} 条内容。`);
         $('status-text').textContent = `解析成功 — ${data.source_filename}`;
         showToast('文档解析成功，进入配置步骤');
 
@@ -1151,10 +1563,12 @@ async function handleFilePath(filePath) {
     } catch (err) {
         if (err.name === 'AbortError' || attemptId !== parseAttemptId) return;
         console.error('解析失败:', err);
-        showToast(`解析失败: ${err.message}`);
+        showToast(`解析失败: ${err.message}`, 'error');
         uploadZone.classList.remove('has-file');
         uploadZone.querySelector('.upload-text-large').textContent = '拖拽文档到这里，或点击选择';
-        uploadZone.querySelector('.upload-hint').textContent = '支持 .docx 文件 · 选择后会自动解析';
+        uploadZone.querySelector('.upload-hint').textContent = '请检查文档格式或内容后重新选择';
+        setUploadFeedback('error', `文档解析失败：${err.message}`);
+        $('status-text').textContent = '文档解析失败，请重新选择';
     } finally {
         if (attemptId === parseAttemptId) {
             parseAbortController = null;
@@ -1178,6 +1592,7 @@ async function uploadFile(file) {
     // 立即更新上传区域，给用户即时反馈
     uploadZone.classList.add('has-file');
     setUploadParsing(true);
+    setUploadFeedback('info', '正在上传并核对文档结构，请稍候…');
     uploadZone.querySelector('.upload-text-large').textContent = file.name;
     uploadZone.querySelector('.upload-hint').textContent = '正在上传并解析文档...';
     $('status-text').textContent = `正在上传: ${file.name}`;
@@ -1211,16 +1626,19 @@ async function uploadFile(file) {
         };
         updateSessionLabels(data.source_filename || file.name, currentSession.parse_results);
         uploadZone.querySelector('.upload-hint').textContent = '解析完成，正在打开声音配置';
+        setUploadFeedback('success', `解析完成：已识别 ${summarizeParseResults(currentSession.parse_results).total} 条内容。`);
         $('status-text').textContent = `解析成功 — ${data.source_filename || file.name}`;
         showToast('文档解析成功，进入配置步骤');
         goToStep(2);
     } catch (err) {
         if (err.name === 'AbortError' || attemptId !== parseAttemptId) return;
-        showToast(`上传失败: ${err.message}`);
+        showToast(`上传失败: ${err.message}`, 'error');
         // 重置上传区域
         uploadZone.classList.remove('has-file');
         uploadZone.querySelector('.upload-text-large').textContent = '拖拽文档到这里，或点击选择';
-        uploadZone.querySelector('.upload-hint').textContent = '支持 .docx 文件 · 选择后会自动解析';
+        uploadZone.querySelector('.upload-hint').textContent = '请检查网络或文档后重新选择';
+        setUploadFeedback('error', `文档上传失败：${err.message}`);
+        $('status-text').textContent = '文档上传失败，请重新选择';
     } finally {
         if (attemptId === parseAttemptId) {
             parseAbortController = null;
@@ -1271,6 +1689,7 @@ function connectSSE(sessionId) {
     }
 
     let sseClosed = false;
+    let recoveryNoticePending = sseRetryCount > 0;
 
     const source = new EventSource(apiUrl(`/api/progress/${sessionId}`));
     eventSource = source;
@@ -1295,6 +1714,18 @@ function connectSSE(sessionId) {
         try {
             const data = JSON.parse(e.data);
             handleSSEEvent(data);
+            if (recoveryNoticePending) {
+                recoveryNoticePending = false;
+                addLogEntry({
+                    level: 'success',
+                    stage: 'system',
+                    kind: 'notice',
+                    status: 'success',
+                    key: 'connection:status',
+                    title: '生成服务连接已恢复',
+                    detail: '任务记录与进度已重新同步',
+                });
+            }
         } catch (err) {
             console.error('SSE 解析错误:', err);
         }
@@ -1317,13 +1748,25 @@ function connectSSE(sessionId) {
 
             // 超过最大重试次数，判定后端不可用
             sseRetryCount++;
-            if (sseRetryCount > SSE_MAX_RETRIES) {
-                isGenerating = false;
+            if (sseRetryCount >= SSE_MAX_RETRIES) {
+                resetGenerateState();
                 generationResult = 'error';
                 $('gen-title').textContent = '连接中断';
+                $('generation-file-name').textContent = `「${currentSession?.source_filename || '当前文档'}」的生成连接已中断；已完成的记录会继续保留。`;
                 $('status-text').textContent = '与服务器连接中断，请检查后端服务';
+                setServiceState('error', '服务连接中断');
+                $('retry-service-btn').hidden = false;
                 setGenerationVisualState('error');
                 showGenerationRecovery('与生成服务的连接已中断。请确认服务正常后重试，或返回配置页。');
+                addLogEntry({
+                    level: 'error',
+                    stage: 'complete',
+                    kind: 'summary',
+                    status: 'error',
+                    key: 'connection:status',
+                    title: '生成服务连接中断',
+                    detail: '多次尝试仍无法恢复连接，请检查服务状态后重试',
+                });
                 showToast('与服务器连接中断，请重试');
                 return;
             }
@@ -1333,9 +1776,15 @@ function connectSSE(sessionId) {
             sseReconnectTimer = setTimeout(() => {
                 sseReconnectTimer = null;
                 if (connectionToken === sseConnectionToken && isGenerating && currentSession?.session_id === sessionId) {
-                    logEntryCount = 0;
-                    $('progress-log').innerHTML = `<div class="log-empty">重新连接中... (${sseRetryCount}/${SSE_MAX_RETRIES})</div>`;
-                    $('log-count').textContent = '0 条';
+                    addLogEntry({
+                        level: 'warn',
+                        stage: 'system',
+                        kind: 'notice',
+                        status: 'warning',
+                        key: 'connection:status',
+                        title: '正在恢复生成服务连接',
+                        detail: `第 ${sseRetryCount} / ${SSE_MAX_RETRIES} 次尝试，现有任务记录会继续保留`,
+                    });
                     connectSSE(sessionId);
                 }
             }, delay);
@@ -1346,7 +1795,7 @@ function connectSSE(sessionId) {
 function handleSSEEvent(event) {
     switch (event.type) {
         case 'log_init':
-            event.entries.forEach(entry => addLogEntry(entry));
+            addLogEntries(Array.isArray(event.entries) ? event.entries : []);
             break;
 
         case 'log':
@@ -1375,7 +1824,41 @@ function handleSSEEvent(event) {
             handleDone(event);
             break;
 
+        case 'cancelled':
+            if (!logEntriesByKey.has('task:summary')) {
+                addLogEntry({
+                    level: 'warn',
+                    stage: 'complete',
+                    kind: 'summary',
+                    status: 'warning',
+                    key: 'task:summary',
+                    title: '任务已取消',
+                    detail: `已完成 ${event.completed || 0} / ${event.total || 0} 条`,
+                    duration_ms: event.duration_ms,
+                });
+            }
+            generationResult = 'cancelled';
+            resetGenerateState();
+            $('gen-title').textContent = '任务已取消';
+            $('generation-file-name').textContent = `已取消「${currentSession?.source_filename || '当前文档'}」的生成任务。`;
+            $('status-text').textContent = '生成任务已取消';
+            setGenerationVisualState('stopped');
+            showToast('任务已取消');
+            break;
+
         case 'error':
+            if (!logEntriesByKey.has('task:summary')) {
+                addLogEntry({
+                    level: 'error',
+                    stage: 'complete',
+                    kind: 'summary',
+                    status: 'error',
+                    key: 'task:summary',
+                    title: '生成任务未能完成',
+                    detail: event.msg || '生成服务返回了未说明的错误',
+                    duration_ms: event.duration_ms,
+                });
+            }
             showToast(`错误: ${event.msg}`);
             generationResult = 'error';
             resetGenerateState();
@@ -1386,6 +1869,7 @@ function handleSSEEvent(event) {
             clearSSEReconnectTimer();
             sseConnectionToken++;
             $('gen-title').textContent = '生成出错';
+            $('generation-file-name').textContent = `「${currentSession?.source_filename || '当前文档'}」生成遇到问题；可查看任务详情后重试。`;
             $('status-text').textContent = `错误: ${event.msg}`;
             setGenerationVisualState('error');
             showGenerationRecovery(`生成出错：${event.msg}`);
@@ -1401,7 +1885,17 @@ function handleSSEEvent(event) {
             sseConnectionToken++;
             // 如果未收到 done 或 error 事件，说明生成异常终止
             if (generationResult === null) {
+                addLogEntry({
+                    level: 'warn',
+                    stage: 'complete',
+                    kind: 'summary',
+                    status: 'warning',
+                    key: 'task:summary',
+                    title: '生成任务意外停止',
+                    detail: '未收到明确的完成、失败或取消状态，可重试任务并检查生成服务',
+                });
                 $('gen-title').textContent = '生成已停止';
+                $('generation-file-name').textContent = `「${currentSession?.source_filename || '当前文档'}」生成意外停止；可重试或返回配置检查设置。`;
                 $('status-text').textContent = '生成已停止，请检查日志或重新开始';
                 setGenerationVisualState('stopped');
                 showGenerationRecovery('生成任务意外停止。你可以重试，或返回配置页检查设置。');
@@ -1419,46 +1913,405 @@ function handleSSEEvent(event) {
 // 日志渲染
 // ============================================================================
 
-function addLogEntry(entry) {
-    const logBody = $('progress-log');
-    const shouldFollowTail = logBody.scrollHeight - logBody.scrollTop - logBody.clientHeight < 36;
-    const empty = logBody.querySelector('.log-empty');
-    if (empty) empty.remove();
+const LOG_STAGE_LABELS = {
+    prepare: '准备任务',
+    parse: '识别文档',
+    synthesize: '生成音频',
+    package: '整理交付',
+    archive: '保存记录',
+    complete: '任务完成',
+    system: '系统状态',
+};
 
-    const iconMap = {
-        success: '✓',
-        error: '✗',
-        warn: '⚠',
-        progress: '⟳',
-        info: '•',
+const LOG_STAGE_ORDER = ['prepare', 'parse', 'synthesize', 'package', 'archive', 'complete'];
+
+function formatLogDuration(durationMs) {
+    const value = Number(durationMs);
+    if (!Number.isFinite(value) || value < 0) return '';
+    if (value < 1000) return `${Math.round(value)} 毫秒`;
+    if (value < 60000) return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} 秒`;
+    const minutes = Math.floor(value / 60000);
+    const seconds = Math.round((value % 60000) / 1000);
+    return `${minutes} 分 ${seconds} 秒`;
+}
+
+function normalizeLogEntry(rawEntry = {}) {
+    const allowedLevels = ['success', 'error', 'warn', 'progress', 'info'];
+    const allowedStatuses = ['running', 'success', 'warning', 'error', 'info'];
+    const level = allowedLevels.includes(rawEntry.level) ? rawEntry.level : 'info';
+    const fallbackStatus = {
+        success: 'success',
+        error: 'error',
+        warn: 'warning',
+        progress: 'running',
+        info: 'info',
+    }[level];
+    const status = allowedStatuses.includes(rawEntry.status) ? rawEntry.status : fallbackStatus;
+    const backendSeq = Number(rawEntry.seq);
+    const hasBackendSeq = Number.isFinite(backendSeq) && backendSeq > 0;
+    if (hasBackendSeq && logSeenSeq.has(backendSeq)) return null;
+    if (hasBackendSeq) logSeenSeq.add(backendSeq);
+    const localSeq = hasBackendSeq ? backendSeq : 1000000 + (++logLocalSeq);
+    const stableKey = String(rawEntry.key || `event:${localSeq}`);
+    return {
+        ...rawEntry,
+        seq: localSeq,
+        key: stableKey,
+        level,
+        status,
+        stage: String(rawEntry.stage || 'system'),
+        kind: String(rawEntry.kind || 'notice'),
+        title: String(rawEntry.title || rawEntry.msg || '任务记录'),
+        detail: String(rawEntry.detail || (rawEntry.title ? rawEntry.msg || '' : '')),
+        time: String(rawEntry.time || new Date().toLocaleTimeString('zh-CN', { hour12: false })),
+        item: rawEntry.item && typeof rawEntry.item === 'object' ? rawEntry.item : null,
+        progress: rawEntry.progress && typeof rawEntry.progress === 'object' ? rawEntry.progress : null,
     };
+}
 
-    const div = document.createElement('div');
-    div.className = 'log-entry';
+function logStatusLabel(entry) {
+    if (entry.status === 'running') return '处理中';
+    if (entry.status === 'success') return '已完成';
+    if (entry.status === 'warning') return '需关注';
+    if (entry.status === 'error') return '失败';
+    return '已记录';
+}
 
-    const timeSpan = document.createElement('span');
-    timeSpan.className = 'log-time';
-    timeSpan.textContent = entry.time;
+function createLogMeta(label, value, className = '') {
+    if (value === undefined || value === null || value === '') return null;
+    const meta = document.createElement('span');
+    meta.className = `log-meta-item${className ? ` ${className}` : ''}`;
+    const key = document.createElement('small');
+    key.textContent = label;
+    const content = document.createElement('strong');
+    content.textContent = String(value);
+    meta.append(key, content);
+    return meta;
+}
 
-    const iconSpan = document.createElement('span');
-    // 只允许已知 level 作为 class，防止注入
-    const safeLevel = ['success', 'error', 'warn', 'progress', 'info'].includes(entry.level) ? entry.level : 'info';
-    iconSpan.className = `log-icon ${safeLevel}`;
-    iconSpan.textContent = iconMap[entry.level] || '•';
+function createLogEntryElement(entry) {
+    const article = document.createElement('article');
+    article.className = `log-entry is-${entry.status}`;
+    article.dataset.logKey = entry.key;
+    article.dataset.logStatus = entry.status;
+    article.dataset.logLevel = entry.level;
+    article.dataset.logKind = entry.kind;
+    article.setAttribute('aria-label', `${entry.title}，${logStatusLabel(entry)}`);
 
-    const msgSpan = document.createElement('span');
-    msgSpan.className = 'log-msg';
-    msgSpan.textContent = entry.msg;
+    const time = document.createElement('time');
+    time.className = 'log-time';
+    time.textContent = entry.time;
+    if (entry.ts) time.dateTime = entry.ts;
 
-    div.appendChild(timeSpan);
-    div.appendChild(iconSpan);
-    div.appendChild(msgSpan);
+    const node = document.createElement('span');
+    node.className = 'log-node';
+    node.setAttribute('aria-hidden', 'true');
 
-    logBody.appendChild(div);
-    if (shouldFollowTail) logBody.scrollTop = logBody.scrollHeight;
+    const content = document.createElement('div');
+    content.className = 'log-content';
+    const head = document.createElement('div');
+    head.className = 'log-entry-head';
+    const headingCopy = document.createElement('div');
+    headingCopy.className = 'log-entry-heading';
+    const stage = document.createElement('span');
+    stage.className = 'log-stage-badge';
+    stage.textContent = LOG_STAGE_LABELS[entry.stage] || '任务记录';
+    const title = document.createElement('strong');
+    title.className = 'log-entry-title';
+    title.textContent = entry.title;
+    headingCopy.append(stage, title);
+    const status = document.createElement('span');
+    status.className = 'log-status-badge';
+    status.textContent = logStatusLabel(entry);
+    head.append(headingCopy, status);
+    content.appendChild(head);
 
-    logEntryCount++;
-    $('log-count').textContent = `${logEntryCount} 条`;
+    if (entry.detail) {
+        const detail = document.createElement('p');
+        detail.className = 'log-detail';
+        detail.textContent = entry.detail;
+        content.appendChild(detail);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'log-meta';
+    const metaItems = [];
+    if (entry.item) {
+        metaItems.push(createLogMeta('题型', entry.item.doc_type));
+        metaItems.push(createLogMeta('分类', entry.item.category));
+        metaItems.push(createLogMeta('音色', entry.item.voice));
+        metaItems.push(createLogMeta('文件', entry.item.filename, 'is-file'));
+    }
+    if (entry.progress) {
+        metaItems.push(createLogMeta('进度', `${entry.progress.completed || 0}/${entry.progress.total || 0}`));
+        if (Number(entry.progress.failed) > 0) {
+            metaItems.push(createLogMeta('失败', entry.progress.failed, 'is-issue'));
+        }
+    }
+    const duration = formatLogDuration(entry.duration_ms);
+    if (duration) metaItems.push(createLogMeta('耗时', duration));
+    metaItems.filter(Boolean).forEach(item => meta.appendChild(item));
+    if (meta.childElementCount > 0) content.appendChild(meta);
+
+    if (entry.item?.text_preview) {
+        const source = document.createElement('details');
+        source.className = 'log-source-preview';
+        const summary = document.createElement('summary');
+        summary.textContent = '查看内容摘要';
+        const sourceText = document.createElement('p');
+        sourceText.textContent = entry.item.text_preview;
+        source.append(summary, sourceText);
+        content.appendChild(source);
+    }
+
+    article.append(time, node, content);
+    return article;
+}
+
+function logEntryMatchesFilter(entry) {
+    if (logFilter === 'running') return entry.status === 'running';
+    if (logFilter === 'success') return entry.status === 'success';
+    if (logFilter === 'issues') return entry.status === 'warning' || entry.status === 'error';
+    return true;
+}
+
+function applyLogFilter() {
+    logEntriesByKey.forEach(record => {
+        record.element.hidden = !logEntryMatchesFilter(record.entry);
+    });
+    const visibleCount = [...logEntriesByKey.values()].filter(record => !record.element.hidden).length;
+    const empty = $('progress-log').querySelector('.log-empty');
+    if (visibleCount === 0 && logEntriesByKey.size > 0) {
+        if (!empty) {
+            const notice = document.createElement('div');
+            notice.className = 'log-empty is-filtered';
+            notice.textContent = '当前筛选条件下没有任务记录。';
+            $('progress-log').appendChild(notice);
+        }
+    } else if (empty?.classList.contains('is-filtered')) {
+        empty.remove();
+    }
+}
+
+function updateLogStageRail(entry) {
+    if (entry.kind !== 'stage' && entry.kind !== 'summary') return;
+    let stageIndex = LOG_STAGE_ORDER.indexOf(entry.stage);
+    if (entry.stage === 'complete') {
+        // 终态只收束已经走到的处理阶段，并由独立的“完成”节点承载
+        // 整体成功/部分完成/失败，避免把未执行阶段误画成绿色。
+        const reachedStageIndex = logStageIndex;
+        LOG_STAGE_ORDER.forEach((stage, index) => {
+            if (stage === 'complete' || index > reachedStageIndex) return;
+            const existing = logStageStates.get(stage);
+            if (!existing || existing === 'running' || existing === 'info') {
+                const isCurrentStage = index === reachedStageIndex;
+                if (isCurrentStage && entry.status === 'error') logStageStates.set(stage, 'error');
+                else if (isCurrentStage && entry.status === 'warning') logStageStates.set(stage, 'warning');
+                else logStageStates.set(stage, 'success');
+            }
+        });
+        logStageStates.set('complete', entry.status);
+        logStageIndex = stageIndex;
+    }
+    if (stageIndex < 0) return;
+    if (entry.stage !== 'complete') {
+        if (stageIndex < logStageIndex && entry.status === 'running') return;
+        logStageIndex = Math.max(logStageIndex, stageIndex);
+        logStageStates.set(entry.stage, entry.status);
+        LOG_STAGE_ORDER.forEach((stage, index) => {
+            if (index < logStageIndex && !logStageStates.has(stage)) {
+                logStageStates.set(stage, 'success');
+            }
+        });
+    }
+    $$('#log-stage-rail [data-log-stage]').forEach((stageEl, index) => {
+        const state = logStageStates.get(stageEl.dataset.logStage);
+        stageEl.classList.remove('is-active', 'is-complete', 'is-error', 'is-warning');
+        if (state === 'success') stageEl.classList.add('is-complete');
+        else if (state === 'warning') stageEl.classList.add('is-warning');
+        else if (state === 'error') stageEl.classList.add('is-error');
+        else if (state === 'running' || (index === logStageIndex && !state)) stageEl.classList.add('is-active');
+        const statusText = state === 'success'
+            ? '已完成'
+            : state === 'warning'
+                ? '需关注'
+                : state === 'error'
+                    ? '失败'
+                    : state === 'running'
+                        ? '进行中'
+                        : '未开始';
+        const stageLabel = LOG_STAGE_LABELS[stageEl.dataset.logStage] || stageEl.textContent.trim();
+        stageEl.setAttribute('aria-label', `${stageLabel}：${statusText}`);
+        if (state === 'running') stageEl.setAttribute('aria-current', 'step');
+        else stageEl.removeAttribute('aria-current');
+    });
+}
+
+function trimLogTimeline() {
+    while (logEntriesByKey.size > LOG_DOM_LIMIT) {
+        let removableKey = null;
+        for (const [key, record] of logEntriesByKey) {
+            if (record.entry.kind === 'item' && record.entry.status === 'success') {
+                removableKey = key;
+                break;
+            }
+        }
+        removableKey ||= logEntriesByKey.keys().next().value;
+        const record = logEntriesByKey.get(removableKey);
+        record?.element.remove();
+        logEntriesByKey.delete(removableKey);
+    }
+}
+
+function updateLogTimelineHeader(lastEntry = null) {
+    logEntryCount = logEntriesByKey.size;
+    const issueCount = [...logEntriesByKey.values()].filter(({ entry }) => entry.status === 'warning' || entry.status === 'error').length;
+    $('log-count').textContent = logEntryCount >= LOG_DOM_LIMIT
+        ? `最近 ${LOG_DOM_LIMIT} 个节点`
+        : `${logEntryCount} 个节点`;
+    $('log-issue-count').textContent = String(issueCount);
+    if (lastStats?.total) {
+        const processed = Number(lastStats.processed ?? ((lastStats.completed || 0) + (lastStats.failed || 0)));
+        const pending = Number(lastStats.pending ?? Math.max(lastStats.total - processed, 0));
+        const eta = formatLogDuration(lastStats.eta_ms);
+        $('log-summary').textContent = `已处理 ${processed} / ${lastStats.total} · 剩余 ${pending}${issueCount ? ` · ${issueCount} 条异常记录` : ''}${eta ? ` · 预计还需 ${eta}` : ''}`;
+    } else if (lastEntry) {
+        $('log-summary').textContent = lastEntry.title;
+    }
+}
+
+function updateLogNewRecordsButton() {
+    const button = $('log-new-records-btn');
+    button.hidden = logAutoFollow || logUnseenCount === 0;
+    button.textContent = logUnseenCount > 0 ? `有 ${logUnseenCount} 条新动态 · 回到最新` : '回到最新';
+}
+
+function setLogDetailsExpanded(expanded) {
+    const panel = $('log-panel');
+    if (!panel) return;
+    const layout = panel.closest('.generation-layout');
+    const button = $('log-toggle-btn');
+    panel.classList.toggle('is-collapsed', !expanded);
+    layout?.classList.toggle('is-log-collapsed', !expanded);
+    button?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    if (button) button.textContent = expanded ? '收起详情' : '展开详情';
+    if (expanded) setLogAutoFollow(true, { scrollToEnd: true });
+}
+
+function setLogAutoFollow(enabled, { scrollToEnd = false } = {}) {
+    logAutoFollow = Boolean(enabled);
+    const button = $('log-follow-btn');
+    button.classList.toggle('is-active', logAutoFollow);
+    button.setAttribute('aria-pressed', logAutoFollow ? 'true' : 'false');
+    button.textContent = logAutoFollow ? '跟随最新' : '已暂停跟随';
+    if (logAutoFollow) logUnseenCount = 0;
+    updateLogNewRecordsButton();
+    if (scrollToEnd) {
+        requestAnimationFrame(() => {
+            const body = $('progress-log');
+            body.scrollTop = body.scrollHeight;
+        });
+    }
+}
+
+function setLogFilter(filter) {
+    logFilter = ['all', 'running', 'success', 'issues'].includes(filter) ? filter : 'all';
+    $$('[data-log-filter]').forEach(button => {
+        const active = button.dataset.logFilter === logFilter;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    applyLogFilter();
+}
+
+function upsertLogEntry(rawEntry) {
+    const entry = normalizeLogEntry(rawEntry);
+    if (!entry) return { changed: false, isNew: false, entry: null };
+    const existing = logEntriesByKey.get(entry.key);
+    if (existing && Number(existing.entry.seq) >= Number(entry.seq)) {
+        return { changed: false, isNew: false, entry: existing.entry };
+    }
+    const existingDetails = existing?.element?.querySelector('.log-source-preview');
+    const preserveDetailsOpen = Boolean(existingDetails?.open);
+    const restoreDetailsFocus = Boolean(
+        existing?.element && existing.element.contains(document.activeElement)
+    );
+    const element = createLogEntryElement(entry);
+    const nextDetails = element.querySelector('.log-source-preview');
+    if (nextDetails && preserveDetailsOpen) nextDetails.open = true;
+    existing?.element?.remove();
+    $('progress-log').querySelector('.log-empty')?.remove();
+    $('progress-log').appendChild(element);
+    if (existing) logEntriesByKey.delete(entry.key);
+    logEntriesByKey.set(entry.key, { entry, element });
+    element.hidden = !logEntryMatchesFilter(entry);
+    updateLogStageRail(entry);
+    if (entry.status === 'warning' || entry.status === 'error') {
+        $('log-live-announcer').textContent = `${entry.title}，${logStatusLabel(entry)}`;
+    }
+    if (nextDetails && restoreDetailsFocus) {
+        requestAnimationFrame(() => nextDetails.querySelector('summary')?.focus());
+    }
+    return { changed: true, isNew: !existing, entry };
+}
+
+function finalizeLogUpdate(results) {
+    const changed = results.filter(result => result.changed);
+    if (changed.length === 0) return;
+    trimLogTimeline();
+    applyLogFilter();
+    const lastEntry = changed[changed.length - 1].entry;
+    updateLogTimelineHeader(lastEntry);
+    if (logAutoFollow) {
+        requestAnimationFrame(() => {
+            const body = $('progress-log');
+            body.scrollTop = body.scrollHeight;
+        });
+    } else {
+        const visibleChanges = changed.filter(result => logEntryMatchesFilter(result.entry));
+        if (visibleChanges.length > 0) {
+            logUnseenCount += visibleChanges.length;
+            updateLogNewRecordsButton();
+        }
+    }
+}
+
+function addLogEntry(entry) {
+    finalizeLogUpdate([upsertLogEntry(entry)]);
+}
+
+function addLogEntries(entries) {
+    const sorted = [...entries].sort((a, b) => (Number(a?.seq) || 0) - (Number(b?.seq) || 0));
+    finalizeLogUpdate(sorted.map(entry => upsertLogEntry(entry)));
+}
+
+function resetLogTimeline(emptyText = '任务开始后，这里会按阶段展示详细处理记录。') {
+    logEntriesByKey.clear();
+    logSeenSeq.clear();
+    logEntryCount = 0;
+    logFilter = 'all';
+    logAutoFollow = true;
+    logUnseenCount = 0;
+    logLocalSeq = 0;
+    logStageIndex = -1;
+    logStageStates.clear();
+    $('progress-log').replaceChildren();
+    const empty = document.createElement('div');
+    empty.className = 'log-empty';
+    empty.textContent = emptyText;
+    $('progress-log').appendChild(empty);
+    $('log-count').textContent = '0 个节点';
+    $('log-issue-count').textContent = '0';
+    $('log-summary').textContent = '准备记录生成阶段与每条音频结果';
+    $$('#log-stage-rail [data-log-stage]').forEach(stage => {
+        stage.classList.remove('is-active', 'is-complete', 'is-warning', 'is-error');
+        const stageLabel = LOG_STAGE_LABELS[stage.dataset.logStage] || stage.textContent.trim();
+        stage.setAttribute('aria-label', `${stageLabel}：未开始`);
+        stage.removeAttribute('aria-current');
+    });
+    setLogFilter('all');
+    setLogAutoFollow(true);
+    setLogDetailsExpanded(true);
 }
 
 // ============================================================================
@@ -1468,13 +2321,17 @@ function addLogEntry(entry) {
 function updateProgress(event) {
     const processed = Math.min((event.completed || 0) + (event.failed || 0), event.total || 0);
     const pct = event.total > 0 ? (processed / event.total) * 100 : 0;
+    const eta = formatLogDuration(event.eta_ms);
     $('progress-bar').style.width = `${pct.toFixed(1)}%`;
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', pct.toFixed(1));
-    $('progress-stats').textContent = `${event.completed} / ${event.total}` + (event.failed > 0 ? `  ·  失败 ${event.failed}` : '');
+    $('progress-stats').textContent = `${event.completed} / ${event.total}`
+        + (event.failed > 0 ? `  ·  失败 ${event.failed}` : '')
+        + (eta ? `  ·  预计 ${eta}` : '');
     $('progress-percent').textContent = String(Math.round(pct));
     $('progress-completed').textContent = String(event.completed || 0);
     $('progress-remaining').textContent = String(Math.max((event.total || 0) - processed, 0));
     $('progress-failed').textContent = String(event.failed || 0);
+    updateLogTimelineHeader();
 }
 
 function updateStats(event) {
@@ -1592,6 +2449,7 @@ function handleDone(event) {
         total: lastStats ? lastStats.total : (event.total || 0),
         failed_items: lastStats?.failed_items || event.failed_items || [],
     };
+    latestCurrentResultEvent = doneData;
 
     // 更新生成页面状态
     const allFailed = doneData.total > 0 && doneData.failed >= doneData.total;
@@ -1610,6 +2468,7 @@ function handleDone(event) {
 
     // 构建结果页面
     buildResultPage(doneData);
+    void refreshHistoryRecords({ showLoading: false });
 
     // 短暂停留展示完成态，再进入交付中心。
     const completedAttemptId = generationAttemptId;
@@ -1617,18 +2476,91 @@ function handleDone(event) {
     resultNavigationTimer = setTimeout(() => {
         resultNavigationTimer = null;
         // 仅在当前仍在生成页（step 3）时才跳转，避免 restart 后误跳
-        if (currentStep === 3 && completedAttemptId === generationAttemptId && currentSession?.session_id === completedSessionId) {
+        if (currentView === 'workflow' && currentStep === 3 && completedAttemptId === generationAttemptId && currentSession?.session_id === completedSessionId) {
             goToStep(4);
         }
     }, 950);
 
-    showToast(doneData.failed > 0 ? `任务结束，${doneData.failed} 条生成失败` : '处理完成');
+    if (generatedFiles.length > 0 && !doneData.history_id) {
+        showToast('音频已完成，但历史记录保存失败，请先下载结果');
+    } else {
+        showToast(doneData.failed > 0 ? `任务结束，${doneData.failed} 条生成失败` : '处理完成');
+    }
 }
 
-function buildResultPage(event) {
+function prepareAudioFilters(files) {
+    const searchInput = $('audio-search-input');
+    const typeFilter = $('audio-type-filter');
+    const toolbar = $('audio-toolbar');
+    const empty = $('audio-filter-empty');
+    if (searchInput) searchInput.value = '';
+    if (empty) empty.hidden = true;
+    if (toolbar) toolbar.hidden = files.length < 5;
+    if (!typeFilter) return;
+
+    typeFilter.replaceChildren();
+    const allOption = document.createElement('option');
+    allOption.value = '';
+    allOption.textContent = '全部题型';
+    typeFilter.appendChild(allOption);
+    [...new Set(files.map(file => file?.doc_type).filter(Boolean))]
+        .sort((a, b) => String(a).localeCompare(String(b), 'zh-CN'))
+        .forEach(type => {
+            const option = document.createElement('option');
+            option.value = type;
+            option.textContent = type;
+            typeFilter.appendChild(option);
+        });
+}
+
+function filterAudioItems() {
+    const audioList = $('audio-list');
+    if (!audioList) return;
+    const query = String($('audio-search-input')?.value || '').trim().toLocaleLowerCase('zh-CN');
+    const selectedType = $('audio-type-filter')?.value || '';
+    const items = [...audioList.querySelectorAll('.audio-item')];
+    let visibleCount = 0;
+    items.forEach(item => {
+        const matchesQuery = !query || (item.dataset.searchText || '').includes(query);
+        const matchesType = !selectedType || item.dataset.docType === selectedType;
+        const visible = matchesQuery && matchesType;
+        item.hidden = !visible;
+        if (visible) visibleCount++;
+        else if (item._audioElement && !item._audioElement.paused) item._audioElement.pause();
+    });
+    const count = $('audio-count');
+    if (count) count.textContent = query || selectedType
+        ? `${visibleCount} / ${items.length} 个文件`
+        : `${items.length} 个文件`;
+    const empty = $('audio-filter-empty');
+    if (empty) empty.hidden = visibleCount > 0 || items.length === 0;
+}
+
+function buildResultPage(event, suppliedContext = null) {
     destroyWaveSurfers();
-    const failed = event.failed || 0;
-    const success = generatedFiles.length || event.completed || 0;
+    const workflowSourceTotal = summarizeParseResults(currentSession?.parse_results).total;
+    const context = suppliedContext || {
+        mode: 'current',
+        sessionId: currentSession?.session_id,
+        historyId: event.history_id || null,
+        sourceFilename: currentSession?.source_filename,
+        files: generatedFiles,
+        completed: event.completed || generatedFiles.length || 0,
+        failed: event.failed || 0,
+        total: workflowSourceTotal || event.total || 0,
+        format: lastGenerationConfig?.format || currentConfig?.format || 'mp3',
+        preview: Boolean(lastGenerationConfig?.preview && workflowSourceTotal > 3),
+        zipAvailable: Boolean(event.zip_path),
+        failedItems: Array.isArray(event.failed_items) ? event.failed_items : [],
+    };
+    activeResultContext = context;
+    const isHistory = context.mode === 'history';
+    const resultFiles = Array.isArray(context.files) ? context.files : [];
+    const success = isHistory
+        ? resultFiles.length
+        : (resultFiles.length || Number(context.completed) || 0);
+    const missingFiles = isHistory ? Math.max(0, (Number(context.completed) || 0) - resultFiles.length) : 0;
+    const failed = Math.max(0, Number(context.failed) || 0) + missingFiles;
     const resultTitle = $('result-title');
     const resultEyebrow = $('result-eyebrow');
     const resultIcon = document.querySelector('.result-success-icon');
@@ -1637,20 +2569,28 @@ function buildResultPage(event) {
     const resultWarningText = $('result-warning-text');
     const failureList = $('result-failure-list');
     const retryFailedBtn = $('retry-failed-btn');
-    const sourceTotal = summarizeParseResults(currentSession?.parse_results).total;
-    const isPreviewResult = Boolean(lastGenerationConfig?.preview && sourceTotal > 3);
-    const failedItems = Array.isArray(event.failed_items) ? event.failed_items : [];
+    const warningActions = document.querySelector('.result-warning-actions');
+    const backToHistoryBtn = $('back-to-history-btn');
+    const sourceTotal = Math.max(0, Number(context.total) || workflowSourceTotal || success + failed);
+    const isPreviewResult = Boolean(context.preview);
+    const failedItems = Array.isArray(context.failedItems) ? context.failedItems : [];
 
     if (generateFullBtn) {
-        generateFullBtn.hidden = !lastGenerationConfig?.preview || sourceTotal <= 3 || success === 0;
+        generateFullBtn.hidden = isHistory || !lastGenerationConfig?.preview || workflowSourceTotal <= 3 || success === 0;
     }
+    if (backToHistoryBtn) backToHistoryBtn.hidden = !isHistory;
+    if (warningActions) warningActions.hidden = isHistory;
     if (resultWarning) resultWarning.hidden = failed === 0;
     if (resultWarningText && failed > 0) {
-        resultWarningText.textContent = success > 0
-            ? `有 ${failed} 条内容未能生成。沿用当前设置只重试失败项；修改参数后会重新生成全部内容。`
-            : `本次共有 ${failed} 条内容生成失败。你可以沿用当前设置重试，或返回配置检查网络与声音设置。`;
+        resultWarningText.textContent = isHistory
+            ? (missingFiles > 0
+                ? `这条历史记录有 ${missingFiles} 个音频文件已不在本机，其余文件仍可试听和下载。`
+                : `这条历史记录有 ${failed} 条内容未能生成，已完成的音频仍可正常使用。`)
+            : (success > 0
+                ? `有 ${failed} 条内容未能生成。沿用当前设置只重试失败项；修改参数后会重新生成全部内容。`
+                : `本次共有 ${failed} 条内容生成失败。你可以沿用当前设置重试，或返回配置检查网络与声音设置。`);
     }
-    if (retryFailedBtn) retryFailedBtn.hidden = failed === 0 || !lastGenerationConfig;
+    if (retryFailedBtn) retryFailedBtn.hidden = isHistory || failed === 0 || !lastGenerationConfig;
     if (failureList) {
         failureList.innerHTML = '';
         const displayedItems = failedItems.slice(0, 5);
@@ -1669,7 +2609,9 @@ function buildResultPage(event) {
         if (failed > displayedItems.length && displayedItems.length > 0) {
             const remaining = document.createElement('li');
             remaining.className = 'result-failure-more';
-            remaining.textContent = `另有 ${failed - displayedItems.length} 条失败内容未展开，重试时会自动包含。`;
+            remaining.textContent = isHistory
+                ? `另有 ${failed - displayedItems.length} 条未完成内容未展开。`
+                : `另有 ${failed - displayedItems.length} 条失败内容未展开，重试时会自动包含。`;
             failureList.appendChild(remaining);
         }
     }
@@ -1692,24 +2634,29 @@ function buildResultPage(event) {
     }
 
     // 摘要
-    let summaryText = isPreviewResult
-        ? `本次试听生成 ${success} 个音频${failed > 0 ? `，失败 ${failed} 个` : ''}；确认效果后可继续生成完整文档`
-        : `成功生成 ${success} 个音频文件${failed > 0 ? `，失败 ${failed} 个` : ''}`;
+    let summaryText = isHistory
+        ? `「${context.sourceFilename || '未命名文档'}」可用 ${success} 个音频文件${failed > 0 ? `，${failed} 个未完成或已缺失` : ''}`
+        : (isPreviewResult
+            ? `本次试听生成 ${success} 个音频${failed > 0 ? `，失败 ${failed} 个` : ''}；确认效果后可继续生成完整文档`
+            : `成功生成 ${success} 个音频文件${failed > 0 ? `，失败 ${failed} 个` : ''}`);
+    if (!isHistory && success > 0 && !context.historyId) {
+        summaryText += '；本次未能写入历史记录，请先下载后再新建任务';
+    }
     $('result-summary').textContent = summaryText;
-    $('result-success-label').textContent = isPreviewResult ? '试听文件' : '已交付';
+    $('result-success-label').textContent = isPreviewResult ? '试听文件' : '已生成';
     $('result-success-count').textContent = String(success);
-    $('result-success-caption').textContent = isPreviewResult
+    $('result-success-caption').textContent = isPreviewResult && !isHistory
         ? `本次范围：前 ${Math.min(sourceTotal, 3)} 条`
         : '音频文件';
-    $('result-secondary-label').textContent = isPreviewResult ? '文档总量' : '未完成';
-    $('result-failed-count').textContent = String(isPreviewResult ? sourceTotal : failed);
-    $('result-secondary-caption').textContent = isPreviewResult ? '完整文档内容' : '待处理内容';
-    $('result-format-value').textContent = String(lastGenerationConfig?.format || currentConfig?.format || 'MP3').toUpperCase();
+    $('result-secondary-label').textContent = isPreviewResult && !isHistory ? '文档总量' : '未完成';
+    $('result-failed-count').textContent = String(isPreviewResult && !isHistory ? sourceTotal : failed);
+    $('result-secondary-caption').textContent = isPreviewResult && !isHistory ? '完整文档内容' : '待处理内容';
+    $('result-format-value').textContent = String(context.format || 'MP3').toUpperCase();
 
     // ZIP 卡片
     const zipCard = $('zip-card');
     const resultHero = $('result-hero');
-    if (event.zip_path) {
+    if (context.zipAvailable) {
         zipCard.style.display = 'flex';
         resultHero?.classList.remove('has-no-package');
         $('zip-desc').textContent = `ZIP 压缩包包含 ${success} 个已生成的音频文件`;
@@ -1722,8 +2669,9 @@ function buildResultPage(event) {
     const audioList = $('audio-list');
     const audioListSection = document.querySelector('.audio-list-section');
     audioList.innerHTML = '';
+    prepareAudioFilters(resultFiles);
 
-    if (generatedFiles.length === 0) {
+    if (resultFiles.length === 0) {
         audioList.innerHTML = '<div class="audio-empty">暂无音频文件</div>';
         $('audio-count').textContent = '0 个文件';
         if (audioListSection) audioListSection.hidden = true;
@@ -1731,18 +2679,25 @@ function buildResultPage(event) {
     }
 
     if (audioListSection) audioListSection.hidden = false;
-    $('audio-count').textContent = `${generatedFiles.length} 个文件`;
+    $('audio-count').textContent = `${resultFiles.length} 个文件`;
     const renderToken = waveformRenderToken;
 
-    generatedFiles.forEach((f, index) => {
+    resultFiles.forEach((f, index) => {
         const color = (currentConfig && currentConfig.type_colors && currentConfig.type_colors[f.doc_type]) || '#a8a29e';
-        const audioUrl = apiUrl(`/api/download/file/${currentSession.session_id}/${encodeURIComponent(f.filename)}`);
+        const audioUrl = isHistory
+            ? apiUrl(`/api/history/${encodeURIComponent(context.recordId)}/file/${encodeURIComponent(f.filename)}`)
+            : apiUrl(`/api/download/file/${encodeURIComponent(context.sessionId)}/${encodeURIComponent(f.filename)}`);
 
         // 使用 DOM API 安全构建，避免 innerHTML 注入风险
         const item = document.createElement('article');
         item.className = 'audio-item';
         item.setAttribute('aria-label', f.filename);
         item.style.setProperty('--item-index', String(Math.min(index, 5)));
+        item.dataset.docType = f.doc_type || '';
+        item.dataset.searchText = [f.filename, f.doc_type, f.category, f.text, f.text_preview]
+            .filter(Boolean)
+            .join(' ')
+            .toLocaleLowerCase('zh-CN');
 
         // --- 头部：序号 + 文件信息 + 下载按钮 ---
         const header = document.createElement('div');
@@ -1783,7 +2738,7 @@ function buildResultPage(event) {
             dlBtn.disabled = true;
             dlBtn.classList.add('is-busy');
             try {
-                await downloadFile(f.filename);
+                await downloadFile(f.filename, context);
             } finally {
                 dlBtn.disabled = false;
                 dlBtn.classList.remove('is-busy');
@@ -1799,6 +2754,7 @@ function buildResultPage(event) {
         const audio = new Audio();
         audio.preload = index < 2 ? 'auto' : 'none';
         audio.src = audioUrl;
+        item._audioElement = audio;
         audioElements.push(audio);
 
         const waveformWrap = document.createElement('div');
@@ -2174,17 +3130,29 @@ function createWaveSurfer(container, media, color, canvasWrap, onReady = null, o
 // 下载
 // ============================================================================
 
-async function downloadZip() {
-    if (!currentSession) return;
+async function downloadZip(context = activeResultContext) {
+    const target = context || (currentSession ? {
+        mode: 'current',
+        sessionId: currentSession.session_id,
+        sourceFilename: currentSession.source_filename,
+    } : null);
+    if (!target) return;
+    const isHistoryDownload = target.mode === 'history';
+    const pathEndpoint = isHistoryDownload
+        ? `/api/history/${encodeURIComponent(target.recordId)}/file-path?filename=output.zip`
+        : `/api/file-path?session_id=${encodeURIComponent(target.sessionId)}&filename=output.zip`;
+    const browserEndpoint = isHistoryDownload
+        ? `/api/history/${encodeURIComponent(target.recordId)}/zip`
+        : `/api/download/zip/${encodeURIComponent(target.sessionId)}`;
 
     if (isElectron) {
         try {
-            const resp = await fetch(apiUrl(`/api/file-path?session_id=${currentSession.session_id}&filename=output.zip`));
+            const resp = await fetch(apiUrl(pathEndpoint));
             if (resp.ok) {
                 const data = await resp.json();
                 if (data.path) {
                     // 使用源文件名作为 ZIP 下载文件名
-                    const sourceName = currentSession.source_filename.replace(/\.docx$/i, '');
+                    const sourceName = String(target.sourceFilename || 'WordTTS').replace(/\.docx$/i, '');
                     const result = await window.electronAPI.saveFileByPath(data.path, `${sourceName}_tts.zip`);
                     if (result && result.success) {
                         showToast('下载成功');
@@ -2206,23 +3174,34 @@ async function downloadZip() {
                     showToast('ZIP 文件不存在');
                 }
             } else {
-                showToast('下载失败：文件不存在或会话已过期');
+                showToast(isHistoryDownload ? '下载失败：历史 ZIP 已不存在' : '下载失败：文件不存在或会话已过期');
             }
         } catch (err) {
             console.error('下载异常:', err);
             showToast('下载失败');
         }
     } else {
-        window.open(apiUrl(`/api/download/zip/${currentSession.session_id}`), '_blank');
+        window.open(apiUrl(browserEndpoint), '_blank');
     }
 }
 
-async function downloadFile(filename) {
-    if (!currentSession) return;
+async function downloadFile(filename, context = activeResultContext) {
+    const target = context || (currentSession ? {
+        mode: 'current',
+        sessionId: currentSession.session_id,
+    } : null);
+    if (!target || !filename) return;
+    const isHistoryDownload = target.mode === 'history';
+    const pathEndpoint = isHistoryDownload
+        ? `/api/history/${encodeURIComponent(target.recordId)}/file-path?filename=${encodeURIComponent(filename)}`
+        : `/api/file-path?session_id=${encodeURIComponent(target.sessionId)}&filename=${encodeURIComponent(filename)}`;
+    const browserEndpoint = isHistoryDownload
+        ? `/api/history/${encodeURIComponent(target.recordId)}/file/${encodeURIComponent(filename)}`
+        : `/api/download/file/${encodeURIComponent(target.sessionId)}/${encodeURIComponent(filename)}`;
 
     if (isElectron) {
         try {
-            const resp = await fetch(apiUrl(`/api/file-path?session_id=${currentSession.session_id}&filename=${encodeURIComponent(filename)}`));
+            const resp = await fetch(apiUrl(pathEndpoint));
             if (resp.ok) {
                 const data = await resp.json();
                 if (data.path) {
@@ -2247,14 +3226,14 @@ async function downloadFile(filename) {
                     showToast('文件不存在');
                 }
             } else {
-                showToast('下载失败：文件不存在或会话已过期');
+                showToast(isHistoryDownload ? '下载失败：历史音频已不存在' : '下载失败：文件不存在或会话已过期');
             }
         } catch (err) {
             console.error('下载异常:', err);
             showToast('下载失败');
         }
     } else {
-        window.open(apiUrl(`/api/download/file/${currentSession.session_id}/${encodeURIComponent(filename)}`), '_blank');
+        window.open(apiUrl(browserEndpoint), '_blank');
     }
 }
 
@@ -2264,16 +3243,20 @@ async function downloadFile(filename) {
 
 function resetGenerateState() {
     isGenerating = false;
+    const historyNav = $('history-nav-btn');
+    if (historyNav) historyNav.disabled = isRestarting || isParsing;
 }
 
 async function requestRestart() {
     if (isRestarting) return;
     if (currentSession) {
-        let message = '更换文档会结束当前任务并清空任务记录，确定继续吗？';
+        let message = '更换文档会结束当前未完成任务，确定继续吗？';
         if (isGenerating) {
             message = '当前音频仍在生成。新建任务会中止处理并清理本次结果，确定继续吗？';
         } else if (generatedFiles.length > 0 || currentStep === 4) {
-            message = '新建任务会清理当前任务的生成结果，请先确认已完成下载。确定继续吗？';
+            message = latestCurrentResultEvent?.history_id
+                ? '本次结果已保存到历史记录。确定开始新任务吗？'
+                : '本次结果未能保存到历史记录。新建任务会清理当前结果，请先确认已完成下载。确定继续吗？';
         }
         if (!window.confirm(message)) return;
     }
@@ -2332,6 +3315,9 @@ async function restart() {
 
     // 重置状态
     generatedFiles = [];
+    activeResultContext = null;
+    latestCurrentResultEvent = null;
+    historyRequestToken++;
     logEntryCount = 0;
     lastStats = null;
     lastDownloadEvent = null;
@@ -2341,10 +3327,11 @@ async function restart() {
 
     // 重置 Step 1
     const uploadZone = $('upload-zone');
-    uploadZone.classList.remove('has-file', 'is-processing', 'dragover');
+    uploadZone.classList.remove('has-file', 'has-error', 'is-processing', 'dragover');
     uploadZone.setAttribute('aria-busy', 'false');
     uploadZone.querySelector('.upload-text-large').textContent = '拖拽文档到这里，或点击选择';
     uploadZone.querySelector('.upload-hint').textContent = '支持 .docx 文件 · 选择后会自动解析';
+    setUploadFeedback();
     updateSessionLabels();
 
     // 刷新预设列表（可能在上一次操作中保存了新配置）
@@ -2361,16 +3348,17 @@ async function restart() {
     $('gen-title').textContent = '正在生成音频';
     setGenerationVisualState('running');
     hideGenerationRecovery();
-    $('progress-log').innerHTML = '<div class="log-empty">等待任务开始...</div>';
-    $('log-count').textContent = '0 条';
+    resetLogTimeline('任务开始后，这里会按阶段展示详细处理记录。');
     $('type-stats').innerHTML = '';
 
     // 重置 Step 4
     $('audio-list').innerHTML = '<div class="audio-empty">暂无音频文件</div>';
     $('audio-count').textContent = '0 个文件';
+    prepareAudioFilters([]);
+    $('audio-filter-empty').hidden = true;
     document.querySelector('.audio-list-section').hidden = false;
     $('result-summary').textContent = '';
-    $('result-success-label').textContent = '已交付';
+    $('result-success-label').textContent = '已生成';
     $('result-success-count').textContent = '0';
     $('result-success-caption').textContent = '音频文件';
     $('result-secondary-label').textContent = '未完成';
@@ -2379,6 +3367,7 @@ async function restart() {
     $('result-format-value').textContent = 'MP3';
     $('result-hero').classList.remove('has-no-package');
     $('generate-full-btn').hidden = true;
+    $('back-to-history-btn').hidden = true;
     $('result-warning').hidden = true;
     $('result-failure-list').innerHTML = '';
     $('retry-failed-btn').hidden = true;
@@ -2392,6 +3381,7 @@ async function restart() {
 
     // 回到首页
     goToStep(1);
+    await refreshHistoryRecords({ showLoading: false });
     showToast(cleanupConfirmed
         ? '已重置，可以开始新任务'
         : '当前任务已关闭，请重新连接生成服务后继续');
@@ -2402,22 +3392,24 @@ async function restart() {
 // ============================================================================
 
 let toastTimer = null;
-function showToast(msg) {
+function showToast(msg, tone = 'info') {
     let toast = document.querySelector('.toast');
     if (!toast) {
         toast = document.createElement('div');
         toast.className = 'toast';
-        toast.setAttribute('role', 'status');
-        toast.setAttribute('aria-live', 'polite');
         document.body.appendChild(toast);
     }
+    toast.classList.remove('is-info', 'is-success', 'is-warning', 'is-error');
+    toast.classList.add(`is-${tone}`);
+    toast.setAttribute('role', tone === 'error' ? 'alert' : 'status');
+    toast.setAttribute('aria-live', tone === 'error' ? 'assertive' : 'polite');
     toast.textContent = msg;
     toast.classList.add('show');
 
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
         toast.classList.remove('show');
-    }, 2500);
+    }, tone === 'error' ? 5200 : 2800);
 }
 
 // ============================================================================

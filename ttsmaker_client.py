@@ -15,7 +15,7 @@ TTSMaker 客户端 — 男声 (788/Alfie) 音频生成
   - 全部完成后调用 close_session() 关闭浏览器
 
 依赖:
-  开发模式: pip install playwright ddddocr && playwright install chromium
+  开发模式: pip install playwright && playwright install chromium
   打包模式: Playwright + Chromium 已内置打包，无需额外安装
 """
 
@@ -100,7 +100,7 @@ async def ensure_session(voice_key="alfie"):
     global _session
 
     if not _TTSMAKER_AVAILABLE:
-        raise RuntimeError("TTSMaker 模块不可用，请安装 playwright 和 ddddocr")
+        raise RuntimeError("TTSMaker 模块不可用，请安装 playwright")
 
     if _session is not None:
         return _session
@@ -157,7 +157,7 @@ async def synth_male_ttsmaker(
         RuntimeError: TTSMaker 不可用或生成失败
     """
     if not _TTSMAKER_AVAILABLE:
-        raise RuntimeError("TTSMaker 模块不可用，请安装 playwright 和 ddddocr")
+        raise RuntimeError("TTSMaker 模块不可用，请安装 playwright")
 
     # 参数已经是 TTSMaker 格式，直接转为字符串
     ttsmaker_speed = str(rate)

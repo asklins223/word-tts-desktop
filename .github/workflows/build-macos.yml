@@ -31,7 +31,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Electron 43 的构建工具要求 Node >= 22.12。
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
 
@@ -115,6 +116,10 @@ jobs:
           kill "$backend_pid" 2>/dev/null || true
           wait "$backend_pid" 2>/dev/null || true
           test "$ready" -eq 1
+
+          PLAYWRIGHT_NODEJS_PATH="$app_path/Contents/MacOS/WordTTS" \
+            ELECTRON_RUN_AS_NODE=1 \
+            "$backend" --smoke-playwright
 
           "$app_path/Contents/MacOS/WordTTS" --smoke-test
 

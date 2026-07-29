@@ -13,8 +13,8 @@
 #   bash build_electron.sh --python     → 仅构建 Python 后端
 #   bash build_electron.sh --electron   → 仅构建 Electron 壳（需先 --python）
 #
-# 前置条件:
-#   pip install fastapi uvicorn edge-tts pydub python-docx pyinstaller imageio-ffmpeg
+# 前置条件（脚本会同步 Python 依赖）:
+#   建议先创建并激活独立 Python venv
 #   cd electron && npm install
 # ============================================================================
 
@@ -22,6 +22,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ELECTRON_DIR="$SCRIPT_DIR/electron"
+REQUIREMENTS_FILE="$SCRIPT_DIR/requirements_electron.txt"
 
 case "$(uname -m)" in
     arm64)
@@ -98,11 +99,26 @@ check_environment() {
         fi
     fi
 
-    # PyInstaller
-    if ! python3 -c "import PyInstaller" 2>/dev/null; then
-        warn "PyInstaller 未安装，正在安装..."
-        pip3 install pyinstaller
+    local isolated_python=1
+    if ! python3 -c 'import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+        isolated_python=0
+        warn "当前未使用 Python 虚拟环境；建议在独立 venv 中构建，避免全局可选依赖影响分析结果"
     fi
+
+    # 只从 Electron 专用依赖清单同步当前解释器，避免零散安装导致版本漂移。
+    if [ ! -f "$REQUIREMENTS_FILE" ]; then
+        err "缺少依赖清单: $REQUIREMENTS_FILE"
+        exit 1
+    fi
+    log "同步 Electron Python 构建依赖..."
+    python3 -m pip install --disable-pip-version-check -r "$REQUIREMENTS_FILE"
+    if [ "$isolated_python" -eq 1 ]; then
+        python3 -m pip check
+    fi
+    python3 -c "from importlib.metadata import version; raise SystemExit(0 if version('playwright') == '1.56.0' else 1)" || {
+        err "Playwright 版本必须为 1.56.0"
+        exit 1
+    }
 
     # Node.js
     if ! command -v node &> /dev/null; then
@@ -119,29 +135,9 @@ check_environment() {
         cd "$SCRIPT_DIR"
     fi
 
-    # 关键 Python 依赖
-    log "检查 Python 依赖..."
-    python3 -c "import fastapi, uvicorn, edge_tts, pydub, docx, aiohttp" 2>/dev/null || {
-        err "缺少关键 Python 依赖，请运行: pip3 install -r requirements_app.txt"
-        exit 1
-    }
-    python3 -c "import imageio_ffmpeg" 2>/dev/null || {
-        warn "imageio-ffmpeg 未安装，正在安装..."
-        pip3 install imageio-ffmpeg
-    }
-
-    # Playwright + ddddocr（TTSMaker 男声生成依赖）
-    python3 -c "import playwright, ddddocr, onnxruntime" 2>/dev/null || {
-        warn "TTSMaker 依赖未安装，正在安装 playwright + ddddocr..."
-        pip3 install playwright ddddocr onnxruntime greenlet pyee
-    }
-
-    # Playwright Chromium 浏览器二进制（打包内置必须先下载）
-    _pw_cache="$(python3 -c "import os; print(os.path.join(os.path.expanduser('~'), 'Library', 'Caches', 'ms-playwright'))" 2>/dev/null)"
-    if [ -z "$_pw_cache" ] || ! ls "$_pw_cache"/chromium-* 1>/dev/null 2>&1; then
-        warn "Playwright Chromium 未下载，正在安装..."
-        python3 -m playwright install chromium
-    fi
+    # 此命令幂等，只会补齐 Playwright 1.56.0 所要求的准确 Chromium revision。
+    log "检查 Playwright Chromium..."
+    python3 -m playwright install chromium
 
     echo "  环境检查通过 ✓"
 }
@@ -160,7 +156,7 @@ build_python_backend() {
     rm -rf "$PYINSTALLER_DIST" "$PYINSTALLER_WORK"
 
     cd "$SCRIPT_DIR"
-    pyinstaller server_pyinstaller.spec \
+    python3 -m PyInstaller server_pyinstaller.spec \
         --noconfirm \
         --distpath "$PYINSTALLER_DIST" \
         --workpath "$PYINSTALLER_WORK"
@@ -171,9 +167,11 @@ build_python_backend() {
         "$PYINSTALLER_DIST/server_backend"
     local browser_app
     browser_app="$(find "$PYINSTALLER_DIST/server_backend/_internal/playwright_browsers" \
-        -maxdepth 4 -type d -name "Google Chrome for Testing.app" 2>/dev/null | head -1)"
+        -maxdepth 4 -type d \
+        \( -name "Chromium.app" -o -name "Google Chrome for Testing.app" \) \
+        2>/dev/null | head -1)"
     if [ -z "$browser_app" ]; then
-        err "内置 Playwright Chromium 不完整：未找到 Google Chrome for Testing.app"
+        err "内置 Playwright Chromium 不完整：未找到 Chromium 浏览器应用"
         exit 1
     fi
     codesign --force --deep --sign - "$browser_app"
@@ -242,8 +240,8 @@ build_electron_app() {
         exit 1
     fi
 
-    # package.json 给出产品期望的最低版本，但本机构建环境里的 Python、OpenSSL、
-    # ONNX Runtime 或 Chromium 可能要求更高版本。扫描所有内置 Mach-O，避免
+    # package.json 给出产品期望的最低版本，但本机构建环境里的 Python、OpenSSL
+    # 或 Chromium 可能要求更高版本。扫描所有内置 Mach-O，避免
     # Info.plist 声称支持旧系统、实际却在启动时被 dyld 拒绝。
     local configured_macos_min
     local backend_macos_min="0.0"

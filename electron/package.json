@@ -26,6 +26,14 @@
       "buildResources": "build"
     },
     "afterSign": "notarize.js",
+    "electronLanguages": [
+      "en",
+      "en-US",
+      "en-GB",
+      "en_GB",
+      "zh-CN",
+      "zh_CN"
+    ],
     "files": [
       "main.js",
       "preload.js",

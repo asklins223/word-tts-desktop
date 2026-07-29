@@ -15,231 +15,37 @@ Electron 应用启动时 spawn 此可执行文件，无需用户安装 Python。
 """
 
 import sys
-import os
-import shutil
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
-# ============================================================================
-# 辅助函数：安全添加数据目录（目录不存在时跳过，不报错）
-# ============================================================================
-def safe_dir(src_dir, dest_dir):
-    """如果源目录存在则添加到 datas，否则跳过。"""
-    if os.path.isdir(src_dir):
-        return [(src_dir, dest_dir)]
-    print(f"[spec] 跳过不存在的目录: {src_dir}")
-    return []
-
-
-def required_file(src_file, dest_dir):
-    """添加构建所需文件；缺失时立即给出明确错误。"""
-    if not os.path.isfile(src_file):
-        raise FileNotFoundError(
-            f"缺少打包必需文件: {src_file}。请确认仓库为完整的干净检出。"
-        )
-    return (src_file, dest_dir)
+# GitHub 的 Windows runner 可能把 Python 控制台设为 cp1252。spec 中的中文
+# 诊断不应反过来令构建失败，因此在任何输出前固定为 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        _stream.reconfigure(encoding='utf-8', errors='backslashreplace')
 
 # ============================================================================
 # 数据文件（资源）
 # ============================================================================
 datas = [
-    # 核心模块
-    ('word_tts_app.py', '.'),
-    ('ttsmaker_client.py', '.'),
+    # word_parser 没有 __init__.py；运行时会把这个目录加入 sys.path。
+    # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
     ('word_parser/word_parser.py', 'word_parser'),
-    ('word_parser/word_parser_app.py', 'word_parser'),
-    # TTSMaker 模块（Playwright + Chromium 浏览器已内置打包）
-    required_file('ttsmaker/ttsmaker.py', 'ttsmaker'),
-    required_file('ttsmaker/__init__.py', 'ttsmaker'),
 ]
-
-# 安全添加可选目录（目录可能为空或不存在）
-datas += safe_dir('edge_tts/voice_profiles/', 'edge_tts/voice_profiles/')
 
 binaries = []
 hiddenimports = [
+    # 这些导入位于容错分支内，显式列出以避免 PyInstaller 将其判为可选。
+    # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx 的导入。
     'docx',
-    'lxml.etree',
-    'edge_tts',
-    'pydub',
-    'aiohttp',
-    'word_parser',
-    'word_tts_app',
     'ttsmaker_client',
     'ttsmaker.ttsmaker',
-    # Playwright + TTSMaker
-    'playwright',
+    # 只使用同步 Playwright API。playwright 自带的官方 PyInstaller hook
+    # 会收集 driver/package；下方在 Analysis 后剔除重复的 Node 可执行文件。
     'playwright.sync_api',
-    'playwright.async_api',
-    'playwright._impl',
-    'playwright._impl._driver',
-    'playwright.driver',
-    'greenlet',
-    'pyee',
-    # 验证码识别
-    'ddddocr',
-    'onnxruntime',
+    # FastAPI 在注册 UploadFile 路由时动态验证这两个兼容导入路径。
+    'python_multipart',
+    'multipart',
+    'multipart.multipart',
 ]
-
-# ============================================================================
-# 收集第三方库的所有子模块和资源
-# ============================================================================
-# --- 后端框架 ---
-for pkg in ['fastapi', 'uvicorn', 'starlette', 'anyio', 'h11', 'pydantic',
-            'pydantic_core', 'httpx', 'certifi', 'Jinja2']:
-    tmp = collect_all(pkg)
-    datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-
-# --- TTS 核心 ---
-for pkg in ['edge_tts', 'aiohttp', 'aiosignal', 'frozenlist', 'multidict',
-            'yarl', 'async_timeout', 'aiofiles']:
-    tmp = collect_all(pkg)
-    datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-
-# --- 文档解析 ---
-for pkg in ['docx', 'lxml', 'PIL']:
-    tmp = collect_all(pkg)
-    datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-
-# --- 音频处理 ---
-for pkg in ['pydub', 'imageio_ffmpeg']:
-    tmp = collect_all(pkg)
-    datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-
-# --- Playwright + TTSMaker（男声生成）---
-# Playwright Python 模块 + driver（含 Node.js 运行时）
-for pkg in ['playwright', 'greenlet', 'pyee']:
-    try:
-        tmp = collect_all(pkg)
-        datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-        print(f"[spec] 已收集 {pkg}")
-    except Exception as e:
-        print(f"[spec] 警告: 收集 {pkg} 失败: {e}")
-
-# ddddocr 只需要运行时核心和内置 OCR 模型。不要 collect_all(onnxruntime)：
-# 它会递归打入 transformers、torch、pandas、测试与量化工具，令包体暴涨且
-# 带入不完整的可选动态库。onnxruntime 自带的 PyInstaller hook 会收集 capi。
-try:
-    datas += [
-        item for item in collect_data_files('ddddocr')
-        if os.path.basename(item[0]) == 'common_old.onnx'
-    ]
-    hiddenimports += collect_submodules(
-        'ddddocr',
-        filter=lambda name: not name.startswith('ddddocr.api'),
-    )
-    print("[spec] 已收集 ddddocr 运行时与 OCR 模型")
-except Exception as e:
-    print(f"[spec] 警告: 收集 ddddocr 失败: {e}（验证码识别将不可用）")
-
-# --- 其他依赖 ---
-for pkg in ['markdown_it', 'mdit_py_plugins', 'safehttpx', 'ffmpy',
-            'sniffio', 'idna', 'httpcore', 'click', 'typing_extensions',
-            'python_multipart']:
-    tmp = collect_all(pkg)
-    datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-
-# ============================================================================
-# Playwright Chromium 浏览器二进制 — 打包内置，开箱即用
-# ============================================================================
-# 查找 Playwright 安装的 Chromium 浏览器目录
-_chromium_browser_added = False
-
-# 方式 1: 通过 PLAYWRIGHT_BROWSERS_PATH 环境变量查找
-_pw_browsers_path = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
-if _pw_browsers_path and os.path.isdir(_pw_browsers_path):
-    for _name in sorted(os.listdir(_pw_browsers_path), reverse=True):
-        if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
-            _chromium_dir = os.path.join(_pw_browsers_path, _name)
-            if os.path.isdir(_chromium_dir):
-                print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
-                _chromium_browser_added = True
-                break
-
-# 方式 2: 默认缓存路径 ~/Library/Caches/ms-playwright/ (macOS)
-if not _chromium_browser_added:
-    _default_cache = os.path.join(os.path.expanduser('~'), 'Library', 'Caches', 'ms-playwright')
-    if os.path.isdir(_default_cache):
-        for _name in sorted(os.listdir(_default_cache), reverse=True):
-            if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
-                _chromium_dir = os.path.join(_default_cache, _name)
-                if os.path.isdir(_chromium_dir):
-                    print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
-                    _chromium_browser_added = True
-                    break
-
-# 方式 3: ~/.cache/ms-playwright/ (Linux)
-if not _chromium_browser_added:
-    _linux_cache = os.path.join(os.path.expanduser('~'), '.cache', 'ms-playwright')
-    if os.path.isdir(_linux_cache):
-        for _name in sorted(os.listdir(_linux_cache), reverse=True):
-            if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
-                _chromium_dir = os.path.join(_linux_cache, _name)
-                if os.path.isdir(_chromium_dir):
-                    print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
-                    _chromium_browser_added = True
-                    break
-
-# 方式 4: %USERPROFILE%\AppData\Local\ms-playwright\ (Windows)
-if not _chromium_browser_added and sys.platform == 'win32':
-    _windows_cache = os.environ.get('LOCALAPPDATA', os.path.join(os.environ.get('USERPROFILE', os.path.expanduser('~')), 'AppData', 'Local'))
-    if _windows_cache:
-        _win_playwright = os.path.join(_windows_cache, 'ms-playwright')
-        if os.path.isdir(_win_playwright):
-            for _name in sorted(os.listdir(_win_playwright), reverse=True):
-                if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
-                    _chromium_dir = os.path.join(_win_playwright, _name)
-                    if os.path.isdir(_chromium_dir):
-                        print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
-                        _chromium_browser_added = True
-                        break
-
-if not _chromium_browser_added:
-    print("[spec] 警告: 未找到 Playwright Chromium 浏览器二进制！")
-    print("[spec] 请先运行: playwright install chromium")
-    print("[spec] 构建脚本将无法把 Chromium 复制进最终后端")
-
-# ============================================================================
-# FFmpeg 二进制文件 — 确保 imageio_ffmpeg 自带的 ffmpeg 被打包进去
-# ============================================================================
-# 方式 1: 通过 imageio_ffmpeg.get_ffmpeg_exe() 获取并显式添加
-try:
-    import imageio_ffmpeg as _iio_ff
-    _ffmpeg_exe = _iio_ff.get_ffmpeg_exe()
-    if _ffmpeg_exe and os.path.isfile(_ffmpeg_exe):
-        # 将 ffmpeg 二进制文件添加到 imageio_ffmpeg/binaries/ 目录
-        binaries.append((_ffmpeg_exe, 'imageio_ffmpeg/binaries'))
-        print(f"[spec] 已添加 FFmpeg 二进制: {_ffmpeg_exe}")
-    else:
-        print("[spec] 警告: imageio_ffmpeg 未找到 ffmpeg 二进制文件")
-except Exception as _e:
-    print(f"[spec] 警告: 获取 imageio_ffmpeg ffmpeg 失败: {_e}")
-
-# 方式 2: 手动搜索 imageio_ffmpeg/binaries/ 目录中的所有文件
-try:
-    import imageio_ffmpeg as _iio_ff2
-    _binaries_dir = os.path.join(os.path.dirname(_iio_ff2.__file__), 'binaries')
-    if os.path.isdir(_binaries_dir):
-        for _name in os.listdir(_binaries_dir):
-            _path = os.path.join(_binaries_dir, _name)
-            if os.path.isfile(_path) and _name.lower().startswith('ffmpeg'):
-                # 避免重复添加
-                _already = any(os.path.basename(b[0]) == _name for b in binaries)
-                if not _already:
-                    binaries.append((_path, 'imageio_ffmpeg/binaries'))
-                    print(f"[spec] 已添加 FFmpeg 二进制 (扫描): {_name}")
-except Exception as _e2:
-    print(f"[spec] 警告: 扫描 imageio_ffmpeg/binaries 失败: {_e2}")
-
-# 方式 3: 系统 PATH 中的 ffmpeg 作为备用
-_system_ff = shutil.which('ffmpeg')
-if _system_ff:
-    _already_sys = any(
-        os.path.basename(b[0]).lower().startswith('ffmpeg')
-        for b in binaries
-    )
-    if not _already_sys:
-        binaries.append((_system_ff, 'imageio_ffmpeg/binaries'))
-        print(f"[spec] 已添加系统 FFmpeg: {_system_ff}")
 
 # ============================================================================
 # 构建
@@ -257,33 +63,67 @@ a = Analysis(
         # 不需要旧版 UI 框架
         'gradio', 'gradio_client',
         'webview', 'bottle', 'proxy_tools',
+        # 构建工具/可选 Web 功能不属于后端运行时。
+        'PIL',
+        'httpx', 'httpcore', 'safehttpx',
+        'jinja2', 'Jinja2', 'markdown', 'markdown_it', 'mdit_py_plugins',
+        'aiofiles', 'ffmpy',
+        # 本应用只使用 REST + SSE，不启用 WebSocket 或可选高性能协议栈。
+        'websockets', 'wsproto', 'uvloop', 'httptools',
         # 不需要的重量级库
         'numba', 'llvmlite',  # numpy 的 JIT 编译器，本应用不需要
         'mysql', 'mysql_mcp_server', 'pymysql', 'mysql.connector', 'aiomysql',
         'sqlalchemy', 'alembic', 'redis', 'celery',
         'pytest', 'IPython', 'notebook', 'jupyter',
-        'cv2', 'sklearn', 'scipy', 'torch', 'tensorflow',
+        'numpy', 'cv2', 'sklearn', 'scipy', 'torch', 'tensorflow',
         'torchaudio', 'torchvision', 'transformers', 'datasets', 'sympy',
         'pandas', 'pyarrow', 'matplotlib', 'openpyxl', 'h5py',
         'moviepy', 'librosa', 'soundfile', 'selenium', 'langchain',
         'boto3', 'botocore', 'google.cloud',
-        # onnxruntime 只用于 ddddocr 推理；排除训练、转换和基准工具。
-        'onnxruntime.tools', 'onnxruntime.transformers',
-        'onnxruntime.quantization', 'onnxruntime.training',
-        'onnxruntime.backend', 'onnxruntime.datasets',
-        'onnxruntime.experimental',
         # 不需要 Firefox / WebKit 浏览器（仅用 Chromium）
-        'playwright.firefox', 'playwright.webkit',
-        # 排除测试模块（collect_all 会拉入 numpy 的测试子包）
-        'numpy.tests', 'numpy.f2py.tests', 'numpy.lib.tests',
-        'numpy.ma.tests', 'numpy.linalg.tests', 'numpy.random.tests',
-        'numpy.typing.tests', 'numpy.matrixlib.tests', 'numpy.fft.tests',
-        'numpy.polynomial.tests', 'numpy.core.tests',
-        'numpy.distutils.tests', 'numpy.compat.tests',
+        'playwright.async_api', 'playwright.firefox', 'playwright.webkit',
     ],
     noarchive=False,
     optimize=0,
 )
+
+
+def _normalized_target(entry):
+    """将 PyInstaller TOC 目标路径归一化为跨平台的 POSIX 小写路径。"""
+    return str(entry[0]).replace('\\', '/').lstrip('./').casefold()
+
+
+def _is_playwright_bundled_node(entry):
+    target = _normalized_target(entry)
+    return target in {
+        'playwright/driver/node',
+        'playwright/driver/node.exe',
+    }
+
+
+# Playwright 官方 hook 会收集完整 driver，其中自带一份约 106MB 的 Node。
+# Electron 主进程通过 PLAYWRIGHT_NODEJS_PATH 指向 process.execPath，因此只剔除
+# node/node.exe，保留 driver/package/cli.js 及其余协议文件。
+_removed_playwright_node = [
+    entry for entry in [*a.binaries, *a.datas]
+    if _is_playwright_bundled_node(entry)
+]
+a.binaries = [entry for entry in a.binaries if not _is_playwright_bundled_node(entry)]
+a.datas = [entry for entry in a.datas if not _is_playwright_bundled_node(entry)]
+
+_analysis_entries = [*a.binaries, *a.datas]
+if not any(
+    _normalized_target(entry) == 'playwright/driver/package/cli.js'
+    for entry in _analysis_entries
+):
+    raise RuntimeError('Playwright driver/package/cli.js 未被收集，无法启动同步 driver')
+if not any(
+    _normalized_target(entry).startswith('imageio_ffmpeg/binaries/ffmpeg')
+    for entry in _analysis_entries
+):
+    raise RuntimeError('imageio-ffmpeg 的 FFmpeg 二进制未被收集')
+
+print(f"[spec] 已移除 Playwright 内置 Node: {len(_removed_playwright_node)} 个文件")
 
 pyz = PYZ(a.pure)
 

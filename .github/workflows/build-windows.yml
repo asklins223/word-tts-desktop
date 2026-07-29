@@ -56,7 +56,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Electron 43 的构建工具要求 Node >= 22.12。
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
 
@@ -86,13 +87,13 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements_electron.txt
+          python -m pip install -r requirements_electron.txt
 
       # ======================================================================
       # 5. 安装 Playwright Chromium 浏览器（TTSMaker 男声生成需要）
       # ======================================================================
       - name: Install Playwright browsers
-        run: playwright install chromium
+        run: python -m playwright install chromium
 
       # ======================================================================
       # 6. 安装 Electron 依赖
@@ -109,8 +110,11 @@ jobs:
       # 7. PyInstaller 打包后端
       # ======================================================================
       - name: Build Python backend
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
         run: |
-          pyinstaller server_pyinstaller.spec `
+          python -m PyInstaller server_pyinstaller.spec `
             --noconfirm `
             --distpath electron/server_backend_build `
             --workpath electron/server_backend_build_tmp
@@ -184,6 +188,21 @@ jobs:
         shell: pwsh
         run: |
           $exe = Resolve-Path "electron/release/win-unpacked/WordTTS.exe"
+          $backend = Resolve-Path "electron/release/win-unpacked/resources/server_backend/server_backend.exe"
+          $previousNodePath = $env:PLAYWRIGHT_NODEJS_PATH
+          $previousElectronNodeMode = $env:ELECTRON_RUN_AS_NODE
+          try {
+            $env:PLAYWRIGHT_NODEJS_PATH = "$exe"
+            $env:ELECTRON_RUN_AS_NODE = "1"
+            & $backend --smoke-playwright
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Playwright/Chromium 打包冒烟测试失败，代码: $LASTEXITCODE"
+              exit 1
+            }
+          } finally {
+            $env:PLAYWRIGHT_NODEJS_PATH = $previousNodePath
+            $env:ELECTRON_RUN_AS_NODE = $previousElectronNodeMode
+          }
           $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
           if (-not $process.WaitForExit(120000)) {
             Stop-Process -Id $process.Id -Force

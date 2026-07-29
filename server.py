@@ -14,6 +14,9 @@ import asyncio
 import hashlib
 import argparse
 import secrets
+import threading
+import time
+from collections import deque
 from datetime import datetime
 
 # ============================================================================
@@ -22,7 +25,16 @@ from datetime import datetime
 # PyInstaller 兼容：打包后 __file__ 指向临时解压目录，
 # BASE_DIR 需要指向可执行文件所在目录（用于写入输出文件），
 # RESOURCE_DIR 指向 _MEIPASS（用于读取打包的只读资源）。
-if getattr(sys, 'frozen', False):
+_configured_data_dir = os.environ.get("WORDTTS_DATA_DIR", "").strip()
+if _configured_data_dir:
+    BASE_DIR = os.path.abspath(os.path.expanduser(_configured_data_dir))
+    os.makedirs(BASE_DIR, exist_ok=True)
+    RESOURCE_DIR = (
+        getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+        if getattr(sys, 'frozen', False)
+        else os.path.dirname(os.path.abspath(__file__))
+    )
+elif getattr(sys, 'frozen', False):
     # 打包模式：BASE_DIR 指向用户数据目录（可写、持久化），
     # 避免写入 .app 包内部（代码签名后不可写，更新时会被擦除）。
     if sys.platform == 'darwin':
@@ -72,13 +84,19 @@ from uvicorn.config import LOGGING_CONFIG as _UVICORN_DEFAULT_LOG_CONFIG
 # 会话与进度管理
 # ============================================================================
 
+MAX_LOG_ENTRIES = 500  # 重连时保留最近的结构化日志
+MAX_EVENT_JOURNAL_ENTRIES = 1200  # 每个 SSE 连接按游标独立读取的有界事件日志
+
 class SessionState:
     """每个处理会话的状态。"""
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.session_dir = session_output_dir(session_id)
-        self.queue: asyncio.Queue = asyncio.Queue()
+        self.event_seq: int = 0
+        self.event_journal = deque(maxlen=MAX_EVENT_JOURNAL_ENTRIES)
+        self.event_signal = asyncio.Event()
         self.log_entries: list = []
+        self.log_seq: int = 0
         self.progress: Optional[dict] = None
         self.parse_results: Optional[list] = None
         self.source_fingerprint: Optional[dict] = None
@@ -90,16 +108,22 @@ class SessionState:
         self.task: Optional[asyncio.Task] = None  # 当前生成任务引用
         self.final_download: Optional[dict] = None  # 最终 download 事件（供重连时重放）
         self.final_zip_path: Optional[str] = None  # 最终 zip 路径（供重连时重放）
+        self.final_done: Optional[dict] = None  # 完整 done 事件（含历史记录 ID，供重连时重放）
         self.final_error: Optional[dict] = None  # 终止错误（供并存/重连 SSE 重放）
+        self.final_cancelled: Optional[dict] = None  # 取消终态（供断线重连 SSE 重放）
         self.last_stats: Optional[dict] = None  # 最新 stats 事件（供重连时重放）
         self.lifecycle_version: int = 0  # cleanup 时递增，使并发中的旧启动请求失效
 
 # 全局会话注册表
 _sessions: dict[str, SessionState] = {}
 MAX_SESSIONS = 20  # 最大并发会话数，防止内存泄漏
+MAX_HISTORY_RECORDS = 20
 PARSE_CACHE_VERSION = 1
 SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
+HISTORY_MANIFEST_FILENAME = "history.json"
+HISTORY_SCHEMA_VERSION = 1
+_history_lock = threading.RLock()
 
 
 def session_output_dir(session_id: str) -> str:
@@ -151,6 +175,263 @@ def _atomic_write_json(path: str, data) -> None:
             pass
 
 
+def history_id_for_session(session_id: str) -> str:
+    """生成不暴露原始会话名、且可幂等复用的历史记录 ID。"""
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:24]
+
+
+def _history_manifest_path(session_dir: str) -> str:
+    return os.path.join(session_dir, HISTORY_MANIFEST_FILENAME)
+
+
+def _is_confined_history_dir(session_dir: str) -> bool:
+    try:
+        root = os.path.realpath(core.OUTPUT_BASE)
+        candidate = os.path.realpath(session_dir)
+        return (
+            os.path.commonpath([root, candidate]) == root
+            and candidate != root
+            and os.path.basename(candidate).startswith(SESSION_DIR_PREFIX)
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _clean_history_file(item: dict, session_dir: str) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    filename = str(item.get("filename") or "")
+    if not filename or filename != os.path.basename(filename):
+        return None
+    try:
+        file_path = confined_file_path(os.path.join(session_dir, "audio"), filename)
+    except HTTPException:
+        return None
+    return {
+        "id": str(item.get("id") or "")[:160],
+        "filename": filename,
+        "doc_type": str(item.get("doc_type") or "")[:160],
+        "category": str(item.get("category") or "")[:160],
+        "text": str(item.get("text") or "")[:20000],
+        "text_preview": str(item.get("text_preview") or "")[:500],
+        "available": os.path.isfile(file_path),
+    }
+
+
+def _read_history_manifest(session_dir: str) -> Optional[dict]:
+    """读取并清洗历史清单；返回值不会包含任意文件路径或生成凭据。"""
+    if not _is_confined_history_dir(session_dir):
+        return None
+    try:
+        with open(_history_manifest_path(session_dir), "r", encoding="utf-8") as source:
+            raw = json.load(source)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(raw, dict) or raw.get("schema_version") != HISTORY_SCHEMA_VERSION:
+        return None
+
+    session_id = str(raw.get("session_id") or "")
+    history_id = str(raw.get("history_id") or "")
+    if not session_id or history_id != history_id_for_session(session_id):
+        return None
+
+    files = []
+    for item in raw.get("files") or []:
+        cleaned = _clean_history_file(item, session_dir)
+        if cleaned:
+            files.append(cleaned)
+
+    completed = max(0, int(raw.get("completed") or len(files)))
+    failed = max(0, int(raw.get("failed") or 0))
+    total = max(completed + failed, int(raw.get("total") or 0))
+    completed_at = str(raw.get("completed_at") or raw.get("created_at") or "")
+    zip_path = os.path.join(session_dir, "output.zip")
+    failed_items = []
+    for item in (raw.get("failed_items") or [])[:20]:
+        if not isinstance(item, dict):
+            continue
+        failed_items.append({
+            "id": str(item.get("id") or "")[:160],
+            "doc_type": str(item.get("doc_type") or "")[:160],
+            "error": str(item.get("error") or "")[:240],
+        })
+
+    return {
+        "id": history_id,
+        "session_id": session_id,
+        "source_filename": os.path.basename(str(raw.get("source_filename") or "未命名文档.docx")),
+        "created_at": str(raw.get("created_at") or completed_at),
+        "completed_at": completed_at,
+        "completed": completed,
+        "failed": failed,
+        "total": total,
+        "format": str(raw.get("format") or "mp3")[:16].lower(),
+        "preview": bool(raw.get("preview")),
+        "zip_available": os.path.isfile(zip_path),
+        "available_files": sum(1 for item in files if item["available"]),
+        "files": files,
+        "failed_items": failed_items,
+        "_session_dir": session_dir,
+    }
+
+
+def _history_records() -> list[dict]:
+    records = []
+    try:
+        entries = [
+            entry for entry in os.scandir(core.OUTPUT_BASE)
+            if entry.name.startswith(SESSION_DIR_PREFIX) and entry.is_dir(follow_symlinks=False)
+        ]
+    except OSError:
+        return records
+    for entry in entries:
+        record = _read_history_manifest(entry.path)
+        # 即使成品被用户或外部工具移走，也保留清单记录供界面展示缺失状态，
+        # 并让用户仍能显式删除该历史目录。
+        if record:
+            records.append(record)
+    records.sort(key=lambda item: item.get("completed_at") or "", reverse=True)
+    return records
+
+
+def _public_history_record(record: dict, include_files: bool) -> dict:
+    public = {key: value for key, value in record.items() if not key.startswith("_") and key != "session_id"}
+    if not include_files:
+        public.pop("files", None)
+        public.pop("failed_items", None)
+    return public
+
+
+def list_history_records() -> list[dict]:
+    with _history_lock:
+        # 启动后首次读取也执行一次收敛，覆盖上次进程在写清单与裁剪之间异常退出的情况。
+        _trim_history_records()
+        return [_public_history_record(record, False) for record in _history_records()[:MAX_HISTORY_RECORDS]]
+
+
+def get_history_record(history_id: str) -> Optional[dict]:
+    if len(history_id) != 24 or any(ch not in "0123456789abcdef" for ch in history_id):
+        return None
+    with _history_lock:
+        for record in _history_records():
+            if record["id"] == history_id:
+                return _public_history_record(record, True)
+    return None
+
+
+def _find_history_record_internal(history_id: str) -> Optional[dict]:
+    if len(history_id) != 24 or any(ch not in "0123456789abcdef" for ch in history_id):
+        return None
+    for record in _history_records():
+        if record["id"] == history_id:
+            return record
+    return None
+
+
+def _trim_history_records() -> None:
+    records = _history_records()
+    for record in records[MAX_HISTORY_RECORDS:]:
+        session = _sessions.get(record["session_id"])
+        if session and session.task and not session.task.done():
+            continue
+        session_dir = record["_session_dir"]
+        if not _is_confined_history_dir(session_dir):
+            continue
+        shutil.rmtree(session_dir, ignore_errors=True)
+        _sessions.pop(record["session_id"], None)
+
+
+def archive_history_record(
+    session: SessionState,
+    progress: dict,
+    file_list: list[dict],
+    zip_path: Optional[str],
+) -> Optional[dict]:
+    """把已完成会话登记为历史记录，并物理淘汰第 21 条及更早记录。"""
+    if not file_list or not _is_confined_history_dir(session.session_dir):
+        return None
+    failed_items = [
+        {
+            "id": item.get("id", ""),
+            "doc_type": item.get("doc_type", ""),
+            "error": str(item.get("error") or "")[:240],
+        }
+        for item in progress.get("items", [])
+        if item.get("status") == "error"
+    ][:20]
+    now = datetime.now().isoformat()
+    manifest = {
+        "schema_version": HISTORY_SCHEMA_VERSION,
+        "history_id": history_id_for_session(session.session_id),
+        "session_id": session.session_id,
+        "source_filename": os.path.basename(str(progress.get("source_file") or "未命名文档.docx")),
+        "created_at": str(progress.get("created_at") or now),
+        "completed_at": now,
+        "total": max(0, int(progress.get("total_items") or 0)),
+        "completed": max(0, int(progress.get("completed") or len(file_list))),
+        "failed": max(0, int(progress.get("failed") or 0)),
+        "format": str((progress.get("config") or {}).get("format") or "mp3")[:16].lower(),
+        "preview": bool((progress.get("config") or {}).get("preview")),
+        "zip_available": bool(zip_path and os.path.isfile(zip_path)),
+        "failed_items": failed_items,
+        "files": [
+            {
+                "id": str(item.get("id") or "")[:160],
+                "filename": os.path.basename(str(item.get("filename") or "")),
+                "doc_type": str(item.get("doc_type") or "")[:160],
+                "category": str(item.get("category") or "")[:160],
+                "text": str(item.get("text") or "")[:20000],
+                "text_preview": str(item.get("text_preview") or "")[:500],
+            }
+            for item in file_list
+            if item.get("filename") and os.path.basename(str(item.get("filename"))) == str(item.get("filename"))
+        ],
+    }
+    if not manifest["files"]:
+        return None
+    with _history_lock:
+        _atomic_write_json(_history_manifest_path(session.session_dir), manifest)
+        _trim_history_records()
+        record = _read_history_manifest(session.session_dir)
+        return _public_history_record(record, True) if record else None
+
+
+def delete_history_record(history_id: str) -> bool:
+    with _history_lock:
+        record = _find_history_record_internal(history_id)
+        if not record:
+            return False
+        session = _sessions.get(record["session_id"])
+        if session and session.task and not session.task.done():
+            raise HTTPException(status_code=409, detail="任务仍在生成，暂时不能删除")
+        session_dir = record["_session_dir"]
+        if not _is_confined_history_dir(session_dir):
+            raise HTTPException(status_code=400, detail="非法历史记录路径")
+        shutil.rmtree(session_dir)
+        _sessions.pop(record["session_id"], None)
+        return True
+
+
+def resolve_history_asset(history_id: str, filename: str) -> tuple[str, dict]:
+    with _history_lock:
+        record = _find_history_record_internal(history_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="历史记录不存在")
+        safe_name = os.path.basename(filename)
+        if not safe_name or safe_name != filename:
+            raise HTTPException(status_code=400, detail="非法文件名")
+        if safe_name == "output.zip":
+            file_path = confined_file_path(record["_session_dir"], safe_name)
+        else:
+            allowed_names = {item["filename"] for item in record["files"]}
+            if safe_name not in allowed_names:
+                raise HTTPException(status_code=404, detail="文件不在历史记录中")
+            file_path = confined_file_path(os.path.join(record["_session_dir"], "audio"), safe_name)
+        if not os.path.isfile(file_path):
+            raise HTTPException(status_code=404, detail="历史文件不存在")
+        return file_path, record
+
+
 def load_parse_cache(session_dir: str, fingerprint: dict) -> Optional[list]:
     parsed_path = os.path.join(session_dir, "parsed.json")
     meta_path = os.path.join(session_dir, SOURCE_META_FILENAME)
@@ -172,7 +453,13 @@ def clear_generated_outputs(session_dir: str) -> None:
     """仅清除可再生成的产物，保留目录本身。"""
     for dirname in ("audio", ".tmp"):
         shutil.rmtree(os.path.join(session_dir, dirname), ignore_errors=True)
-    for filename in ("progress.json", "progress.json.tmp", "output.zip"):
+    for filename in (
+        "progress.json",
+        "progress.json.tmp",
+        "output.zip",
+        HISTORY_MANIFEST_FILENAME,
+        f"{HISTORY_MANIFEST_FILENAME}.tmp",
+    ):
         try:
             os.remove(os.path.join(session_dir, filename))
         except FileNotFoundError:
@@ -311,11 +598,10 @@ def get_or_create_session(session_id: str) -> SessionState:
     return _sessions[session_id]
 
 
-MAX_LOG_ENTRIES = 500  # 日志条目上限，防止长任务内存膨胀
-
-
 def push_event(session: SessionState, event: dict):
     """向会话队列推送事件，同时更新本地状态。"""
+    session.event_seq += 1
+    event = {**event, "event_seq": session.event_seq}
     if event["type"] == "log":
         session.log_entries.append(event["entry"])
         # 超出上限时丢弃最早的日志（保留最近 MAX_LOG_ENTRIES 条）
@@ -326,12 +612,18 @@ def push_event(session: SessionState, event: dict):
     elif event["type"] == "stats":
         session.last_stats = event
     elif event["type"] == "done":
+        session.final_done = dict(event)
         session.done = True
     elif event["type"] == "error":
         session.final_error = event
+    elif event["type"] == "cancelled":
+        session.final_cancelled = dict(event)
     elif event["type"] == "end":
         session.ended = True
-    session.queue.put_nowait(event)
+    session.event_journal.append(event)
+    # asyncio.Event 是广播唤醒：所有 SSE 连接都会按各自游标读取同一事件，
+    # 不会像单消费者 Queue 那样在重连窗口互相“偷走”进度。
+    session.event_signal.set()
 
 
 # ============================================================================
@@ -345,16 +637,74 @@ async def generate_audio_stream(
     config: dict,
 ):
     """
-    异步生成音频，通过 session.queue 推送进度事件。
+    异步生成音频，通过会话事件日志向所有 SSE 连接广播进度。
     复用 word_tts_app.py 中的所有核心函数。
     """
     # finally 中需要读取该变量；必须在任何可能抛错的 I/O 之前初始化。
     has_male_voice = False
+    task_started_at = time.perf_counter()
+    eta_started_at: Optional[float] = None
+    eta_baseline_processed = 0
 
-    def log(level: str, msg: str):
+    def log(
+        level: str,
+        msg: str,
+        *,
+        stage: str = "system",
+        kind: str = "notice",
+        status: Optional[str] = None,
+        key: Optional[str] = None,
+        title: Optional[str] = None,
+        detail: Optional[str] = None,
+        item: Optional[dict] = None,
+        progress_snapshot: Optional[dict] = None,
+        duration_ms: Optional[int] = None,
+    ):
+        session.log_seq += 1
+        entry = {
+            "v": 1,
+            "time": core.now_str(),
+            "ts": datetime.now().astimezone().isoformat(),
+            "level": level,
+            "msg": msg,
+            "stage": stage,
+            "kind": kind,
+            "status": status or {
+                "progress": "running",
+                "success": "success",
+                "warn": "warning",
+                "error": "error",
+            }.get(level, "info"),
+            "title": str(title or msg)[:240],
+            "seq": session.log_seq,
+        }
+        if key:
+            entry["key"] = str(key)[:160]
+        if detail:
+            entry["detail"] = str(detail)[:1200]
+        if duration_ms is not None:
+            entry["duration_ms"] = max(0, int(duration_ms))
+        if item:
+            entry["item"] = {
+                "id": str(item.get("id") or "")[:160],
+                "filename": os.path.basename(str(item.get("filename") or "")),
+                "doc_type": str(item.get("doc_type") or "")[:160],
+                "category": str(item.get("category") or "")[:160],
+                "voice": str(item.get("voice") or "")[:80],
+                "text_preview": str(item.get("text_preview") or "")[:240],
+            }
+        if progress_snapshot:
+            completed = max(0, int(progress_snapshot.get("completed") or 0))
+            failed = max(0, int(progress_snapshot.get("failed") or 0))
+            total = max(completed + failed, int(progress_snapshot.get("total_items") or 0))
+            entry["progress"] = {
+                "completed": completed,
+                "failed": failed,
+                "total": total,
+            }
         push_event(session, {
             "type": "log",
-            "entry": {"time": core.now_str(), "level": level, "msg": msg},
+            "entry": entry,
         })
 
     def emit_stats(progress):
@@ -362,10 +712,12 @@ async def generate_audio_stream(
         for item in progress.get("items", []):
             dt = item["doc_type"]
             if dt not in type_counts:
-                type_counts[dt] = {"done": 0, "total": 0}
+                type_counts[dt] = {"done": 0, "failed": 0, "total": 0}
             type_counts[dt]["total"] += 1
             if item["status"] == "done":
                 type_counts[dt]["done"] += 1
+            elif item["status"] == "error":
+                type_counts[dt]["failed"] += 1
         failed_items = [
             {
                 "id": item.get("id", ""),
@@ -375,17 +727,43 @@ async def generate_audio_stream(
             for item in progress.get("items", [])
             if item.get("status") == "error"
         ][:20]
+        completed = max(0, int(progress.get("completed") or 0))
+        failed = max(0, int(progress.get("failed") or 0))
+        total = max(completed + failed, int(progress.get("total_items") or 0))
+        processed = min(completed + failed, total)
+        elapsed_ms = max(0, round((time.perf_counter() - task_started_at) * 1000))
+        eta_ms = None
+        run_processed = max(0, processed - eta_baseline_processed)
+        if eta_started_at is not None and run_processed > 0 and total > processed:
+            run_elapsed_ms = max(0, round((time.perf_counter() - eta_started_at) * 1000))
+            eta_ms = round((run_elapsed_ms / run_processed) * (total - processed))
         push_event(session, {
             "type": "stats",
-            "completed": progress["completed"],
-            "total": progress["total_items"],
-            "failed": progress["failed"],
+            "completed": completed,
+            "total": total,
+            "failed": failed,
+            "processed": processed,
+            "pending": max(total - processed, 0),
+            "elapsed_ms": elapsed_ms,
+            "eta_ms": eta_ms,
             "failed_items": failed_items,
             "by_type": type_counts,
         })
 
     def emit_status(text: str):
         push_event(session, {"type": "status", "text": text})
+
+    def emit_generation_status(progress, current_item: Optional[str] = None):
+        completed = max(0, int(progress.get("completed") or 0))
+        failed = max(0, int(progress.get("failed") or 0))
+        total = max(completed + failed, int(progress.get("total_items") or 0))
+        processed = min(completed + failed, total)
+        text = f"生成中 — 已处理 {processed}/{total} · 成功 {completed}"
+        if failed:
+            text += f" · 失败 {failed}"
+        if current_item:
+            text += f" · {current_item}"
+        emit_status(text)
 
     def emit_download(progress, file_list, zip_path=None):
         event = {
@@ -411,6 +789,73 @@ async def generate_audio_stream(
             session.final_download = event
         push_event(session, event)
 
+    def emit_error_terminal(
+        title: str,
+        detail: str,
+        *,
+        status_text: Optional[str] = None,
+        progress_snapshot: Optional[dict] = None,
+        duration_ms: Optional[int] = None,
+    ):
+        if session.final_error:
+            return
+        elapsed_ms = (
+            max(0, int(duration_ms))
+            if duration_ms is not None
+            else round((time.perf_counter() - task_started_at) * 1000)
+        )
+        emit_status(status_text or title)
+        log(
+            "error",
+            detail,
+            stage="complete",
+            kind="summary",
+            key="task:summary",
+            title=title,
+            detail=detail,
+            progress_snapshot=progress_snapshot,
+            duration_ms=elapsed_ms,
+        )
+        push_event(session, {
+            "type": "error",
+            "msg": detail,
+            "duration_ms": elapsed_ms,
+        })
+
+    def emit_cancelled_terminal(reason: str):
+        if session.final_cancelled:
+            return
+        active_progress = session.progress or {}
+        completed = max(0, int(active_progress.get("completed") or 0))
+        failed = max(0, int(active_progress.get("failed") or 0))
+        total = max(
+            completed + failed,
+            int(active_progress.get("total_items") or 0),
+        )
+        elapsed_ms = round((time.perf_counter() - task_started_at) * 1000)
+        log(
+            "warn",
+            reason,
+            stage="complete",
+            kind="summary",
+            key="task:summary",
+            title="任务已取消",
+            detail=(
+                f"已完成 {completed} 条，失败 {failed} 条，"
+                f"未处理 {max(total - completed - failed, 0)} 条 · {reason}"
+            ),
+            progress_snapshot=active_progress or None,
+            duration_ms=elapsed_ms,
+        )
+        emit_status("已取消")
+        push_event(session, {
+            "type": "cancelled",
+            "completed": completed,
+            "failed": failed,
+            "total": total,
+            "duration_ms": elapsed_ms,
+        })
+
     try:
         session_dir = session.session_dir
         audio_dir = os.path.join(session_dir, "audio")
@@ -419,10 +864,35 @@ async def generate_audio_stream(
         os.makedirs(audio_dir, exist_ok=True)
         os.makedirs(tmp_dir, exist_ok=True)
 
+        prepare_started_at = time.perf_counter()
+        scope_label = "试听前 3 条" if config.get("preview") else "完整文档"
+        log(
+            "progress",
+            "正在校验文档与输出设置",
+            stage="prepare",
+            kind="stage",
+            key="stage:prepare",
+            title="准备生成任务",
+            detail=(
+                f"{source_filename} · {scope_label} · "
+                f"{str(config.get('format') or 'mp3').upper()} · "
+                f"{config.get('quality') or '标准质量'}"
+            ),
+        )
         current_fingerprint = await asyncio.to_thread(source_fingerprint, filepath)
         if session.source_fingerprint and current_fingerprint != session.source_fingerprint:
             raise RuntimeError("源文档在导入后发生变化，请重新导入文档")
         session.source_fingerprint = current_fingerprint
+        log(
+            "success",
+            "文档与输出设置校验完成",
+            stage="prepare",
+            kind="stage",
+            key="stage:prepare",
+            title="任务准备完成",
+            detail="源文档可读取，输出目录与生成参数已确认",
+            duration_ms=round((time.perf_counter() - prepare_started_at) * 1000),
+        )
 
         # ---- 检查断点续传 ----
         existing = core.load_progress(session_dir)
@@ -444,7 +914,16 @@ async def generate_audio_stream(
             if restored:
                 existing = restored
                 core.save_progress(session_dir, existing)
-                log("info", f"已恢复历史任务进度（{existing['completed']}/{existing['total_items']}）")
+                log(
+                    "info",
+                    f"已恢复历史任务进度（{existing['completed']}/{existing['total_items']}）",
+                    stage="prepare",
+                    kind="recovery",
+                    key="task:recovery",
+                    title="已找到可继续的任务进度",
+                    detail=f"将从第 {existing['completed'] + 1} 条继续，已完成 {existing['completed']} / {existing['total_items']}",
+                    progress_snapshot=existing,
+                )
         if progress_is_reusable(existing, current_fingerprint):
             old_config = existing.get("config", {})
             config_changed = any(
@@ -454,25 +933,58 @@ async def generate_audio_stream(
 
             if config_changed:
                 reason = "配置已变更"
-                log("warn", f"检测到已有进度但{reason}，重新开始处理")
+                log(
+                    "warn",
+                    f"检测到已有进度但{reason}，重新开始处理",
+                    stage="prepare",
+                    kind="recovery",
+                    key="task:recovery",
+                    title="已有进度不能继续使用",
+                    detail="声音或输出设置发生变化，将重新生成以保证结果一致",
+                )
                 progress = None
             else:
                 progress = existing
                 session.progress = progress  # 保存到 session 供下载端点使用
                 done = progress["completed"]
                 total = progress["total_items"]
-                log("info", f"检测到已有进度（{done}/{total} 已完成），继续处理...")
+                log(
+                    "info",
+                    f"检测到已有进度（{done}/{total} 已完成），继续处理",
+                    stage="prepare",
+                    kind="recovery",
+                    key="task:recovery",
+                    title="继续上次未完成的任务",
+                    detail=f"已完成 {done} 条，剩余 {max(total - done, 0)} 条",
+                    progress_snapshot=progress,
+                )
                 emit_stats(progress)
                 emit_status(f"断点续传中 — {done}/{total} 已完成")
-                emit_download(progress, core.get_completed_file_list(progress))
         else:
             if existing:
-                log("warn", "已有进度与当前源文档不匹配或产物缺失，将重新开始处理")
+                log(
+                    "warn",
+                    "已有进度与当前源文档不匹配或产物缺失，将重新开始处理",
+                    stage="prepare",
+                    kind="recovery",
+                    key="task:recovery",
+                    title="旧进度已失效",
+                    detail="源文档内容或已生成文件发生变化，本次将重新处理",
+                )
             progress = None
 
         # ---- 解析文档 ----
         if progress is None:
-            log("info", f"开始解析文档: {source_filename}")
+            parse_started_at = time.perf_counter()
+            log(
+                "progress",
+                f"开始解析文档: {source_filename}",
+                stage="parse",
+                kind="stage",
+                key="stage:parse",
+                title="识别文档内容",
+                detail="正在读取题型、分段与需要生成的音频条目",
+            )
             emit_status("正在解析文档...")
 
             parse_results = session.parse_results
@@ -485,15 +997,44 @@ async def generate_audio_stream(
                         core.parse_document_auto, filepath
                     )
                 except Exception as e:
-                    log("error", f"解析失败: {e}")
-                    emit_status(f"解析失败: {e}")
-                    push_event(session, {"type": "error", "msg": str(e)})
+                    parse_duration_ms = round((time.perf_counter() - parse_started_at) * 1000)
+                    log(
+                        "error",
+                        f"解析失败: {e}",
+                        stage="parse",
+                        kind="stage",
+                        key="stage:parse",
+                        title="文档内容识别失败",
+                        detail=str(e),
+                        duration_ms=parse_duration_ms,
+                    )
+                    emit_error_terminal(
+                        "生成任务未能继续",
+                        f"文档解析失败：{e}",
+                        status_text=f"解析失败: {e}",
+                        duration_ms=parse_duration_ms,
+                    )
                     return
 
             if not parse_results:
-                log("error", f"未识别到任何题型内容: {summary}")
-                emit_status(summary or "未识别到任何题型内容")
-                push_event(session, {"type": "error", "msg": summary or "未识别到任何题型内容"})
+                parse_duration_ms = round((time.perf_counter() - parse_started_at) * 1000)
+                log(
+                    "error",
+                    f"未识别到任何题型内容: {summary}",
+                    stage="parse",
+                    kind="stage",
+                    key="stage:parse",
+                    title="没有找到可生成的内容",
+                    detail=summary or "请检查 Word 文档的题型与段落结构",
+                    duration_ms=parse_duration_ms,
+                )
+                empty_detail = summary or "未识别到任何题型内容"
+                emit_error_terminal(
+                    "生成任务未能继续",
+                    empty_detail,
+                    status_text=empty_detail,
+                    duration_ms=parse_duration_ms,
+                )
                 return
 
             # 全量重做时清理旧产物，并保存与源文件指纹绑定的解析结果。
@@ -513,13 +1054,45 @@ async def generate_audio_stream(
                 original_total = progress["total_items"]
                 progress["items"] = progress["items"][:3]
                 progress["total_items"] = 3
-                log("warn", f"试听模式：仅生成前 3 条（共 {original_total} 条）")
+                log(
+                    "info",
+                    f"试听模式：仅生成前 3 条（共 {original_total} 条）",
+                    stage="parse",
+                    kind="notice",
+                    key="scope:preview",
+                    title="已应用试听范围",
+                    detail=f"文档共有 {original_total} 条内容，本次先生成前 3 条用于试听",
+                )
 
             core.save_progress(session_dir, progress)
             session.progress = progress  # 保存到 session 供下载端点使用
 
             count_info = f"共 {progress['total_items']} 个音频"
-            log("success", f"解析完成 — {summary} | 题型：{type_names} | {count_info}")
+            log(
+                "success",
+                f"解析完成 — {summary} | 题型：{type_names} | {count_info}",
+                stage="parse",
+                kind="stage",
+                key="stage:parse",
+                title="文档内容识别完成",
+                detail=f"{summary} · {count_info} · 题型：{type_names}",
+                progress_snapshot=progress,
+                duration_ms=round((time.perf_counter() - parse_started_at) * 1000),
+            )
+        else:
+            cached_types = "、".join(
+                sorted({str(item.get("doc_type") or "") for item in progress.get("items", []) if item.get("doc_type")})
+            )
+            log(
+                "success",
+                "已加载验证过的文档结构",
+                stage="parse",
+                kind="stage",
+                key="stage:parse",
+                title="文档内容已就绪",
+                detail=f"共 {progress['total_items']} 个音频" + (f" · 题型：{cached_types}" if cached_types else ""),
+                progress_snapshot=progress,
+            )
 
         # ---- 为断点续传重置失败项 ----
         # 失败项会在本轮重新尝试，因此必须先从统计中移除；否则每次重试都会
@@ -531,7 +1104,16 @@ async def generate_audio_stream(
         progress["completed"] = sum(1 for item in progress["items"] if item.get("status") == "done")
         progress["failed"] = 0
         if retry_items:
-            log("info", f"将重新尝试 {len(retry_items)} 个失败项")
+            log(
+                "info",
+                f"将重新尝试 {len(retry_items)} 个失败项",
+                stage="synthesize",
+                kind="recovery",
+                key="task:retry",
+                title="重新处理上次失败内容",
+                detail=f"共 {len(retry_items)} 条，将沿用当前声音与输出设置",
+                progress_snapshot=progress,
+            )
 
         # ---- 开始生成 ----
         progress["status"] = "generating"
@@ -546,15 +1128,42 @@ async def generate_audio_stream(
         fmt = config.get("format", "mp3")
         quality = config.get("quality", "128 kbps（标准）")
 
-        log("info", f"开始生成音频（{progress['completed']}/{total}）...")
+        log(
+            "info",
+            f"生成计划已创建（{progress['completed']}/{total}）",
+            stage="prepare",
+            kind="notice",
+            key="task:plan",
+            title="生成计划已创建",
+            detail=f"待处理 {max(total - progress['completed'], 0)} 条 · {str(fmt).upper()} · {quality}",
+            progress_snapshot=progress,
+        )
         if core._TTSMaker_AVAILABLE:
-            log("info", "男声使用 TTSMaker 788 (Alfie) 生成，女声使用 edge-tts")
+            log(
+                "info",
+                "男声使用 TTSMaker 788 (Alfie) 生成，女声使用 edge-tts",
+                stage="prepare",
+                kind="notice",
+                key="engine:plan",
+                title="音色引擎已就绪",
+                detail="女声使用 edge-tts；检测到男声内容时使用 TTSMaker 788 Alfie",
+            )
         else:
-            log("warn", "TTSMaker 不可用，男声将使用 edge-tts (Remy) 生成")
+            log(
+                "warn",
+                "TTSMaker 不可用，男声将使用 edge-tts (Remy) 生成",
+                stage="prepare",
+                kind="notice",
+                key="engine:plan",
+                title="男声引擎已自动切换",
+                detail="TTSMaker 当前不可用，本次男声内容将使用 edge-tts Remy，不影响任务继续",
+            )
 
         emit_stats(progress)
-        emit_status(f"生成中 — {progress['completed']}/{total}")
-        emit_download(progress, core.get_completed_file_list(progress))
+        emit_generation_status(progress)
+        if session.cancelled:
+            emit_cancelled_terminal("生成计划准备完成后已停止任务")
+            return
 
         # ---- 检查是否有男声数据，决定是否需要启动 TTSMaker ----
         if core._TTSMaker_AVAILABLE:
@@ -571,21 +1180,69 @@ async def generate_audio_stream(
 
         # ---- TTSMaker 登录（仅有男声数据时才唤起浏览器）----
         if core._TTSMaker_AVAILABLE and has_male_voice:
-            log("warn", "检测到男声数据，正在启动 TTSMaker 浏览器（首次需扫码登录，后续自动复用登录状态）")
+            engine_started_at = time.perf_counter()
+            log(
+                "progress",
+                "检测到男声数据，正在连接 TTSMaker",
+                stage="prepare",
+                kind="stage",
+                key="engine:male",
+                title="连接男声音色服务",
+                detail="首次使用可能需要扫码登录，完成后会自动继续生成",
+            )
             try:
                 await core._ttsmaker.ensure_session(voice_key="alfie")
-                log("success", "TTSMaker 登录成功，开始生成音频")
+                log(
+                    "success",
+                    "TTSMaker 登录成功，开始生成音频",
+                    stage="prepare",
+                    kind="stage",
+                    key="engine:male",
+                    title="男声音色服务已连接",
+                    detail="TTSMaker 788 Alfie 已就绪",
+                    duration_ms=round((time.perf_counter() - engine_started_at) * 1000),
+                )
             except Exception as login_err:
-                log("error", f"TTSMaker 登录失败: {login_err}，男声将回退到 edge-tts")
+                log(
+                    "warn",
+                    f"TTSMaker 登录失败: {login_err}，男声将回退到 edge-tts",
+                    stage="prepare",
+                    kind="notice",
+                    key="engine:male",
+                    title="男声音色服务连接失败，已启用备用方案",
+                    detail=f"将使用 edge-tts Remy 继续生成。原因：{login_err}",
+                    duration_ms=round((time.perf_counter() - engine_started_at) * 1000),
+                )
         elif core._TTSMaker_AVAILABLE and not has_male_voice:
-            log("info", "未检测到男声数据，跳过 TTSMaker 浏览器启动")
+            log(
+                "info",
+                "未检测到男声数据，跳过 TTSMaker 浏览器启动",
+                stage="prepare",
+                kind="notice",
+                key="engine:male",
+                title="本次无需连接男声服务",
+                detail="文档内容将全部使用 edge-tts 生成",
+            )
+
+        synthesis_started_at = time.perf_counter()
+        eta_started_at = synthesis_started_at
+        eta_baseline_processed = progress["completed"] + progress["failed"]
+        log(
+            "progress",
+            f"开始生成音频（{progress['completed']}/{total}）",
+            stage="synthesize",
+            kind="stage",
+            key="stage:synthesize",
+            title="逐条生成音频",
+            detail=f"已完成 {progress['completed']} 条，剩余 {max(total - progress['completed'], 0)} 条",
+            progress_snapshot=progress,
+        )
 
         # ---- 逐条生成 ----
         for item in progress["items"]:
             # 检查是否被用户取消
             if session.cancelled:
-                log("warn", "用户已取消生成")
-                emit_status("已取消")
+                emit_cancelled_terminal("已收到取消请求，未开始的内容不会继续处理")
                 return
 
             if item["status"] == "done":
@@ -598,25 +1255,65 @@ async def generate_audio_stream(
                 item["status"] = "error"
                 item["error"] = "文本为空"
                 progress["failed"] += 1
-                log("warn", f"{item_id} — 文本为空，跳过")
+                log(
+                    "warn",
+                    f"{item_id} — 文本为空，跳过",
+                    stage="synthesize",
+                    kind="item",
+                    status="error",
+                    key=f"item:{item_id}",
+                    title=f"{item_id} 未生成",
+                    detail="对应内容为空，已跳过这一条",
+                    item={
+                        "id": item_id,
+                        "filename": item.get("filename"),
+                        "doc_type": item.get("doc_type"),
+                        "category": item.get("category"),
+                        "text_preview": item.get("text_preview"),
+                    },
+                    progress_snapshot=progress,
+                )
                 core.save_progress(session_dir, progress)
                 emit_stats(progress)
-                emit_status(f"生成中 — {progress['completed']}/{total}")
+                emit_generation_status(progress)
                 continue
 
             speakers = core.parse_speakers(text)
             speaker_info = ""
+            voice_label = "女声"
             if len(speakers) > 1 or speakers[0][0] != core.FEMALE_VOICE:
                 voices_used = set(v for v, _ in speakers)
                 if voices_used == {core.FEMALE_VOICE, core.MALE_VOICE}:
                     speaker_info = " [混合音色]"
+                    voice_label = "混合音色"
                 elif core.MALE_VOICE in voices_used:
                     speaker_info = " [男声]"
+                    voice_label = "男声"
                 else:
                     speaker_info = " [女声]"
+                    voice_label = "女声"
 
-            log("progress", f"正在生成: {item_id}{speaker_info}...")
-            emit_status(f"生成中 — {progress['completed']}/{total} — {item_id}")
+            item_context = {
+                "id": item_id,
+                "filename": item.get("filename"),
+                "doc_type": item.get("doc_type"),
+                "category": item.get("category"),
+                "voice": voice_label,
+                "text_preview": item.get("text_preview"),
+            }
+            item_started_at = time.perf_counter()
+            log(
+                "progress",
+                f"正在生成: {item_id}{speaker_info}",
+                stage="synthesize",
+                kind="item",
+                key=f"item:{item_id}",
+                title=f"正在生成 {item_id}",
+                detail=" · ".join(filter(None, [item.get("doc_type"), item.get("category"), voice_label])),
+                item=item_context,
+                progress_snapshot=progress,
+            )
+            emit_generation_status(progress, item_id)
 
             try:
                 audio_seg = await core._synth_item(
@@ -629,54 +1326,236 @@ async def generate_audio_stream(
                 item["output_path"] = out_path
                 item["error"] = None
                 progress["completed"] += 1
-                log("success", f"{item_id} 完成 ({progress['completed']}/{total})")
+                log(
+                    "success",
+                    f"{item_id} 完成 ({progress['completed']}/{total})",
+                    stage="synthesize",
+                    kind="item",
+                    key=f"item:{item_id}",
+                    title=f"{item_id} 已生成",
+                    detail=f"{item.get('filename')} · {voice_label} · 第 {progress['completed']} / {total} 条",
+                    item=item_context,
+                    progress_snapshot=progress,
+                    duration_ms=round((time.perf_counter() - item_started_at) * 1000),
+                )
             except Exception as e:
                 item["status"] = "error"
                 item["error"] = str(e)
                 progress["failed"] += 1
-                log("error", f"{item_id} 失败: {e}")
+                log(
+                    "error",
+                    f"{item_id} 失败: {e}",
+                    stage="synthesize",
+                    kind="item",
+                    key=f"item:{item_id}",
+                    title=f"{item_id} 生成失败",
+                    detail=str(e),
+                    item=item_context,
+                    progress_snapshot=progress,
+                    duration_ms=round((time.perf_counter() - item_started_at) * 1000),
+                )
 
             core.save_progress(session_dir, progress)
             emit_stats(progress)
-            emit_status(f"生成中 — {progress['completed']}/{total}")
-            emit_download(progress, core.get_completed_file_list(progress))
+            emit_generation_status(progress)
+            if session.cancelled:
+                emit_cancelled_terminal("当前音频处理结束后已停止后续任务")
+                return
+
+        synthesis_duration_ms = round((time.perf_counter() - synthesis_started_at) * 1000)
+        synthesis_all_failed = progress["completed"] == 0 and progress["failed"] > 0
+        log(
+            "error" if synthesis_all_failed else ("success" if progress["failed"] == 0 else "warn"),
+            f"音频生成阶段结束：成功 {progress['completed']}，失败 {progress['failed']}",
+            stage="synthesize",
+            kind="stage",
+            key="stage:synthesize",
+            title=(
+                "音频生成失败"
+                if synthesis_all_failed
+                else ("音频生成完成" if progress["failed"] == 0 else "音频已部分生成")
+            ),
+            detail=f"成功 {progress['completed']} / {total}" + (f" · 失败 {progress['failed']}" if progress["failed"] else ""),
+            progress_snapshot=progress,
+            duration_ms=synthesis_duration_ms,
+        )
 
         # ---- 清理 + 打包 ----
+        if session.cancelled:
+            emit_cancelled_terminal("音频生成阶段结束后已停止交付整理")
+            return
         shutil.rmtree(tmp_dir, ignore_errors=True)
         progress["status"] = "packaging"
         core.save_progress(session_dir, progress)
-        log("info", "正在打包 ZIP...")
-        emit_status("正在打包...")
-
-        zip_path = await asyncio.to_thread(core.create_zip, session_dir, progress)
+        package_started_at = time.perf_counter()
+        if progress["completed"] > 0:
+            log(
+                "progress",
+                "正在打包 ZIP",
+                stage="package",
+                kind="stage",
+                key="stage:package",
+                title="整理交付文件",
+                detail=f"正在将 {progress['completed']} 个音频打包为 ZIP",
+                progress_snapshot=progress,
+            )
+            emit_status("正在打包...")
+            zip_path = await asyncio.to_thread(core.create_zip, session_dir, progress)
+            log(
+                "success",
+                "ZIP 打包完成",
+                stage="package",
+                kind="stage",
+                key="stage:package",
+                title="交付文件已整理完成",
+                detail=f"ZIP 中包含 {progress['completed']} 个已生成音频",
+                progress_snapshot=progress,
+                duration_ms=round((time.perf_counter() - package_started_at) * 1000),
+            )
+        else:
+            zip_path = ""
+            log(
+                "warn",
+                "没有成功生成的音频，已跳过 ZIP 打包",
+                stage="package",
+                kind="stage",
+                key="stage:package",
+                title="没有可整理的交付文件",
+                detail=f"本次 {progress['failed']} 条内容均未生成成功，请查看失败记录后重试",
+                progress_snapshot=progress,
+                duration_ms=round((time.perf_counter() - package_started_at) * 1000),
+            )
         progress["status"] = "done"
         core.save_progress(session_dir, progress)
 
+        if session.cancelled:
+            emit_cancelled_terminal("交付文件整理结束后已停止任务")
+            return
+
         done = progress["completed"]
         failed = progress["failed"]
-        log("success", f"全部完成！成功 {done}/{total}" + (f"，失败 {failed}" if failed > 0 else ""))
 
         file_list = core.get_completed_file_list(progress)
-        status_text = f"完成 — 成功 {done}/{total}"
-        if failed > 0:
+        if done == 0 and failed > 0:
+            status_text = f"任务结束 — {failed} 条均未生成成功"
+        else:
+            status_text = f"完成 — 成功 {done}/{total}"
+        if failed > 0 and done > 0:
             status_text += f"，失败 {failed}"
         emit_status(status_text)
         emit_download(progress, file_list, zip_path=zip_path)
         # 保存最终 zip_path 供 SSE 重连重放
         session.final_zip_path = zip_path if file_list else None
-        push_event(session, {"type": "done", "zip_path": session.final_zip_path})
+        history_record = None
+        if session.cancelled:
+            emit_cancelled_terminal("任务在保存历史记录前已停止")
+            return
+        if file_list:
+            archive_started_at = time.perf_counter()
+            log(
+                "progress",
+                "正在保存历史记录",
+                stage="archive",
+                kind="stage",
+                key="stage:archive",
+                title="保存到历史记录",
+                detail="完成后可从历史记录重新试听和下载",
+                progress_snapshot=progress,
+            )
+            try:
+                history_record = await asyncio.to_thread(
+                    archive_history_record,
+                    session,
+                    progress,
+                    file_list,
+                    session.final_zip_path,
+                )
+                log(
+                    "success",
+                    "历史记录保存完成",
+                    stage="archive",
+                    kind="stage",
+                    key="stage:archive",
+                    title="已保存到历史记录",
+                    detail="结果已安全保存在当前电脑，历史记录最多保留 20 条",
+                    progress_snapshot=progress,
+                    duration_ms=round((time.perf_counter() - archive_started_at) * 1000),
+                )
+            except Exception as history_error:
+                log(
+                    "warn",
+                    f"历史记录保存失败：{history_error}",
+                    stage="archive",
+                    kind="stage",
+                    key="stage:archive",
+                    title="历史记录保存失败",
+                    detail=f"请先下载本次结果后再新建任务。原因：{history_error}",
+                    progress_snapshot=progress,
+                    duration_ms=round((time.perf_counter() - archive_started_at) * 1000),
+                )
+        else:
+            log(
+                "warn",
+                "没有可保存的音频结果",
+                stage="archive",
+                kind="stage",
+                key="stage:archive",
+                title="本次未写入历史记录",
+                detail="没有成功生成的音频文件，可返回配置后重试",
+                progress_snapshot=progress,
+            )
+        if session.cancelled:
+            emit_cancelled_terminal("历史记录处理结束后已停止任务")
+            return
+        task_duration_ms = round((time.perf_counter() - task_started_at) * 1000)
+        all_failed = done == 0 and failed > 0
+        log(
+            "error" if all_failed else ("success" if failed == 0 else "warn"),
+            f"任务完成：成功 {done}/{total}" + (f"，失败 {failed}" if failed > 0 else ""),
+            stage="complete",
+            kind="summary",
+            key="task:summary",
+            title=(
+                "本次未生成可交付音频"
+                if all_failed
+                else ("全部处理完成" if failed == 0 else "任务已完成，部分内容需要关注")
+            ),
+            detail=(
+                f"成功 {done} 条 · 失败 {failed} 条 · {str(fmt).upper()} · "
+                f"共用时 {task_duration_ms / 1000:.1f} 秒"
+            ),
+            progress_snapshot=progress,
+            duration_ms=task_duration_ms,
+        )
+        push_event(session, {
+            "type": "done",
+            "zip_path": session.final_zip_path,
+            "zip_available": bool(session.final_zip_path),
+            "history_id": history_record.get("id") if history_record else None,
+            "completed": done,
+            "failed": failed,
+            "total": total,
+            "file_count": len(file_list),
+            "duration_ms": task_duration_ms,
+        })
 
+    except asyncio.CancelledError:
+        emit_cancelled_terminal("生成进程已安全停止")
     except Exception as e:
-        log("error", f"处理异常: {e}")
-        push_event(session, {"type": "error", "msg": str(e)})
+        emit_error_terminal(
+            "生成任务未能完成",
+            str(e),
+            status_text="生成任务未能完成",
+        )
     finally:
         # 无论成功/失败/取消，都关闭 TTSMaker 浏览器会话，防止进程泄漏
         if core._TTSMaker_AVAILABLE and has_male_voice:
             try:
                 await core._ttsmaker.close_session()
-                log("info", "TTSMaker 浏览器已关闭")
+            except asyncio.CancelledError:
+                pass
             except Exception as close_err:
-                log("warn", f"关闭 TTSMaker 浏览器异常: {close_err}")
+                print(f"[wordtts] 关闭 TTSMaker 浏览器异常: {close_err}", file=sys.stderr)
         push_event(session, {"type": "end"})
 
 
@@ -720,7 +1599,7 @@ app.add_middleware(
     allow_origins=[
         "null",  # Electron file:// 协议的 origin 为 "null"
     ],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -1022,20 +1901,21 @@ async def generate_endpoint(req: GenerateRequest):
 
     session.done = False
     session.ended = False
+    session.event_seq = 0
     session.log_entries = []
+    session.log_seq = 0
     session.cancelled = False
     session.status = "starting"
     session.final_download = None
     session.final_zip_path = None
+    session.final_done = None
     session.final_error = None
+    session.final_cancelled = None
     session.last_stats = None
 
-    # 清空队列中残留的旧事件，防止上次生成的 end/done 事件污染新流
-    while not session.queue.empty():
-        try:
-            session.queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+    # 清空上一次生成的事件日志，避免旧终态污染新流。
+    session.event_journal.clear()
+    session.event_signal.clear()
 
     # 在后台启动生成任务（保存引用以防止并发和 orphaned task）
     session.task = asyncio.create_task(
@@ -1053,84 +1933,174 @@ async def progress_sse(session_id: str):
         raise HTTPException(status_code=404, detail="会话不存在")
 
     async def event_stream():
+        # 建立连接时一次性冻结快照及水位线。随后队列里早于该水位线的
+        # status/stats/log 已被快照覆盖，必须跳过，避免重连后进度倒退。
+        snapshot_event_seq = session.event_seq
+        snapshot_logs = list(session.log_entries)
+        snapshot_status = session.status
+        snapshot_stats = copy.deepcopy(session.last_stats)
+        snapshot_download = copy.deepcopy(session.final_download)
+        snapshot_done_event = copy.deepcopy(session.final_done)
+        snapshot_error = copy.deepcopy(session.final_error)
+        snapshot_cancelled = copy.deepcopy(session.final_cancelled)
+        snapshot_done = session.done
+        snapshot_ended = session.ended
+        snapshot_task_done = bool(session.task and session.task.done())
+
         # 如果任务已完成（正常结束），重放最终状态后关闭
-        if session.done:
+        if snapshot_done:
+            if snapshot_logs:
+                yield f"data: {json.dumps({'type': 'log_init', 'entries': snapshot_logs}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'text': snapshot_status}, ensure_ascii=False)}\n\n"
             # 重放最终 download 事件（含文件列表）
-            if session.final_download:
-                yield f"data: {json.dumps(session.final_download, ensure_ascii=False)}\n\n"
+            if snapshot_download:
+                yield f"data: {json.dumps(snapshot_download, ensure_ascii=False)}\n\n"
             # 重放最后 stats 事件（进度条）
-            if session.last_stats:
-                yield f"data: {json.dumps(session.last_stats, ensure_ascii=False)}\n\n"
-            # 重放 done 事件（含 zip_path）
-            yield f"data: {json.dumps({'type': 'done', 'zip_path': session.final_zip_path}, ensure_ascii=False)}\n\n"
+            if snapshot_stats:
+                yield f"data: {json.dumps(snapshot_stats, ensure_ascii=False)}\n\n"
+            # 重放完整 done 事件（包含 zip_path 与 history_id）
+            done_event = snapshot_done_event or {"type": "done", "zip_path": session.final_zip_path}
+            yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'end'})}\n\n"
             return
 
         # 如果任务已终止（错误或取消）但不是正常完成，直接发送 end
         # 防止 SSE 重连后队列已空导致永久挂在心跳循环
-        if session.task and session.task.done() and not session.done:
+        if (
+            snapshot_ended
+            or snapshot_task_done
+            or snapshot_error
+            or snapshot_cancelled
+        ) and not snapshot_done:
             # 先发送已有日志
-            if session.log_entries:
-                yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+            if snapshot_logs:
+                yield f"data: {json.dumps({'type': 'log_init', 'entries': snapshot_logs}, ensure_ascii=False)}\n\n"
             # 发送当前状态和最后 stats
-            yield f"data: {json.dumps({'type': 'status', 'text': session.status}, ensure_ascii=False)}\n\n"
-            if session.last_stats:
-                yield f"data: {json.dumps(session.last_stats, ensure_ascii=False)}\n\n"
-            if session.final_download:
-                yield f"data: {json.dumps(session.final_download, ensure_ascii=False)}\n\n"
-            if session.final_error:
-                yield f"data: {json.dumps(session.final_error, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'text': snapshot_status}, ensure_ascii=False)}\n\n"
+            if snapshot_stats:
+                yield f"data: {json.dumps(snapshot_stats, ensure_ascii=False)}\n\n"
+            if snapshot_download:
+                yield f"data: {json.dumps(snapshot_download, ensure_ascii=False)}\n\n"
+            if snapshot_cancelled:
+                yield f"data: {json.dumps(snapshot_cancelled, ensure_ascii=False)}\n\n"
+            if snapshot_error:
+                yield f"data: {json.dumps(snapshot_error, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'end'})}\n\n"
             return
 
         # 先发送已有日志
-        if session.log_entries:
-            yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+        if snapshot_logs:
+            yield f"data: {json.dumps({'type': 'log_init', 'entries': snapshot_logs}, ensure_ascii=False)}\n\n"
 
         # 发送当前状态和最后 stats
-        yield f"data: {json.dumps({'type': 'status', 'text': session.status}, ensure_ascii=False)}\n\n"
-        if session.last_stats:
-            yield f"data: {json.dumps(session.last_stats, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'text': snapshot_status}, ensure_ascii=False)}\n\n"
+        if snapshot_stats:
+            yield f"data: {json.dumps(snapshot_stats, ensure_ascii=False)}\n\n"
 
-        # 流式发送新事件
+        # 流式发送新事件。每个连接维护自己的游标，从同一个有界日志读取，
+        # 因此并行连接/重连不会分食事件。
+        cursor_event_seq = snapshot_event_seq
         while True:
-            # queue 是单消费者；断线重连时旧连接可能短暂存活并取走 done/end。
-            # 终态同时保存在 session 上，因此每个连接都能独立完成收尾。
             if session.done:
+                # done 可能紧跟在最后一条日志之后写入；此时不能依赖游标
+                # 已逐条消费完，重放快照可保证汇总日志一定先于终态到达。
+                if session.log_entries:
+                    yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'status', 'text': session.status}, ensure_ascii=False)}\n\n"
                 if session.final_download:
                     yield f"data: {json.dumps(session.final_download, ensure_ascii=False)}\n\n"
                 if session.last_stats:
                     yield f"data: {json.dumps(session.last_stats, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'zip_path': session.final_zip_path}, ensure_ascii=False)}\n\n"
+                done_event = session.final_done or {"type": "done", "zip_path": session.final_zip_path}
+                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'end'})}\n\n"
                 return
-            if session.ended or (session.task and session.task.done()):
+            if (
+                session.final_cancelled
+                or session.final_error
+                or session.ended
+                or (session.task and session.task.done())
+            ):
+                if session.log_entries:
+                    yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'status', 'text': session.status}, ensure_ascii=False)}\n\n"
+                if session.last_stats:
+                    yield f"data: {json.dumps(session.last_stats, ensure_ascii=False)}\n\n"
+                if session.final_download:
+                    yield f"data: {json.dumps(session.final_download, ensure_ascii=False)}\n\n"
+                if session.final_cancelled:
+                    yield f"data: {json.dumps(session.final_cancelled, ensure_ascii=False)}\n\n"
                 if session.final_error:
                     yield f"data: {json.dumps(session.final_error, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'end'})}\n\n"
                 return
-            try:
-                event = await asyncio.wait_for(session.queue.get(), timeout=5.0)
-                event_type = event.get("type")
-                # 两个连接可能分别取到 done / end；任一终止事件都以 session
-                # 快照为准重放完整结果，不能只把自己取到的那一半发出去。
-                if event_type in {"done", "end"} and session.done:
-                    if session.final_download:
-                        yield f"data: {json.dumps(session.final_download, ensure_ascii=False)}\n\n"
+
+            journal_snapshot = list(session.event_journal)
+            if journal_snapshot:
+                oldest_seq = int(journal_snapshot[0].get("event_seq") or 0)
+                if cursor_event_seq < oldest_seq - 1:
+                    # 极慢连接落后到有界日志之外时，用最新快照重新同步。
+                    cursor_event_seq = session.event_seq
+                    if session.log_entries:
+                        yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'status', 'text': session.status}, ensure_ascii=False)}\n\n"
                     if session.last_stats:
                         yield f"data: {json.dumps(session.last_stats, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'done', 'zip_path': session.final_zip_path}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'end'})}\n\n"
-                    return
-                if event_type == "end" and session.final_error:
-                    yield f"data: {json.dumps(session.final_error, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'end'})}\n\n"
-                    return
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event_type in {"done", "error", "end"}:
-                    if event_type in {"done", "error"}:
+                    continue
+
+            pending_events = [
+                event for event in journal_snapshot
+                if int(event.get("event_seq") or 0) > cursor_event_seq
+            ]
+            if pending_events:
+                for event in pending_events:
+                    cursor_event_seq = max(
+                        cursor_event_seq,
+                        int(event.get("event_seq") or 0),
+                    )
+                    event_type = event.get("type")
+                    # 任一终止事件都以 session 快照为准重放完整结果。
+                    if event_type in {"done", "end"} and session.done:
+                        if session.log_entries:
+                            yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                        if session.final_download:
+                            yield f"data: {json.dumps(session.final_download, ensure_ascii=False)}\n\n"
+                        if session.last_stats:
+                            yield f"data: {json.dumps(session.last_stats, ensure_ascii=False)}\n\n"
+                        done_event = session.final_done or {"type": "done", "zip_path": session.final_zip_path}
+                        yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
                         yield f"data: {json.dumps({'type': 'end'})}\n\n"
-                    return
+                        return
+                    if event_type == "end" and session.final_cancelled:
+                        if session.log_entries:
+                            yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(session.final_cancelled, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                        return
+                    if event_type == "end" and session.final_error:
+                        if session.log_entries:
+                            yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(session.final_error, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                        return
+                    if event_type in {"error", "cancelled"} and session.log_entries:
+                        yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if event_type in {"done", "error", "cancelled", "end"}:
+                        if event_type in {"done", "error", "cancelled"}:
+                            yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                        return
+                continue
+
+            # 清除后再复查，避免事件恰好落在“检查为空”和 wait 之间而丢唤醒。
+            session.event_signal.clear()
+            if any(
+                int(event.get("event_seq") or 0) > cursor_event_seq
+                for event in session.event_journal
+            ):
+                continue
+            try:
+                await asyncio.wait_for(session.event_signal.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 if not session.done and not session.ended:
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
@@ -1231,6 +2201,48 @@ async def resolve_file_path(session_id: str, filename: str):
     raise HTTPException(status_code=404, detail="文件不存在")
 
 
+@app.get("/api/history")
+async def history_list():
+    """返回最近完成的本机任务，最多 20 条。"""
+    records = await asyncio.to_thread(list_history_records)
+    return {"records": records, "limit": MAX_HISTORY_RECORDS}
+
+
+@app.get("/api/history/{history_id}")
+async def history_detail(history_id: str):
+    record = await asyncio.to_thread(get_history_record, history_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="历史记录不存在")
+    return record
+
+
+@app.get("/api/history/{history_id}/zip")
+async def history_download_zip(history_id: str):
+    file_path, record = await asyncio.to_thread(resolve_history_asset, history_id, "output.zip")
+    source_name = os.path.splitext(record["source_filename"])[0]
+    return FileResponse(file_path, filename=f"{source_name}_tts.zip", media_type="application/zip")
+
+
+@app.get("/api/history/{history_id}/file/{filename}")
+async def history_download_file(history_id: str, filename: str):
+    file_path, _record = await asyncio.to_thread(resolve_history_asset, history_id, filename)
+    return FileResponse(file_path, filename=filename)
+
+
+@app.get("/api/history/{history_id}/file-path")
+async def history_file_path(history_id: str, filename: str):
+    file_path, _record = await asyncio.to_thread(resolve_history_asset, history_id, filename)
+    return {"path": file_path}
+
+
+@app.delete("/api/history/{history_id}")
+async def history_delete(history_id: str):
+    deleted = await asyncio.to_thread(delete_history_record, history_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="历史记录不存在")
+    return {"status": "ok", "deleted": deleted}
+
+
 @app.post("/api/cleanup/{session_id}")
 async def cleanup_session(session_id: str):
     """清理会话数据（删除生成的音频和临时文件）。"""
@@ -1262,7 +2274,14 @@ async def cleanup_session(session_id: str):
             if session.task and not session.task.done():
                 session.task.cancel()
 
-    # 会话目录独占，解析后尚未生成的任务也可以安全清理。
+    # 已归档的完成任务只释放内存；历史删除接口才负责物理删除成品。
+    archived_record = await asyncio.to_thread(_read_history_manifest, session.session_dir)
+    if archived_record and session.done:
+        if _sessions.get(session_id) is session:
+            del _sessions[session_id]
+        return {"status": "ok", "message": "会话已释放，历史结果已保留", "archived": True}
+
+    # 未完成会话的目录独占，可以安全清理。
     if os.path.exists(session.session_dir):
         shutil.rmtree(session.session_dir, ignore_errors=True)
 
@@ -1279,11 +2298,39 @@ async def cleanup_session(session_id: str):
 
 DEFAULT_PORT = 7863
 
+
+def run_playwright_packaging_smoke_test():
+    """验证打包内的 Playwright driver、Node 复用和 Chromium 可实际启动。"""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        # Playwright 1.56 默认 headless=True 会寻找单独的
+        # chromium_headless_shell；打包只保留完整 Chromium，显式使用新版
+        # Chromium headless 模式，避免重复内置第二套浏览器。
+        browser = playwright.chromium.launch(channel='chromium', headless=True)
+        try:
+            page = browser.new_page()
+            page.set_content('<title>WordTTS packaging smoke</title><p id="ok">ok</p>')
+            if page.title() != 'WordTTS packaging smoke':
+                raise RuntimeError('Chromium 页面执行结果不正确')
+        finally:
+            browser.close()
+    print('[smoke] Playwright driver 与内置 Chromium 启动通过')
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WordTTS local API server")
     parser.add_argument("--port", type=int, default=int(os.environ.get("WORDTTS_PORT", DEFAULT_PORT)))
     parser.add_argument("--token", default=os.environ.get("WORDTTS_API_TOKEN", ""))
+    parser.add_argument(
+        "--smoke-playwright",
+        action="store_true",
+        help="启动后立即验证 Playwright driver 与 Chromium，然后退出",
+    )
     args = parser.parse_args()
+    if args.smoke_playwright:
+        run_playwright_packaging_smoke_test()
+        raise SystemExit(0)
     if not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")
     _API_TOKEN = args.token

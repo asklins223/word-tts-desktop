@@ -33,7 +33,16 @@ from datetime import datetime
 # 路径与模块导入
 # ============================================================================
 # ---- PyInstaller 兼容：将打包资源路径加入 sys.path ----
-if getattr(sys, 'frozen', False):
+_configured_data_dir = os.environ.get("WORDTTS_DATA_DIR", "").strip()
+if _configured_data_dir:
+    BASE_DIR = os.path.abspath(os.path.expanduser(_configured_data_dir))
+    os.makedirs(BASE_DIR, exist_ok=True)
+    _RESOURCE_DIR = (
+        getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+        if getattr(sys, 'frozen', False)
+        else os.path.dirname(os.path.abspath(__file__))
+    )
+elif getattr(sys, 'frozen', False):
     # 打包模式：BASE_DIR 指向用户数据目录（可写、持久化），
     # 避免写入 .app 包内部（代码签名后只读，App Translocation 后只读）。
     if sys.platform == 'darwin':

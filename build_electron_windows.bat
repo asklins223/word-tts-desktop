@@ -1,5 +1,7 @@
 @echo off
 chcp 65001 >nul 2>&1
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 REM ============================================================================
 REM Word -> TTS -- Electron 混合打包脚本 (Windows)
 REM ============================================================================
@@ -14,8 +16,8 @@ REM   build_electron_windows.bat              -> 完整构建 (PyInstaller + ele
 REM   build_electron_windows.bat --python     -> 仅构建 Python 后端
 REM   build_electron_windows.bat --electron   -> 仅构建 Electron 壳 (需先 --python)
 REM
-REM 前置条件:
-REM   pip install -r requirements_electron.txt
+REM 前置条件（脚本会同步 Python 依赖）:
+REM   建议先创建并激活独立 Python venv
 REM   cd electron && npm install
 REM ============================================================================
 
@@ -24,6 +26,7 @@ setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "ELECTRON_DIR=%SCRIPT_DIR%\electron"
+set "REQUIREMENTS_FILE=%SCRIPT_DIR%\requirements_electron.txt"
 
 REM ============================================================================
 REM 颜色 / 日志
@@ -60,11 +63,35 @@ if !errorlevel! neq 0 (
 for /f "delims=" %%v in ('python --version 2^>^&1') do set "PY_VER=%%v"
 echo   Python: !PY_VER!
 
-REM ---- PyInstaller ----
-python -c "import PyInstaller" >nul 2>&1
+set "ISOLATED_PYTHON=1"
+python -c "import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)" >nul 2>&1
 if !errorlevel! neq 0 (
-    call :warn "PyInstaller 未安装，正在安装..."
-    pip install pyinstaller
+    set "ISOLATED_PYTHON=0"
+    call :warn "当前未使用 Python 虚拟环境；建议在独立 venv 中构建，避免全局可选依赖影响分析结果"
+)
+
+REM ---- Electron 专用 Python 依赖 ----
+if not exist "%REQUIREMENTS_FILE%" (
+    call :err "缺少依赖清单: %REQUIREMENTS_FILE%"
+    exit /b 1
+)
+call :log "同步 Electron Python 构建依赖..."
+python -m pip install --disable-pip-version-check -r "%REQUIREMENTS_FILE%"
+if !errorlevel! neq 0 (
+    call :err "安装 Electron Python 构建依赖失败"
+    exit /b 1
+)
+if "!ISOLATED_PYTHON!"=="1" (
+    python -m pip check
+    if !errorlevel! neq 0 (
+        call :err "Python 依赖冲突，请在独立虚拟环境中重新构建"
+        exit /b 1
+    )
+)
+python -c "from importlib.metadata import version; raise SystemExit(0 if version('playwright') == '1.56.0' else 1)" >nul 2>&1
+if !errorlevel! neq 0 (
+    call :err "Playwright 版本必须为 1.56.0"
+    exit /b 1
 )
 
 REM ---- Node.js ----
@@ -84,17 +111,12 @@ if not exist "%ELECTRON_DIR%\node_modules\electron-builder" (
     popd
 )
 
-REM ---- 关键 Python 依赖 ----
-call :log "检查 Python 依赖..."
-python -c "import fastapi, uvicorn, edge_tts, pydub, docx, aiohttp" >nul 2>&1
+REM 此命令幂等，只会补齐 Playwright 1.56.0 所要求的准确 Chromium revision。
+call :log "检查 Playwright Chromium..."
+python -m playwright install chromium
 if !errorlevel! neq 0 (
-    call :err "缺少关键 Python 依赖，请运行: pip install -r requirements_electron.txt"
+    call :err "安装 Playwright Chromium 失败"
     exit /b 1
-)
-python -c "import imageio_ffmpeg" >nul 2>&1
-if !errorlevel! neq 0 (
-    call :warn "imageio-ffmpeg 未安装，正在安装..."
-    pip install imageio-ffmpeg
 )
 
 echo   环境检查通过 OK
@@ -115,7 +137,7 @@ if exist "%PYINSTALLER_DIST%" rmdir /s /q "%PYINSTALLER_DIST%"
 if exist "%PYINSTALLER_WORK%" rmdir /s /q "%PYINSTALLER_WORK%"
 
 pushd "%SCRIPT_DIR%"
-pyinstaller server_pyinstaller.spec ^
+python -m PyInstaller server_pyinstaller.spec ^
     --noconfirm ^
     --distpath "%PYINSTALLER_DIST%" ^
     --workpath "%PYINSTALLER_WORK%"

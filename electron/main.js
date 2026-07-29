@@ -125,6 +125,13 @@ function startPythonServer() {
             WORDTTS_PORT: String(serverPort),
             WORDTTS_API_TOKEN: serverToken,
             WORDTTS_VERSION: app.getVersion(),
+            WORDTTS_DATA_DIR: app.getPath('userData'),
+            // 打包后复用 Electron 自带的 Node 启动 Playwright driver，
+            // 避免在 Python 后端中再携带一份约 106MB 的 node/node.exe。
+            ...(app.isPackaged ? {
+                PLAYWRIGHT_NODEJS_PATH: process.execPath,
+                ELECTRON_RUN_AS_NODE: '1',
+            } : {}),
         },
         // Windows 下隐藏控制台窗口（后端输出通过 pipe 捕获）
         windowsHide: true,
@@ -318,7 +325,8 @@ function createWindow() {
 // ============================================================================
 
 function getAllowedFileRoots() {
-    if (!app.isPackaged) return [path.resolve(__dirname, '..')];
+    const userDataDir = app.getPath('userData');
+    if (!app.isPackaged) return [path.resolve(__dirname, '..'), userDataDir];
 
     const home = app.getPath('home');
     let dataDir;
@@ -329,7 +337,7 @@ function getAllowedFileRoots() {
     } else {
         dataDir = path.join(home, '.wordtts');
     }
-    return [dataDir, path.join(process.resourcesPath, 'server_backend')];
+    return [dataDir, userDataDir, path.join(process.resourcesPath, 'server_backend')];
 }
 
 function isAllowedFilePath(filePath) {
