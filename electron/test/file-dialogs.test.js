@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const { createNativeFileDialogs } = require('../file-dialogs');
 
 function createHarness(overrides = {}) {
@@ -110,7 +111,7 @@ test('保存文件弹出系统保存框并复制到用户选择的位置', async
     assert.deepEqual(result, { success: true });
     assert.equal(calls.save.length, 1);
     assert.equal(calls.save[0][0], owner);
-    assert.equal(calls.save[0][1].defaultPath, '/Downloads/lesson.mp3');
+    assert.equal(calls.save[0][1].defaultPath, path.join('/Downloads', 'lesson.mp3'));
     assert.deepEqual(calls.copy, [['/safe/lesson.mp3', '/chosen/lesson.mp3']]);
 });
 
