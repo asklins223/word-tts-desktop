@@ -52,7 +52,12 @@ jobs:
               echo "非法版本号: $requested" >&2
               exit 1
             fi
-            npm version "$requested" --no-git-tag-version
+            current="$(node -p "require('./package.json').version")"
+            if [ "$requested" != "$current" ]; then
+              npm version "$requested" --no-git-tag-version
+            else
+              echo "package.json 版本已是 $requested，跳过 npm version"
+            fi
           fi
           resolved="$(node -p "require('./package.json').version")"
           echo "version=$resolved" >> "$GITHUB_OUTPUT"

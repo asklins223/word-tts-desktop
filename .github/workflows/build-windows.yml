@@ -75,7 +75,12 @@ jobs:
               Write-Error "非法版本号: $requested"
               exit 1
             }
-            npm version $requested --no-git-tag-version
+            $current = node -p "require('./package.json').version"
+            if ($requested -ne $current) {
+              npm version $requested --no-git-tag-version
+            } else {
+              Write-Host "package.json 版本已是 $requested，跳过 npm version"
+            }
           }
           $resolved = node -p "require('./package.json').version"
           "version=$resolved" >> $env:GITHUB_OUTPUT
