@@ -8,6 +8,16 @@ FastAPI 后端服务器 — Word → TTS 一体化应用
 
 import os
 import sys
+
+# Windows 打包后 stdout/stderr 默认使用 cp1252 编码，无法输出中文。
+# 在任何 print 之前重配置为 UTF-8，防止 UnicodeEncodeError。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
 import json
 import shutil
 import asyncio
