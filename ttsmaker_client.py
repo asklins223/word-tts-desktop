@@ -148,7 +148,7 @@ async def synth_male_ttsmaker(
         rate: 语速倍率 (TTSMaker 格式, 1.0=正常, 1.5=加速50%)
         volume: 音量倍率 (TTSMaker 格式, 1=正常, 1.5=增大50%)
         pitch: 音调倍率 (TTSMaker 格式, 1=正常, 1.1=升高10%)
-        pause: 段落停顿 (TTSMaker 格式, -1=不停顿, 0=默认300ms, N=N ms)
+        pause: 段落停顿 (TTSMaker 格式, -1=不停顿, 0=默认300ms, 500=400ms, 其他N=N ms)
 
     Returns:
         pydub.AudioSegment 音频段

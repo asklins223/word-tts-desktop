@@ -141,6 +141,13 @@ electron/server_backend_build_tmp/
 electron/release/
 .build_bin/
 
+# WordTTS 应用图标：源图与各平台打包产物必须进入干净检出和 CI。
+!electron/build/
+!electron/build/icon-source.png
+!electron/build/icon.png
+!electron/build/icon.icns
+!electron/build/icon.ico
+
 # ========================================
 # 大文件 / 训练数据（不传 GitHub）
 # ========================================
@@ -150,7 +157,14 @@ ref_samples/
 experiments/
 _tmp_xvect/
 tts_output/
-ttsmaker/
+# TTSMaker 运行模块需要进入干净检出和 CI；其余实验脚本、缓存与输出仍忽略。
+ttsmaker/*
+!ttsmaker/__init__.py
+!ttsmaker/ttsmaker.py
+
+# 全局 gitignore 可能忽略 vendor；显式保留离线运行所需的 WaveSurfer。
+!electron/renderer/vendor/
+!electron/renderer/vendor/wavesurfer.min.js
 
 # macOS
 .DS_Store

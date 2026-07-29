@@ -11,13 +11,17 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
-
-const SERVER_PORT = 7863;
-const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
+const crypto = require('crypto');
+const net = require('net');
 
 let mainWindow = null;
 let pythonProcess = null;
 let isQuitting = false;
+let serverPort = null;
+let serverUrl = null;
+let serverToken = null;
+let serverInstance = null;
+const isSmokeTest = process.argv.includes('--smoke-test');
 
 // ============================================================================
 // Python 服务器管理
@@ -73,8 +77,29 @@ function getServerCommand() {
     return { cmd: pythonCmd, args: ['server.py'], cwd: projectRoot };
 }
 
+function allocateServerPort() {
+    return new Promise((resolve, reject) => {
+        const probe = net.createServer();
+        probe.unref();
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', () => {
+            const address = probe.address();
+            const port = address && typeof address === 'object' ? address.port : null;
+            probe.close((err) => {
+                if (err) reject(err);
+                else if (!port) reject(new Error('无法分配本地服务端口'));
+                else resolve(port);
+            });
+        });
+    });
+}
+
 function startPythonServer() {
     const { cmd, args, cwd } = getServerCommand();
+
+    if (!serverPort || !serverToken) {
+        throw new Error('后端端口或会话令牌尚未初始化');
+    }
 
     console.log(`[main] 启动后端服务器: ${cmd} ${args.join(' ')} (cwd: ${cwd})`);
 
@@ -97,6 +122,9 @@ function startPythonServer() {
         env: {
             ...process.env,
             PATH: extraPath,
+            WORDTTS_PORT: String(serverPort),
+            WORDTTS_API_TOKEN: serverToken,
+            WORDTTS_VERSION: app.getVersion(),
         },
         // Windows 下隐藏控制台窗口（后端输出通过 pipe 捕获）
         windowsHide: true,
@@ -173,21 +201,59 @@ function stopPythonServerAsync() {
     });
 }
 
-function waitForServer(maxRetries = 30) {
+function waitForServer(timeoutMs = 90000) {
     return new Promise((resolve, reject) => {
-        let retries = 0;
+        const deadline = Date.now() + timeoutMs;
+        let settled = false;
         const check = () => {
-            const req = http.get(`${SERVER_URL}/api/health`, (res) => {
-                if (res.statusCode === 200) resolve();
-                else retry();
-                res.resume();
+            if (!serverUrl || !serverToken || !pythonProcess) {
+                retry();
+                return;
+            }
+            let attemptDone = false;
+            const completeAttempt = (ready) => {
+                if (attemptDone || settled) return;
+                attemptDone = true;
+                if (ready) {
+                    settled = true;
+                    resolve();
+                } else {
+                    retry();
+                }
+            };
+            const req = http.get(`${serverUrl}/api/health`, {
+                headers: { 'X-WordTTS-Token': serverToken },
+            }, (res) => {
+                let body = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk) => { body += chunk; });
+                res.on('end', () => {
+                    try {
+                        const health = JSON.parse(body);
+                        if (
+                            res.statusCode === 200
+                            && health.app === 'wordtts'
+                            && health.instance === serverInstance
+                        ) {
+                            completeAttempt(true);
+                            return;
+                        }
+                    } catch (e) { /* 服务尚未就绪或响应并非 WordTTS */ }
+                    completeAttempt(false);
+                });
             });
-            req.on('error', () => retry());
-            req.setTimeout(1500, () => { req.destroy(); retry(); });
+            req.on('error', () => completeAttempt(false));
+            req.setTimeout(1500, () => {
+                req.destroy();
+                completeAttempt(false);
+            });
         };
         const retry = () => {
-            retries++;
-            if (retries >= maxRetries) reject(new Error('服务器启动超时'));
+            if (settled) return;
+            if (Date.now() >= deadline) {
+                settled = true;
+                reject(new Error('服务器启动超时'));
+            }
             else setTimeout(check, 500);
         };
         check();
@@ -208,7 +274,7 @@ function createWindow() {
         minWidth: 900,
         minHeight: 600,
         transparent: false,
-        backgroundColor: '#faf9f7',
+        backgroundColor: '#f8fafd',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
@@ -226,8 +292,8 @@ function createWindow() {
         // titleBarOverlay 让 Windows 渲染原生控件按钮在右上角
         windowOptions.titleBarStyle = 'hidden';
         windowOptions.titleBarOverlay = {
-            color: '#faf9f7',
-            symbolColor: '#4a4a4a',
+            color: '#f8fafd',
+            symbolColor: '#172033',
             height: 40,
         };
         windowOptions.autoHideMenuBar = true;
@@ -251,7 +317,48 @@ function createWindow() {
 // IPC 注册
 // ============================================================================
 
+function getAllowedFileRoots() {
+    if (!app.isPackaged) return [path.resolve(__dirname, '..')];
+
+    const home = app.getPath('home');
+    let dataDir;
+    if (process.platform === 'darwin') {
+        dataDir = path.join(home, 'Library', 'Application Support', 'WordTTS');
+    } else if (process.platform === 'win32') {
+        dataDir = path.join(app.getPath('appData'), 'WordTTS');
+    } else {
+        dataDir = path.join(home, '.wordtts');
+    }
+    return [dataDir, path.join(process.resourcesPath, 'server_backend')];
+}
+
+function isAllowedFilePath(filePath) {
+    if (typeof filePath !== 'string' || !filePath) return false;
+    try {
+        // realpath 同时封住“允许目录内的符号链接指向目录外文件”的绕过方式。
+        const source = fs.realpathSync.native(filePath);
+        return getAllowedFileRoots().some((root) => {
+            const canonicalRoot = fs.existsSync(root) ? fs.realpathSync.native(root) : path.resolve(root);
+            const normalize = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+            const normalizedSource = normalize(source);
+            const normalizedRoot = normalize(canonicalRoot);
+            const relative = path.relative(normalizedRoot, normalizedSource);
+            return relative === '' || (
+                relative !== '..'
+                && !relative.startsWith(`..${path.sep}`)
+                && !path.isAbsolute(relative)
+            );
+        });
+    } catch (err) {
+        return false;
+    }
+}
+
 function registerIpcHandlers() {
+    ipcMain.on('backend-config', (event) => {
+        event.returnValue = { url: serverUrl, token: serverToken };
+    });
+
     // 选择文件
     ipcMain.handle('select-file', async () => {
         if (!mainWindow) return null;
@@ -269,39 +376,8 @@ function registerIpcHandlers() {
         if (!mainWindow) return false;
 
         // 安全校验：源路径必须在允许的目录内，防止复制系统敏感文件
-        const allowedRoots = [];
-        if (app.isPackaged) {
-            // 打包模式：后端输出文件在用户数据目录（与 server.py 的 BASE_DIR 一致）
-            const home = app.getPath('home');
-            let dataDir;
-            if (process.platform === 'darwin') {
-                dataDir = path.join(home, 'Library', 'Application Support', 'WordTTS');
-            } else if (process.platform === 'win32') {
-                dataDir = path.join(app.getPath('appData'), 'WordTTS');
-            } else {
-                dataDir = path.join(home, '.wordtts');
-            }
-            allowedRoots.push(dataDir);
-            // 打包资源目录（读取资源文件时可能需要）
-            allowedRoots.push(path.join(process.resourcesPath, 'server_backend'));
-        } else {
-            // 开发模式：项目根目录
-            allowedRoots.push(path.resolve(__dirname, '..'));
-        }
-        const resolvedSource = path.resolve(sourcePath);
-
-        // Windows 路径校验需要大小写不敏感
-        const isAllowed = allowedRoots.some(root => {
-            const resolvedRoot = path.resolve(root);
-            const isExactMatch = resolvedSource.toLowerCase() === resolvedRoot.toLowerCase();
-            const isSubPath = resolvedSource.toLowerCase().startsWith(resolvedRoot.toLowerCase() + path.sep.toLowerCase());
-            return isExactMatch || isSubPath;
-        });
-
-        if (!isAllowed) {
+        if (!isAllowedFilePath(sourcePath)) {
             console.error('[main] 拒绝复制允许目录外的文件:', sourcePath);
-            console.error('[main] resolvedSource:', resolvedSource);
-            console.error('[main] allowedRoots:', allowedRoots);
             return { success: false, reason: 'path-check-failed' };
         }
 
@@ -333,8 +409,9 @@ function registerIpcHandlers() {
 
     // 检查服务器是否就绪
     ipcMain.handle('server-ready', async () => {
+        if (!pythonProcess) return false;
         try {
-            await waitForServer(30);
+            await waitForServer();
             return true;
         } catch {
             return false;
@@ -343,7 +420,7 @@ function registerIpcHandlers() {
 
     // 在 Finder 中显示
     ipcMain.handle('show-in-folder', async (event, filePath) => {
-        if (filePath && fs.existsSync(filePath)) {
+        if (isAllowedFilePath(filePath)) {
             shell.showItemInFolder(filePath);
             return true;
         }
@@ -360,15 +437,32 @@ function registerIpcHandlers() {
 app.whenReady().then(async () => {
     console.log('[main] Electron app ready');
 
+    serverPort = await allocateServerPort();
+    serverUrl = `http://127.0.0.1:${serverPort}`;
+    serverToken = crypto.randomBytes(32).toString('hex');
+    serverInstance = crypto.createHash('sha256').update(serverToken).digest('hex').slice(0, 16);
+    console.log(`[main] 已分配独立后端地址: ${serverUrl}`);
+
     registerIpcHandlers();
     startPythonServer();
 
     try {
         console.log('[main] 等待 Python 服务器就绪...');
-        await waitForServer(40);
+        await waitForServer();
+        if (isSmokeTest) {
+            console.log('[main] 桌面端到端冒烟测试通过');
+            await stopPythonServerAsync();
+            app.exit(0);
+            return;
+        }
         console.log('[main] 服务器就绪，创建窗口');
     } catch (err) {
         console.error('[main] 服务器启动失败:', err.message);
+        if (isSmokeTest) {
+            await stopPythonServerAsync();
+            app.exit(1);
+            return;
+        }
         // 服务器启动失败时仍然创建窗口，让用户能看到错误提示
         createWindow();
         if (mainWindow) {

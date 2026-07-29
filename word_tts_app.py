@@ -74,6 +74,7 @@ except (ImportError, ModuleNotFoundError):
 
 import edge_tts
 from pydub import AudioSegment
+from pydub.silence import detect_silence
 
 # ---- 配置 pydub 使用 imageio-ffmpeg 自带的静态 ffmpeg ----
 def _find_ffmpeg():
@@ -375,7 +376,59 @@ def parse_speakers(text):
 # 音频生成核心
 # ============================================================================
 
-async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
+def _strip_edge_silence(seg, silence_thresh_db=-40, min_silence_ms=50):
+    """裁剪音频段首尾的静音部分。
+
+    edge-tts 生成的 MP3 通常带有 200-500ms 的尾部静音，
+    导致女声→男声切换时间隔远大于设定的段落停顿。
+    TTSMaker 生成的音频尾部静音极少，男声→女声间隔正常。
+
+    本函数统一裁剪每段音频的首尾静音，确保 _synth_item
+    插入的 AudioSegment.silent 是唯一的段落间隔源。
+
+    Args:
+        seg: pydub.AudioSegment 音频段
+        silence_thresh_db: 静音判定阈值 (dBFS)，-40 足以检测
+                          edge-tts 的数字静音而不误裁语音
+        min_silence_ms: 静音段最小长度 (ms)，50ms 足以检测
+                       连续静音而不影响语音内自然停顿
+
+    Returns:
+        裁剪后的 AudioSegment；若检测失败则返回原始音频
+    """
+    if len(seg) < min_silence_ms * 3:
+        return seg
+    try:
+        silent_ranges = detect_silence(
+            seg,
+            min_silence_len=min_silence_ms,
+            silence_thresh=silence_thresh_db,
+        )
+        if not silent_ranges:
+            return seg
+
+        start_ms = 0
+        end_ms = len(seg)
+
+        # 裁剪首部静音（第一个静音段从 0 附近开始）
+        if silent_ranges[0][0] <= 10:
+            start_ms = silent_ranges[0][1]
+
+        # 裁剪尾部静音（最后一个静音段延伸到音频末尾附近）
+        if silent_ranges[-1][1] >= len(seg) - 10:
+            end_ms = silent_ranges[-1][0]
+
+        if start_ms >= end_ms:
+            # 全静音或裁剪后为空，返回原始音频
+            return seg
+
+        return seg[start_ms:end_ms]
+    except Exception:
+        # 检测失败时不裁剪，返回原始音频
+        return seg
+
+
+async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0):
     """合成单段文本的音频，返回 AudioSegment。
 
     男声 (MALE_VOICE) 优先使用 TTSMaker 788 (Alfie) 生成；
@@ -386,19 +439,24 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
     本函数只负责生成单段干净音频（不含尾部静音）。
 
     rate/volume/pitch: TTSMaker 格式 (float 倍率, 如 1.5)
+    pause: TTSMaker 格式 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
+           传递给 TTSMaker 仅用于网页显示和日志记录，
+           实际段落停顿由 _synth_item 的 AudioSegment.silent 插入。
     """
     # ---- 男声：优先使用 TTSMaker ----
     if voice == MALE_VOICE and _TTSMaker_AVAILABLE:
         try:
             print(f"[tts] 使用 TTSMaker 788 (Alfie) 生成男声: {text[:50]}...", file=sys.stdout)
-            # pause=-1：让 TTSMaker 不在音频内部加段落停顿，
-            # 段落间静音统一由 _synth_item 用 AudioSegment.silent 插入，
-            # 避免 TTSMaker 内部停顿 + _synth_item 显式静音 = 双重停顿
+            # 传递用户配置的 pause 值，让 TTSMaker 网页/日志显示正确值。
+            # 由于 _synth_item 已按换行拆分段落，每段是独立 TTS 请求，
+            # TTSMaker 的段落停顿参数不会在单段请求内生效，
+            # 实际段落间静音由 _synth_item 用 AudioSegment.silent 插入，
+            # 不会出现双重停顿。
             seg = await _ttsmaker.synth_male_ttsmaker(
                 text, tmp_dir, voice_key="alfie",
-                rate=rate, volume=volume, pitch=pitch, pause=-1,
+                rate=rate, volume=volume, pitch=pitch, pause=pause,
             )
-            return seg
+            return _strip_edge_silence(seg)
         except Exception as e:
             print(f"[tts] TTSMaker 生成失败，回退到 edge-tts: {e}", file=sys.stdout)
             # 继续执行 edge-tts 回退逻辑
@@ -432,6 +490,9 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir):
             raise RuntimeError(f"解码后音频时长过短 ({dur_ms}ms)，可能 edge_tts 返回了空音频")
         if seg.channels == 0 or seg.frame_rate == 0:
             raise RuntimeError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
+        # 裁剪首尾静音，确保段落间隔精确等于设定值
+        seg = _strip_edge_silence(seg)
+        print(f"[tts] 裁剪静音后: duration={len(seg)}ms", file=sys.stdout)
         return seg
     finally:
         if os.path.exists(tmp_path):
@@ -454,20 +515,23 @@ async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir):
         raise ValueError("文本为空")
 
     # 将 TTSMaker pause 值转换为实际毫秒数用于插入静音
+    # TTSMaker 的 pause 值并非直接等于毫秒数：
+    #   -1 = 消除停顿 (0ms)
+    #   0  = 默认 (300ms)
+    #   500 = 400ms (TTSMaker 网站标签为 "400ms"，值与标签不一致)
+    #   其他值 = 值即为毫秒数
+    _PAUSE_VAL_TO_MS = {
+        -1: 0, 0: 300, 500: 400,
+    }
     pause_val = int(float(pause))
-    if pause_val == -1:
-        pause_ms = 0
-    elif pause_val == 0:
-        pause_ms = 300
-    else:
-        pause_ms = pause_val
+    pause_ms = _PAUSE_VAL_TO_MS.get(pause_val, pause_val)
 
     audio_parts = []
     for voice, seg_text in segments:
         # 段内按换行分段落
         paragraphs = [p.strip() for p in seg_text.splitlines() if p.strip()]
         for para in paragraphs:
-            part = await _synth_segment(para, voice, rate, volume, pitch, proxy, tmp_dir)
+            part = await _synth_segment(para, voice, rate, volume, pitch, proxy, tmp_dir, pause=pause)
             audio_parts.append(part)
 
     if not audio_parts:

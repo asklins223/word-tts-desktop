@@ -1,14 +1,14 @@
 # ============================================================================
 # Word → TTS — Windows 自动构建
 # ============================================================================
-# 在 Windows runner 上构建 WordTTS-Setup-x.x.x.exe 安装包
+# 在 Windows runner 上构建 WordTTS-Setup-x.x.x-x64.exe 安装包
 #
 # 触发方式:
 #   1. 手动触发 (Actions → Build Windows → Run workflow)
 #   2. 推送 tag v* 时自动触发
 #
 # 产物:
-#   WordTTS-Setup-<version>.exe (NSIS 安装包)
+#   WordTTS-Setup-<version>-x64.exe (NSIS 安装包)
 # ============================================================================
 
 name: Build Windows
@@ -60,6 +60,26 @@ jobs:
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
 
+      - name: Resolve package version
+        id: version
+        shell: pwsh
+        working-directory: electron
+        run: |
+          $requested = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($requested) -and "${{ github.ref_type }}" -eq "tag") {
+            $requested = "${{ github.ref_name }}".TrimStart("v")
+          }
+          if (-not [string]::IsNullOrWhiteSpace($requested)) {
+            if ($requested -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
+              Write-Error "非法版本号: $requested"
+              exit 1
+            }
+            npm version $requested --no-git-tag-version
+          }
+          $resolved = node -p "require('./package.json').version"
+          "version=$resolved" >> $env:GITHUB_OUTPUT
+          Write-Host "本次构建版本: $resolved"
+
       # ======================================================================
       # 4. 安装 Python 依赖
       # ======================================================================
@@ -79,7 +99,11 @@ jobs:
       # ======================================================================
       - name: Install Electron dependencies
         working-directory: electron
-        run: npm install
+        run: npm ci
+
+      - name: Audit packaged runtime dependencies
+        working-directory: electron
+        run: npm audit --omit=dev --audit-level=high
 
       # ======================================================================
       # 7. PyInstaller 打包后端
@@ -90,6 +114,7 @@ jobs:
             --noconfirm `
             --distpath electron/server_backend_build `
             --workpath electron/server_backend_build_tmp
+          node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend
 
       - name: Verify backend artifact
         run: |
@@ -97,18 +122,79 @@ jobs:
             Write-Error "PyInstaller 打包失败：未找到 server_backend.exe"
             exit 1
           }
+          if (-not (Test-Path "electron/server_backend_build/server_backend/_internal/playwright_browsers/chromium-*")) {
+            Write-Error "未找到内置 Playwright Chromium"
+            exit 1
+          }
           Write-Host "后端打包成功"
           Get-ChildItem -Path "electron/server_backend_build/server_backend" | Select-Object Name, Length | Format-Table
+
+      - name: Smoke test packaged backend
+        shell: pwsh
+        run: |
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+          $listener.Start()
+          $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+          $listener.Stop()
+          $token = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+          $env:WORDTTS_PORT = "$port"
+          $env:WORDTTS_API_TOKEN = $token
+          $env:WORDTTS_VERSION = "${{ steps.version.outputs.version }}"
+          $backend = Resolve-Path "electron/server_backend_build/server_backend/server_backend.exe"
+          $process = Start-Process -FilePath $backend -WorkingDirectory (Split-Path $backend) -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 180; $attempt++) {
+              Start-Sleep -Milliseconds 500
+              if ($process.HasExited) {
+                Write-Error "后端提前退出，代码: $($process.ExitCode)"
+                exit 1
+              }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -Headers @{"X-WordTTS-Token" = $token} -TimeoutSec 2
+                if ($health.status -eq "ok" -and $health.app -eq "wordtts" -and $health.version -eq "${{ steps.version.outputs.version }}") {
+                  $ready = $true
+                  break
+                }
+              } catch { }
+            }
+            if (-not $ready) {
+              Write-Error "打包后端未通过健康检查"
+              exit 1
+            }
+            Write-Host "打包后端启动冒烟测试通过"
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
 
       # ======================================================================
       # 7. electron-builder 打包 Windows 应用
       # ======================================================================
       - name: Build Electron app
         working-directory: electron
-        run: npx electron-builder --win --publish never
+        run: |
+          npm run build:icons
+          npx electron-builder --win --publish never
         env:
-          # CI 环境中跳过代码签名
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # 未配置密钥时生成未签名测试包；配置后自动生成 Authenticode 签名包。
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+
+      - name: Smoke test unpacked desktop app
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "electron/release/win-unpacked/WordTTS.exe"
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
+          if (-not $process.WaitForExit(120000)) {
+            Stop-Process -Id $process.Id -Force
+            Write-Error "Electron 桌面端到端冒烟测试超时"
+            exit 1
+          }
+          if ($process.ExitCode -ne 0) {
+            Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($process.ExitCode)"
+            exit 1
+          }
+          Write-Host "Electron 桌面端到端冒烟测试通过"
 
       # ======================================================================
       # 8. 上传构建产物

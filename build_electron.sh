@@ -2,7 +2,7 @@
 # ============================================================================
 # Word → TTS — Electron 混合打包脚本
 # ============================================================================
-# 产出: electron/release/WordTTS-<version>.dmg
+# 产出: electron/release/WordTTS-<version>-<arch>.dmg
 #
 # 流程:
 #   1. PyInstaller 打包 server.py → server_backend/
@@ -23,6 +23,23 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ELECTRON_DIR="$SCRIPT_DIR/electron"
 
+case "$(uname -m)" in
+    arm64)
+        BUILD_ARCH="arm64"
+        BUILDER_ARCH_FLAG="--arm64"
+        MAC_OUTPUT_DIR="mac-arm64"
+        ;;
+    x86_64)
+        BUILD_ARCH="x64"
+        BUILDER_ARCH_FLAG="--x64"
+        MAC_OUTPUT_DIR="mac"
+        ;;
+    *)
+        echo "[错误] 不支持的 macOS 构建架构: $(uname -m)"
+        exit 1
+        ;;
+esac
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -32,6 +49,21 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[构建]${NC} $1"; }
 warn() { echo -e "${YELLOW}[警告]${NC} $1"; }
 err()  { echo -e "${RED}[错误]${NC} $1"; }
+
+version_lt() {
+    awk -v left="$1" -v right="$2" 'BEGIN {
+        left_count = split(left, left_parts, ".")
+        right_count = split(right, right_parts, ".")
+        count = left_count > right_count ? left_count : right_count
+        for (i = 1; i <= count; i++) {
+            l = left_parts[i] + 0
+            r = right_parts[i] + 0
+            if (l < r) exit 0
+            if (l > r) exit 1
+        }
+        exit 1
+    }'
+}
 
 # ============================================================================
 # 环境检查
@@ -133,9 +165,35 @@ build_python_backend() {
         --distpath "$PYINSTALLER_DIST" \
         --workpath "$PYINSTALLER_WORK"
 
+    # Chromium 是一个已签名的嵌套应用，必须在 PyInstaller 后原样复制，
+    # 否则 PyInstaller 的二进制重签会破坏其 Framework bundle。
+    node "$SCRIPT_DIR/scripts/stage_playwright_browser.js" \
+        "$PYINSTALLER_DIST/server_backend"
+    local browser_app
+    browser_app="$(find "$PYINSTALLER_DIST/server_backend/_internal/playwright_browsers" \
+        -maxdepth 4 -type d -name "Google Chrome for Testing.app" 2>/dev/null | head -1)"
+    if [ -z "$browser_app" ]; then
+        err "内置 Playwright Chromium 不完整：未找到 Google Chrome for Testing.app"
+        exit 1
+    fi
+    codesign --force --deep --sign - "$browser_app"
+    codesign --verify --deep --strict "$browser_app"
+
     # 验证产物
     if [ ! -f "$PYINSTALLER_DIST/server_backend/server_backend" ]; then
         err "PyInstaller 打包失败：未找到 server_backend 可执行文件"
+        exit 1
+    fi
+
+    # PyInstaller 产物必须和随后构建的 Electron 壳为同一架构。
+    local backend_info
+    backend_info="$(file "$PYINSTALLER_DIST/server_backend/server_backend")"
+    if [ "$BUILD_ARCH" = "arm64" ] && [[ "$backend_info" != *"arm64"* ]]; then
+        err "后端架构不匹配，期望 arm64: $backend_info"
+        exit 1
+    fi
+    if [ "$BUILD_ARCH" = "x64" ] && [[ "$backend_info" != *"x86_64"* ]]; then
+        err "后端架构不匹配，期望 x64: $backend_info"
         exit 1
     fi
 
@@ -153,6 +211,9 @@ build_python_backend() {
 build_electron_app() {
     log "=== 步骤 2/2: electron-builder 打包应用 ==="
 
+    log "生成 macOS / Windows 应用图标..."
+    python3 "$SCRIPT_DIR/scripts/build_app_icons.py"
+
     # 确认后端产物存在
     if [ ! -d "$ELECTRON_DIR/server_backend_build/server_backend" ]; then
         err "未找到后端产物，请先运行: bash build_electron.sh --python"
@@ -165,45 +226,96 @@ build_electron_app() {
         hdiutil detach -force "$vol" 2>/dev/null || true
     done
     # 清理旧的 release 目录
-    rm -rf "$ELECTRON_DIR/release/mac-arm64" "$ELECTRON_DIR/release/mac" 2>/dev/null || true
+    rm -rf "$ELECTRON_DIR/release/$MAC_OUTPUT_DIR" 2>/dev/null || true
 
     # 确保后端二进制有执行权限
     chmod +x "$ELECTRON_DIR/server_backend_build/server_backend/server_backend" 2>/dev/null || true
 
-    cd "$ELECTRON_DIR"
-    npx electron-builder --mac
-
-    # 找到构建产物 .app（dir 模式输出到 mac-arm64/ 或 mac/）
-    local app_path=""
-    for candidate in \
-        "$ELECTRON_DIR/release/mac-arm64/WordTTS.app" \
-        "$ELECTRON_DIR/release/mac/WordTTS.app"; do
-        if [ -d "$candidate" ]; then
-            app_path="$candidate"
-            break
-        fi
-    done
-    if [ -z "$app_path" ]; then
-        app_path=$(find "$ELECTRON_DIR/release" -name "WordTTS.app" -type d 2>/dev/null | head -1)
+    local backend_info
+    backend_info="$(file "$ELECTRON_DIR/server_backend_build/server_backend/server_backend")"
+    if [ "$BUILD_ARCH" = "arm64" ] && [[ "$backend_info" != *"arm64"* ]]; then
+        err "现有后端不是 arm64，不能装入 arm64 Electron: $backend_info"
+        exit 1
     fi
+    if [ "$BUILD_ARCH" = "x64" ] && [[ "$backend_info" != *"x86_64"* ]]; then
+        err "现有后端不是 x64，不能装入 x64 Electron: $backend_info"
+        exit 1
+    fi
+
+    # package.json 给出产品期望的最低版本，但本机构建环境里的 Python、OpenSSL、
+    # ONNX Runtime 或 Chromium 可能要求更高版本。扫描所有内置 Mach-O，避免
+    # Info.plist 声称支持旧系统、实际却在启动时被 dyld 拒绝。
+    local configured_macos_min
+    local backend_macos_min="0.0"
+    local candidate_minos
+    local candidate_binary
+    if ! command -v vtool &> /dev/null; then
+        err "未找到 vtool，无法校验包内二进制的最低 macOS 版本"
+        exit 1
+    fi
+    configured_macos_min="$(node -p "require('$ELECTRON_DIR/package.json').build.mac.minimumSystemVersion || '0.0'")"
+    while IFS= read -r -d '' candidate_binary; do
+        if file "$candidate_binary" | grep -q "Mach-O"; then
+            candidate_minos="$(vtool -show-build "$candidate_binary" 2>/dev/null | awk '/minos/{print $2; exit}')"
+            if [ -n "$candidate_minos" ] && version_lt "$backend_macos_min" "$candidate_minos"; then
+                backend_macos_min="$candidate_minos"
+            fi
+        fi
+    done < <(find "$ELECTRON_DIR/server_backend_build/server_backend" -type f -print0)
+
+    local effective_macos_min="$configured_macos_min"
+    if version_lt "$configured_macos_min" "$backend_macos_min"; then
+        effective_macos_min="$backend_macos_min"
+    fi
+    log "本次产物最低系统版本: macOS ${effective_macos_min} (配置 ${configured_macos_min}, 内置二进制 ${backend_macos_min})"
+
+    cd "$ELECTRON_DIR"
+    npx electron-builder --mac "$BUILDER_ARCH_FLAG" \
+        -c.mac.minimumSystemVersion="$effective_macos_min"
+
+    # 只接受本次目标架构对应的目录，禁止从旧目录误拿另一架构产物。
+    local app_path="$ELECTRON_DIR/release/$MAC_OUTPUT_DIR/WordTTS.app"
 
     if [ -z "$app_path" ] || [ ! -d "$app_path" ]; then
         err "未找到构建产物 WordTTS.app"
         exit 1
     fi
 
+    local packaged_macos_min
+    packaged_macos_min="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")"
+    if version_lt "$packaged_macos_min" "$effective_macos_min"; then
+        err "应用最低系统版本写入失败：期望 $effective_macos_min，实际 $packaged_macos_min"
+        exit 1
+    fi
+
     log "构建产物: $app_path"
 
+    local app_info
+    app_info="$(file "$app_path/Contents/MacOS/WordTTS")"
+    if [ "$BUILD_ARCH" = "arm64" ] && [[ "$app_info" != *"arm64"* ]]; then
+        err "Electron 主程序架构不匹配: $app_info"
+        exit 1
+    fi
+    if [ "$BUILD_ARCH" = "x64" ] && [[ "$app_info" != *"x86_64"* ]]; then
+        err "Electron 主程序架构不匹配: $app_info"
+        exit 1
+    fi
+
     # ---- ad-hoc 签名（从内到外）----
-    log "对 .app 进行 ad-hoc 签名..."
-    xattr -cr "$app_path" 2>/dev/null || true
+    # electron-builder 已使用 Developer ID 时必须保留其签名，不能再被 ad-hoc 覆盖。
+    if codesign -dv --verbose=4 "$app_path" 2>&1 | grep -q "Authority=Developer ID Application"; then
+        log "检测到 Developer ID 签名，保留现有签名"
+    else
+        log "未配置 Developer ID，进行 ad-hoc 签名..."
+        xattr -cr "$app_path" 2>/dev/null || true
 
     local fw_dir="$app_path/Contents/Frameworks"
 
     # 1. 签 server_backend 内部的动态库和可执行文件
     local backend_dir="$app_path/Contents/Resources/server_backend"
     if [ -d "$backend_dir" ]; then
-        find "$backend_dir" -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.pyd" \) \
+        find "$backend_dir" -path "*/playwright_browsers" -prune -o \
+            -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.pyd" \) \
             -exec codesign --force --sign - {} \; 2>/dev/null || true
         codesign --force --sign - "$backend_dir/server_backend" 2>/dev/null || true
     fi
@@ -234,7 +346,8 @@ build_electron_app() {
     # 5. 签主应用
     codesign --force --sign - "$app_path" 2>/dev/null || true
     xattr -cr "$app_path" 2>/dev/null || true
-    echo "  ad-hoc 签名完成 ✓"
+        echo "  ad-hoc 签名完成 ✓"
+    fi
 
     # 验证签名
     if codesign --verify --deep --strict "$app_path" 2>/dev/null; then
@@ -245,13 +358,14 @@ build_electron_app() {
 
     # ---- 手动创建 DMG（绕过 electron-builder 的 dmgbuild bug） ----
     log "创建 DMG 安装包..."
-    local dmg_path="$ELECTRON_DIR/release/WordTTS.dmg"
+    local package_version
+    package_version="$(node -p "require('$ELECTRON_DIR/package.json').version")"
+    local dmg_path="$ELECTRON_DIR/release/WordTTS-${package_version}-${BUILD_ARCH}.dmg"
     rm -f "$dmg_path"
 
     # 创建临时 DMG 目录
-    local dmg_staging="/tmp/wordtts_dmg_staging"
-    rm -rf "$dmg_staging"
-    mkdir -p "$dmg_staging"
+    local dmg_staging
+    dmg_staging="$(mktemp -d /tmp/wordtts_dmg_staging.XXXXXX)"
     # 复制 .app 和 Applications 链接
     cp -R "$app_path" "$dmg_staging/"
     ln -s /Applications "$dmg_staging/Applications"

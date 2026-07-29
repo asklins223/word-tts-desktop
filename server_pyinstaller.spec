@@ -17,7 +17,7 @@ Electron 应用启动时 spawn 此可执行文件，无需用户安装 Python。
 import sys
 import os
 import shutil
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 # ============================================================================
 # 辅助函数：安全添加数据目录（目录不存在时跳过，不报错）
@@ -29,6 +29,15 @@ def safe_dir(src_dir, dest_dir):
     print(f"[spec] 跳过不存在的目录: {src_dir}")
     return []
 
+
+def required_file(src_file, dest_dir):
+    """添加构建所需文件；缺失时立即给出明确错误。"""
+    if not os.path.isfile(src_file):
+        raise FileNotFoundError(
+            f"缺少打包必需文件: {src_file}。请确认仓库为完整的干净检出。"
+        )
+    return (src_file, dest_dir)
+
 # ============================================================================
 # 数据文件（资源）
 # ============================================================================
@@ -39,8 +48,8 @@ datas = [
     ('word_parser/word_parser.py', 'word_parser'),
     ('word_parser/word_parser_app.py', 'word_parser'),
     # TTSMaker 模块（Playwright + Chromium 浏览器已内置打包）
-    ('ttsmaker/ttsmaker.py', 'ttsmaker'),
-    ('ttsmaker/__init__.py', 'ttsmaker'),
+    required_file('ttsmaker/ttsmaker.py', 'ttsmaker'),
+    required_file('ttsmaker/__init__.py', 'ttsmaker'),
 ]
 
 # 安全添加可选目录（目录可能为空或不存在）
@@ -87,7 +96,7 @@ for pkg in ['edge_tts', 'aiohttp', 'aiosignal', 'frozenlist', 'multidict',
     datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
 
 # --- 文档解析 ---
-for pkg in ['docx', 'lxml', 'PIL', 'numpy']:
+for pkg in ['docx', 'lxml', 'PIL']:
     tmp = collect_all(pkg)
     datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
 
@@ -106,14 +115,21 @@ for pkg in ['playwright', 'greenlet', 'pyee']:
     except Exception as e:
         print(f"[spec] 警告: 收集 {pkg} 失败: {e}")
 
-# ddddocr（验证码识别）+ onnxruntime（ddddocr 依赖）
-for pkg in ['ddddocr', 'onnxruntime']:
-    try:
-        tmp = collect_all(pkg)
-        datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-        print(f"[spec] 已收集 {pkg}")
-    except Exception as e:
-        print(f"[spec] 警告: 收集 {pkg} 失败: {e}（验证码识别将回退到 pytesseract）")
+# ddddocr 只需要运行时核心和内置 OCR 模型。不要 collect_all(onnxruntime)：
+# 它会递归打入 transformers、torch、pandas、测试与量化工具，令包体暴涨且
+# 带入不完整的可选动态库。onnxruntime 自带的 PyInstaller hook 会收集 capi。
+try:
+    datas += [
+        item for item in collect_data_files('ddddocr')
+        if os.path.basename(item[0]) == 'common_old.onnx'
+    ]
+    hiddenimports += collect_submodules(
+        'ddddocr',
+        filter=lambda name: not name.startswith('ddddocr.api'),
+    )
+    print("[spec] 已收集 ddddocr 运行时与 OCR 模型")
+except Exception as e:
+    print(f"[spec] 警告: 收集 ddddocr 失败: {e}（验证码识别将不可用）")
 
 # --- 其他依赖 ---
 for pkg in ['markdown_it', 'mdit_py_plugins', 'safehttpx', 'ffmpy',
@@ -135,8 +151,7 @@ if _pw_browsers_path and os.path.isdir(_pw_browsers_path):
         if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
             _chromium_dir = os.path.join(_pw_browsers_path, _name)
             if os.path.isdir(_chromium_dir):
-                datas.append((_chromium_dir, 'playwright_browsers/' + _name))
-                print(f"[spec] 已添加 Playwright Chromium: {_chromium_dir}")
+                print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
                 _chromium_browser_added = True
                 break
 
@@ -148,8 +163,7 @@ if not _chromium_browser_added:
             if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
                 _chromium_dir = os.path.join(_default_cache, _name)
                 if os.path.isdir(_chromium_dir):
-                    datas.append((_chromium_dir, 'playwright_browsers/' + _name))
-                    print(f"[spec] 已添加 Playwright Chromium (默认缓存): {_chromium_dir}")
+                    print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
                     _chromium_browser_added = True
                     break
 
@@ -161,8 +175,7 @@ if not _chromium_browser_added:
             if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
                 _chromium_dir = os.path.join(_linux_cache, _name)
                 if os.path.isdir(_chromium_dir):
-                    datas.append((_chromium_dir, 'playwright_browsers/' + _name))
-                    print(f"[spec] 已添加 Playwright Chromium (Linux 缓存): {_chromium_dir}")
+                    print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
                     _chromium_browser_added = True
                     break
 
@@ -176,15 +189,14 @@ if not _chromium_browser_added and sys.platform == 'win32':
                 if _name.startswith('chromium-') and not _name.startswith('chromium_headless'):
                     _chromium_dir = os.path.join(_win_playwright, _name)
                     if os.path.isdir(_chromium_dir):
-                        datas.append((_chromium_dir, 'playwright_browsers/' + _name))
-                        print(f"[spec] 已添加 Playwright Chromium (Windows 缓存): {_chromium_dir}")
+                        print(f"[spec] 已检测到 Playwright Chromium（构建后原样复制）: {_chromium_dir}")
                         _chromium_browser_added = True
                         break
 
 if not _chromium_browser_added:
     print("[spec] 警告: 未找到 Playwright Chromium 浏览器二进制！")
     print("[spec] 请先运行: playwright install chromium")
-    print("[spec] 打包后男声 TTSMaker 将依赖系统 Chrome，无 Chromium 回退")
+    print("[spec] 构建脚本将无法把 Chromium 复制进最终后端")
 
 # ============================================================================
 # FFmpeg 二进制文件 — 确保 imageio_ffmpeg 自带的 ffmpeg 被打包进去
@@ -222,7 +234,7 @@ except Exception as _e2:
 _system_ff = shutil.which('ffmpeg')
 if _system_ff:
     _already_sys = any(
-        os.path.basename(b[0]) == os.path.basename(_system_ff)
+        os.path.basename(b[0]).lower().startswith('ffmpeg')
         for b in binaries
     )
     if not _already_sys:
@@ -251,6 +263,15 @@ a = Analysis(
         'sqlalchemy', 'alembic', 'redis', 'celery',
         'pytest', 'IPython', 'notebook', 'jupyter',
         'cv2', 'sklearn', 'scipy', 'torch', 'tensorflow',
+        'torchaudio', 'torchvision', 'transformers', 'datasets', 'sympy',
+        'pandas', 'pyarrow', 'matplotlib', 'openpyxl', 'h5py',
+        'moviepy', 'librosa', 'soundfile', 'selenium', 'langchain',
+        'boto3', 'botocore', 'google.cloud',
+        # onnxruntime 只用于 ddddocr 推理；排除训练、转换和基准工具。
+        'onnxruntime.tools', 'onnxruntime.transformers',
+        'onnxruntime.quantization', 'onnxruntime.training',
+        'onnxruntime.backend', 'onnxruntime.datasets',
+        'onnxruntime.experimental',
         # 不需要 Firefox / WebKit 浏览器（仅用 Chromium）
         'playwright.firefox', 'playwright.webkit',
         # 排除测试模块（collect_all 会拉入 numpy 的测试子包）

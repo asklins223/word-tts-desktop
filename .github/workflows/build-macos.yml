@@ -1,0 +1,139 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空则从 package.json 读取）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements_electron.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Resolve package version
+        id: version
+        working-directory: electron
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          requested="$REQUESTED_VERSION"
+          if [ -z "$requested" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            requested="${{ github.ref_name }}"
+            requested="${requested#v}"
+          fi
+          if [ -n "$requested" ]; then
+            if ! [[ "$requested" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+              echo "非法版本号: $requested" >&2
+              exit 1
+            fi
+            npm version "$requested" --no-git-tag-version
+          fi
+          resolved="$(node -p "require('./package.json').version")"
+          echo "version=$resolved" >> "$GITHUB_OUTPUT"
+          echo "本次构建版本: $resolved"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements_electron.txt
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci
+
+      - name: Audit packaged runtime dependencies
+        working-directory: electron
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build architecture-matched app and DMG
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash build_electron.sh
+
+      - name: Smoke test packaged macOS app
+        run: |
+          if [ "$(uname -m)" = "arm64" ]; then
+            output_dir="mac-arm64"
+          else
+            output_dir="mac"
+          fi
+          app_path="electron/release/$output_dir/WordTTS.app"
+          backend="$app_path/Contents/Resources/server_backend/server_backend"
+          test -x "$backend"
+          test -x "$app_path/Contents/MacOS/WordTTS"
+          file "$backend"
+          file "$app_path/Contents/MacOS/WordTTS"
+
+          port="$(python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+          token="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          WORDTTS_PORT="$port" WORDTTS_API_TOKEN="$token" WORDTTS_VERSION="${{ steps.version.outputs.version }}" "$backend" &
+          backend_pid=$!
+          ready=0
+          for _ in $(seq 1 180); do
+            if ! kill -0 "$backend_pid" 2>/dev/null; then
+              echo "打包后端提前退出" >&2
+              exit 1
+            fi
+            if curl --fail --silent --header "X-WordTTS-Token: $token" "http://127.0.0.1:$port/api/health" | grep -q '"app":"wordtts"'; then
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+          kill "$backend_pid" 2>/dev/null || true
+          wait "$backend_pid" 2>/dev/null || true
+          test "$ready" -eq 1
+
+          "$app_path/Contents/MacOS/WordTTS" --smoke-test
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordTTS-macOS
+          path: electron/release/WordTTS-*.dmg
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: electron/release/WordTTS-*.dmg
+          name: WordTTS ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

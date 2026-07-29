@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 REM ============================================================================
 REM Word -> TTS -- Electron 混合打包脚本 (Windows)
 REM ============================================================================
-REM 产出: electron\release\WordTTS-Setup-<version>.exe (NSIS 安装包)
+REM 产出: electron\release\WordTTS-Setup-<version>-x64.exe (NSIS 安装包)
 REM
 REM 流程:
 REM   1. PyInstaller 打包 server.py -> server_backend\ (server_backend.exe)
@@ -127,6 +127,12 @@ if !BUILD_EXIT! neq 0 (
     exit /b 1
 )
 
+node "%SCRIPT_DIR%\scripts\stage_playwright_browser.js" "%PYINSTALLER_DIST%\server_backend"
+if !errorlevel! neq 0 (
+    call :err "复制 Playwright Chromium 失败"
+    exit /b 1
+)
+
 REM 验证产物
 if not exist "%PYINSTALLER_DIST%\server_backend\server_backend.exe" (
     call :err "PyInstaller 打包失败: 未找到 server_backend.exe 可执行文件"
@@ -145,6 +151,13 @@ REM 步骤 2: electron-builder 打包前端 + 后端
 REM ============================================================================
 :build_electron_app
 call :log "=== 步骤 2/2: electron-builder 打包应用 ==="
+
+call :log "生成 macOS / Windows 应用图标..."
+python "%SCRIPT_DIR%\scripts\build_app_icons.py"
+if !errorlevel! neq 0 (
+    call :err "应用图标生成失败"
+    exit /b 1
+)
 
 REM 确认后端产物存在
 if not exist "%ELECTRON_DIR%\server_backend_build\server_backend\server_backend.exe" (
@@ -169,7 +182,7 @@ if !BUILD_EXIT! neq 0 (
 
 REM 查找构建产物
 set "EXE_PATH="
-for %%f in ("%ELECTRON_DIR%\release\WordTTS-Setup-*.exe") do (
+for %%f in ("%ELECTRON_DIR%\release\WordTTS-Setup-*-x64.exe") do (
     if not defined EXE_PATH set "EXE_PATH=%%f"
 )
 

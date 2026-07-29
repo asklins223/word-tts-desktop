@@ -1,6 +1,6 @@
 {
   "name": "word-tts-desktop",
-  "version": "1.0.0",
+  "version": "1.2.1",
   "description": "Word → TTS 一体化桌面工具",
   "main": "main.js",
   "author": "asklins223",
@@ -12,17 +12,20 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build:python": "cd .. && pyinstaller server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp",
-    "build": "npm run build:python && electron-builder",
-    "build:mac": "npm run build:python && electron-builder --mac",
-    "build:win": "npm run build:python && electron-builder --win"
+    "build:icons": "cd .. && node scripts/run_python.js scripts/build_app_icons.py",
+    "build:python": "cd .. && pyinstaller server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp && node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend",
+    "build": "npm run build:icons && npm run build:python && electron-builder",
+    "build:mac": "npm run build:icons && npm run build:python && electron-builder --mac",
+    "build:win": "npm run build:icons && npm run build:python && electron-builder --win"
   },
   "build": {
     "appId": "com.wordtts.desktop",
     "productName": "WordTTS",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
+    "afterSign": "notarize.js",
     "files": [
       "main.js",
       "preload.js",
@@ -36,20 +39,12 @@
       }
     ],
     "mac": {
-      "target": [
-        {
-          "target": "dir",
-          "arch": ["arm64", "x64"]
-        }
-      ],
+      "target": "dir",
       "category": "public.app-category.education",
-      "icon": null,
-      "hardenedRuntime": false,
-      "gatekeeperAssess": false,
-      "identity": null,
-      "signIgnore": [
-        "server_backend"
-      ]
+      "minimumSystemVersion": "12.0",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
     },
     "dmg": {
       "title": "${productName} ${version}",
@@ -67,14 +62,15 @@
       ]
     },
     "win": {
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "nsis",
           "arch": ["x64"]
         }
       ],
-      "icon": null,
-      "signAndEditExecutable": false
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": true
     },
     "nsis": {
       "oneClick": false,
@@ -83,14 +79,15 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "WordTTS",
-      "installerIcon": null,
-      "uninstallerIcon": null,
-      "installerHeaderIcon": null,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false
     }
   },
   "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3"
+    "@electron/notarize": "3.1.1",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
   }
 }

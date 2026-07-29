@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showInFolder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
 
     // 服务器
+    backend: ipcRenderer.sendSync('backend-config'),
     serverReady: () => ipcRenderer.invoke('server-ready'),
 
     // 平台信息
