@@ -279,6 +279,7 @@ build_electron_app() {
 
     cd "$ELECTRON_DIR"
     npx electron-builder --mac "$BUILDER_ARCH_FLAG" \
+        --publish never \
         -c.mac.minimumSystemVersion="$effective_macos_min"
 
     # 只接受本次目标架构对应的目录，禁止从旧目录误拿另一架构产物。
@@ -378,23 +379,43 @@ build_electron_app() {
     cp -R "$app_path" "$dmg_staging/"
     ln -s /Applications "$dmg_staging/Applications"
 
-    # 创建 DMG
-    hdiutil create \
-        -volname "$PRODUCT_NAME" \
-        -srcfolder "$dmg_staging" \
-        -ov -format UDZO \
-        "$dmg_path" 2>/dev/null
+    # 创建 DMG（带重试，CI 环境偶发 hdiutil 失败）
+    local dmg_created=false
+    for attempt in 1 2 3; do
+        if hdiutil create \
+            -volname "$PRODUCT_NAME" \
+            -srcfolder "$dmg_staging" \
+            -ov -format UDZO \
+            "$dmg_path"; then
+            dmg_created=true
+            break
+        fi
+        warn "hdiutil 第 $attempt 次创建 DMG 失败，重试..."
+        rm -f "$dmg_path" 2>/dev/null || true
+        sleep 3
+    done
 
     rm -rf "$dmg_staging"
 
-    if [ -f "$dmg_path" ]; then
+    if [ "$dmg_created" = true ] && [ -f "$dmg_path" ]; then
         # 清除 DMG 的隔离属性
         xattr -cr "$dmg_path" 2>/dev/null || true
         echo "  DMG 创建完成 ✓"
         echo "  位置: $dmg_path"
         echo "  大小: $(du -sh "$dmg_path" | awk '{print $1}')"
     else
-        warn "DMG 创建失败，可直接使用 .app: $app_path"
+        warn "DMG 创建失败，改用 zip 打包 .app 作为分发产物"
+        local zip_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.zip"
+        rm -f "$zip_path"
+        ditto -c -k --keepParent "$app_path" "$zip_path" 2>/dev/null || true
+        if [ -f "$zip_path" ]; then
+            echo "  ZIP 创建完成 ✓"
+            echo "  位置: $zip_path"
+            echo "  大小: $(du -sh "$zip_path" | awk '{print $1}')"
+        else
+            err "DMG 和 ZIP 均创建失败"
+            exit 1
+        fi
     fi
 
     log "打包完成 ✓"
