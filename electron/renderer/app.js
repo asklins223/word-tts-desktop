@@ -75,6 +75,40 @@ let pendingCleanupSessionId = null; // 未确认清理完成前禁止创建同�
 // ============================================================================
 
 const PRESET_STORAGE_KEY = 'wordtts_presets_v1';
+const CURRENT_CONFIG_STORAGE_KEY = 'wordtts_current_config_v1';
+
+/**
+ * 保存尚未创建为预设的当前配置。Windows 渲染进程或页面意外重载后，
+ * 仍可恢复用户刚刚选择的参数。
+ */
+function saveCurrentConfig(config) {
+    if (!config) return false;
+    try {
+        localStorage.setItem(CURRENT_CONFIG_STORAGE_KEY, JSON.stringify(config));
+        return true;
+    } catch (e) {
+        console.error('保存当前配置失败:', e);
+        return false;
+    }
+}
+
+function loadCurrentConfig() {
+    try {
+        const raw = localStorage.getItem(CURRENT_CONFIG_STORAGE_KEY);
+        if (!raw) return null;
+        const config = JSON.parse(raw);
+        return config && typeof config === 'object' && !Array.isArray(config)
+            ? config
+            : null;
+    } catch (e) {
+        console.error('读取当前配置失败:', e);
+        return null;
+    }
+}
+
+function rememberCurrentConfig() {
+    saveCurrentConfig(collectConfig(false));
+}
 
 /**
  * 从 localStorage 读取所有预设。
@@ -264,6 +298,7 @@ function applyConfigToForm(config) {
     $('proxy').value = config.proxy ?? '';
     $('preview').checked = !!config.preview;
     enforceOutputCompatibility($('format'));
+    rememberCurrentConfig();
 }
 
 /**
@@ -914,6 +949,12 @@ async function init() {
     // 初始化预设 UI
     refreshPresetUI();
     window.WordTTSUI?.enhanceSelects(document);
+    const savedConfig = loadCurrentConfig();
+    if (savedConfig) {
+        applyConfigToForm(savedConfig);
+    } else {
+        rememberCurrentConfig();
+    }
 
     const connected = await connectService(isElectron);
     updateStepper();
@@ -1014,11 +1055,24 @@ function bindEvents() {
 
     // Step 2: 配置
     ['rate', 'volume', 'pitch', 'pause'].forEach(id => {
-        $(id).addEventListener('change', updateConfigSummary);
+        $(id).addEventListener('change', () => {
+            updateConfigSummary();
+            rememberCurrentConfig();
+        });
     });
-    $('format').addEventListener('change', (e) => enforceOutputCompatibility(e.currentTarget));
-    $('quality').addEventListener('change', (e) => enforceOutputCompatibility(e.currentTarget));
-    $('preview').addEventListener('change', updateConfigSummary);
+    $('format').addEventListener('change', (e) => {
+        enforceOutputCompatibility(e.currentTarget);
+        rememberCurrentConfig();
+    });
+    $('quality').addEventListener('change', (e) => {
+        enforceOutputCompatibility(e.currentTarget);
+        rememberCurrentConfig();
+    });
+    $('preview').addEventListener('change', () => {
+        updateConfigSummary();
+        rememberCurrentConfig();
+    });
+    $('proxy').addEventListener('input', rememberCurrentConfig);
     $('change-file-btn').addEventListener('click', requestRestart);
     $('back-to-upload-btn').addEventListener('click', requestRestart);
     $('retry-generation-btn').addEventListener('click', () => {

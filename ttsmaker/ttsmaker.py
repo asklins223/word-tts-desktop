@@ -707,6 +707,9 @@ class TTSMakerSession:
         self._page = None
         self._logged_in = False
         self._is_persistent = False
+        # 记录当前任务要求的表单状态。页面局部异常时优先原地恢复；只有
+        # 表单 DOM 确实不可用时才刷新，并在刷新后立即恢复这些值。
+        self._last_form_state = None
         # 非持久化模式下的后台 Chrome 资源（login 失败时 close() 需要安全清理）
         self._background_profile = None
         self._background_pid = None
@@ -716,13 +719,13 @@ class TTSMakerSession:
     # 内部辅助
     # ------------------------------------------------------------------
 
-    def _select_language(self, page):
+    def _select_language(self, page, force=False):
         """选择英语语言，触发 updateAnnouncersList 动态生成 voice radio"""
         try:
             current_lang = page.evaluate(
                 "() => document.querySelector('#userSelectLanguageID')?.value"
             )
-            if current_lang == self.lang_id:
+            if current_lang == self.lang_id and not force:
                 return True
             page.evaluate(
                 """(langId) => {
@@ -837,7 +840,9 @@ class TTSMakerSession:
             radio = page.locator(radio_selector)
         if radio.count() == 0:
             _log("   voice radio 未出现，重新触发语言切换...")
-            self._select_language(page)
+            # 页面刚加载时下拉框可能已经显示 en-us，但音色列表的动态
+            # change 回调尚未执行；此处必须强制触发一次。
+            self._select_language(page, force=True)
             page.wait_for_timeout(2000)
             radio = page.locator(radio_selector)
             for _ in range(10):
@@ -855,6 +860,71 @@ class TTSMakerSession:
         )
         page.wait_for_timeout(500)
         _log(f"   已选音色: {self.voice_name} (ID: {self.voice_id})")
+
+    def _remember_form_state(self, text, speed, volume, pitch, pause_time):
+        """保存本次合成需要的页面值，供重试与刷新后恢复。"""
+        self._last_form_state = {
+            "text": text,
+            "speed": str(speed),
+            "volume": str(volume),
+            "pitch": str(pitch),
+            "pause_time": str(pause_time),
+        }
+
+    def _restore_form_state(self, page):
+        """将记录的音色、文本和高级选项完整恢复到当前页面。"""
+        state = self._last_form_state
+        if not state:
+            return True
+
+        self._select_voice(page)
+        textarea = page.locator("#UserInputTextarea")
+        if textarea.count() == 0:
+            textarea = page.locator("textarea").first
+        if textarea.count() == 0:
+            raise RuntimeError("TTSMaker 文本输入框不可用")
+        textarea.fill("")
+        page.wait_for_timeout(100)
+        textarea.fill(state["text"])
+        self._set_tts_settings(
+            page,
+            state["speed"],
+            state["volume"],
+            state["pitch"],
+            state["pause_time"],
+        )
+        return True
+
+    def _form_is_usable(self, page, timeout=5000):
+        """检查现有页面能否继续工作，不通过刷新来探测。"""
+        try:
+            if page.is_closed():
+                return False
+            page.wait_for_selector("#UserInputTextarea", timeout=timeout)
+            page.wait_for_selector("#tts_order_submit", timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+    def _recover_form(self, page):
+        """
+        恢复 TTSMaker 表单。
+
+        页面仍可操作时只清理旧结果并重新写入表单，避免 Windows 用户看到
+        整页刷新；只有输入框或转换按钮确实不可用时才执行硬刷新。
+        """
+        if self._form_is_usable(page):
+            try:
+                self._restore_form_state(page)
+                self._clear_previous_audio(page)
+                _log("   表单已原地恢复，无需刷新页面")
+                return True
+            except Exception as soft_error:
+                _log(f"   原地恢复失败，将重新加载页面: {soft_error}")
+        else:
+            _log("   页面表单不可用，将重新加载页面")
+
+        return self._reload_page(page)
 
     def _clear_previous_audio(self, page):
         """清除上一次 TTS 生成的音频结果，防止下载到旧音频"""
@@ -926,12 +996,14 @@ class TTSMakerSession:
         return download_audio(audio_url, output_path)
 
     def _reload_page(self, page):
-        """刷新页面并等待表单加载"""
+        """硬刷新页面，并立即恢复音色、文本及高级选项。"""
         try:
             page.reload(wait_until="load", timeout=60000)
             page.wait_for_timeout(3000)
             page.wait_for_selector("#UserInputTextarea", timeout=60000)
-            self._select_language(page)
+            self._restore_form_state(page)
+            self._clear_previous_audio(page)
+            _log("   页面已重新加载并恢复当前生成设置")
             return True
         except Exception as e:
             _log(f"   页面刷新失败: {e}")
@@ -939,7 +1011,9 @@ class TTSMakerSession:
                 page.goto(HOME_URL, wait_until="load", timeout=60000)
                 page.wait_for_timeout(5000)
                 page.wait_for_selector("#UserInputTextarea", timeout=60000)
-                self._select_language(page)
+                self._restore_form_state(page)
+                self._clear_previous_audio(page)
+                _log("   页面已重新打开并恢复当前生成设置")
                 return True
             except Exception as e2:
                 _log(f"   重新导航也失败: {e2}")
@@ -1153,25 +1227,14 @@ class TTSMakerSession:
         _log(f"{'='*60}")
 
         page = self._page
+        self._remember_form_state(text, speed, volume, pitch, pause_time)
 
         for attempt in range(1, max_retries + 1):
             _log(f"   第 {attempt}/{max_retries} 次尝试...")
 
             try:
-                # 1. 选音色（含选语言）
-                self._select_voice(page)
-
-                # 2. 输入文本
-                textarea = page.locator("#UserInputTextarea")
-                if textarea.count() == 0:
-                    textarea = page.locator("textarea").first
-                textarea.fill("")
-                page.wait_for_timeout(200)
-                textarea.fill(text)
-                page.wait_for_timeout(300)
-
-                # 3. 设置语速/音量/音调/停顿
-                self._set_tts_settings(page, speed, volume, pitch, pause_time)
+                # 1–3. 恢复音色、文本、语速、音量、音调与停顿
+                self._restore_form_state(page)
 
                 # 4. 清除上一次的音频结果
                 self._clear_previous_audio(page)
@@ -1197,7 +1260,7 @@ class TTSMakerSession:
                             pass
                     if not clicked:
                         _log("   未找到转换按钮")
-                        if not self._reload_page(page):
+                        if not self._recover_form(page):
                             break
                         continue
 
@@ -1206,6 +1269,12 @@ class TTSMakerSession:
                 if found and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                     size = os.path.getsize(output_path)
                     _log(f"\n🎉 生成成功! ({size:,} bytes)")
+                    # 某些页面版本会在生成完成后还原高级选项；再次写回，
+                    # 让下一条开始前浏览器中看到的设置保持稳定。
+                    try:
+                        self._restore_form_state(page)
+                    except Exception as restore_error:
+                        _log(f"   生成后恢复页面设置失败 (非致命): {restore_error}")
                     return output_path
 
                 # 7. 检查频率限制
@@ -1214,20 +1283,20 @@ class TTSMakerSession:
                     if any(kw in page_text for kw in ["429", "rate limit", "频率", "限制", "稍后", "too many", "频繁", "排队"]):
                         _log("   遇到频率限制，等 65 秒...")
                         time.sleep(65)
-                        if not self._reload_page(page):
+                        if not self._recover_form(page):
                             break
                         continue
                 except Exception:
                     pass
 
-                _log("   未获取到音频，刷新重试...")
-                if not self._reload_page(page):
+                _log("   未获取到音频，恢复表单后重试...")
+                if not self._recover_form(page):
                     break
                 page.wait_for_timeout(2000)
 
             except Exception as attempt_err:
                 _log(f"   第 {attempt} 次异常: {attempt_err}")
-                if not self._reload_page(page):
+                if not self._recover_form(page):
                     break
 
         _log("\n❌ 失败")
@@ -1269,6 +1338,7 @@ class TTSMakerSession:
             self._background_pid = None
             self._background_guard = None
             self._logged_in = False
+            self._last_form_state = None
             _log("[ttsmaker] 浏览器已关闭（登录状态已保留）")
 
 

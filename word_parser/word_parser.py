@@ -5,7 +5,7 @@ Word 文档解析脚本
 从 /word 文件夹下的 Word 文档中提取各类英语听说考试素材。
 
 支持文档类型：
-  1. 信息获取        — 提取「第一节 听选信息」的所有录音稿
+  1. 信息获取        — 提取「听选信息」「回答问题」的题目与录音稿
   2. 课文跟读        — 提取句子跟读（去序号、按序号排序）、段落跟读、语篇跟读
   3. 信息转述及询问   — 提取「第一节 信息转述」的录音稿
   4. 模仿朗读        — 提取每个单元的「外网」(2篇) 和「教材」(1篇)
@@ -123,7 +123,13 @@ class BaseParser:
 class InfoAcquisitionParser(BaseParser):
     """
     解析「信息获取」文档。
-    提取「第一节 听选信息」和「第二节 回答问题」中每段对话/独白的录音稿。
+    提取「第一节 听选信息」和「第二节 回答问题」中的题目及每段录音稿。
+
+    题目规则：
+      - 两节共用文档中的连续题号，题号不会在第二节重新开始
+      - 每道题单独生成一条结果，文本去掉题号
+      - 按题目出现顺序使用男声、女声交替朗读（第一题为男声）
+      - filename_stem 使用"问题x"，供 TTS 阶段生成问题1.mp3等文件
 
     文档结构示例:
         第一节 听选信息
@@ -160,6 +166,8 @@ class InfoAcquisitionParser(BaseParser):
     RE_SCRIPT = re.compile(r'录音稿\s*[：:]\s*(.*)')
     # 听第X段对话 → 上一段录音稿结束
     RE_DIALOG = re.compile(r'听第.+段对话')
+    # 题目编号：1. / 1． / 1、 / 1) / 1）
+    RE_QUESTION = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)')
 
     def parse(self):
         items = []
@@ -167,6 +175,7 @@ class InfoAcquisitionParser(BaseParser):
         current_category = ""    # 当前节的 category
         collecting = False       # 是否正在收集录音稿
         current_lines = []       # 当前录音稿的文本行
+        question_order = 0       # 当前试题内的题目顺序；第二节不重置
         # 每节独立编号
         idx_by_cat = {}          # {category: count}
 
@@ -189,6 +198,7 @@ class InfoAcquisitionParser(BaseParser):
                 flush()
                 in_section = True
                 current_category = "听选信息录音稿"
+                question_order = 0
                 continue
 
             # ---- 第二节 回答问题 开始 ----
@@ -215,6 +225,27 @@ class InfoAcquisitionParser(BaseParser):
                 continue
 
             if not in_section:
+                continue
+
+            # ---- 题目：去题号，按出现顺序男/女交替 ----
+            # 只在非录音稿状态识别，避免把录音稿中偶然以数字开头的句子误判为题目。
+            question_match = self.RE_QUESTION.match(text) if not collecting else None
+            if question_match:
+                question_number = int(question_match.group(1))
+                question_text = sanitize(question_match.group(2))
+                if question_text:
+                    question_order += 1
+                    speaker = "M" if question_order % 2 == 1 else "W"
+                    section_name = (
+                        "听选信息" if current_category == "听选信息录音稿" else "回答问题"
+                    )
+                    items.append({
+                        "category": f"{section_name}题目",
+                        "number": question_number,
+                        "filename_stem": f"问题{question_number}",
+                        "voice": "male" if speaker == "M" else "female",
+                        "text": f"{speaker}: {question_text}",
+                    })
                 continue
 
             # ---- 录音稿标记 ----

@@ -6,7 +6,7 @@ Word 文档解析 + Edge TTS 音频生成 — 一体化应用
 2. 解析成功后自动开始生成音频（支持 w/m 说话人标识自动选音色）
 3. 全程进度记录，支持断点续传
 4. 生成完成后可下载 ZIP 包或选择单个文件下载
-5. 文件命名规则：题型_序号
+5. 文件命名规则：信息获取题目使用问题x；其他题型使用题型-录音稿x
 
 音色规则：
   - w/W 标识 → 女声 en-US-JennyNeural
@@ -625,17 +625,38 @@ def _category_to_prefix(category):
     return prefix if prefix else "audio"
 
 
+def _sanitize_filename_stem(value):
+    """清理解析器指定的文件名主体；空值表示仍使用默认命名规则。"""
+    stem = str(value or "").strip()
+    stem = re.sub(r'[\\/:*?"<>|]', '_', stem).strip(' .')
+    return stem[:120]
+
+
+def _unique_filename_stem(stem, used_stems):
+    """以大小写不敏感方式避免同一批任务中的文件名冲突。"""
+    candidate = stem
+    suffix = 2
+    while candidate.casefold() in used_stems:
+        candidate = f"{stem}_{suffix}"
+        suffix += 1
+    used_stems.add(candidate.casefold())
+    return candidate
+
+
 def build_progress(source_filename, source_path, parse_results, config):
     """
     构建初始进度数据结构。
     每条解析结果（每道题）独立生成一个音频文件。
-    文件名使用具体子题型（如"听选信息"、"回答问题"）而非大题型。
-    同一子题型内按序号编号。
+
+    文件命名规则：
+      - 信息获取题目（听选信息题目/回答问题题目）：问题x.mp3（x 为题号）
+      - 其他题型：题型-录音稿x.mp3（x 为同题型内的顺序号）
     """
     ext = FORMAT_MAP[config['format']][1].lstrip('.')
     items = []
     # 每个子题型独立编号
     seq_by_cat = {}
+    used_filename_stems = set()
 
     for result in parse_results:
         doc_type = result["doc_type"]
@@ -645,15 +666,29 @@ def build_progress(source_filename, source_path, parse_results, config):
             cat = raw_item.get("category", "")
             prefix = _category_to_prefix(cat)
             seq_by_cat[prefix] = seq_by_cat.get(prefix, 0) + 1
-            seq = seq_by_cat[prefix]
-            item_id = f"{prefix}_{seq:03d}"
+            default_seq = seq_by_cat[prefix]
+            requested_stem = _sanitize_filename_stem(raw_item.get("filename_stem"))
+            if requested_stem:
+                filename_stem = _unique_filename_stem(requested_stem, used_filename_stems)
+                try:
+                    seq = int(raw_item.get("number"))
+                except (TypeError, ValueError):
+                    seq = default_seq
+                item_id = f"{prefix}_{filename_stem}"
+            else:
+                # 其他题型：题型-录音稿x
+                seq = default_seq
+                filename_stem = _unique_filename_stem(
+                    f"{prefix}-录音稿{seq}", used_filename_stems
+                )
+                item_id = filename_stem
             text_preview = raw_item.get("text", "")[:80].replace('\n', ' ')
             items.append({
                 "id": item_id,
                 "doc_type": doc_type,
                 "category": cat,
                 "seq": seq,
-                "filename": f"{item_id}.{ext}",
+                "filename": f"{filename_stem}.{ext}",
                 "status": "pending",
                 "output_path": None,
                 "error": None,
