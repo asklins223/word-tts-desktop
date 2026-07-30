@@ -494,6 +494,11 @@ def progress_is_reusable(progress: Optional[dict], fingerprint: dict) -> bool:
         return False
     if progress.get("source_fingerprint") != fingerprint:
         return False
+    if (
+        (progress.get("config") or {}).get("audio_algorithm_version")
+        != core.AUDIO_ALGORITHM_VERSION
+    ):
+        return False
     if not all("raw_item" in item for item in progress.get("items", [])):
         return False
     return all(
@@ -650,6 +655,10 @@ async def generate_audio_stream(
     异步生成音频，通过会话事件日志向所有 SSE 连接广播进度。
     复用 word_tts_app.py 中的所有核心函数。
     """
+    config = {
+        **config,
+        "audio_algorithm_version": core.AUDIO_ALGORITHM_VERSION,
+    }
     # finally 中需要读取该变量；必须在任何可能抛错的 I/O 之前初始化。
     has_male_voice = False
     task_started_at = time.perf_counter()

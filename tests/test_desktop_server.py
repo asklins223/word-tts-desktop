@@ -49,6 +49,24 @@ class DesktopSessionIsolationTests(unittest.TestCase):
             with self.assertRaises(server.HTTPException):
                 server.confined_file_path(session_dir, "../outside.mp3")
 
+    def test_progress_from_an_old_audio_algorithm_is_not_reused(self):
+        fingerprint = {"sha256": "same", "size": 1}
+        progress = {
+            "source_fingerprint": fingerprint,
+            "config": {},
+            "items": [{"status": "pending", "raw_item": {}}],
+        }
+
+        self.assertFalse(server.progress_is_reusable(progress, fingerprint))
+
+        progress["config"]["audio_algorithm_version"] = 1
+        self.assertFalse(server.progress_is_reusable(progress, fingerprint))
+
+        progress["config"]["audio_algorithm_version"] = (
+            server.core.AUDIO_ALGORITHM_VERSION
+        )
+        self.assertTrue(server.progress_is_reusable(progress, fingerprint))
+
     def test_early_generation_error_still_emits_end(self):
         session = server.SessionState("fault-injection")
 

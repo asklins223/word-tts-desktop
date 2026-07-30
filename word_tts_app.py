@@ -93,7 +93,7 @@ except (ImportError, ModuleNotFoundError):
 
 import edge_tts
 from pydub import AudioSegment
-from pydub.silence import detect_silence
+from pydub.silence import detect_leading_silence, detect_silence
 
 # ---- 配置 pydub 使用 imageio-ffmpeg 自带的静态 ffmpeg ----
 def _find_ffmpeg():
@@ -212,6 +212,19 @@ QUALITY_BITRATE = {
     "无损（仅 wav 生效）": None,
 }
 
+# 音频生成算法版本。调整裁边/拼接规则时递增，避免断点续传复用旧算法产物。
+AUDIO_ALGORITHM_VERSION = 2
+
+# Edge TTS 的 MP3 通常带有较长的首尾数字填充。检测阈值相对于每段峰值计算，
+# 因而用户把音量调低时不会把整段低音量语音误判成静音。
+_EDGE_SILENCE_BELOW_PEAK_DB = 70.0
+_EDGE_MIN_SILENCE_MS = 80
+_EDGE_LEADING_GUARD_MS = 20
+_EDGE_TRAILING_GUARD_MS = 50
+_EDGE_MIN_TRAILING_PADDING_MS = 250
+_EDGE_BOUNDARY_SCAN_MS = 2000
+_FINAL_POST_ROLL_MS = 150
+
 TYPE_COLORS = {
     "信息获取": "#0e7490",
     "课文跟读": "#15803d",
@@ -248,7 +261,9 @@ def export_audio(seg, fmt, quality, out_path):
     if br and fmt in ("mp3", "aac", "opus"):
         kwargs["bitrate"] = br
     print(f"[export] 导出: {out_path} fmt={fmt_id} dur={len(seg)}ms bitrate={br}", file=sys.stdout)
-    seg.export(out_path, **kwargs)
+    export_result = seg.export(out_path, **kwargs)
+    if hasattr(export_result, "close"):
+        export_result.close()
     out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
     print(f"[export] 完成: {out_path} ({out_size} bytes)", file=sys.stdout)
     if out_size == 0:
@@ -263,7 +278,10 @@ def export_audio(seg, fmt, quality, out_path):
         import shutil as _verify_shutil
         _verify_shutil.copy2(out_path, _verify_tmp_path)
         try:
-            verify_seg = AudioSegment.from_file(_verify_tmp_path, format=fmt_id)
+            with open(_verify_tmp_path, "rb") as verify_source:
+                # 让 FFmpeg 从文件内容自动识别输入容器。输出侧的 adts/opus
+                # 名称不是所有 FFmpeg 构建都接受的输入 demuxer 名称。
+                verify_seg = AudioSegment.from_file(verify_source)
             if len(verify_seg) < 10:
                 raise RuntimeError(f"回读验证失败: 时长 {len(verify_seg)}ms 过短")
             print(f"[export] 回读验证通过: dur={len(verify_seg)}ms size={out_size}B", file=sys.stdout)
@@ -395,33 +413,54 @@ def parse_speakers(text):
 # 音频生成核心
 # ============================================================================
 
-def _strip_edge_silence(seg, silence_thresh_db=-40, min_silence_ms=50):
-    """裁剪音频段首尾的静音部分。
+def _relative_silence_threshold(seg, below_peak_db=_EDGE_SILENCE_BELOW_PEAK_DB):
+    """返回相对本段峰值的静音阈值，兼容用户降低整体音量的场景。"""
+    peak_db = seg.max_dBFS
+    if peak_db == float("-inf"):
+        return 0.0
+    return peak_db - max(0.0, float(below_peak_db))
+
+
+def _strip_edge_silence(
+    seg,
+    silence_thresh_db=None,
+    min_silence_ms=_EDGE_MIN_SILENCE_MS,
+    leading_guard_ms=_EDGE_LEADING_GUARD_MS,
+    trailing_guard_ms=_EDGE_TRAILING_GUARD_MS,
+    min_trailing_padding_ms=_EDGE_MIN_TRAILING_PADDING_MS,
+):
+    """保守裁剪 Edge TTS 音频段首尾的引擎填充。
 
     edge-tts 生成的 MP3 通常带有 200-500ms 的尾部静音，
     导致女声→男声切换时间隔远大于设定的段落停顿。
-    TTSMaker 生成的音频尾部静音极少，男声→女声间隔正常。
 
-    本函数统一裁剪每段音频的首尾静音，确保 _synth_item
-    插入的 AudioSegment.silent 是唯一的段落间隔源。
+    与旧实现不同，本函数使用相对峰值的保守阈值，并且只有尾部填充
+    足够长时才裁剪；裁剪后仍保留少量首尾余量，避免把弱尾音、爆破音
+    或用户降低音量后的正常语音误判为静音。
 
     Args:
         seg: pydub.AudioSegment 音频段
-        silence_thresh_db: 静音判定阈值 (dBFS)，-40 足以检测
-                          edge-tts 的数字静音而不误裁语音
-        min_silence_ms: 静音段最小长度 (ms)，50ms 足以检测
-                       连续静音而不影响语音内自然停顿
+        silence_thresh_db: 可选的绝对静音阈值；默认按本段峰值动态计算
+        min_silence_ms: 静音段最小长度
+        leading_guard_ms/trailing_guard_ms: 裁剪后保留的安全余量
+        min_trailing_padding_ms: 尾部静音达到此长度才视为引擎填充
 
     Returns:
         裁剪后的 AudioSegment；若检测失败则返回原始音频
     """
+    min_silence_ms = max(1, int(min_silence_ms))
     if len(seg) < min_silence_ms * 3:
         return seg
     try:
+        silence_threshold = (
+            float(silence_thresh_db)
+            if silence_thresh_db is not None
+            else _relative_silence_threshold(seg)
+        )
         silent_ranges = detect_silence(
             seg,
             min_silence_len=min_silence_ms,
-            silence_thresh=silence_thresh_db,
+            silence_thresh=silence_threshold,
         )
         if not silent_ranges:
             return seg
@@ -431,11 +470,25 @@ def _strip_edge_silence(seg, silence_thresh_db=-40, min_silence_ms=50):
 
         # 裁剪首部静音（第一个静音段从 0 附近开始）
         if silent_ranges[0][0] <= 10:
-            start_ms = silent_ranges[0][1]
+            start_ms = max(
+                0,
+                silent_ranges[0][1] - max(0, int(leading_guard_ms)),
+            )
 
-        # 裁剪尾部静音（最后一个静音段延伸到音频末尾附近）
-        if silent_ranges[-1][1] >= len(seg) - 10:
-            end_ms = silent_ranges[-1][0]
+        # 仅裁明显较长的尾部填充；短暂弱音或自然衰减原样保留。
+        trailing_range = silent_ranges[-1]
+        trailing_padding_ms = len(seg) - trailing_range[0]
+        if (
+            trailing_range[1] >= len(seg) - 10
+            and trailing_padding_ms >= max(
+                min_silence_ms,
+                int(min_trailing_padding_ms),
+            )
+        ):
+            end_ms = min(
+                len(seg),
+                trailing_range[0] + max(0, int(trailing_guard_ms)),
+            )
 
         if start_ms >= end_ms:
             # 全静音或裁剪后为空，返回原始音频
@@ -447,6 +500,67 @@ def _strip_edge_silence(seg, silence_thresh_db=-40, min_silence_ms=50):
         return seg
 
 
+def _edge_silence_ms(seg, *, leading, max_scan_ms=_EDGE_BOUNDARY_SCAN_MS):
+    """测量一段音频边缘的确认静音，只扫描有限窗口。"""
+    if not seg or max_scan_ms <= 0:
+        return 0
+    scan_ms = min(len(seg), max(1, int(max_scan_ms)))
+    probe = seg[:scan_ms] if leading else seg[-scan_ms:].reverse()
+    return detect_leading_silence(
+        probe,
+        silence_threshold=_relative_silence_threshold(seg),
+        chunk_size=5,
+    )
+
+
+def _fit_boundary_to_pause(previous, current, pause_ms):
+    """用确认的边缘静音归一段间距，并优先保护上一句的尾音。"""
+    pause_ms = max(0, int(pause_ms))
+    previous_tail_ms = _edge_silence_ms(previous, leading=False)
+    current_head_ms = _edge_silence_ms(current, leading=True)
+    existing_silence_ms = previous_tail_ms + current_head_ms
+
+    if existing_silence_ms > pause_ms:
+        excess_ms = existing_silence_ms - pause_ms
+
+        # 优先移除下一段的开头数字填充，尽量不碰上一句尾部安全余量。
+        trim_head_ms = min(excess_ms, current_head_ms)
+        if trim_head_ms:
+            current = current[trim_head_ms:]
+            current_head_ms -= trim_head_ms
+            excess_ms -= trim_head_ms
+
+        if excess_ms:
+            trim_tail_ms = min(excess_ms, previous_tail_ms)
+            if trim_tail_ms:
+                previous = previous[:-trim_tail_ms]
+                previous_tail_ms -= trim_tail_ms
+
+    remaining_silence_ms = previous_tail_ms + current_head_ms
+    inserted_pause_ms = max(0, pause_ms - remaining_silence_ms)
+    return previous, current, inserted_pause_ms
+
+
+def _pause_value_to_ms(pause):
+    """把界面停顿值转换为应用层毫秒数。"""
+    pause_val = int(float(pause))
+    if pause_val == -1:
+        return 0
+    if pause_val == 0:
+        return 300
+    return max(0, pause_val)
+
+
+def _silent_segment(duration_ms, *segments):
+    """按相邻音频的最高采样率创建静音，避免隐式低采样率重采样。"""
+    frame_rates = [seg.frame_rate for seg in segments if seg]
+    frame_rate = max(frame_rates) if frame_rates else 44100
+    return AudioSegment.silent(
+        duration=max(0, int(duration_ms)),
+        frame_rate=frame_rate,
+    )
+
+
 async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0):
     """合成单段文本的音频，返回 AudioSegment。
 
@@ -454,28 +568,23 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause
     女声 (FEMALE_VOICE) 使用 edge-tts 生成。
     TTSMaker 不可用或失败时回退到 edge-tts。
 
-    段落间的停顿由 _synth_item 统一用 AudioSegment.silent 插入，
-    本函数只负责生成单段干净音频（不含尾部静音）。
+    段落间的停顿由 _synth_item 统一归一；本函数只负责生成单段音频。
 
     rate/volume/pitch: TTSMaker 格式 (float 倍率, 如 1.5)
-    pause: TTSMaker 格式 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
-           传递给 TTSMaker 仅用于网页显示和日志记录，
-           实际段落停顿由 _synth_item 的 AudioSegment.silent 插入。
+    pause: 应用层停顿值 (int ms, -1=不停顿, 0=默认300ms, N=N ms)；
+           TTSMaker 始终接收 -1，实际间隔由 _synth_item 处理。
     """
     # ---- 男声：优先使用 TTSMaker ----
     if voice == MALE_VOICE and _TTSMaker_AVAILABLE:
         try:
             print(f"[tts] 使用 TTSMaker 788 (Alfie) 生成男声: {text[:50]}...", file=sys.stdout)
-            # 传递用户配置的 pause 值，让 TTSMaker 网页/日志显示正确值。
-            # 由于 _synth_item 已按换行拆分段落，每段是独立 TTS 请求，
-            # TTSMaker 的段落停顿参数不会在单段请求内生效，
-            # 实际段落间静音由 _synth_item 用 AudioSegment.silent 插入，
-            # 不会出现双重停顿。
+            # TTSMaker 内部不添加停顿；用户设置的段间距统一由 _synth_item
+            # 处理。男声音频不做幅度裁剪，避免弱尾音被误判。
             seg = await _ttsmaker.synth_male_ttsmaker(
                 text, tmp_dir, voice_key="alfie",
-                rate=rate, volume=volume, pitch=pitch, pause=pause,
+                rate=rate, volume=volume, pitch=pitch, pause=-1,
             )
-            return _strip_edge_silence(seg)
+            return seg
         except Exception as e:
             print(f"[tts] TTSMaker 生成失败，回退到 edge-tts: {e}", file=sys.stdout)
             # 继续执行 edge-tts 回退逻辑
@@ -509,7 +618,7 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause
             raise RuntimeError(f"解码后音频时长过短 ({dur_ms}ms)，可能 edge_tts 返回了空音频")
         if seg.channels == 0 or seg.frame_rate == 0:
             raise RuntimeError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
-        # 裁剪首尾静音，确保段落间隔精确等于设定值
+        # 仅裁剪确认的长填充；精确段间距由 _synth_item 在拼接时归一。
         seg = _strip_edge_silence(seg)
         print(f"[tts] 裁剪静音后: duration={len(seg)}ms", file=sys.stdout)
         return seg
@@ -527,23 +636,14 @@ async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir):
     自动处理 w/m 说话人切换，段落间插入停顿。
 
     rate/volume/pitch: TTSMaker 格式 (float 倍率)
-    pause: TTSMaker 格式 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
+    pause: 应用层停顿值 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
     """
     segments = parse_speakers(text)
     if not segments:
         raise ValueError("文本为空")
 
-    # 将 TTSMaker pause 值转换为实际毫秒数用于插入静音
-    # TTSMaker 的 pause 值并非直接等于毫秒数：
-    #   -1 = 消除停顿 (0ms)
-    #   0  = 默认 (300ms)
-    #   500 = 400ms (TTSMaker 网站标签为 "400ms"，值与标签不一致)
-    #   其他值 = 值即为毫秒数
-    _PAUSE_VAL_TO_MS = {
-        -1: 0, 0: 300, 500: 400,
-    }
-    pause_val = int(float(pause))
-    pause_ms = _PAUSE_VAL_TO_MS.get(pause_val, pause_val)
+    # 引擎内部停顿已关闭，段间距完全由应用层按界面标注的毫秒数控制。
+    pause_ms = _pause_value_to_ms(pause)
 
     audio_parts = []
     for voice, seg_text in segments:
@@ -556,10 +656,33 @@ async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir):
     if not audio_parts:
         raise RuntimeError("合成失败，未生成任何音频")
 
-    silence = AudioSegment.silent(duration=max(0, pause_ms))
-    full = audio_parts[0]
+    normalized_parts = [audio_parts[0]]
+    inserted_pauses = []
     for seg in audio_parts[1:]:
-        full = full + silence + seg
+        previous, current, inserted_pause_ms = _fit_boundary_to_pause(
+            normalized_parts[-1],
+            seg,
+            pause_ms,
+        )
+        normalized_parts[-1] = previous
+        normalized_parts.append(current)
+        inserted_pauses.append(inserted_pause_ms)
+
+    full = normalized_parts[0]
+    for inserted_pause_ms, seg in zip(inserted_pauses, normalized_parts[1:]):
+        if inserted_pause_ms:
+            full = full + _silent_segment(inserted_pause_ms, full, seg)
+        full = full + seg
+
+    # 确保最后一句后至少有一小段真静音，避免播放器在有效波形处直接 EOF。
+    trailing_silence_ms = _edge_silence_ms(
+        full,
+        leading=False,
+        max_scan_ms=_FINAL_POST_ROLL_MS,
+    )
+    post_roll_ms = max(0, _FINAL_POST_ROLL_MS - trailing_silence_ms)
+    if post_roll_ms:
+        full = full + _silent_segment(post_roll_ms, full)
     return full
 
 
@@ -652,6 +775,10 @@ def build_progress(source_filename, source_path, parse_results, config):
       - 信息获取题目（听选信息题目/回答问题题目）：问题x.mp3（x 为题号）
       - 其他题型：题型-录音稿x.mp3（x 为同题型内的顺序号）
     """
+    config = {
+        **config,
+        "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
+    }
     ext = FORMAT_MAP[config['format']][1].lstrip('.')
     items = []
     # 每个子题型独立编号
@@ -1005,6 +1132,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         "quality": quality,
         "proxy": proxy or "",
         "preview": preview,
+        "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
     }
 
     log_entries = []
@@ -1024,6 +1152,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             or old_config.get("format") != fmt
             or old_config.get("quality") != quality
             or old_config.get("preview") != preview
+            or old_config.get("audio_algorithm_version") != AUDIO_ALGORITHM_VERSION
         )
 
         if config_changed or not has_raw_item:
