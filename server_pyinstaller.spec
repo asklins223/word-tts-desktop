@@ -15,12 +15,15 @@ Electron 应用启动时 spawn 此可执行文件，无需用户安装 Python。
 """
 
 import sys
+import os
 
 # GitHub 的 Windows runner 可能把 Python 控制台设为 cp1252。spec 中的中文
 # 诊断不应反过来令构建失败，因此在任何输出前固定为 UTF-8。
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, 'reconfigure'):
         _stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+
+from PyInstaller.utils.hooks import collect_data_files
 
 # ============================================================================
 # 数据文件（资源）
@@ -30,6 +33,11 @@ datas = [
     # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
     ('word_parser/word_parser.py', 'word_parser'),
 ]
+
+# Playwright 官方 hook（playwright/_impl/__pyinstaller/）在某些 PyInstaller
+# 版本下可能不被自动发现。显式收集 playwright 数据文件（含 driver/package/cli.js），
+# 确保打包后同步 driver 可用。
+datas += collect_data_files('playwright', include_py_files=False)
 
 binaries = []
 hiddenimports = [

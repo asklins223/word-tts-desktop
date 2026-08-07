@@ -285,6 +285,17 @@ class TextReadingParser(BaseParser):
       - 段落跟读：整段英文
       - 语篇跟读：按「语篇N」分组，每组可含多段
 
+    音色/语速/停顿/命名规则（仅 Understanding Idea / Reading for writing 章节）：
+      Understanding Idea (前缀 U)：
+        - 句子跟读：男声，语速 0.7，停顿 400ms，命名 U-句子1、U-句子2 …
+        - 段落跟读：男声，语速 0.7，停顿 400ms，命名 U-段落
+        - 语篇1：男声，语速 0.7，停顿 400ms，命名 U-语篇1
+        - 语篇2：女声，语速 0.7，停顿 400ms，命名 U-语篇2
+      Reading for writing (前缀 R)：
+        - 句子跟读：男声，语速 0.7，停顿 400ms，命名 R-句子1、R-句子2 …
+        - 段落跟读：男声，语速 0.7，停顿 400ms，命名 R-段落
+        - 语篇跟读：女声，语速 0.7，停顿 400ms，命名 R-语篇
+
     文档结构示例:
         [Heading 1] 课文跟读-7上U1
         [Heading 2] Understanding Idea
@@ -326,6 +337,33 @@ class TextReadingParser(BaseParser):
         'developing ideas', 'developing idea',
     }
 
+    # 课文跟读 TTS 规则常量
+    TTS_RATE = 0.7        # 语速倍率
+    TTS_PAUSE = 400       # 段落停顿 (ms)
+
+    @staticmethod
+    def _section_prefix(section):
+        """根据 Heading 2 章节名返回命名前缀，未知章节返回空字符串。"""
+        s = section.strip().lower()
+        if 'understanding' in s:
+            return "U"
+        if 'reading' in s:
+            return "R"
+        return ""
+
+    @classmethod
+    def _discourse_voice(cls, section, discourse_number):
+        """确定语篇跟读的音色。
+        Understanding Idea: 语篇1→男声, 语篇2→女声
+        Reading for writing: 全部女声
+        """
+        prefix = cls._section_prefix(section)
+        if prefix == "U":
+            return "male" if discourse_number == 1 else "female"
+        if prefix == "R":
+            return "female"
+        return "female"
+
     def parse(self):
         items = []
         current_sub = None        # 当前子章节类型
@@ -341,38 +379,62 @@ class TextReadingParser(BaseParser):
         def flush_sentences():
             nonlocal sentence_buf
             if sentence_buf:
+                prefix = self._section_prefix(current_section)
                 sentence_buf.sort(key=lambda x: x[0])
                 for num, text in sentence_buf:
-                    items.append({
+                    item = {
                         "category": "句子跟读",
                         "section": current_section,
                         "number": num,
                         "text": text,
-                    })
+                    }
+                    if prefix:
+                        item["voice"] = "male"
+                        item["rate"] = self.TTS_RATE
+                        item["pause"] = self.TTS_PAUSE
+                        item["filename_stem"] = f"{prefix}-句子{num}"
+                    items.append(item)
                 sentence_buf = []
 
         def flush_paragraph():
             nonlocal paragraph_buf
             if paragraph_buf:
-                items.append({
+                prefix = self._section_prefix(current_section)
+                item = {
                     "category": "段落跟读",
                     "section": current_section,
                     "text": sanitize('\n'.join(paragraph_buf)),
-                })
+                }
+                if prefix:
+                    item["voice"] = "male"
+                    item["rate"] = self.TTS_RATE
+                    item["pause"] = self.TTS_PAUSE
+                    item["filename_stem"] = f"{prefix}-段落"
+                items.append(item)
                 paragraph_buf = []
 
         def flush_discourse():
             nonlocal discourse_buf
             if discourse_buf:
+                prefix = self._section_prefix(current_section)
                 for num in sorted(discourse_buf.keys()):
                     lines = discourse_buf[num]
                     if lines:
-                        items.append({
+                        item = {
                             "category": "语篇跟读",
                             "section": current_section,
                             "discourse_number": num,
                             "text": sanitize('\n'.join(lines)),
-                        })
+                        }
+                        if prefix:
+                            item["voice"] = self._discourse_voice(current_section, num)
+                            item["rate"] = self.TTS_RATE
+                            item["pause"] = self.TTS_PAUSE
+                            if prefix == "U":
+                                item["filename_stem"] = f"{prefix}-语篇{num}"
+                            else:  # R: 只有一个语篇，命名为 R-语篇
+                                item["filename_stem"] = f"{prefix}-语篇"
+                        items.append(item)
                 discourse_buf = {}
 
         def flush_all():

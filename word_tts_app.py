@@ -342,7 +342,7 @@ RE_LINE_SPEAKER = re.compile(r'^([WwMm])\s*[:：]\s*(.*)')
 RE_PAREN_SPEAKER = re.compile(r'^\(([WwMm])\)\s*(.*)')
 
 
-def parse_speakers(text):
+def parse_speakers(text, default_voice=None):
     """
     解析文本中的 w/m 说话人标识，返回 [(voice, clean_text), ...] 列表。
 
@@ -351,13 +351,18 @@ def parse_speakers(text):
       - "M: text" 或 "m: text" → 男声，去除 "M:" 前缀
       - "(W) text" 或 "(w) text" → 女声，去除 "(W)" 前缀
       - "(M) text" 或 "(m) text" → 男声，去除 "(M)" 前缀
-      - 无标识的行 → 默认女声
+      - 无标识的行 → 使用 default_voice（默认女声）
       - 连续相同说话人的行合并为一段
+
+    default_voice: 无说话人标识时的默认音色，用于课文跟读等需要
+                   按规则指定男声/女声但文本中没有 w/m 前缀的场景。
     """
+    if default_voice is None:
+        default_voice = FEMALE_VOICE
     segments = []
     lines = text.strip().split('\n')
 
-    current_voice = FEMALE_VOICE
+    current_voice = default_voice
     current_lines = []
 
     def flush():
@@ -400,11 +405,11 @@ def parse_speakers(text):
 
     flush()
 
-    # 如果没有检测到任何说话人标识，整段用默认女声
+    # 如果没有检测到任何说话人标识，整段用默认音色
     if not segments:
         clean = text.strip()
         if clean:
-            segments.append((FEMALE_VOICE, clean))
+            segments.append((default_voice, clean))
 
     return segments
 
@@ -630,15 +635,16 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause
                 pass
 
 
-async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir):
+async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None):
     """
     为一条解析结果生成完整音频。
     自动处理 w/m 说话人切换，段落间插入停顿。
 
     rate/volume/pitch: TTSMaker 格式 (float 倍率)
     pause: 应用层停顿值 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
+    default_voice: 无 w/m 标识时的默认音色，None 表示女声
     """
-    segments = parse_speakers(text)
+    segments = parse_speakers(text, default_voice=default_voice)
     if not segments:
         raise ValueError("文本为空")
 
@@ -686,9 +692,9 @@ async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir):
     return full
 
 
-def generate_item_audio(text, rate, volume, pitch, pause, proxy, tmp_dir):
+def generate_item_audio(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None):
     """同步包装：为一条文本生成音频。"""
-    return asyncio.run(_synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir))
+    return asyncio.run(_synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=default_voice))
 
 
 # ============================================================================
@@ -810,6 +816,14 @@ def build_progress(source_filename, source_path, parse_results, config):
                 )
                 item_id = filename_stem
             text_preview = raw_item.get("text", "")[:80].replace('\n', ' ')
+            # 课文跟读等题型可在解析阶段指定 per-item 音色/语速/停顿覆盖
+            voice_override = raw_item.get("voice") or None      # "male" / "female" / None
+            rate_override = raw_item.get("rate") or None         # float 倍率, e.g. 0.7
+            pause_override = raw_item.get("pause")               # int ms, 可能为 0
+            if pause_override is not None:
+                pause_override = int(pause_override)
+            else:
+                pause_override = None
             items.append({
                 "id": item_id,
                 "doc_type": doc_type,
@@ -823,6 +837,9 @@ def build_progress(source_filename, source_path, parse_results, config):
                 "merged": False,
                 "merged_count": 1,
                 "raw_item": raw_item,
+                "voice_override": voice_override,
+                "rate_override": rate_override,
+                "pause_override": pause_override,
             })
 
     return {
@@ -1294,8 +1311,14 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 continue
             raw_item = item.get("raw_item", {})
             text = raw_item.get("text", "")
+            # per-item 音色覆盖（课文跟读等题型）
+            voice_override = item.get("voice_override")
+            if voice_override == "male":
+                has_male_voice = True
+                break
             if text.strip():
-                speakers = parse_speakers(text)
+                dv = MALE_VOICE if voice_override == "male" else FEMALE_VOICE
+                speakers = parse_speakers(text, default_voice=dv)
                 if any(v == MALE_VOICE for v, _ in speakers):
                     has_male_voice = True
                     break
@@ -1360,7 +1383,10 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 )
                 continue
 
-            speakers = parse_speakers(text)
+            # per-item 音色覆盖（课文跟读等题型）
+            voice_override = item.get("voice_override")
+            item_default_voice = MALE_VOICE if voice_override == "male" else FEMALE_VOICE
+            speakers = parse_speakers(text, default_voice=item_default_voice)
             speaker_info = ""
             if len(speakers) > 1 or speakers[0][0] != FEMALE_VOICE:
                 voices_used = set(v for v, _ in speakers)
@@ -1370,7 +1396,6 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                     speaker_info = " [男声]"
                 else:
                     speaker_info = " [女声]"
-
             log_entries.append({
                 "time": now_str(), "level": "progress",
                 "msg": f"正在生成: {item_id}{speaker_info}..."
@@ -1383,9 +1408,14 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
             )
 
+            # per-item 语速/停顿覆盖（课文跟读等题型）
+            item_rate = item.get("rate_override") or rate
+            item_pause = item.get("pause_override")
+            item_pause = item_pause if item_pause is not None else pause
             try:
                 audio_seg = generate_item_audio(
-                    text, rate, volume, pitch, pause, proxy, tmp_dir
+                    text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
+                    default_voice=item_default_voice,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 export_audio(audio_seg, fmt, quality, out_path)

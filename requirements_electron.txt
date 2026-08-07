@@ -16,7 +16,7 @@ python-docx>=1.0.0
 lxml>=5.0.0
 # 仅供 scripts/build_app_icons.py 构建图标；固定版本确保 CI 生成的 PNG/ICNS/ICO 可复现。
 # PyInstaller 后端明确排除 PIL。
-Pillow==12.3.0
+Pillow>=11.0.0
 
 # ---- 音频处理 ----
 pydub>=0.25.1

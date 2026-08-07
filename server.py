@@ -1191,8 +1191,14 @@ async def generate_audio_stream(
                     continue
                 raw_item = item.get("raw_item", {})
                 text = raw_item.get("text", "")
+                # per-item 音色覆盖（课文跟读等题型）
+                voice_override = item.get("voice_override")
+                if voice_override == "male":
+                    has_male_voice = True
+                    break
                 if text.strip():
-                    speakers = core.parse_speakers(text)
+                    dv = core.MALE_VOICE if voice_override == "male" else core.FEMALE_VOICE
+                    speakers = core.parse_speakers(text, default_voice=dv)
                     if any(v == core.MALE_VOICE for v, _ in speakers):
                         has_male_voice = True
                         break
@@ -1297,7 +1303,10 @@ async def generate_audio_stream(
                 emit_generation_status(progress)
                 continue
 
-            speakers = core.parse_speakers(text)
+            # per-item 音色覆盖（课文跟读等题型）
+            voice_override = item.get("voice_override")
+            item_default_voice = core.MALE_VOICE if voice_override == "male" else core.FEMALE_VOICE
+            speakers = core.parse_speakers(text, default_voice=item_default_voice)
             speaker_info = ""
             voice_label = "女声"
             if len(speakers) > 1 or speakers[0][0] != core.FEMALE_VOICE:
@@ -1311,7 +1320,6 @@ async def generate_audio_stream(
                 else:
                     speaker_info = " [女声]"
                     voice_label = "女声"
-
             item_context = {
                 "id": item_id,
                 "filename": item.get("filename"),
@@ -1334,9 +1342,14 @@ async def generate_audio_stream(
             )
             emit_generation_status(progress, item_id)
 
+            # per-item 语速/停顿覆盖（课文跟读等题型）
+            item_rate = item.get("rate_override") or rate
+            item_pause = item.get("pause_override")
+            item_pause = item_pause if item_pause is not None else pause
             try:
                 audio_seg = await core._synth_item(
-                    text, rate, volume, pitch, pause, proxy, tmp_dir
+                    text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
+                    default_voice=item_default_voice,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 await asyncio.to_thread(core.export_audio, audio_seg, fmt, quality, out_path)
