@@ -285,18 +285,21 @@ class TextReadingParser(BaseParser):
       - 段落跟读：整段英文
       - 语篇跟读：按「语篇N」分组，每组可含多段
 
-    音色/语速/停顿/命名规则（仅 Understanding Idea / Reading for writing 章节）：
+    音色/命名规则（仅 Understanding Idea / Reading for writing 章节）：
+      语速和停顿由前端动态配置，解析器不固定。
       Understanding Idea (前缀 U)：
-        - 句子跟读：男声，语速 0.7，停顿 400ms，命名 U-句子1、U-句子2 …
-        - 段落跟读：男声，语速 0.7，停顿 400ms，命名 U-段落
-        - 语篇1：男声，语速 0.7，停顿 400ms，命名 U-语篇1
-        - 语篇2：女声，语速 0.7，停顿 400ms，命名 U-语篇2
+        - 句子跟读：男声，命名 U-句子1、U-句子2 …
+        - 段落跟读：男声，命名 U-段落
+        - 语篇1：男声，命名 U-语篇1
+        - 语篇2：女声，命名 U-语篇2
+        - 语篇（仅一篇时）：男声，命名 U-语篇
       Reading for writing (前缀 R)：
-        - 句子跟读：男声，语速 0.7，停顿 400ms，命名 R-句子1、R-句子2 …
-        - 段落跟读：男声，语速 0.7，停顿 400ms，命名 R-段落
-        - 语篇跟读：女声，语速 0.7，停顿 400ms，命名 R-语篇
+        - 句子跟读：男声，命名 R-句子1、R-句子2 …
+        - 段落跟读：男声，命名 R-段落
+        - 语篇跟读：女声，命名 R-语篇
 
-    文档结构示例:
+    文档结构示例（两种标题层级均支持）：
+        格式一（旧）：
         [Heading 1] 课文跟读-7上U1
         [Heading 2] Understanding Idea
           [Heading 3] 句子跟读
@@ -315,6 +318,20 @@ class TextReadingParser(BaseParser):
         [Heading 2] Reading for writing
           ...
 
+        格式二（新）：
+        [Normal] 课文跟读-7 上 U2
+        [Heading 1] Understanding Idea
+          [Heading 2] 句子跟读
+            ...
+          [Heading 2] 段落跟读
+            ...
+          [Heading 2] 语篇跟读
+            English paragraph 1
+            English paragraph 2
+            （无显式「语篇N」标记，仅一篇时自动归为一组）
+        [Heading 1] Reading for writing
+          ...
+
     支持同一文件内包含多个单元/章节。
     """
 
@@ -331,19 +348,15 @@ class TextReadingParser(BaseParser):
     RE_DISCOURSE_NUM = re.compile(r'^语篇\s*(\d+)\s*[：:]?\s*$')
     # 中文翻译行
     RE_CHINESE_PREFIX = re.compile(r'^中文\s*[：:]')
-    # 已知的 Heading 2 章节名（用于无样式时的备用判断）
+    # 已知的章节名（用于内容匹配，不依赖样式）
     KNOWN_SECTIONS = {
         'understanding idea', 'reading for writing',
         'developing ideas', 'developing idea',
     }
 
-    # 课文跟读 TTS 规则常量
-    TTS_RATE = 0.7        # 语速倍率
-    TTS_PAUSE = 400       # 段落停顿 (ms)
-
     @staticmethod
     def _section_prefix(section):
-        """根据 Heading 2 章节名返回命名前缀，未知章节返回空字符串。"""
+        """根据章节名返回命名前缀，未知章节返回空字符串。"""
         s = section.strip().lower()
         if 'understanding' in s:
             return "U"
@@ -364,10 +377,13 @@ class TextReadingParser(BaseParser):
             return "female"
         return "female"
 
+    # 子章节名称集合，用于排除 heading 样式误匹配
+    _SUB_SECTION_NAMES = frozenset({SUB_SENTENCE, SUB_PARAGRAPH, SUB_DISCOURSE})
+
     def parse(self):
         items = []
         current_sub = None        # 当前子章节类型
-        current_section = ""      # 当前 Heading 2 章节名
+        current_section = ""      # 当前章节名
 
         # 句子跟读临时存储: [(序号, 英文), ...]
         sentence_buf = []
@@ -390,8 +406,6 @@ class TextReadingParser(BaseParser):
                     }
                     if prefix:
                         item["voice"] = "male"
-                        item["rate"] = self.TTS_RATE
-                        item["pause"] = self.TTS_PAUSE
                         item["filename_stem"] = f"{prefix}-句子{num}"
                     items.append(item)
                 sentence_buf = []
@@ -407,8 +421,6 @@ class TextReadingParser(BaseParser):
                 }
                 if prefix:
                     item["voice"] = "male"
-                    item["rate"] = self.TTS_RATE
-                    item["pause"] = self.TTS_PAUSE
                     item["filename_stem"] = f"{prefix}-段落"
                 items.append(item)
                 paragraph_buf = []
@@ -417,6 +429,7 @@ class TextReadingParser(BaseParser):
             nonlocal discourse_buf
             if discourse_buf:
                 prefix = self._section_prefix(current_section)
+                discourse_count = len(discourse_buf)
                 for num in sorted(discourse_buf.keys()):
                     lines = discourse_buf[num]
                     if lines:
@@ -427,12 +440,16 @@ class TextReadingParser(BaseParser):
                             "text": sanitize('\n'.join(lines)),
                         }
                         if prefix:
-                            item["voice"] = self._discourse_voice(current_section, num)
-                            item["rate"] = self.TTS_RATE
-                            item["pause"] = self.TTS_PAUSE
                             if prefix == "U":
-                                item["filename_stem"] = f"{prefix}-语篇{num}"
+                                # Understanding Idea：只有一篇语篇时用男声且命名不带数字
+                                if discourse_count == 1:
+                                    item["voice"] = "male"
+                                    item["filename_stem"] = f"{prefix}-语篇"
+                                else:
+                                    item["voice"] = self._discourse_voice(current_section, num)
+                                    item["filename_stem"] = f"{prefix}-语篇{num}"
                             else:  # R: 只有一个语篇，命名为 R-语篇
+                                item["voice"] = self._discourse_voice(current_section, num)
                                 item["filename_stem"] = f"{prefix}-语篇"
                         items.append(item)
                 discourse_buf = {}
@@ -443,14 +460,8 @@ class TextReadingParser(BaseParser):
             flush_discourse()
 
         for _, text, style in self.paras:
-            # ---- Heading 2：新章节 ----
-            if self._is_heading2(style, text):
-                flush_all()
-                current_section = text
-                current_sub = None
-                continue
-
-            # ---- 子章节标记 ----
+            # ---- 子章节标记（优先于 Heading 检查，兼容新格式中
+            #      子章节使用 Heading 2 样式的情况）----
             if text == self.SUB_SENTENCE:
                 flush_all()
                 current_sub = self.SUB_SENTENCE
@@ -462,6 +473,13 @@ class TextReadingParser(BaseParser):
             if text == self.SUB_DISCOURSE:
                 flush_all()
                 current_sub = self.SUB_DISCOURSE
+                continue
+
+            # ---- Heading：新章节 ----
+            if self._is_section_heading(style, text):
+                flush_all()
+                current_section = text
+                current_sub = None
                 continue
 
             # ---- 根据子章节处理内容 ----
@@ -480,11 +498,27 @@ class TextReadingParser(BaseParser):
         flush_all()
         return self._result(items)
 
-    def _is_heading2(self, style, text):
-        """判断是否为 Heading 2（优先用样式，备用内容匹配）"""
-        if style and 'heading 2' in style.lower():
+    def _is_section_heading(self, style, text):
+        """判断是否为章节标题（Understanding Idea / Reading for writing 等）。
+
+        兼容两种文档格式：
+        - 旧格式：章节为 Heading 2，子章节为 Heading 3
+        - 新格式：章节为 Heading 1，子章节为 Heading 2
+
+        策略：
+        1. 已知章节名直接匹配（不依赖样式）
+        2. Heading 1/2 样式且不是子章节名时，也视为章节标题
+        """
+        # 已知章节名直接匹配
+        if text.strip().lower() in self.KNOWN_SECTIONS:
             return True
-        return text.strip().lower() in self.KNOWN_SECTIONS
+        # Heading 1 或 Heading 2 样式（排除子章节名，避免误匹配）
+        if style:
+            sl = style.lower()
+            if ('heading 1' in sl or 'heading 2' in sl):
+                if text.strip() not in self._SUB_SECTION_NAMES:
+                    return True
+        return False
 
     def _handle_sentence(self, text, buf):
         """处理句子跟读的一个段落"""
