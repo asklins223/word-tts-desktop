@@ -88,11 +88,34 @@ def is_available():
     return _TTSMAKER_AVAILABLE
 
 
+def _session_is_healthy(session):
+    """
+    轻量级健康检查：验证会话的关键属性仍然有效。
+
+    只检查 Python 层的标志和对象引用，不发起任何 Playwright 网络/DOM
+    操作，因此可以在任何线程中安全调用（包括事件循环线程）。
+    """
+    if session is None:
+        return False
+    if not getattr(session, "_logged_in", False):
+        return False
+    page = getattr(session, "_page", None)
+    ctx = getattr(session, "_ctx", None)
+    if page is None or ctx is None:
+        return False
+    try:
+        if page.is_closed():
+            return False
+    except Exception:
+        return False
+    return True
+
+
 async def ensure_session(voice_key="alfie"):
     """
     确保 TTSMaker 浏览器会话已登录。
-    如果会话不存在，则创建并打开浏览器等待用户登录。
-    如果会话已存在且已登录，则直接返回。
+    如果会话不存在或已损坏，则创建并打开浏览器等待用户登录。
+    如果会话已存在且健康，则直接返回。
 
     Returns: TTSMakerSession 实例
     Raises: RuntimeError 如果 TTSMaker 不可用或登录失败
@@ -102,8 +125,16 @@ async def ensure_session(voice_key="alfie"):
     if not _TTSMAKER_AVAILABLE:
         raise RuntimeError("TTSMaker 模块不可用，请安装 playwright")
 
+    # 快速健康检查：如果已有会话但已损坏（浏览器崩溃/页面关闭等），
+    # 先丢弃旧会话再重建，避免后续所有男声生成都卡在坏会话上。
     if _session is not None:
-        return _session
+        if _session_is_healthy(_session):
+            return _session
+        print(
+            "[ttsmaker] 检测到已有会话已失效，将丢弃并重新创建",
+            file=sys.stderr,
+        )
+        _discard_session_unsafe()
 
     # 在线程中获取 threading.Lock（避免阻塞事件循环），
     # 同时支持跨 asyncio.run() 调用（不绑定到特定事件循环）
@@ -111,7 +142,9 @@ async def ensure_session(voice_key="alfie"):
         with _session_lock:
             # 双重检查
             if _session is not None:
-                return _session
+                if _session_is_healthy(_session):
+                    return _session
+                _discard_session_unsafe()
             return _create_and_login_session(voice_key)
 
     _session = await asyncio.to_thread(_locked_create)
@@ -222,13 +255,38 @@ async def synth_male_ttsmaker(
                 pass
 
 
+def _discard_session_unsafe():
+    """
+    清空全局 _session 引用（不加锁）。
+
+    调用方需自行持有 _session_lock 或确保不会并发调用。
+    旧会话的 close() 不在这里执行——由 close_session() 负责——
+    此函数只确保 _session 不再返回给新的调用方。
+    """
+    global _session
+    _session = None
+
+
 async def close_session():
     """
     关闭 TTSMaker 浏览器会话。
     应在所有男声生成完成后调用。
+
+    无论 close() 是否抛异常，都会先清空全局 _session，防止坏会话
+    被后续任务复用导致长时间卡顿后回退到备用音色。
     """
     global _session
-    if _session is not None:
-        await asyncio.to_thread(_session.close)
-        _session = None
-        print("[ttsmaker] 浏览器会话已关闭", file=sys.stdout)
+    # 先清空全局引用，再关闭旧会话。
+    # 这样即使 close() 抛异常或超时，后续 ensure_session() 也不会
+    # 拿到坏会话——最坏情况是重建一个新会话，而不是卡在旧会话上。
+    old = _session
+    _session = None
+    if old is not None:
+        try:
+            await asyncio.to_thread(old.close)
+            print("[ttsmaker] 浏览器会话已关闭", file=sys.stdout)
+        except Exception as e:
+            print(
+                f"[ttsmaker] 关闭浏览器会话异常（已清空引用，不影响后续任务）: {e}",
+                file=sys.stderr,
+            )

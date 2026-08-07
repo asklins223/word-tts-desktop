@@ -1,5 +1,25 @@
 # 更新日志
 
+## 2.2.1 - 2026-08-07
+
+### 男声音色会话修复
+
+- 修复男声任务失败后，后续任务即使更换文档仍会卡住很久并回退到 edge-tts 备用音色的问题。
+- 根因：`close_session()` 在 `_session.close()` 抛异常时不会执行 `_session = None`，导致全局变量残留坏会话引用，后续所有任务的 `ensure_session()` 无条件复用该坏会话。
+- `close_session()` 改为先清空全局 `_session` 再关闭旧会话，确保无论 `close()` 是否异常都不会残留坏引用。
+- `ensure_session()` 新增轻量级健康检查（`_session_is_healthy`），复用已有会话前验证 `_logged_in`、`_page`、`_ctx` 是否仍然有效，坏会话自动丢弃并重建。
+- 新增 `_discard_session_unsafe()` 辅助函数，供锁外快速路径与锁内双重检查共用，只清空引用不执行 `close()`，职责分离。
+
+## 2.2.0 - 2026-08-07
+
+### 课文跟读 TTS 规则
+
+- `word_parser`：`TextReadingParser` 新增 Understanding Idea (U) / Reading for writing (R) 章节音色规则——句子/段落使用男声，语篇按编号分配男/女声；语速 0.7、停顿 400ms、命名前缀。
+- `word_tts_app`：`parse_speakers` / `_synth_item` 新增 `default_voice` 参数，支持 per-item 音色覆盖；`build_progress` 传递覆盖字段。
+- `server`：`generate_audio_stream` 支持 per-item 音色/语速/停顿覆盖。
+- `server_pyinstaller.spec`：显式 `collect_data_files('playwright')` 确保打包后 driver 可用。
+- `requirements_electron`：Pillow 版本约束放宽至 `>=11.0.0`；更新应用图标。
+
 ## 2.0.0 - 2026-07-29
 
 ### 成熟落地版
