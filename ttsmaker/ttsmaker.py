@@ -12,6 +12,7 @@ import sys
 import re
 import time
 import json
+import hashlib
 import pathlib
 import shutil
 import subprocess
@@ -714,6 +715,10 @@ class TTSMakerSession:
         self._background_profile = None
         self._background_pid = None
         self._background_guard = None
+        # 防止 TTSMaker CDN 返回缓存/旧音频：记录本会话已下载的音频 URL
+        # 和文件 SHA-256，发现重复时拒绝并重试。
+        self._used_audio_urls = set()
+        self._downloaded_hashes = {}  # {sha256_hex: text_preview}
 
     # ------------------------------------------------------------------
     # 内部辅助
@@ -926,6 +931,18 @@ class TTSMakerSession:
 
         return self._reload_page(page)
 
+    @staticmethod
+    def _file_sha256(path):
+        """计算文件 SHA-256"""
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+
     def _clear_previous_audio(self, page):
         """清除上一次 TTS 生成的音频结果，防止下载到旧音频"""
         try:
@@ -941,7 +958,9 @@ class TTSMakerSession:
                     if (resultDiv) resultDiv.innerHTML = '';
                 }"""
             )
-            page.wait_for_timeout(200)
+            # 等待 500ms 确保 TTSMaker 网站的 JS 不会在清除后立即
+            # 把旧 src 写回去（部分页面版本有延迟回填行为）。
+            page.wait_for_timeout(500)
         except Exception as e:
             _log(f"   清除旧音频结果失败 (非致命): {e}")
 
@@ -949,6 +968,13 @@ class TTSMakerSession:
         """
         等待音频生成完成并下载。
         ttsmaker.cn 流程: 点击转换 → 等待 #tts_mp3_download_player_source 出现 URL → 下载
+
+        包含两层防护防止下载到旧/缓存音频：
+        1. URL 去重：如果发现的音频 URL 与本会话之前用过的完全相同，
+           说明 TTSMaker CDN 返回了缓存结果，拒绝并返回 False 触发重试。
+        2. SHA-256 去重：下载后计算文件哈希，如果与之前下载的文件完全相同，
+           说明是同一份音频（不同文本不应该产生完全相同的音频），
+           删除文件并返回 False 触发重试。
         """
         audio_url = None
         deadline = time.time() + timeout
@@ -977,6 +1003,11 @@ class TTSMakerSession:
         if not audio_url:
             return False
 
+        # 防护 1: URL 去重 — 同一会话内不应出现完全相同的音频 URL
+        if audio_url in self._used_audio_urls:
+            _log(f"   ⚠️ 音频 URL 与之前用过的一样，可能是 CDN 缓存，拒绝并重试")
+            return False
+
         # 尝试点击下载按钮
         try:
             dl_btn = page.locator("#tts_mp3_download_btn")
@@ -988,12 +1019,33 @@ class TTSMakerSession:
                 download.save_as(output_path)
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                     _log(f"   下载完成 (按钮): {os.path.getsize(output_path):,} bytes")
+                    # 防护 2: SHA-256 去重
+                    sha = self._file_sha256(output_path)
+                    if sha in self._downloaded_hashes:
+                        prev = self._downloaded_hashes[sha]
+                        _log(f"   ⚠️ 下载的音频与之前的 '{prev[:40]}' 完全相同 (SHA {sha[:12]}), 删除并重试")
+                        os.remove(output_path)
+                        return False
+                    self._used_audio_urls.add(audio_url)
+                    self._downloaded_hashes[sha] = self._last_form_state.get("text", "")[:60] if self._last_form_state else ""
                     return True
         except Exception as e:
             _log(f"   下载按钮失败: {e}")
 
         # 用 curl 下载
-        return download_audio(audio_url, output_path)
+        if download_audio(audio_url, output_path):
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                # 防护 2: SHA-256 去重
+                sha = self._file_sha256(output_path)
+                if sha in self._downloaded_hashes:
+                    prev = self._downloaded_hashes[sha]
+                    _log(f"   ⚠️ 下载的音频与之前的 '{prev[:40]}' 完全相同 (SHA {sha[:12]}), 删除并重试")
+                    os.remove(output_path)
+                    return False
+                self._used_audio_urls.add(audio_url)
+                self._downloaded_hashes[sha] = self._last_form_state.get("text", "")[:60] if self._last_form_state else ""
+                return True
+        return False
 
     def _reload_page(self, page):
         """硬刷新页面，并立即恢复音色、文本及高级选项。"""
@@ -1236,7 +1288,7 @@ class TTSMakerSession:
                 # 1–3. 恢复音色、文本、语速、音量、音调与停顿
                 self._restore_form_state(page)
 
-                # 4. 清除上一次的音频结果
+                # 4. 清除上一次的音频结果（含 500ms 等待防止 JS 回填旧 URL）
                 self._clear_previous_audio(page)
 
                 # 5. 点击转换按钮
@@ -1339,6 +1391,8 @@ class TTSMakerSession:
             self._background_guard = None
             self._logged_in = False
             self._last_form_state = None
+            self._used_audio_urls = set()
+            self._downloaded_hashes = {}
             _log("[ttsmaker] 浏览器已关闭（登录状态已保留）")
 
 

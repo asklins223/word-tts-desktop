@@ -215,6 +215,10 @@ QUALITY_BITRATE = {
 # 音频生成算法版本。调整裁边/拼接规则时递增，避免断点续传复用旧算法产物。
 AUDIO_ALGORITHM_VERSION = 2
 
+# 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
+# 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
+PARSER_VERSION = 3
+
 # Edge TTS 的 MP3 通常带有较长的首尾数字填充。检测阈值相对于每段峰值计算，
 # 因而用户把音量调低时不会把整段低音量语音误判成静音。
 _EDGE_SILENCE_BELOW_PEAK_DB = 70.0
@@ -784,6 +788,7 @@ def build_progress(source_filename, source_path, parse_results, config):
     config = {
         **config,
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
+        "parser_version": PARSER_VERSION,
     }
     ext = FORMAT_MAP[config['format']][1].lstrip('.')
     items = []
@@ -1150,6 +1155,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         "proxy": proxy or "",
         "preview": preview,
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
+        "parser_version": PARSER_VERSION,
     }
 
     log_entries = []
@@ -1170,6 +1176,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             or old_config.get("quality") != quality
             or old_config.get("preview") != preview
             or old_config.get("audio_algorithm_version") != AUDIO_ALGORITHM_VERSION
+            or old_config.get("parser_version") != PARSER_VERSION
         )
 
         if config_changed or not has_raw_item:

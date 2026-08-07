@@ -88,6 +88,36 @@ def sanitize(text):
     return clean_whitespace(remove_zero_width(text))
 
 
+# 句末标点（可带闭合引号/括号）后跟空白和大写字母/开引号 → 切分点
+_RE_SENTENCE_END = re.compile(
+    r"([.!?][\u201d\u2019\u0022\u0027\u0029\u005d]?)\s+(?=[A-Z\u201c\u0022])"
+)
+
+
+def split_sentences(text):
+    """将英文文本按句子切分。
+
+    在 . ! ? 后切分，正确处理闭合引号和括号。
+    用于段落跟读和语篇跟读的逐句录音。
+    """
+    normalized = re.sub(r'\s+', ' ', text.strip())
+    if not normalized:
+        return []
+    parts = _RE_SENTENCE_END.split(normalized)
+    sentences = []
+    for i in range(0, len(parts), 2):
+        sentence = parts[i]
+        if i + 1 < len(parts):
+            sentence += parts[i + 1]
+        sentence = sentence.strip()
+        if sentence:
+            sentences.append(sentence)
+    if not sentences:
+        # 无句末标点时，整段作为一条
+        sentences.append(normalized)
+    return sentences
+
+
 # ============================================================================
 # 解析器基类
 # ============================================================================
@@ -289,14 +319,14 @@ class TextReadingParser(BaseParser):
       语速和停顿由前端动态配置，解析器不固定。
       Understanding Idea (前缀 U)：
         - 句子跟读：男声，命名 U-句子1、U-句子2 …
-        - 段落跟读：男声，命名 U-段落
-        - 语篇1：男声，命名 U-语篇1
-        - 语篇2：女声，命名 U-语篇2
-        - 语篇（仅一篇时）：男声，命名 U-语篇
+        - 段落跟读：男声，逐句切分，命名 U-段落1、U-段落2 …
+        - 语篇1：男声，逐句切分，命名 U-语篇1-1、U-语篇1-2 …
+        - 语篇2：女声，逐句切分，命名 U-语篇2-1、U-语篇2-2 …
+        - 语篇（仅一篇时）：男声，逐句切分，命名 U-语篇1-1、U-语篇1-2 …
       Reading for writing (前缀 R)：
         - 句子跟读：男声，命名 R-句子1、R-句子2 …
-        - 段落跟读：男声，命名 R-段落
-        - 语篇跟读：女声，命名 R-语篇
+        - 段落跟读：男声，逐句切分，命名 R-段落1、R-段落2 …
+        - 语篇跟读：女声，逐句切分，命名 R-语篇1-1、R-语篇1-2 …
 
     文档结构示例（两种标题层级均支持）：
         格式一（旧）：
@@ -414,15 +444,22 @@ class TextReadingParser(BaseParser):
             nonlocal paragraph_buf
             if paragraph_buf:
                 prefix = self._section_prefix(current_section)
-                item = {
-                    "category": "段落跟读",
-                    "section": current_section,
-                    "text": sanitize('\n'.join(paragraph_buf)),
-                }
-                if prefix:
-                    item["voice"] = "male"
-                    item["filename_stem"] = f"{prefix}-段落"
-                items.append(item)
+                full_text = sanitize('\n'.join(paragraph_buf))
+                # 逐句切分，每句一个音频文件
+                sentences = split_sentences(full_text)
+                if not sentences:
+                    sentences = [full_text]
+                for sent_idx, sent_text in enumerate(sentences, 1):
+                    item = {
+                        "category": "段落跟读",
+                        "section": current_section,
+                        "sentence_number": sent_idx,
+                        "text": sent_text,
+                    }
+                    if prefix:
+                        item["voice"] = "male"
+                        item["filename_stem"] = f"{prefix}-段落{sent_idx}"
+                    items.append(item)
                 paragraph_buf = []
 
         def flush_discourse():
@@ -432,25 +469,40 @@ class TextReadingParser(BaseParser):
                 discourse_count = len(discourse_buf)
                 for num in sorted(discourse_buf.keys()):
                     lines = discourse_buf[num]
-                    if lines:
+                    if not lines:
+                        continue
+                    full_text = sanitize('\n'.join(lines))
+                    # 确定音色和显示编号
+                    if prefix == "U":
+                        if discourse_count == 1:
+                            voice = "male"
+                            display_num = 1  # 仅一篇时也用「语篇1」
+                        else:
+                            voice = self._discourse_voice(current_section, num)
+                            display_num = num
+                    elif prefix == "R":
+                        voice = self._discourse_voice(current_section, num)
+                        display_num = 1  # R 章节仅一篇，用「语篇1」
+                    else:
+                        voice = "female"
+                        display_num = max(num, 1)
+                    # 逐句切分，每句一个音频文件
+                    sentences = split_sentences(full_text)
+                    if not sentences:
+                        sentences = [full_text]
+                    for sent_idx, sent_text in enumerate(sentences, 1):
                         item = {
                             "category": "语篇跟读",
                             "section": current_section,
                             "discourse_number": num,
-                            "text": sanitize('\n'.join(lines)),
+                            "sentence_number": sent_idx,
+                            "text": sent_text,
                         }
                         if prefix:
-                            if prefix == "U":
-                                # Understanding Idea：只有一篇语篇时用男声且命名不带数字
-                                if discourse_count == 1:
-                                    item["voice"] = "male"
-                                    item["filename_stem"] = f"{prefix}-语篇"
-                                else:
-                                    item["voice"] = self._discourse_voice(current_section, num)
-                                    item["filename_stem"] = f"{prefix}-语篇{num}"
-                            else:  # R: 只有一个语篇，命名为 R-语篇
-                                item["voice"] = self._discourse_voice(current_section, num)
-                                item["filename_stem"] = f"{prefix}-语篇"
+                            item["voice"] = voice
+                            item["filename_stem"] = (
+                                f"{prefix}-语篇{display_num}-{sent_idx}"
+                            )
                         items.append(item)
                 discourse_buf = {}
 
@@ -923,6 +975,10 @@ def main():
 
             if "number" in item:
                 print(f"  · [{cat}] #{item['number']:>2}  {preview}...")
+            elif "sentence_number" in item and "discourse_number" in item:
+                print(f"  · [{cat}] 语篇{item['discourse_number']}-{item['sentence_number']}  {preview}...")
+            elif "sentence_number" in item:
+                print(f"  · [{cat}] 句{item['sentence_number']}  {preview}...")
             elif "index" in item:
                 print(f"  · [{cat}] #{item['index']:>2}  {preview}...")
             elif "unit" in item:
