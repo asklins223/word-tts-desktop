@@ -88,32 +88,123 @@ def sanitize(text):
     return clean_whitespace(remove_zero_width(text))
 
 
-# 句末标点（可带闭合引号/括号）后跟空白和大写字母/开引号 → 切分点
-_RE_SENTENCE_END = re.compile(
-    r"([.!?][\u201d\u2019\u0022\u0027\u0029\u005d]?)\s+(?=[A-Z\u201c\u0022])"
-)
-
-
 def split_sentences(text):
     """将英文文本按句子切分。
 
-    在 . ! ? 后切分，正确处理闭合引号和括号。
+    使用状态机跟踪引号开闭，确保：
+    - 引号内部的 . ! ? 不会触发切分
+    - 闭合引号后跟大写字母时才切分（新句开始）
+    - 非引号环境下的 . ! ? 后跟大写字母/开引号时切分
+
+    支持直引号 (") 和智能引号 (\u201c \u201d)。
     用于段落跟读和语篇跟读的逐句录音。
     """
     normalized = re.sub(r'\s+', ' ', text.strip())
     if not normalized:
         return []
-    parts = _RE_SENTENCE_END.split(normalized)
+
     sentences = []
-    for i in range(0, len(parts), 2):
-        sentence = parts[i]
-        if i + 1 < len(parts):
-            sentence += parts[i + 1]
-        sentence = sentence.strip()
-        if sentence:
-            sentences.append(sentence)
+    current = ""
+    in_quote = False          # 是否在引号内部
+    quote_char = None         # 当前引号类型: '"' 或 '\u201c'
+
+    i = 0
+    n = len(normalized)
+    while i < n:
+        ch = normalized[i]
+
+        # ---- 智能左引号 \u201c ----
+        if ch == '\u201c':
+            in_quote = True
+            quote_char = '\u201c'
+            current += ch
+            i += 1
+            continue
+
+        # ---- 智能右引号 \u201d ----
+        if ch == '\u201d':
+            in_quote = False
+            quote_char = None
+            current += ch
+            # 仅当引号内以 . ! ? 结尾时，才检查是否需要切分
+            # （逗号结尾如 “Hello,” she said. 不切分）
+            if len(current) >= 2 and current[-2] in '.!?':
+                j = i + 1
+                while j < n and normalized[j] == ' ':
+                    j += 1
+                if j < n and normalized[j].isupper():
+                    sentences.append(current.strip())
+                    current = ""
+                    i = j
+                    continue
+            i += 1
+            continue
+
+        # ---- 直引号 " → 切换状态 ----
+        if ch == '"':
+            if not in_quote:
+                # 开引号
+                in_quote = True
+                quote_char = '"'
+                current += ch
+                i += 1
+                continue
+            else:
+                # 闭合引号
+                in_quote = False
+                quote_char = None
+                current += ch
+                # 仅当引号内以 . ! ? 结尾时，才检查是否需要切分
+                # （逗号结尾如 "Hello," she said. 不切分）
+                if len(current) >= 2 and current[-2] in '.!?':
+                    j = i + 1
+                    while j < n and normalized[j] == ' ':
+                        j += 1
+                    if j < n and normalized[j].isupper():
+                        sentences.append(current.strip())
+                        current = ""
+                        i = j
+                        continue
+                i += 1
+                continue
+
+        # ---- 句末标点 . ! ? ----
+        if ch in '.!?':
+            current += ch
+            if not in_quote:
+                # 向前吞掉闭合括号/方括号（不吞引号，引号单独处理）
+                j = i + 1
+                while j < n and normalized[j] in ')]':
+                    current += normalized[j]
+                    j += 1
+                # 跳过空白
+                k = j
+                while k < n and normalized[k] == ' ':
+                    k += 1
+                # 后面是大写字母或开引号 → 切分
+                if k >= n:
+                    # 文本结束，剩余部分由末尾兜底
+                    i = k
+                    continue
+                if normalized[k].isupper() or normalized[k] in '\u201c"':
+                    sentences.append(current.strip())
+                    current = ""
+                    i = k
+                    continue
+                # 没有切分 → 继续从 j 开始
+                i = j
+                continue
+            # 引号内部：不切分，继续
+            i += 1
+            continue
+
+        current += ch
+        i += 1
+
+    if current.strip():
+        sentences.append(current.strip())
+
     if not sentences:
-        # 无句末标点时，整段作为一条
         sentences.append(normalized)
     return sentences
 
