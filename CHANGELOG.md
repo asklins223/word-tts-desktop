@@ -12,6 +12,8 @@
   - 单篇语篇：`U-语篇1-1`、`U-语篇1-2` …（统一使用「语篇1」前缀，原为 `U-语篇` 无编号）。
   - Reading for writing 章节：`R-语篇1-1`、`R-语篇1-2` …（统一使用「语篇1」前缀，原为 `R-语篇` 无编号）。
 - `PARSER_VERSION` 递增至 3，确保断点续传不复用旧解析结果。
+- `PARSE_CACHE_VERSION` 递增至 2，`server.py` 不再复用旧版解析缓存（缺少 `filename_stem`/`voice` 字段）。
+- `server.py` 的 `progress_is_reusable` 增加 `parser_version` 校验，config 增加 `parser_version` 字段，防止旧进度被误复用。
 
 ## 2.3.0 - 2026-08-07
 

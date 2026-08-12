@@ -128,7 +128,7 @@ class SessionState:
 _sessions: dict[str, SessionState] = {}
 MAX_SESSIONS = 20  # 最大并发会话数，防止内存泄漏
 MAX_HISTORY_RECORDS = 20
-PARSE_CACHE_VERSION = 1
+PARSE_CACHE_VERSION = 2
 SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
 HISTORY_MANIFEST_FILENAME = "history.json"
@@ -494,10 +494,10 @@ def progress_is_reusable(progress: Optional[dict], fingerprint: dict) -> bool:
         return False
     if progress.get("source_fingerprint") != fingerprint:
         return False
-    if (
-        (progress.get("config") or {}).get("audio_algorithm_version")
-        != core.AUDIO_ALGORITHM_VERSION
-    ):
+    cfg = progress.get("config") or {}
+    if cfg.get("audio_algorithm_version") != core.AUDIO_ALGORITHM_VERSION:
+        return False
+    if cfg.get("parser_version") != core.PARSER_VERSION:
         return False
     if not all("raw_item" in item for item in progress.get("items", [])):
         return False
@@ -658,6 +658,7 @@ async def generate_audio_stream(
     config = {
         **config,
         "audio_algorithm_version": core.AUDIO_ALGORITHM_VERSION,
+        "parser_version": core.PARSER_VERSION,
     }
     # finally 中需要读取该变量；必须在任何可能抛错的 I/O 之前初始化。
     has_male_voice = False
