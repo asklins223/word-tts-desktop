@@ -664,7 +664,16 @@ class TextReadingParser(BaseParser):
         return False
 
     def _handle_sentence(self, text, buf):
-        """处理句子跟读的一个段落"""
+        """处理句子跟读的一个段落
+
+        支持两种格式：
+        - 带编号：1. English sentence / 1、English sentence
+        - 无编号：English sentence（如 Understanding Idea 中的格式，
+          每个英文句子后跟一行中文翻译）
+        """
+        # 跳过中文翻译行
+        if self.RE_CHINESE_PREFIX.match(text):
+            return
         # 取第一行（段落内可能内嵌中文翻译换行）
         first_line = text.split('\n')[0].strip()
         m = self.RE_NUMBERED.match(first_line)
@@ -674,6 +683,15 @@ class TextReadingParser(BaseParser):
             # 跳过纯中文行
             if eng and not is_chinese(eng):
                 buf.append((num, eng))
+        else:
+            # 无编号格式：英文句子后跟中文翻译行
+            # 跳过纯中文行，保留英文句子
+            if not is_chinese(text):
+                eng = sanitize(text)
+                if eng:
+                    # 自动编号：基于当前缓冲区大小
+                    num = len(buf) + 1
+                    buf.append((num, eng))
 
     def _handle_discourse(self, text, buf):
         """处理语篇跟读的一个段落"""
