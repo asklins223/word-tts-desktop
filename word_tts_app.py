@@ -217,7 +217,7 @@ AUDIO_ALGORITHM_VERSION = 2
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 4
+PARSER_VERSION = 5
 
 # Edge TTS 的 MP3 通常带有较长的首尾数字填充。检测阈值相对于每段峰值计算，
 # 因而用户把音量调低时不会把整段低音量语音误判成静音。

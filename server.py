@@ -128,7 +128,7 @@ class SessionState:
 _sessions: dict[str, SessionState] = {}
 MAX_SESSIONS = 20  # 最大并发会话数，防止内存泄漏
 MAX_HISTORY_RECORDS = 20
-PARSE_CACHE_VERSION = 3
+PARSE_CACHE_VERSION = 4
 SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
 HISTORY_MANIFEST_FILENAME = "history.json"

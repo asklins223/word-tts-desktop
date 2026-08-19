@@ -268,7 +268,10 @@ class InfoAcquisitionParser(BaseParser):
           ...
           录音稿：
           (W) ...
-        参考答案               ← 到此结束
+        参考答案（独立一行）                ← 到此结束
+        （新格式中每题后可能紧跟「参考答案：xxx」行内答案，
+          该行不结束采集，会被跳过）
+        （「回答问题」题目也可能漏编号，按上一个题号自动顺延）
 
     支持同一文件内包含多篇试题（多次出现「第一节 听选信息」）。
     """
@@ -279,8 +282,17 @@ class InfoAcquisitionParser(BaseParser):
     RE_SECTION_START = re.compile(r'第一节\s*听选信息')
     # 第二节 回答问题
     RE_SECTION2_START = re.compile(r'第二节\s*回答问题')
-    # 参考答案 → 结束所有收集
-    RE_SECTION_END = re.compile(r'参考答案')
+    # 参考答案（仅独立一行）→ 结束所有收集。
+    # 注意：新格式中每题后面紧跟「参考答案：xxx」的行不是结束标记，
+    # 只有文档末尾独立成行的「参考答案：」才是。
+    RE_SECTION_END = re.compile(r'^参考答案\s*[：:]?\s*$')
+    # 行内参考答案（每题附带答案）→ 直接跳过
+    RE_INLINE_ANSWER = re.compile(r'^参考答案\s*[：:]')
+    # 漏编号的英文题目（新格式「回答问题」中 7-9 题可能没有题号）
+    RE_UNNUMBERED_QUESTION = re.compile(r'[?？]\s*$')
+    # 题号区间（如「回答第 7-10 个问题」「回答第1—2两个问题」），
+    # 用于给漏编号题目确定起始题号
+    RE_ANSWER_RANGE = re.compile(r'第\s*(\d+)\s*[-—~～至到]\s*(\d+)')
     # 任何「第X节」标记（用于检测其他题型的章节边界）
     RE_ANY_SECTION = re.compile(r'第[一二三四五六七八九十]+节')
     # 录音稿：（可能后面紧跟内容，也可能单独一行）
@@ -297,6 +309,8 @@ class InfoAcquisitionParser(BaseParser):
         collecting = False       # 是否正在收集录音稿
         current_lines = []       # 当前录音稿的文本行
         question_order = 0       # 当前试题内的题目顺序；第二节不重置
+        last_qnum = 0            # 上一个题目编号（用于漏编号题目顺延）
+        next_qnum = None         # 下一个待分配的题号（由说明行的题号区间设定）
         # 每节独立编号
         idx_by_cat = {}          # {category: count}
 
@@ -320,6 +334,8 @@ class InfoAcquisitionParser(BaseParser):
                 in_section = True
                 current_category = "听选信息录音稿"
                 question_order = 0
+                last_qnum = 0
+                next_qnum = None
                 continue
 
             # ---- 第二节 回答问题 开始 ----
@@ -338,8 +354,8 @@ class InfoAcquisitionParser(BaseParser):
                     current_category = ""
                     continue
 
-            # ---- 参考答案 → 结束所有收集 ----
-            if in_section and self.RE_SECTION_END.search(text):
+            # ---- 参考答案（独立一行）→ 结束所有收集 ----
+            if in_section and self.RE_SECTION_END.match(text):
                 flush()
                 in_section = False
                 current_category = ""
@@ -348,25 +364,49 @@ class InfoAcquisitionParser(BaseParser):
             if not in_section:
                 continue
 
+            # ---- 行内参考答案（每题附带答案）→ 跳过，不参与任何收集 ----
+            if self.RE_INLINE_ANSWER.match(text):
+                continue
+
+            # ---- 题号区间说明行（如「回答第 7-10 个问题」）→ 设定起始题号 ----
+            m_range = self.RE_ANSWER_RANGE.search(text)
+            if m_range:
+                next_qnum = int(m_range.group(1))
+
             # ---- 题目：去题号，按出现顺序男/女交替 ----
             # 只在非录音稿状态识别，避免把录音稿中偶然以数字开头的句子误判为题目。
-            question_match = self.RE_QUESTION.match(text) if not collecting else None
-            if question_match:
-                question_number = int(question_match.group(1))
-                question_text = sanitize(question_match.group(2))
-                if question_text:
-                    question_order += 1
-                    speaker = "M" if question_order % 2 == 1 else "W"
-                    section_name = (
-                        "听选信息" if current_category == "听选信息录音稿" else "回答问题"
+            question_number = None
+            question_text = ""
+            if not collecting:
+                m_q = self.RE_QUESTION.match(text)
+                if m_q:
+                    question_number = int(m_q.group(1))
+                    question_text = sanitize(m_q.group(2))
+                    # 有编号的题目推进待分配题号
+                    next_qnum = max(next_qnum or 0, question_number + 1)
+                elif self.RE_UNNUMBERED_QUESTION.search(text) and not is_chinese(text):
+                    # 新格式中题目可能漏编号（如 U2 的 7-9 题）：
+                    # 以英文问句（末尾 ?）兜底识别，题号按说明行区间顺延
+                    question_number = (
+                        next_qnum if next_qnum is not None else last_qnum + 1
                     )
-                    items.append({
-                        "category": f"{section_name}题目",
-                        "number": question_number,
-                        "filename_stem": f"问题{question_number}",
-                        "voice": "male" if speaker == "M" else "female",
-                        "text": f"{speaker}: {question_text}",
-                    })
+                    if next_qnum is not None:
+                        next_qnum += 1
+                    question_text = sanitize(text)
+            if question_number is not None and question_text:
+                question_order += 1
+                last_qnum = question_number
+                speaker = "M" if question_order % 2 == 1 else "W"
+                section_name = (
+                    "听选信息" if current_category == "听选信息录音稿" else "回答问题"
+                )
+                items.append({
+                    "category": f"{section_name}题目",
+                    "number": question_number,
+                    "filename_stem": f"问题{question_number}",
+                    "voice": "male" if speaker == "M" else "female",
+                    "text": f"{speaker}: {question_text}",
+                })
                 continue
 
             # ---- 录音稿标记 ----
