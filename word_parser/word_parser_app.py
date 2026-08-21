@@ -56,7 +56,7 @@ TYPE_DESCRIPTIONS = {
     "课文跟读": "提取句子跟读（去序号排序）、段落跟读、语篇跟读",
     "信息转述及询问": "提取「第一节 信息转述」的录音稿",
     "模仿朗读": "提取每个单元的外网(2篇)和教材(1篇)朗读素材",
-    "词汇": "预留接口，未来接入",
+    "词汇": "从 Excel 单词模板提取单词和例句（男声生成）",
 }
 
 
@@ -790,10 +790,10 @@ def _get_filepath(file_obj):
 def process_file(file_obj):
     filepath = _get_filepath(file_obj)
     if not filepath:
-        raise gr.Error("请先上传 Word 文档（.docx）")
+        raise gr.Error("请先上传文档（.docx 或 .xlsx）")
 
-    if not filepath.lower().endswith('.docx'):
-        raise gr.Error("仅支持 .docx 格式的 Word 文档")
+    if not (filepath.lower().endswith('.docx') or filepath.lower().endswith('.xlsx')):
+        raise gr.Error("仅支持 .docx 或 .xlsx 格式")
 
     if not os.path.exists(filepath):
         raise gr.Error(f"文件不存在: {filepath}")
@@ -950,8 +950,8 @@ def _empty_preview():
     return (
         '<div class="empty-hint">'
         '<div class="empty-icon">W</div>'
-        '<div>上传 Word 文档并点击「开始解析」</div>'
-        '<div style="font-size:11.5px; color:var(--c-text-muted);">支持 .docx 格式，自动识别题型</div>'
+        '<div>上传 Word/Excel 文档并点击「开始解析」</div>'
+        '<div style="font-size:11.5px; color:var(--c-text-muted);">支持 .docx / .xlsx 格式，自动识别题型</div>'
         '</div>'
     )
 
@@ -1001,7 +1001,7 @@ with gr.Blocks(title="Word 文档解析工具") as app:
                 gr.HTML('<div class="sidebar-section"><div class="sidebar-section-title">文档上传</div></div>')
                 file_input = gr.File(
                     label="",
-                    file_types=[".docx"],
+                    file_types=[".docx", ".xlsx"],
                     file_count="single",
                     type="filepath",
                     elem_id="file-upload",

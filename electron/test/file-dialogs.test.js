@@ -57,7 +57,11 @@ test('选择 Word 使用 IPC 发起窗口作为原生对话框父窗口', async 
     assert.deepEqual(result, { success: true, filePath: '/safe/lesson.docx' });
     assert.equal(calls.open.length, 1);
     assert.equal(calls.open[0][0], owner);
-    assert.deepEqual(calls.open[0][1].filters, [{ name: 'Word 文档', extensions: ['docx'] }]);
+    assert.deepEqual(calls.open[0][1].filters, [
+        { name: 'Word/Excel 文档', extensions: ['docx', 'xlsx'] },
+        { name: 'Word 文档', extensions: ['docx'] },
+        { name: 'Excel 文档', extensions: ['xlsx'] },
+    ]);
     assert.deepEqual(calls.open[0][1].properties, ['openFile']);
     assert.equal(calls.focus, 1);
 });

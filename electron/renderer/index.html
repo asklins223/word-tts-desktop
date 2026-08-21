@@ -24,7 +24,7 @@
                     <div class="step-circle"><span class="step-num">1</span></div>
                     <div class="step-copy">
                         <span class="step-label">导入文档</span>
-                        <span class="step-meta">选择 Word 源文件</span>
+                        <span class="step-meta">选择源文档</span>
                     </div>
                 </div>
                 <div class="step-line" data-line="1"></div>
@@ -99,7 +99,7 @@
                             <div class="page-heading page-heading-wide">
                                 <div>
                                     <span class="eyebrow">新建配音任务</span>
-                                    <h1 id="upload-title" tabindex="-1">把 Word 文档变成可直接交付的音频</h1>
+                                    <h1 id="upload-title" tabindex="-1">把文档变成可直接交付的音频</h1>
                                     <p>导入教学文档，系统会自动识别内容结构、分配男女声，并按题型整理音频。</p>
                                 </div>
                             </div>
@@ -113,7 +113,7 @@
                                             </span>
                                             <div><h2>导入源文档</h2><p>选择一个新版本 Word 文档</p></div>
                                         </div>
-                                        <span class="accepted-format">.docx</span>
+                                        <span class="accepted-format">.docx / .xlsx</span>
                                     </div>
 
                                     <div class="upload-zone-large" id="upload-zone" role="button" tabindex="0" aria-label="选择或拖入 Word 文档">
@@ -126,8 +126,8 @@
                                             </span>
                                         </div>
                                         <div class="upload-text-large">拖拽文档到这里，或点击选择</div>
-                                        <div class="upload-hint">支持 .docx 文件 · 选择后会自动解析</div>
-                                        <span class="upload-cta">选择 Word 文档</span>
+                                        <div class="upload-hint">支持 .docx / .xlsx 文件 · 选择后会自动解析</div>
+                                        <span class="upload-cta">选择文档</span>
                                     </div>
                                     <div class="upload-feedback" id="upload-feedback" role="status" aria-live="polite" hidden></div>
                                 </div>
@@ -138,7 +138,7 @@
                                     <ul class="checklist">
                                         <li>
                                             <span class="check-icon">✓</span>
-                                            <div><strong>使用 .docx 格式</strong><small>暂不支持旧版 .doc 文档</small></div>
+                                            <div><strong>使用 .docx 或 .xlsx 格式</strong><small>暂不支持旧版 .doc 文档</small></div>
                                         </li>
                                         <li>
                                             <span class="check-icon">✓</span>
@@ -173,7 +173,7 @@
                                 </div>
                                 <button type="button" class="source-file-chip" id="change-file-btn" title="更换源文档">
                                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                                    <span><small id="source-file-meta">当前文档</small><strong id="source-file-name">已导入的 Word 文档</strong></span>
+                                    <span><small id="source-file-meta">当前文档</small><strong id="source-file-name">已导入的文档</strong></span>
                                     <svg class="chip-action" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 0 15 6.7L21 16"/><path d="M21 21v-5h-5"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M8 8H3V3"/></svg>
                                 </button>
                             </div>
@@ -672,7 +672,7 @@
         </div>
     </div>
 
-    <input type="file" id="hidden-file-input" accept=".docx" hidden>
+    <input type="file" id="hidden-file-input" accept=".docx,.xlsx" hidden>
 
     <dialog class="app-dialog" id="app-dialog" aria-modal="true" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message">
         <div class="app-dialog-heading">

@@ -48,8 +48,12 @@ function createNativeFileDialogs({
         try {
             focusDialogOwner(ownerWindow);
             const result = await dialog.showOpenDialog(ownerWindow, {
-                title: '选择 Word 文档',
-                filters: [{ name: 'Word 文档', extensions: ['docx'] }],
+                title: '选择文档',
+                filters: [
+                    { name: 'Word/Excel 文档', extensions: ['docx', 'xlsx'] },
+                    { name: 'Word 文档', extensions: ['docx'] },
+                    { name: 'Excel 文档', extensions: ['xlsx'] },
+                ],
                 properties: ['openFile'],
             });
             if (result.canceled || result.filePaths.length === 0) {
@@ -57,7 +61,7 @@ function createNativeFileDialogs({
             }
             return { success: true, filePath: result.filePaths[0] };
         } catch (error) {
-            logger.error('[main] 打开 Word 文件选择框失败:', error);
+            logger.error('[main] 打开文件选择框失败:', error);
             return { success: false, reason: 'dialog-error', error: error.message };
         }
     }

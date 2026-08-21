@@ -13,6 +13,7 @@ aiohttp
 
 # ---- 文档解析 ----
 python-docx>=1.0.0
+openpyxl>=3.1.0
 lxml>=5.0.0
 # 仅供 scripts/build_app_icons.py 构建图标；固定版本确保 CI 生成的 PNG/ICNS/ICO 可复现。
 # PyInstaller 后端明确排除 PIL。

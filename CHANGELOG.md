@@ -1,5 +1,23 @@
 # 更新日志
 
+## 2.5.0 - 2026-08-21
+
+### 新增 Excel 单词模板（.xlsx）解析与音频生成
+
+- 新增 `ExcelVocabularyParser` 解析器，支持从 Excel 单词导入模板（.xlsx）中提取「单词名称」和「例句」两列。
+- 每个单词生成两条 TTS 条目：
+  - **单词**：英文男声，命名 `单词1`、`单词2` …
+  - **例句**：英文男声，命名 `句子1`、`句子2` …
+- 解析器自动识别表头中的「单词名称」和「例句」列位置，无需硬编码列号。
+- 全链路支持 `.xlsx` 格式：
+  - `word_parser.py`：`detect_doc_type` / `parse_document_auto` 支持 xlsx 文件
+  - `word_tts_app.py` / `word_parser_app.py`：文件上传和类型检测支持 xlsx
+  - `server.py`：API 端点文件类型检测支持 xlsx
+  - Electron 前端：文件选择对话框、拖拽检测、提示文字均支持 xlsx
+  - 打包配置：所有 spec 文件和构建脚本添加 openpyxl 收集
+- 新增 `openpyxl>=3.1.0` 依赖。
+- `BaseParser` 新增 `_SKIP_LOAD_PARAGRAPHS` 标志，让 Excel 解析器跳过 docx 专用的段落加载。
+
 ## 2.4.2 - 2026-08-19
 
 ### 修复「信息获取」文档每题行内参考答案导致只解析出一道题的问题

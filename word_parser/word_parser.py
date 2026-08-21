@@ -29,6 +29,12 @@ import re
 import json
 from docx import Document
 
+try:
+    import openpyxl
+    _OPENPYXL_AVAILABLE = True
+except ImportError:
+    _OPENPYXL_AVAILABLE = False
+
 # ============================================================================
 # 路径配置
 # ============================================================================
@@ -214,14 +220,19 @@ def split_sentences(text):
 # ============================================================================
 
 class BaseParser:
-    """Word 文档解析器基类，子类需实现 parse() 方法。"""
+    """文档解析器基类，子类需实现 parse() 方法。"""
 
     DOC_TYPE = "未知"
+    # 子类可设为 True 以跳过 load_paragraphs（如 Excel 解析器）
+    _SKIP_LOAD_PARAGRAPHS = False
 
     def __init__(self, filepath):
         self.filepath = filepath
         self.filename = os.path.basename(filepath)
-        self.paras = load_paragraphs(filepath)
+        if self._SKIP_LOAD_PARAGRAPHS:
+            self.paras = []
+        else:
+            self.paras = load_paragraphs(filepath)
 
     def parse(self):
         """子类实现：返回解析结果字典"""
@@ -924,33 +935,122 @@ class ImitationReadingParser(BaseParser):
 
 
 # ============================================================================
-# 5. 词汇解析器（预留接口）
+# 5. 词汇解析器（Excel 单词导入模板）
 # ============================================================================
 
-class VocabularyParser(BaseParser):
+class ExcelVocabularyParser(BaseParser):
     """
-    词汇解析器（预留接口，未来接入）。
+    解析 Excel 单词导入模板（.xlsx），提取「单词名称」和「例句」两列。
 
-    预期文档结构:
-        [Title]  七年级上册 Unit X 词汇整理
-        [Heading 1] 一、基础词汇整理
-        [Heading 2] （一）Unit X 词汇例句整理
-        （01） word /phonetic/ pos. 中文释义
-        例句：English sentence
-        翻译：中文翻译
-        ...
-        [Heading 2] 二、重点词汇与短语搭配整理
-        ...
+    每个单词生成两条 TTS 条目：
+      1. 单词本身 — 英文男声，命名「单词1」「单词2」…
+      2. 例句     — 英文男声，命名「句子1」「句子2」…
 
-    未来实现时，重写 parse() 方法即可，无需修改其他代码。
+    Excel 结构（第一行为表头）：
+      A: 单元    (如 Unit 6)
+      B: 课时信息 (如 Understanding ideas)
+      C: 单词名称 (如 pigeon)
+      D: 美式音标
+      E: 英式音标
+      F: 词性
+      G: 释义
+      H: 例句    (如 A pigeon is standing near the window.)
+      I: 翻译
+
+    解析器自动识别「单词名称」和「例句」列的位置（按表头匹配），
+    无需硬编码列号。
     """
 
     DOC_TYPE = "词汇"
 
+    # Excel 文件不使用 load_paragraphs
+    _SKIP_LOAD_PARAGRAPHS = True
+
+    # 表头匹配关键词
+    WORD_HEADER_KEYWORDS = ("单词名称", "单词")
+    SENTENCE_HEADER_KEYWORDS = ("例句",)
+
     def parse(self):
-        # TODO: 未来实现词汇解析
-        # return self._result(items)
-        return self._result([])
+        if not _OPENPYXL_AVAILABLE:
+            raise RuntimeError(
+                "解析 Excel 文件需要 openpyxl 库，请运行: pip install openpyxl"
+            )
+
+        wb = openpyxl.load_workbook(self.filepath, read_only=True, data_only=True)
+        ws = wb.active
+
+        # ---- 识别表头列号 ----
+        word_col = None
+        sentence_col = None
+        headers = {}
+        for row in ws.iter_rows(min_row=1, max_row=1, values_only=False):
+            for cell in row:
+                if cell.value is None:
+                    continue
+                header = str(cell.value).strip()
+                col_idx = cell.column
+                headers[col_idx] = header
+                if word_col is None:
+                    for kw in self.WORD_HEADER_KEYWORDS:
+                        if kw in header:
+                            word_col = col_idx
+                            break
+                if sentence_col is None:
+                    for kw in self.SENTENCE_HEADER_KEYWORDS:
+                        if kw in header:
+                            sentence_col = col_idx
+                            break
+
+        if word_col is None:
+            raise ValueError(
+                "未找到「单词名称」列，请确认 Excel 表头包含「单词名称」或「单词」"
+            )
+        if sentence_col is None:
+            raise ValueError(
+                "未找到「例句」列，请确认 Excel 表头包含「例句」"
+            )
+
+        # ---- 提取数据行 ----
+        items = []
+        word_seq = 0    # 单词序号
+        sentence_seq = 0  # 例句序号
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            # openpyxl read_only 模式返回的行可能短于总列数
+            word_val = row[word_col - 1] if len(row) >= word_col else None
+            sentence_val = row[sentence_col - 1] if len(row) >= sentence_col else None
+
+            word_text = sanitize(str(word_val).strip()) if word_val else ""
+            sentence_text = sanitize(str(sentence_val).strip()) if sentence_val else ""
+
+            # 跳过空行
+            if not word_text and not sentence_text:
+                continue
+
+            # 单词条目
+            if word_text:
+                word_seq += 1
+                items.append({
+                    "category": "单词",
+                    "number": word_seq,
+                    "filename_stem": f"单词{word_seq}",
+                    "voice": "male",
+                    "text": word_text,
+                })
+
+            # 例句条目
+            if sentence_text:
+                sentence_seq += 1
+                items.append({
+                    "category": "例句",
+                    "number": sentence_seq,
+                    "filename_stem": f"句子{sentence_seq}",
+                    "voice": "male",
+                    "text": sentence_text,
+                })
+
+        wb.close()
+        return self._result(items)
 
 
 # ============================================================================
@@ -962,12 +1062,18 @@ PARSER_MAP = {
     "课文跟读": TextReadingParser,
     "信息转述及询问": InfoRetellingParser,
     "模仿朗读": ImitationReadingParser,
-    "词汇": VocabularyParser,
+    "词汇": ExcelVocabularyParser,
 }
 
 
 def detect_doc_type(filename):
-    """根据文件名自动识别文档类型，返回类型名或 None"""
+    """根据文件名自动识别文档类型，返回类型名或 None
+
+    对于 .xlsx 文件，统一归为「词汇」类型。
+    """
+    # Excel 文件统一归为词汇类型
+    if filename.lower().endswith('.xlsx'):
+        return "词汇"
     if '信息获取' in filename:
         return "信息获取"
     if '课文跟读' in filename:
@@ -1008,6 +1114,8 @@ CONTENT_MARKERS = {
     "词汇": [
         re.compile(r'词汇例句'),
         re.compile(r'词汇整理'),
+        re.compile(r'单词名称'),
+        re.compile(r'例句'),
     ],
 }
 
@@ -1034,7 +1142,29 @@ def parse_document_auto(filepath):
 
     对上传的文档运行所有匹配的解析器，收集非空结果。
     返回 (results_list, summary_str)。
+
+    对于 .xlsx 文件，直接使用 ExcelVocabularyParser 解析。
     """
+    filename = os.path.basename(filepath)
+
+    # ---- Excel 文件直接走词汇解析器 ----
+    if filename.lower().endswith('.xlsx'):
+        doc_type = detect_doc_type(filename)
+        if doc_type is None:
+            return [], "未识别到任何题型内容"
+        parser_cls = PARSER_MAP.get(doc_type)
+        if parser_cls is None:
+            return [], f"未找到题型 {doc_type} 的解析器"
+        try:
+            parser = parser_cls(filepath)
+            result = parser.parse()
+        except Exception as e:
+            return [], f"解析失败: {e}"
+        if result["item_count"] == 0:
+            return [], "未提取到任何内容"
+        return [result], f"检测到 1 种题型，成功提取 {result['item_count']} 条内容"
+
+    # ---- Word 文档走原有逻辑 ----
     try:
         paras = load_paragraphs(filepath)
     except Exception as e:
@@ -1078,20 +1208,20 @@ def parse_document_auto(filepath):
 # ============================================================================
 
 def main():
-    """主函数：遍历 word 文件夹，解析所有 Word 文档"""
+    """主函数：遍历 word 文件夹，解析所有 Word/Excel 文档"""
     print("=" * 70)
-    print("Word 文档解析脚本")
+    print("文档解析脚本")
     print(f"输入目录: {WORD_DIR}")
     print(f"输出目录: {OUTPUT_DIR}")
     print("=" * 70)
 
     word_files = [
         f for f in os.listdir(WORD_DIR)
-        if f.endswith('.docx') and not f.startswith('~$')
+        if (f.endswith('.docx') or f.endswith('.xlsx')) and not f.startswith('~$')
     ]
 
     if not word_files:
-        print("[警告] word 文件夹中没有找到 .docx 文件")
+        print("[警告] word 文件夹中没有找到 .docx 或 .xlsx 文件")
         return
 
     all_results = []

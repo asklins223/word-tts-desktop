@@ -1130,9 +1130,9 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
     """
     filepath = _get_filepath(file_obj)
     if not filepath:
-        raise gr.Error("请先上传 Word 文档（.docx）")
-    if not filepath.lower().endswith('.docx'):
-        raise gr.Error("仅支持 .docx 格式的 Word 文档")
+        raise gr.Error("请先上传文档（.docx 或 .xlsx）")
+    if not (filepath.lower().endswith('.docx') or filepath.lower().endswith('.xlsx')):
+        raise gr.Error("仅支持 .docx 或 .xlsx 格式")
     if not os.path.exists(filepath):
         raise gr.Error(f"文件不存在: {filepath}")
 
@@ -2321,7 +2321,7 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
                 gr.HTML('<div class="sidebar-section"><div class="sidebar-section-title">文档上传</div></div>')
                 file_input = gr.File(
                     label="",
-                    file_types=[".docx"],
+                    file_types=[".docx", ".xlsx"],
                     file_count="single",
                     type="filepath",
                     elem_id="file-upload",

@@ -1753,8 +1753,8 @@ async def parse_document_endpoint(req: ParseRequest):
     filepath = req.file_path
     if not filepath or not os.path.exists(filepath):
         raise HTTPException(status_code=400, detail="文件不存在")
-    if not filepath.lower().endswith('.docx'):
-        raise HTTPException(status_code=400, detail="仅支持 .docx 格式")
+    if not filepath.lower().endswith(('.docx', '.xlsx')):
+        raise HTTPException(status_code=400, detail="仅支持 .docx 或 .xlsx 格式")
     # 防止路径穿越：确保解析后的路径是真实文件（非符号链接等）
     real_path = os.path.realpath(filepath)
     if not os.path.isfile(real_path):
@@ -1826,8 +1826,8 @@ async def parse_document_endpoint(req: ParseRequest):
 @app.post("/api/parse/upload")
 async def parse_document_upload(file: UploadFile = File(...)):
     """上传 Word 文档并解析（浏览器模式）。"""
-    if not file.filename or not file.filename.lower().endswith('.docx'):
-        raise HTTPException(status_code=400, detail="仅支持 .docx 格式")
+    if not file.filename or not file.filename.lower().endswith(('.docx', '.xlsx')):
+        raise HTTPException(status_code=400, detail="仅支持 .docx 或 .xlsx 格式")
 
     # 保存到临时文件（防止路径穿越：只取文件名部分）
     safe_filename = os.path.basename(file.filename)

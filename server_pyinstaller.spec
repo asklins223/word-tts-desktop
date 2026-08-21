@@ -42,8 +42,9 @@ datas += collect_data_files('playwright', include_py_files=False)
 binaries = []
 hiddenimports = [
     # 这些导入位于容错分支内，显式列出以避免 PyInstaller 将其判为可选。
-    # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx 的导入。
+    # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx / openpyxl 的导入。
     'docx',
+    'openpyxl',
     'ttsmaker_client',
     'ttsmaker.ttsmaker',
     # 只使用同步 Playwright API。playwright 自带的官方 PyInstaller hook
@@ -85,7 +86,7 @@ a = Analysis(
         'pytest', 'IPython', 'notebook', 'jupyter',
         'numpy', 'cv2', 'sklearn', 'scipy', 'torch', 'tensorflow',
         'torchaudio', 'torchvision', 'transformers', 'datasets', 'sympy',
-        'pandas', 'pyarrow', 'matplotlib', 'openpyxl', 'h5py',
+        'pandas', 'pyarrow', 'matplotlib', 'h5py',
         'moviepy', 'librosa', 'soundfile', 'selenium', 'langchain',
         'boto3', 'botocore', 'google.cloud',
         # 不需要 Firefox / WebKit 浏览器（仅用 Chromium）

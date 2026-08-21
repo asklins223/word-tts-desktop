@@ -55,6 +55,7 @@ pyinstaller \
     --collect-all gradio \
     --collect-all gradio_client \
     --collect-all docx \
+    --collect-all openpyxl \
     --collect-all lxml \
     --collect-all PIL \
     --collect-all numpy \

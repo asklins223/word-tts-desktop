@@ -538,7 +538,7 @@ function summarizeParseResults(parseResults) {
 }
 
 function updateSessionLabels(filename = '', parseResults = currentSession?.parse_results, generationScope = null) {
-    const displayName = filename || '已导入的 Word 文档';
+    const displayName = filename || '已导入的文档';
     const { total, types } = summarizeParseResults(parseResults);
     const generationTotal = generationScope?.total ?? total;
     const generationDescriptor = generationScope?.preview
@@ -1019,11 +1019,11 @@ function bindEvents() {
         uploadZone.classList.remove('dragover');
         if (isRestarting || uploadZone.getAttribute('aria-disabled') === 'true') return;
         const file = e.dataTransfer.files[0];
-        if (file && file.name.toLowerCase().endsWith('.docx')) {
+        if (file && (file.name.toLowerCase().endsWith('.docx') || file.name.toLowerCase().endsWith('.xlsx'))) {
             handleFileSelected(file);
         } else {
-            setUploadFeedback('error', '文件格式不支持，请重新选择 .docx 文档。');
-            showToast('请选择 .docx 格式的 Word 文档', 'error');
+            setUploadFeedback('error', '文件格式不支持，请重新选择 .docx 或 .xlsx 文档。');
+            showToast('请选择 .docx 或 .xlsx 格式的文档', 'error');
         }
     });
 
@@ -1514,7 +1514,7 @@ async function deleteHistoryRecord(record, button) {
             const uploadTitle = uploadZone?.querySelector('.upload-text-large');
             const uploadHint = uploadZone?.querySelector('.upload-hint');
             if (uploadTitle) uploadTitle.textContent = '拖拽文档到这里，或点击选择';
-            if (uploadHint) uploadHint.textContent = '支持 .docx 文件 · 选择后会自动解析';
+            if (uploadHint) uploadHint.textContent = '支持 .docx / .xlsx 文件 · 选择后会自动解析';
             updateSessionLabels();
             if ($('stats-bar')) $('stats-bar').replaceChildren();
             if ($('status-text')) $('status-text').textContent = '就绪';
@@ -1548,14 +1548,14 @@ async function selectFile() {
             if (filePath) {
                 handleFilePath(filePath);
             } else if (result != null && result?.reason !== 'user-cancelled') {
-                await showNativeFileDialogError('选择 Word 文档失败', result?.reason ? result : {
-                    reason: result?.success === true ? 'dialog-error' : 'ipc-error',
-                    error: '主进程未返回有效的 Word 文件路径',
+await showNativeFileDialogError('选择文档失败', result?.reason ? result : {
+                reason: result?.success === true ? 'dialog-error' : 'ipc-error',
+                error: '主进程未返回有效的文件路径',
                 });
             }
         } catch (error) {
-            console.error('打开 Word 文件选择框失败:', error);
-            await showNativeFileDialogError('选择 Word 文档失败', {
+            console.error('打开文件选择框失败:', error);
+            await showNativeFileDialogError('选择文档失败', {
                 reason: 'ipc-error',
                 error: error?.message,
             });
@@ -3278,7 +3278,7 @@ async function downloadZip(context = activeResultContext) {
                 const data = await resp.json();
                 if (data.path) {
                     // 使用源文件名作为 ZIP 下载文件名
-                    const sourceName = String(target.sourceFilename || PRODUCT_NAME).replace(/\.docx$/i, '');
+                    const sourceName = String(target.sourceFilename || PRODUCT_NAME).replace(/\.(docx|xlsx)$/i, '');
                     await saveNativeFile(data.path, `${sourceName}_tts.zip`);
                 } else {
                     showToast('ZIP 文件不存在');
@@ -3347,7 +3347,7 @@ async function requestRestart() {
         let confirmation = {
             kicker: '当前任务',
             title: '更换当前文档？',
-            message: '当前文档会话将结束，随后可以导入新的 Word 文档。',
+            message: '当前文档会话将结束，随后可以导入新的文档。',
             detail: '尚未保存到历史记录的临时结果会被清理。',
             tone: 'warning',
             confirmLabel: '更换文档',
@@ -3451,7 +3451,7 @@ async function restart() {
     uploadZone.classList.remove('has-file', 'has-error', 'is-processing', 'dragover');
     uploadZone.setAttribute('aria-busy', 'false');
     uploadZone.querySelector('.upload-text-large').textContent = '拖拽文档到这里，或点击选择';
-    uploadZone.querySelector('.upload-hint').textContent = '支持 .docx 文件 · 选择后会自动解析';
+    uploadZone.querySelector('.upload-hint').textContent = '支持 .docx / .xlsx 文件 · 选择后会自动解析';
     setUploadFeedback();
     updateSessionLabels();
 
