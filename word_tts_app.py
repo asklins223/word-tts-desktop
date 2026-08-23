@@ -2495,11 +2495,11 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
             gr.HTML(
                 '<div class="voice-info">'
                 '<strong>音色分配规则：</strong><br>'
-                '<span class="voice-female">● 女声</span>：上方“女声音色”选择<br>'
+                '<span class="voice-female">● 女声</span>：en-US-JennyNeural（词汇题型用 en-GB-LibbyNeural）<br>'
                 '　└ w/W 标识 → 女声<br>'
                 '　└ 无标识 → 默认女声<br>'
                 '<span class="voice-male">● 男声</span>：'
-                + ('TTSMaker 788 Alfie' if _TTSMaker_AVAILABLE else '上方“男声音色”选择 (edge-tts)')
+                + ('TTSMaker 788 Alfie' if _TTSMaker_AVAILABLE else 'fr-FR-RemyMultilingualNeural (edge-tts)')
                 + '<br>'
                 '　└ m/M 标识 → 男声<br>'
                 '<em style="font-size:10px; color:var(--c-text-muted);">'

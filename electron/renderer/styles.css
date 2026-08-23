@@ -1234,59 +1234,6 @@ body.platform-win32 #toolbar {
     background: var(--success);
 }
 
-.voice-rules {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 11px;
-}
-
-.voice-rule-item {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-    padding: 15px;
-    border: 1px solid var(--border-light);
-    border-radius: 12px;
-}
-
-.voice-female-card { background: var(--voice-female-bg); }
-.voice-male-card { background: var(--voice-male-bg); }
-
-.voice-avatar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 40px;
-    height: 40px;
-    flex: 0 0 40px;
-    border-radius: 11px;
-    font-family: var(--font-mono);
-    font-size: 14px;
-    font-weight: 750;
-}
-
-.voice-female-card .voice-avatar {
-    color: var(--voice-female);
-    background: #fff;
-    border: 1px solid #efd7e1;
-}
-
-.voice-male-card .voice-avatar {
-    color: var(--voice-male);
-    background: #fff;
-    border: 1px solid #d4e8ef;
-}
-
-.voice-info {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 4px 8px;
-    min-width: 0;
-}
-
 .voice-badge {
     display: inline-flex;
     align-items: center;
@@ -1299,31 +1246,6 @@ body.platform-win32 #toolbar {
 
 .voice-badge.voice-female { color: var(--voice-female); background: #f4dce6; }
 .voice-badge.voice-male { color: var(--voice-male); background: #d8ecf2; }
-
-.voice-name {
-    overflow: hidden;
-    color: var(--text);
-    font-size: 10.5px;
-    font-weight: 650;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.voice-desc {
-    grid-column: 1 / -1;
-    overflow: hidden;
-    color: var(--text-muted);
-    font-size: 9.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.voice-status {
-    align-self: flex-start;
-    margin-left: auto;
-    color: var(--text-faint);
-    font-size: 9px;
-}
 
 /* ---- 音色说明区（01 音色说明，只读） ---- */
 .voice-info-list {
@@ -2627,9 +2549,6 @@ input[type="text"]::placeholder {
     .config-layout {
         grid-template-columns: minmax(0, 1fr) 245px;
     }
-
-    .voice-rules { grid-template-columns: 1fr; }
-    .voice-select-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 980px) {
@@ -3975,7 +3894,6 @@ input[type="text"]::placeholder {
 .required-badge,
 .pipeline-item > span,
 .voice-badge,
-.voice-status,
 .summary-card-head small,
 .generation-metrics span,
 .result-metric span,
@@ -4001,7 +3919,6 @@ input[type="text"]::placeholder {
 .section-heading-row p,
 .auto-badge,
 .processing-badge,
-.voice-desc,
 .field-label small,
 .advanced-section summary small,
 .preview-option small,
@@ -4037,7 +3954,6 @@ input[type="text"]::placeholder {
 .default-profile strong,
 .preset-card-name,
 .source-file-chip strong,
-.voice-name,
 .field-label,
 select,
 input[type="text"],
@@ -4335,19 +4251,6 @@ input[type="text"],
 .preset-section {
     padding-top: 17px;
     padding-bottom: 17px;
-}
-
-.voice-rule-item {
-    border-color: var(--border);
-}
-
-.voice-desc {
-    display: -webkit-box;
-    line-height: 1.4;
-    text-overflow: initial;
-    white-space: normal;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
 }
 
 .config-grid {
