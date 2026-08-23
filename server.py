@@ -1147,9 +1147,10 @@ async def generate_audio_stream(
         proxy = config.get("proxy", "")
         fmt = config.get("format", "mp3")
         quality = config.get("quality", "128 kbps（标准）")
-        # 从 config 读取并归一化用户选择的音色（非法值回退到默认）
-        fv = core.resolve_female_voice(config.get("female_voice"))
-        mv = core.resolve_male_voice(config.get("male_voice"))
+        # 音色由题型自动决定，不再从前端读取
+        fv = core.FEMALE_VOICE
+        mv = core.MALE_VOICE
+        wv = core.WORD_VOICE
 
         log(
             "info",
@@ -1189,12 +1190,18 @@ async def generate_audio_stream(
             return
 
         # ---- 检查是否有男声数据，决定是否需要启动 TTSMaker ----
+        # 词汇题型（单词/例句）使用 WORD_VOICE 女声，不参与男声检测
+        has_male_voice = False
         if core._TTSMaker_AVAILABLE:
             for item in progress["items"]:
                 if item["status"] == "done":
                     continue
                 raw_item = item.get("raw_item", {})
                 text = raw_item.get("text", "")
+                cat = raw_item.get("category", "")
+                if cat in core.WORD_CATEGORIES:
+                    # 词汇题型纯女声，跳过男声检测
+                    continue
                 # per-item 音色覆盖（课文跟读等题型）
                 voice_override = item.get("voice_override")
                 if voice_override == "male":
@@ -1309,13 +1316,23 @@ async def generate_audio_stream(
                 continue
 
             # per-item 音色覆盖（课文跟读等题型）
+            cat = raw_item.get("category", "")
             voice_override = item.get("voice_override")
-            item_default_voice = mv if voice_override == "male" else fv
-            speakers = core.parse_speakers(text, default_voice=item_default_voice,
-                                           female_voice=fv, male_voice=mv)
+            if cat in core.WORD_CATEGORIES:
+                # 词汇题型统一使用单词专用女声
+                item_default_voice = wv
+                speakers = core.parse_speakers(text, default_voice=wv,
+                                               female_voice=wv, male_voice=mv)
+            else:
+                item_default_voice = mv if voice_override == "male" else fv
+                speakers = core.parse_speakers(text, default_voice=item_default_voice,
+                                               female_voice=fv, male_voice=mv)
             speaker_info = ""
             voice_label = "女声"
-            if len(speakers) > 1 or speakers[0][0] != fv:
+            if cat in core.WORD_CATEGORIES:
+                speaker_info = " [单词专用女声]"
+                voice_label = "单词专用女声"
+            elif len(speakers) > 1 or speakers[0][0] != fv:
                 voices_used = set(v for v, _ in speakers)
                 if voices_used == {fv, mv}:
                     speaker_info = " [混合音色]"
@@ -1353,10 +1370,12 @@ async def generate_audio_stream(
             item_pause = item.get("pause_override")
             item_pause = item_pause if item_pause is not None else pause
             try:
+                # 词汇题型用 WORD_VOICE 作为女声，其他题型用 fv
+                item_fv = wv if cat in core.WORD_CATEGORIES else fv
                 audio_seg = await core._synth_item(
                     text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
                     default_voice=item_default_voice,
-                    female_voice=fv, male_voice=mv,
+                    female_voice=item_fv, male_voice=mv,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 await asyncio.to_thread(core.export_audio, audio_seg, fmt, quality, out_path)
@@ -1665,16 +1684,7 @@ async def get_config():
         "ttsmaker_available": core._TTSMaker_AVAILABLE,
         "female_voice": core.FEMALE_VOICE,
         "male_voice": core.MALE_VOICE,
-        "female_voice_choices": [
-            {"label": label, "value": value}
-            for label, value in core.WORD_FEMALE_VOICE_CHOICES
-        ],
-        "male_voice_choices": [
-            {"label": label, "value": value}
-            for label, value in core.WORD_MALE_VOICE_CHOICES
-        ],
-        "default_female_voice": core.WORD_DEFAULT_FEMALE_VOICE,
-        "default_male_voice": core.WORD_DEFAULT_MALE_VOICE,
+        "word_voice": core.WORD_VOICE,
     }
 
 

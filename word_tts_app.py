@@ -9,6 +9,7 @@ Word 文档解析 + Edge TTS 音频生成 — 一体化应用
 5. 文件命名规则：信息获取题目使用问题x；其他题型使用题型-录音稿x
 
 音色规则：
+  - 词汇题型（单词/例句）统一使用 en-GB-LibbyNeural 女声
   - w/W 标识 → 女声 en-US-JennyNeural
   - m/M 标识 → 男声 fr-FR-RemyMultilingualNeural
   - 无标识   → 默认女声 en-US-JennyNeural
@@ -193,35 +194,10 @@ os.makedirs(OUTPUT_BASE, exist_ok=True)
 FEMALE_VOICE = "en-US-JennyNeural"
 MALE_VOICE = "fr-FR-RemyMultilingualNeural"
 
-# 单词 TTS 可选音色列表（男女分列），供前端音色选择使用。
-# 标签 → ShortName；首个为默认值，与上面的 FEMALE_VOICE / MALE_VOICE 一致。
-WORD_FEMALE_VOICE_CHOICES = [
-    ("en-US-JennyNeural（默认女声）", "en-US-JennyNeural"),
-    ("en-GB-LibbyNeural（单词专用女声）", "en-GB-LibbyNeural"),
-]
-WORD_MALE_VOICE_CHOICES = [
-    ("fr-FR-RemyMultilingualNeural（默认男声）", "fr-FR-RemyMultilingualNeural"),
-]
-# 快速查找：ShortName → 标签
-WORD_VOICE_LABELS = {sn: label for label, sn in
-                     (WORD_FEMALE_VOICE_CHOICES + WORD_MALE_VOICE_CHOICES)}
-# 默认女声/男声 ShortName（取各列表第一项）
-WORD_DEFAULT_FEMALE_VOICE = WORD_FEMALE_VOICE_CHOICES[0][1]
-WORD_DEFAULT_MALE_VOICE = WORD_MALE_VOICE_CHOICES[0][1]
-
-
-def resolve_female_voice(voice):
-    """将前端传入的女声值归一化为合法 ShortName。"""
-    if voice and voice in {sn for _, sn in WORD_FEMALE_VOICE_CHOICES}:
-        return voice
-    return FEMALE_VOICE
-
-
-def resolve_male_voice(voice):
-    """将前端传入的男声值归一化为合法 ShortName。"""
-    if voice and voice in {sn for _, sn in WORD_MALE_VOICE_CHOICES}:
-        return voice
-    return MALE_VOICE
+# 词汇题型（单词 / 例句）专用女声。前端不再提供音色选择，一律使用此音色。
+WORD_VOICE = "en-GB-LibbyNeural"
+# 词汇类条目的 category 集合，用于在逐条生成时强制使用 WORD_VOICE。
+WORD_CATEGORIES = {"单词", "例句"}
 
 # 每条解析结果（每道题）独立生成一个音频文件，不做跨题合并
 
@@ -1164,7 +1140,7 @@ def get_supported_types_html():
 # ============================================================================
 
 def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
-                     preview, female_voice=None, male_voice=None):
+                     preview):
     """
     主处理函数（生成器）：
     1. 解析 Word 文档
@@ -1174,7 +1150,9 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
 
     Yields: (log_html, download_html, stats_html, status_text, zip_file, file_dropdown, single_file, current_file_path)
 
-    female_voice/male_voice: 前端选择的男女声 ShortName；None 或非法值会回退到默认。
+    音色规则：
+      - 词汇题型（单词/例句）统一使用 WORD_VOICE（en-GB-LibbyNeural 女声）
+      - 其他题型沿用 w/m 标识规则：Jenny 女声 / Remy 男声
     """
     filepath = _get_filepath(file_obj)
     if not filepath:
@@ -1193,9 +1171,10 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
     os.makedirs(audio_dir, exist_ok=True)
     os.makedirs(tmp_dir, exist_ok=True)
 
-    # 归一化前端传入的音色（非法值回退到默认）
-    fv = resolve_female_voice(female_voice)
-    mv = resolve_male_voice(male_voice)
+    # 音色由题型自动决定，不再从前端读取
+    fv = FEMALE_VOICE
+    mv = MALE_VOICE
+    wv = WORD_VOICE
 
     config = {
         "rate": rate,
@@ -1206,8 +1185,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         "quality": quality,
         "proxy": proxy or "",
         "preview": preview,
-        "female_voice": fv,
-        "male_voice": mv,
+        "word_voice": wv,
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
         "parser_version": PARSER_VERSION,
     }
@@ -1229,8 +1207,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             or old_config.get("format") != fmt
             or old_config.get("quality") != quality
             or old_config.get("preview") != preview
-            or old_config.get("female_voice") != fv
-            or old_config.get("male_voice") != mv
+        or old_config.get("word_voice") != wv
             or old_config.get("audio_algorithm_version") != AUDIO_ALGORITHM_VERSION
             or old_config.get("parser_version") != PARSER_VERSION
         )
@@ -1367,6 +1344,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
     )
 
     # ---- 检查是否有男声数据，决定是否需要启动 TTSMaker ----
+    # 词汇题型（单词/例句）使用 WORD_VOICE 女声，不参与男声检测
     has_male_voice = False
     if _TTSMaker_AVAILABLE:
         for item in progress["items"]:
@@ -1374,6 +1352,10 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 continue
             raw_item = item.get("raw_item", {})
             text = raw_item.get("text", "")
+            cat = raw_item.get("category", "")
+            if cat in WORD_CATEGORIES:
+                # 词汇题型纯女声，跳过男声检测
+                continue
             # per-item 音色覆盖（课文跟读等题型）
             voice_override = item.get("voice_override")
             if voice_override == "male":
@@ -1448,12 +1430,21 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 continue
 
             # per-item 音色覆盖（课文跟读等题型）
+            cat = raw_item.get("category", "")
             voice_override = item.get("voice_override")
-            item_default_voice = mv if voice_override == "male" else fv
-            speakers = parse_speakers(text, default_voice=item_default_voice,
-                                     female_voice=fv, male_voice=mv)
+            if cat in WORD_CATEGORIES:
+                # 词汇题型统一使用单词专用女声
+                item_default_voice = wv
+                speakers = parse_speakers(text, default_voice=wv,
+                                         female_voice=wv, male_voice=mv)
+            else:
+                item_default_voice = mv if voice_override == "male" else fv
+                speakers = parse_speakers(text, default_voice=item_default_voice,
+                                         female_voice=fv, male_voice=mv)
             speaker_info = ""
-            if len(speakers) > 1 or speakers[0][0] != fv:
+            if cat in WORD_CATEGORIES:
+                speaker_info = " [单词专用女声]"
+            elif len(speakers) > 1 or speakers[0][0] != fv:
                 voices_used = set(v for v, _ in speakers)
                 if voices_used == {fv, mv}:
                     speaker_info = " [混合音色]"
@@ -1478,10 +1469,12 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             item_pause = item.get("pause_override")
             item_pause = item_pause if item_pause is not None else pause
             try:
+                # 词汇题型用 WORD_VOICE 作为女声，其他题型用 fv
+                item_fv = wv if cat in WORD_CATEGORIES else fv
                 audio_seg = generate_item_audio(
                     text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
                     default_voice=item_default_voice,
-                    female_voice=fv, male_voice=mv,
+                    female_voice=item_fv, male_voice=mv,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 export_audio(audio_seg, fmt, quality, out_path)
@@ -2390,20 +2383,16 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
             with gr.Group(elem_id="sidebar-config"):
                 gr.HTML('<div class="sidebar-section"><div class="sidebar-section-title">音频配置</div></div>')
 
-                with gr.Group(elem_classes="config-dropdown"):
-                    female_voice = gr.Dropdown(
-                        choices=WORD_FEMALE_VOICE_CHOICES,
-                        value=WORD_DEFAULT_FEMALE_VOICE,
-                        label="女声音色",
-                        info="w/W 标识及无标识内容使用的女声",
-                    )
-                with gr.Group(elem_classes="config-dropdown"):
-                    male_voice = gr.Dropdown(
-                        choices=WORD_MALE_VOICE_CHOICES,
-                        value=WORD_DEFAULT_MALE_VOICE,
-                        label="男声音色",
-                        info="m/M 标识使用的男声",
-                    )
+                gr.HTML(
+                    '<div class="voice-info-box">'
+                    '<div class="voice-info-row"><span class="voice-badge voice-female">女声</span>'
+                    '<span>词汇题型（单词/例句）：en-GB-LibbyNeural</span></div>'
+                    '<div class="voice-info-row"><span class="voice-badge voice-female">女声</span>'
+                    '<span>其他题型：en-US-JennyNeural（w/W 标识）</span></div>'
+                    '<div class="voice-info-row"><span class="voice-badge voice-male">男声</span>'
+                    '<span>其他题型：fr-FR-RemyMultilingualNeural（m/M 标识）</span></div>'
+                    '</div>'
+                )
                 with gr.Group(elem_classes="config-dropdown"):
                     rate = gr.Dropdown(
                         choices=[
@@ -2621,7 +2610,7 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
     start_btn.click(
         fn=process_document,
         inputs=[file_input, rate, volume, pitch, pause, fmt, quality, proxy,
-                preview, female_voice, male_voice],
+                preview],
         outputs=[
             progress_output,    # log_html
             download_html,      # download_html

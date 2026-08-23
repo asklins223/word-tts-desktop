@@ -1027,25 +1027,25 @@ class ExcelVocabularyParser(BaseParser):
             if not word_text and not sentence_text:
                 continue
 
-            # 单词条目
+            # 单词条目（voice=female，由 TTS 引擎统一映射为单词专用女声 en-GB-LibbyNeural）
             if word_text:
                 word_seq += 1
                 items.append({
                     "category": "单词",
                     "number": word_seq,
                     "filename_stem": f"单词{word_seq}",
-                    "voice": "male",
+                    "voice": "female",
                     "text": word_text,
                 })
 
-            # 例句条目
+            # 例句条目（同上，使用单词专用女声）
             if sentence_text:
                 sentence_seq += 1
                 items.append({
                     "category": "例句",
                     "number": sentence_seq,
                     "filename_stem": f"句子{sentence_seq}",
-                    "voice": "male",
+                    "voice": "female",
                     "text": sentence_text,
                 })
 

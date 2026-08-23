@@ -311,8 +311,6 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
             "pause": 0,
             "proxy": "",
             "preview": False,
-            "female_voice": "en-US-JennyNeural",
-            "male_voice": "fr-FR-RemyMultilingualNeural",
         }
 
     @staticmethod
