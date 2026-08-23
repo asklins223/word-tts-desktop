@@ -193,6 +193,36 @@ os.makedirs(OUTPUT_BASE, exist_ok=True)
 FEMALE_VOICE = "en-US-JennyNeural"
 MALE_VOICE = "fr-FR-RemyMultilingualNeural"
 
+# 单词 TTS 可选音色列表（男女分列），供前端音色选择使用。
+# 标签 → ShortName；首个为默认值，与上面的 FEMALE_VOICE / MALE_VOICE 一致。
+WORD_FEMALE_VOICE_CHOICES = [
+    ("en-US-JennyNeural（默认女声）", "en-US-JennyNeural"),
+    ("en-GB-LibbyNeural（单词专用女声）", "en-GB-LibbyNeural"),
+]
+WORD_MALE_VOICE_CHOICES = [
+    ("fr-FR-RemyMultilingualNeural（默认男声）", "fr-FR-RemyMultilingualNeural"),
+]
+# 快速查找：ShortName → 标签
+WORD_VOICE_LABELS = {sn: label for label, sn in
+                     (WORD_FEMALE_VOICE_CHOICES + WORD_MALE_VOICE_CHOICES)}
+# 默认女声/男声 ShortName（取各列表第一项）
+WORD_DEFAULT_FEMALE_VOICE = WORD_FEMALE_VOICE_CHOICES[0][1]
+WORD_DEFAULT_MALE_VOICE = WORD_MALE_VOICE_CHOICES[0][1]
+
+
+def resolve_female_voice(voice):
+    """将前端传入的女声值归一化为合法 ShortName。"""
+    if voice and voice in {sn for _, sn in WORD_FEMALE_VOICE_CHOICES}:
+        return voice
+    return FEMALE_VOICE
+
+
+def resolve_male_voice(voice):
+    """将前端传入的男声值归一化为合法 ShortName。"""
+    if voice and voice in {sn for _, sn in WORD_MALE_VOICE_CHOICES}:
+        return voice
+    return MALE_VOICE
+
 # 每条解析结果（每道题）独立生成一个音频文件，不做跨题合并
 
 # 导出格式
@@ -346,7 +376,7 @@ RE_LINE_SPEAKER = re.compile(r'^([WwMm])\s*[:：]\s*(.*)')
 RE_PAREN_SPEAKER = re.compile(r'^\(([WwMm])\)\s*(.*)')
 
 
-def parse_speakers(text, default_voice=None):
+def parse_speakers(text, default_voice=None, female_voice=None, male_voice=None):
     """
     解析文本中的 w/m 说话人标识，返回 [(voice, clean_text), ...] 列表。
 
@@ -360,9 +390,14 @@ def parse_speakers(text, default_voice=None):
 
     default_voice: 无说话人标识时的默认音色，用于课文跟读等需要
                    按规则指定男声/女声但文本中没有 w/m 前缀的场景。
+    female_voice: W/w 标识映射到的女声 ShortName，None 时用 FEMALE_VOICE。
+    male_voice:   M/m 标识映射到的男声 ShortName，None 时用 MALE_VOICE。
+                  传入后，男声标识将使用该音色，而非模块级常量。
     """
     if default_voice is None:
         default_voice = FEMALE_VOICE
+    fv = female_voice if female_voice else FEMALE_VOICE
+    mv = male_voice if male_voice else MALE_VOICE
     segments = []
     lines = text.strip().split('\n')
 
@@ -387,7 +422,7 @@ def parse_speakers(text, default_voice=None):
         if m:
             flush()
             gender = m.group(1).upper()
-            current_voice = FEMALE_VOICE if gender == 'W' else MALE_VOICE
+            current_voice = fv if gender == 'W' else mv
             content = m.group(2).strip()
             if content:
                 current_lines.append(content)
@@ -398,7 +433,7 @@ def parse_speakers(text, default_voice=None):
         if m2:
             flush()
             gender = m2.group(1).upper()
-            current_voice = FEMALE_VOICE if gender == 'W' else MALE_VOICE
+            current_voice = fv if gender == 'W' else mv
             content = m2.group(2).strip()
             if content:
                 current_lines.append(content)
@@ -570,10 +605,11 @@ def _silent_segment(duration_ms, *segments):
     )
 
 
-async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0):
+async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0,
+                         male_voice=None):
     """合成单段文本的音频，返回 AudioSegment。
 
-    男声 (MALE_VOICE) 优先使用 TTSMaker 788 (Alfie) 生成；
+    男声 (male_voice，默认 MALE_VOICE) 优先使用 TTSMaker 788 (Alfie) 生成；
     女声 (FEMALE_VOICE) 使用 edge-tts 生成。
     TTSMaker 不可用或失败时回退到 edge-tts。
 
@@ -582,9 +618,11 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause
     rate/volume/pitch: TTSMaker 格式 (float 倍率, 如 1.5)
     pause: 应用层停顿值 (int ms, -1=不停顿, 0=默认300ms, N=N ms)；
            TTSMaker 始终接收 -1，实际间隔由 _synth_item 处理。
+    male_voice: 用于判断走 TTSMaker 的男声 ShortName，None 时用 MALE_VOICE。
     """
+    effective_male_voice = male_voice if male_voice else MALE_VOICE
     # ---- 男声：优先使用 TTSMaker ----
-    if voice == MALE_VOICE and _TTSMaker_AVAILABLE:
+    if voice == effective_male_voice and _TTSMaker_AVAILABLE:
         try:
             print(f"[tts] 使用 TTSMaker 788 (Alfie) 生成男声: {text[:50]}...", file=sys.stdout)
             # TTSMaker 内部不添加停顿；用户设置的段间距统一由 _synth_item
@@ -639,7 +677,8 @@ async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause
                 pass
 
 
-async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None):
+async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None,
+                      female_voice=None, male_voice=None):
     """
     为一条解析结果生成完整音频。
     自动处理 w/m 说话人切换，段落间插入停顿。
@@ -647,8 +686,11 @@ async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_
     rate/volume/pitch: TTSMaker 格式 (float 倍率)
     pause: 应用层停顿值 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
     default_voice: 无 w/m 标识时的默认音色，None 表示女声
+    female_voice: W/w 标识映射的女声 ShortName，None 时用 FEMALE_VOICE。
+    male_voice:   M/m 标识映射的男声 ShortName，None 时用 MALE_VOICE。
     """
-    segments = parse_speakers(text, default_voice=default_voice)
+    segments = parse_speakers(text, default_voice=default_voice,
+                              female_voice=female_voice, male_voice=male_voice)
     if not segments:
         raise ValueError("文本为空")
 
@@ -660,7 +702,8 @@ async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_
         # 段内按换行分段落
         paragraphs = [p.strip() for p in seg_text.splitlines() if p.strip()]
         for para in paragraphs:
-            part = await _synth_segment(para, voice, rate, volume, pitch, proxy, tmp_dir, pause=pause)
+            part = await _synth_segment(para, voice, rate, volume, pitch, proxy, tmp_dir,
+                                        pause=pause, male_voice=male_voice)
             audio_parts.append(part)
 
     if not audio_parts:
@@ -696,9 +739,12 @@ async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_
     return full
 
 
-def generate_item_audio(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None):
+def generate_item_audio(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None,
+                        female_voice=None, male_voice=None):
     """同步包装：为一条文本生成音频。"""
-    return asyncio.run(_synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=default_voice))
+    return asyncio.run(_synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir,
+                                   default_voice=default_voice,
+                                   female_voice=female_voice, male_voice=male_voice))
 
 
 # ============================================================================
@@ -1118,7 +1164,7 @@ def get_supported_types_html():
 # ============================================================================
 
 def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
-                     preview):
+                     preview, female_voice=None, male_voice=None):
     """
     主处理函数（生成器）：
     1. 解析 Word 文档
@@ -1127,6 +1173,8 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
     4. 流式输出进度
 
     Yields: (log_html, download_html, stats_html, status_text, zip_file, file_dropdown, single_file, current_file_path)
+
+    female_voice/male_voice: 前端选择的男女声 ShortName；None 或非法值会回退到默认。
     """
     filepath = _get_filepath(file_obj)
     if not filepath:
@@ -1145,6 +1193,10 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
     os.makedirs(audio_dir, exist_ok=True)
     os.makedirs(tmp_dir, exist_ok=True)
 
+    # 归一化前端传入的音色（非法值回退到默认）
+    fv = resolve_female_voice(female_voice)
+    mv = resolve_male_voice(male_voice)
+
     config = {
         "rate": rate,
         "volume": volume,
@@ -1154,6 +1206,8 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         "quality": quality,
         "proxy": proxy or "",
         "preview": preview,
+        "female_voice": fv,
+        "male_voice": mv,
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
         "parser_version": PARSER_VERSION,
     }
@@ -1175,6 +1229,8 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             or old_config.get("format") != fmt
             or old_config.get("quality") != quality
             or old_config.get("preview") != preview
+            or old_config.get("female_voice") != fv
+            or old_config.get("male_voice") != mv
             or old_config.get("audio_algorithm_version") != AUDIO_ALGORITHM_VERSION
             or old_config.get("parser_version") != PARSER_VERSION
         )
@@ -1324,9 +1380,10 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 has_male_voice = True
                 break
             if text.strip():
-                dv = MALE_VOICE if voice_override == "male" else FEMALE_VOICE
-                speakers = parse_speakers(text, default_voice=dv)
-                if any(v == MALE_VOICE for v, _ in speakers):
+                dv = mv if voice_override == "male" else fv
+                speakers = parse_speakers(text, default_voice=dv,
+                                         female_voice=fv, male_voice=mv)
+                if any(v == mv for v, _ in speakers):
                     has_male_voice = True
                     break
 
@@ -1392,14 +1449,15 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
 
             # per-item 音色覆盖（课文跟读等题型）
             voice_override = item.get("voice_override")
-            item_default_voice = MALE_VOICE if voice_override == "male" else FEMALE_VOICE
-            speakers = parse_speakers(text, default_voice=item_default_voice)
+            item_default_voice = mv if voice_override == "male" else fv
+            speakers = parse_speakers(text, default_voice=item_default_voice,
+                                     female_voice=fv, male_voice=mv)
             speaker_info = ""
-            if len(speakers) > 1 or speakers[0][0] != FEMALE_VOICE:
+            if len(speakers) > 1 or speakers[0][0] != fv:
                 voices_used = set(v for v, _ in speakers)
-                if voices_used == {FEMALE_VOICE, MALE_VOICE}:
+                if voices_used == {fv, mv}:
                     speaker_info = " [混合音色]"
-                elif MALE_VOICE in voices_used:
+                elif mv in voices_used:
                     speaker_info = " [男声]"
                 else:
                     speaker_info = " [女声]"
@@ -1423,6 +1481,7 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 audio_seg = generate_item_audio(
                     text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
                     default_voice=item_default_voice,
+                    female_voice=fv, male_voice=mv,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 export_audio(audio_seg, fmt, quality, out_path)
@@ -2332,6 +2391,20 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
                 gr.HTML('<div class="sidebar-section"><div class="sidebar-section-title">音频配置</div></div>')
 
                 with gr.Group(elem_classes="config-dropdown"):
+                    female_voice = gr.Dropdown(
+                        choices=WORD_FEMALE_VOICE_CHOICES,
+                        value=WORD_DEFAULT_FEMALE_VOICE,
+                        label="女声音色",
+                        info="w/W 标识及无标识内容使用的女声",
+                    )
+                with gr.Group(elem_classes="config-dropdown"):
+                    male_voice = gr.Dropdown(
+                        choices=WORD_MALE_VOICE_CHOICES,
+                        value=WORD_DEFAULT_MALE_VOICE,
+                        label="男声音色",
+                        info="m/M 标识使用的男声",
+                    )
+                with gr.Group(elem_classes="config-dropdown"):
                     rate = gr.Dropdown(
                         choices=[
                             ("0.5x 降速", "0.5"), ("0.6x 降速", "0.6"),
@@ -2432,17 +2505,17 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
             # 音色说明
             gr.HTML(
                 '<div class="voice-info">'
-                '<strong>音色自动分配规则：</strong><br>'
-                '<span class="voice-female">● 女声</span>：en-US-JennyNeural (edge-tts)<br>'
+                '<strong>音色分配规则：</strong><br>'
+                '<span class="voice-female">● 女声</span>：上方“女声音色”选择<br>'
                 '　└ w/W 标识 → 女声<br>'
                 '　└ 无标识 → 默认女声<br>'
                 '<span class="voice-male">● 男声</span>：'
-                + ('TTSMaker 788 Alfie' if _TTSMaker_AVAILABLE else 'fr-FR-RemyMultilingualNeural (edge-tts)')
+                + ('TTSMaker 788 Alfie' if _TTSMaker_AVAILABLE else '上方“男声音色”选择 (edge-tts)')
                 + '<br>'
                 '　└ m/M 标识 → 男声<br>'
                 '<em style="font-size:10px; color:var(--c-text-muted);">'
                 + ('男声通过 TTSMaker 网站生成，需要 Playwright + Chrome' if _TTSMaker_AVAILABLE else 'TTSMaker 不可用，男声回退到 edge-tts')
-                + ' · 生成音频时自动去除 w/m 标识</em>'
+                + ' · en-GB-LibbyNeural 为单词专用女声 · 生成音频时自动去除 w/m 标识</em>'
                 '</div>'
             )
 
@@ -2548,7 +2621,7 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
     start_btn.click(
         fn=process_document,
         inputs=[file_input, rate, volume, pitch, pause, fmt, quality, proxy,
-                preview],
+                preview, female_voice, male_voice],
         outputs=[
             progress_output,    # log_html
             download_html,      # download_html

@@ -210,28 +210,30 @@
                                         <div class="section-heading-row">
                                             <div>
                                                 <span class="section-index">01</span>
-                                                <div><h2>自动分配规则</h2><p>这里只展示固定规则，无需逐项设置。</p></div>
+                                                <div><h2>音色选择</h2><p>分别选择男女声发音人，w/m 标识自动分配。</p></div>
                                             </div>
                                             <span class="auto-badge"><span></span>自动匹配</span>
                                         </div>
-                                        <div class="voice-rules">
-                                            <div class="voice-rule-item voice-female-card">
-                                                <div class="voice-avatar">W</div>
-                                                <div class="voice-info">
+                                        <div class="config-grid voice-select-grid">
+                                            <div class="config-field voice-field">
+                                                <span class="field-label">
                                                     <span class="voice-badge voice-female">女声</span>
-                                                    <strong class="voice-name" id="voice-female-name">JennyNeural</strong>
-                                                    <small class="voice-desc">w / W 标识，以及未标记内容</small>
-                                                </div>
-                                                <span class="voice-status">默认</span>
+                                                    <small>w / W 标识及未标记内容</small>
+                                                </span>
+                                                <select id="female-voice" aria-label="女声音色">
+                                                    <option value="en-US-JennyNeural" selected>en-US-JennyNeural · 默认女声</option>
+                                                    <option value="en-GB-LibbyNeural">en-GB-LibbyNeural · 单词专用女声</option>
+                                                </select>
                                             </div>
-                                            <div class="voice-rule-item voice-male-card">
-                                                <div class="voice-avatar">M</div>
-                                                <div class="voice-info">
+                                            <div class="config-field voice-field">
+                                                <span class="field-label">
                                                     <span class="voice-badge voice-male">男声</span>
-                                                    <strong class="voice-name" id="voice-male-name">加载中...</strong>
-                                                    <small class="voice-desc" id="voice-male-desc">m / M 标识，生成时自动移除标记</small>
-                                                </div>
-                                                <span class="voice-status">自动</span>
+                                                    <small>m / M 标识，自动移除标记</small>
+                                                </span>
+                                                <select id="male-voice" aria-label="男声音色">
+                                                    <option value="fr-FR-RemyMultilingualNeural" selected>fr-FR-RemyMultilingualNeural · 默认男声</option>
+                                                </select>
+                                                <small class="voice-engine-note" id="male-voice-note">加载中...</small>
                                             </div>
                                         </div>
                                     </section>
@@ -378,6 +380,7 @@
                                         </div>
                                         <div class="summary-list" aria-label="当前生成设置">
                                             <div><span class="summary-key">文档内容</span><strong class="summary-value" id="summary-document">等待解析</strong></div>
+                                            <div><span class="summary-key">音色</span><strong class="summary-value" id="summary-voice">女 Jenny · 男 Remy</strong></div>
                                             <div><span class="summary-key">语速</span><strong class="summary-value" id="summary-rate">1.0x · 自然语速</strong></div>
                                             <div><span class="summary-key">段落停顿</span><strong class="summary-value" id="summary-pause">约 300 毫秒 · 自然</strong></div>
                                             <div><span class="summary-key">输出</span><strong class="summary-value" id="summary-output">MP3 · 128 kbps</strong></div>

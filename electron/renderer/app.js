@@ -177,6 +177,9 @@ function bindNativeAppNotices() {
 function presetSummary(config) {
     if (!config) return '配置数据缺失';
     const parts = [];
+    // 提取女声 ShortName 中的个人名部分
+    const fShort = (config.female_voice || '').split('-').pop()?.replace('Neural', '') || 'Jenny';
+    parts.push(`女声 ${fShort}`);
     parts.push(`语速 ${config.rate ?? 1.0}x`);
     parts.push(`音量 ${Math.round((config.volume ?? 1) * 100)}%`);
     parts.push(`音调 ${config.pitch ?? 1}x`);
@@ -295,6 +298,8 @@ function applyConfigToForm(config) {
     setSelectValue($('pause'), config.pause, 0);
     setSelectValue($('format'), config.format, 'mp3');
     setSelectValue($('quality'), config.quality, '128 kbps（标准）');
+    if ($('female-voice')) setSelectValue($('female-voice'), config.female_voice, 'en-US-JennyNeural');
+    if ($('male-voice')) setSelectValue($('male-voice'), config.male_voice, 'fr-FR-RemyMultilingualNeural');
     $('proxy').value = config.proxy ?? '';
     $('preview').checked = !!config.preview;
     enforceOutputCompatibility($('format'));
@@ -628,6 +633,17 @@ function updateConfigSummary() {
         const label = selectedOptionLabel(selectId);
         if (target && label) target.textContent = label;
     });
+
+    // 音色摘要：女声 / 男声
+    const voiceEl = $('summary-voice');
+    if (voiceEl) {
+        const fLabel = selectedOptionLabel('female-voice') || '';
+        const mLabel = selectedOptionLabel('male-voice') || '';
+        // 取 ShortName 中的个人名部分用于简洁显示
+        const fShort = fLabel.replace(/^[^·]*·\s*/, '').trim() || fLabel;
+        const mShort = mLabel.replace(/^[^·]*·\s*/, '').trim() || mLabel;
+        voiceEl.textContent = `女 ${fShort} · 男 ${mShort}`;
+    }
 
     const output = $('summary-output');
     if (output) {
@@ -1054,8 +1070,9 @@ function bindEvents() {
     $('delete-preset-btn').addEventListener('click', handleDeletePreset);
 
     // Step 2: 配置
-    ['rate', 'volume', 'pitch', 'pause'].forEach(id => {
-        $(id).addEventListener('change', () => {
+    ['rate', 'volume', 'pitch', 'pause', 'female-voice', 'male-voice'].forEach(id => {
+        const el = $(id);
+        if (el) el.addEventListener('change', () => {
             updateConfigSummary();
             rememberCurrentConfig();
         });
@@ -1143,6 +1160,30 @@ function bindSliderDisplay(slider, display, formatter) {
 // 配置加载
 // ============================================================================
 
+/**
+ * 从 /api/config 返回的 choices 列表填充 <select>，并选中默认值。
+ * choices: [{label, value}, ...] 或 [[label, value], ...]
+ */
+function populateVoiceSelect(selectId, choices, defaultValue) {
+    const select = $(selectId);
+    if (!select || !Array.isArray(choices)) return;
+    // 保留当前已选中的值（避免重复填充时丢失用户选择）
+    const prevValue = select.value;
+    select.innerHTML = '';
+    for (const item of choices) {
+        const label = typeof item === 'string' ? item : (item.label || item.value);
+        const value = typeof item === 'string' ? item : (item.value || item.label);
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        select.appendChild(opt);
+    }
+    // 优先使用保留的用户选择，其次用接口默认值
+    const target = prevValue || defaultValue || (choices[0] && (choices[0].value || choices[0]));
+    setSelectValue(select, target, target);
+    window.WordTTSUI?.syncSelect(select);
+}
+
 async function loadConfig() {
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -1151,18 +1192,23 @@ async function loadConfig() {
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             currentConfig = await resp.json();
 
-            // 男声引擎显示（TTSMaker 或 edge-tts）
-            const maleNameEl = $('voice-male-name');
-            const maleDescEl = $('voice-male-desc');
-            if (maleNameEl && maleDescEl) {
+            // 动态填充女声/男声音色下拉框
+            populateVoiceSelect('female-voice', currentConfig.female_voice_choices,
+                currentConfig.default_female_voice || currentConfig.female_voice);
+            populateVoiceSelect('male-voice', currentConfig.male_voice_choices,
+                currentConfig.default_male_voice || currentConfig.male_voice);
+
+            // 男声引擎说明（TTSMaker 或 edge-tts）
+            const maleNoteEl = $('male-voice-note');
+            if (maleNoteEl) {
                 if (currentConfig.ttsmaker_available) {
-                    maleNameEl.textContent = 'Alfie · TTSMaker 788';
-                    maleDescEl.textContent = 'm/M 标识 → 男声 · 通过 TTSMaker 网站生成';
+                    maleNoteEl.textContent = '男声通过 TTSMaker 788 (Alfie) 生成';
                 } else {
-                    maleNameEl.textContent = 'Remy · edge-tts';
-                    maleDescEl.textContent = 'm/M 标识 → 男声 · TTSMaker 不可用，回退到 edge-tts';
+                    maleNoteEl.textContent = 'TTSMaker 不可用，男声回退到 edge-tts';
                 }
             }
+            // 刷新摘要中的音色显示
+            updateConfigSummary();
 
             return true;  // 成功，退出重试
         } catch (err) {
@@ -1735,6 +1781,8 @@ function collectConfig(useDefaults) {
             quality: '128 kbps（标准）',
             proxy: '',
             preview: false,
+            female_voice: currentConfig?.default_female_voice || 'en-US-JennyNeural',
+            male_voice: currentConfig?.default_male_voice || 'fr-FR-RemyMultilingualNeural',
         };
     }
     return {
@@ -1746,6 +1794,8 @@ function collectConfig(useDefaults) {
         quality: $('quality').value,
         proxy: $('proxy').value || '',
         preview: $('preview').checked,
+        female_voice: $('female-voice')?.value || 'en-US-JennyNeural',
+        male_voice: $('male-voice')?.value || 'fr-FR-RemyMultilingualNeural',
     };
 }
 

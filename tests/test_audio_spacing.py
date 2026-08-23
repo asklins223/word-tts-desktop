@@ -76,7 +76,7 @@ class AudioSpacingTests(unittest.TestCase):
         male_raw = self._silence(30) + self._tone() + self._silence(80)
 
         async def fake_synth_segment(
-            text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0
+            text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0, **_kwargs
         ):
             return female_raw if voice == core.FEMALE_VOICE else male_raw
 
@@ -136,7 +136,7 @@ class AudioSpacingTests(unittest.TestCase):
         male_raw = self._silence(30) + self._tone() + self._silence(80)
 
         async def fake_synth_segment(
-            text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0
+            text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0, **_kwargs
         ):
             return female_raw if voice == core.FEMALE_VOICE else male_raw
 

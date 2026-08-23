@@ -1147,6 +1147,9 @@ async def generate_audio_stream(
         proxy = config.get("proxy", "")
         fmt = config.get("format", "mp3")
         quality = config.get("quality", "128 kbps（标准）")
+        # 从 config 读取并归一化用户选择的音色（非法值回退到默认）
+        fv = core.resolve_female_voice(config.get("female_voice"))
+        mv = core.resolve_male_voice(config.get("male_voice"))
 
         log(
             "info",
@@ -1198,9 +1201,10 @@ async def generate_audio_stream(
                     has_male_voice = True
                     break
                 if text.strip():
-                    dv = core.MALE_VOICE if voice_override == "male" else core.FEMALE_VOICE
-                    speakers = core.parse_speakers(text, default_voice=dv)
-                    if any(v == core.MALE_VOICE for v, _ in speakers):
+                    dv = mv if voice_override == "male" else fv
+                    speakers = core.parse_speakers(text, default_voice=dv,
+                                                   female_voice=fv, male_voice=mv)
+                    if any(v == mv for v, _ in speakers):
                         has_male_voice = True
                         break
 
@@ -1306,16 +1310,17 @@ async def generate_audio_stream(
 
             # per-item 音色覆盖（课文跟读等题型）
             voice_override = item.get("voice_override")
-            item_default_voice = core.MALE_VOICE if voice_override == "male" else core.FEMALE_VOICE
-            speakers = core.parse_speakers(text, default_voice=item_default_voice)
+            item_default_voice = mv if voice_override == "male" else fv
+            speakers = core.parse_speakers(text, default_voice=item_default_voice,
+                                           female_voice=fv, male_voice=mv)
             speaker_info = ""
             voice_label = "女声"
-            if len(speakers) > 1 or speakers[0][0] != core.FEMALE_VOICE:
+            if len(speakers) > 1 or speakers[0][0] != fv:
                 voices_used = set(v for v, _ in speakers)
-                if voices_used == {core.FEMALE_VOICE, core.MALE_VOICE}:
+                if voices_used == {fv, mv}:
                     speaker_info = " [混合音色]"
                     voice_label = "混合音色"
-                elif core.MALE_VOICE in voices_used:
+                elif mv in voices_used:
                     speaker_info = " [男声]"
                     voice_label = "男声"
                 else:
@@ -1351,6 +1356,7 @@ async def generate_audio_stream(
                 audio_seg = await core._synth_item(
                     text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
                     default_voice=item_default_voice,
+                    female_voice=fv, male_voice=mv,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 await asyncio.to_thread(core.export_audio, audio_seg, fmt, quality, out_path)
@@ -1659,6 +1665,16 @@ async def get_config():
         "ttsmaker_available": core._TTSMaker_AVAILABLE,
         "female_voice": core.FEMALE_VOICE,
         "male_voice": core.MALE_VOICE,
+        "female_voice_choices": [
+            {"label": label, "value": value}
+            for label, value in core.WORD_FEMALE_VOICE_CHOICES
+        ],
+        "male_voice_choices": [
+            {"label": label, "value": value}
+            for label, value in core.WORD_MALE_VOICE_CHOICES
+        ],
+        "default_female_voice": core.WORD_DEFAULT_FEMALE_VOICE,
+        "default_male_voice": core.WORD_DEFAULT_MALE_VOICE,
     }
 
 
