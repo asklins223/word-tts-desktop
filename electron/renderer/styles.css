@@ -1507,6 +1507,7 @@ body.platform-win32 #toolbar {
 }
 
 .voice-avatar {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1524,6 +1525,9 @@ body.platform-win32 #toolbar {
 
 .voice-avatar img {
     display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 1;
     width: 100%;
     height: 100%;
     object-fit: cover;

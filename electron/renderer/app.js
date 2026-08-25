@@ -47,6 +47,7 @@ const DEFAULT_MALE_ROLE_KEY = '__default_male__';
 const ROLE_CONFIG_PREFIX = 'role:';
 const DEFAULT_VOICE_PARAMS = { rate: 50, volume: 50, pitch: 50 };
 let voicePreviewAudio = null;
+let voiceAvatarObserver = null;
 const VOICE_RECENT_STORAGE_KEY = 'wordtts_recent_xunfei_voices_v1';
 let eventSource = null;          // SSE 连接
 let sseReconnectTimer = null;    // SSE 延迟重连计时器
@@ -447,10 +448,11 @@ function getVoiceInitials(name) {
     return value.slice(0, 1) || '?';
 }
 
-function renderVoiceAvatar(container, voice, large = false) {
+function renderVoiceAvatar(container, voice, large = false, eager = false) {
     if (!container) return;
     container.replaceChildren();
     container.classList.toggle('voice-avatar-large', large);
+    container.classList.remove('has-image');
     const fallback = document.createElement('span');
     fallback.textContent = getVoiceInitials(voice?.name);
     container.appendChild(fallback);
@@ -458,10 +460,54 @@ function renderVoiceAvatar(container, voice, large = false) {
     if (!src) return;
     const image = document.createElement('img');
     image.alt = '';
-    image.loading = 'lazy';
-    image.src = src;
-    image.addEventListener('error', () => image.remove(), { once: true });
+    const loadImmediately = large || eager;
+    image.loading = loadImmediately ? 'eager' : 'lazy';
+    image.decoding = 'async';
+    image.hidden = loadImmediately;
+    image.addEventListener('load', () => {
+        fallback.hidden = true;
+        image.hidden = false;
+        container.classList.add('has-image');
+    }, { once: true });
+    image.addEventListener('error', () => {
+        image.remove();
+        container.classList.remove('has-image');
+    }, { once: true });
     container.appendChild(image);
+    if (loadImmediately) image.src = src;
+    else image.dataset.src = src;
+}
+
+function observeVoiceAvatars() {
+    if (voiceAvatarObserver) {
+        voiceAvatarObserver.disconnect();
+        voiceAvatarObserver = null;
+    }
+    const grid = $('voice-browser-grid');
+    if (!grid) return;
+    const lazyImages = [...grid.querySelectorAll('img[data-src]')];
+    if (!lazyImages.length) return;
+
+    const activate = image => {
+        const src = image.dataset.src;
+        if (!src) return;
+        image.hidden = true;
+        image.loading = 'eager';
+        image.src = src;
+        delete image.dataset.src;
+    };
+    if (!('IntersectionObserver' in window)) {
+        lazyImages.forEach(activate);
+        return;
+    }
+    voiceAvatarObserver = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            activate(entry.target);
+            voiceAvatarObserver?.unobserve(entry.target);
+        });
+    }, { root: grid, rootMargin: '120px 0px' });
+    lazyImages.forEach(image => voiceAvatarObserver.observe(image));
 }
 
 function getRecentVoiceKeys() {
@@ -700,8 +746,12 @@ function renderVoiceCards() {
     const query = String($('voice-search-input')?.value || '').trim().toLocaleLowerCase('zh-CN');
     const selectedKey = activeVoiceKeyForRole();
     const matches = voiceCatalog.filter(voice => voiceMatchesFilter(voice, activeVoiceFilter) && (!query || voiceSearchText(voice).includes(query)));
+    if (voiceAvatarObserver) {
+        voiceAvatarObserver.disconnect();
+        voiceAvatarObserver = null;
+    }
     grid.replaceChildren();
-    matches.forEach(voice => {
+    matches.forEach((voice, index) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = `voice-card${voice.key === selectedKey ? ' is-selected' : ''}`;
@@ -710,7 +760,9 @@ function renderVoiceCards() {
         button.setAttribute('aria-selected', voice.key === selectedKey ? 'true' : 'false');
         const avatar = document.createElement('span');
         avatar.className = 'voice-avatar';
-        renderVoiceAvatar(avatar, voice);
+        // 首屏卡片直接加载，滚动到后续音色时再按可见区域加载，避免
+        // 387 个音色同时请求头像而又保证当前列表不会只显示首字母。
+        renderVoiceAvatar(avatar, voice, false, index < 20);
         const copy = document.createElement('span');
         copy.className = 'voice-card-copy';
         const name = document.createElement('strong');
@@ -727,6 +779,7 @@ function renderVoiceCards() {
         button.append(avatar, copy);
         grid.appendChild(button);
     });
+    observeVoiceAvatars();
     empty.hidden = matches.length > 0;
 }
 

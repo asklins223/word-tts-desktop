@@ -1602,15 +1602,10 @@ async def ensure_session(voice_key="amanda"):
     if not is_available():
         raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
 
-    if _session is not None:
-        if _session_is_healthy(_session):
-            return _session
-        _log("[xunfei] 检测到已有会话已失效，将丢弃并重新创建")
-        _discard_session_unsafe()
-
     import asyncio
 
     def _locked_create():
+        global _session
         with _session_lock:
             if _session is not None:
                 if _session_is_healthy(_session):
@@ -1625,10 +1620,15 @@ async def ensure_session(voice_key="amanda"):
                 except Exception:
                     pass
                 raise
+            # 必须在线程内写入全局会话。否则两个 asyncio 任务同时首次
+            # 调用 ensure_session 时，第二个任务可能在主事件循环中看见
+            # 仍为空，再创建第二个 Playwright Sync 会话。
+            _session = session
             return session
 
-    _session = await asyncio.to_thread(_locked_create)
-    return _session
+    # Playwright Sync API 的所有 page/context 操作（包括健康检查）都必须
+    # 留在同一个工作线程，不能在 FastAPI/asyncio 事件循环线程调用。
+    return await asyncio.to_thread(_locked_create)
 
 
 async def synth_xunfei(
@@ -1700,8 +1700,9 @@ async def close_session():
     global _session
     import asyncio
 
-    old = _session
-    _session = None
+    with _session_lock:
+        old = _session
+        _session = None
     if old is not None:
         try:
             await asyncio.to_thread(old.close)
