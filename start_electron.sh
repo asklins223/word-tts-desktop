@@ -93,7 +93,7 @@ python3 -c "import fastapi, uvicorn" 2>/dev/null || {
     pip3 install fastapi uvicorn
 }
 python3 -c "import playwright" 2>/dev/null || {
-    echo "  安装 TTSMaker 依赖 (Playwright)..."
+    echo "  安装讯飞配音依赖 (Playwright)..."
     pip3 install playwright greenlet pyee
 }
 # 开发模式下需要 Chromium 浏览器（打包后内置，开发时需手动安装）

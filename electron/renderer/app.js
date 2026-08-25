@@ -30,6 +30,20 @@ let activeResultContext = null;  // 当前交付页对应当前任务或历史�
 let latestCurrentResultEvent = null; // 从历史详情返回时恢复当前任务的交付页
 let currentSession = null;       // { session_id, source_filename, file_path, parse_results }
 let currentConfig = null;        // API 返回的配置
+let voiceCatalog = [
+    { key: 'amanda', name: 'Amanda', gender: 'female', gender_label: '女声', language: ['英语'], tags: ['英语'], categories: ['女声', '英语'] },
+    { key: 'george', name: 'George', gender: 'male', gender_label: '男声', language: ['英语'], tags: ['英语'], categories: ['男声', '英语'] },
+];
+let voiceFilterOptions = [];
+let activeVoiceFilter = 'all';
+let activeVoiceRole = '__default_female__';
+let voiceRoles = [];
+let roleVoiceMap = {};
+let voiceParamConfigs = {};
+let selectedDefaultFemaleVoice = 'amanda';
+let selectedDefaultMaleVoice = 'george';
+let voicePreviewAudio = null;
+const VOICE_RECENT_STORAGE_KEY = 'wordtts_recent_xunfei_voices_v1';
 let eventSource = null;          // SSE 连接
 let sseReconnectTimer = null;    // SSE 延迟重连计时器
 let sseStableTimer = null;       // 连接稳定后重置累计重试次数
@@ -74,8 +88,9 @@ let pendingCleanupSessionId = null; // 未确认清理完成前禁止创建同�
 // 配置预设管理 (localStorage 持久化)
 // ============================================================================
 
-const PRESET_STORAGE_KEY = 'wordtts_presets_v1';
-const CURRENT_CONFIG_STORAGE_KEY = 'wordtts_current_config_v1';
+// 讯飞参数与旧版倍率/音色配置不兼容，使用新存储命名空间避免旧值被误套用。
+const PRESET_STORAGE_KEY = 'wordtts_presets_xunfei_v3';
+const CURRENT_CONFIG_STORAGE_KEY = 'wordtts_current_config_xunfei_v3';
 
 /**
  * 保存尚未创建为预设的当前配置。Windows 渲染进程或页面意外重载后，
@@ -98,7 +113,7 @@ function loadCurrentConfig() {
         if (!raw) return null;
         const config = JSON.parse(raw);
         return config && typeof config === 'object' && !Array.isArray(config)
-            ? config
+            ? normalizeClientConfig(config)
             : null;
     } catch (e) {
         console.error('读取当前配置失败:', e);
@@ -118,7 +133,10 @@ function loadPresets() {
         const raw = localStorage.getItem(PRESET_STORAGE_KEY);
         if (!raw) return [];
         const arr = JSON.parse(raw);
-        return Array.isArray(arr) ? arr : [];
+        return Array.isArray(arr)
+            ? arr.filter(p => p && typeof p === 'object' && p.id && p.name)
+                .map(p => ({ ...p, config: normalizeClientConfig(p.config) }))
+            : [];
     } catch (e) {
         console.error('读取预设失败:', e);
         return [];
@@ -177,9 +195,9 @@ function bindNativeAppNotices() {
 function presetSummary(config) {
     if (!config) return '配置数据缺失';
     const parts = [];
-    parts.push(`语速 ${config.rate ?? 1.0}x`);
-    parts.push(`音量 ${Math.round((config.volume ?? 1) * 100)}%`);
-    parts.push(`音调 ${config.pitch ?? 1}x`);
+    parts.push(`语速 ${clampParamValue(config.rate)}`);
+    parts.push(`音量 ${clampParamValue(config.volume)}`);
+    parts.push(`音调 ${clampParamValue(config.pitch)}`);
     parts.push((config.format || 'mp3').toUpperCase());
     return parts.join(' · ');
 }
@@ -254,12 +272,540 @@ function renderStep2PresetSelect() {
     window.WordTTSUI?.syncSelect(select);
 }
 
+/** 讯飞参数滑块（0-100）：range 与 number 双向联动。 */
+function clampParamValue(v) {
+    if (v === null || v === undefined || v === '') return 50;
+    const n = Math.round(Number(v));
+    if (Number.isNaN(n)) return 50;
+    return Math.min(100, Math.max(0, n));
+}
+
+function normalizeVoiceKey(value, fallback = '') {
+    const key = String(value ?? '').trim();
+    return key ? key.slice(0, 160) : fallback;
+}
+
+function normalizeRoleKeyClient(value) {
+    return String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('zh-CN').slice(0, 80);
+}
+
+function normalizeVoiceParams(raw, fallback = { rate: 50, volume: 50, pitch: 50 }) {
+    const values = raw && typeof raw === 'object' ? raw : {};
+    return {
+        rate: clampParamValue(values.rate ?? fallback.rate),
+        volume: clampParamValue(values.volume ?? fallback.volume),
+        pitch: clampParamValue(values.pitch ?? fallback.pitch),
+    };
+}
+
+function normalizeClientConfig(config = {}) {
+    const raw = config && typeof config === 'object' ? config : {};
+    const formats = ['mp3', 'ogg', 'aac', 'opus', 'wav'];
+    const qualities = [
+        '48 kbps（低）',
+        '128 kbps（标准）',
+        '192 kbps（高）',
+        '320 kbps（极高）',
+        '无损（仅 wav 生效）',
+    ];
+    const baseParams = normalizeVoiceParams(raw);
+    const defaultFemaleVoice = normalizeVoiceKey(
+        raw.default_female_voice || currentConfig?.default_female_voice,
+        'amanda',
+    );
+    const defaultMaleVoice = normalizeVoiceKey(
+        raw.default_male_voice || currentConfig?.default_male_voice,
+        'george',
+    );
+    const normalizedVoiceConfigs = {};
+    const rawVoiceConfigs = raw.voice_configs && typeof raw.voice_configs === 'object'
+        ? raw.voice_configs
+        : {};
+    Object.entries(rawVoiceConfigs).slice(0, 512).forEach(([key, value]) => {
+        const normalizedKey = normalizeVoiceKey(key);
+        if (normalizedKey) normalizedVoiceConfigs[normalizedKey] = normalizeVoiceParams(value, baseParams);
+    });
+    if (!normalizedVoiceConfigs[defaultFemaleVoice]) normalizedVoiceConfigs[defaultFemaleVoice] = { ...baseParams };
+    if (!normalizedVoiceConfigs[defaultMaleVoice]) normalizedVoiceConfigs[defaultMaleVoice] = { ...baseParams };
+
+    const normalizedRoleVoices = {};
+    const rawRoleVoices = raw.role_voices && typeof raw.role_voices === 'object'
+        ? raw.role_voices
+        : {};
+    Object.entries(rawRoleVoices).slice(0, 128).forEach(([role, key]) => {
+        const roleKey = normalizeRoleKeyClient(role);
+        const voiceKey = normalizeVoiceKey(key);
+        if (roleKey && voiceKey) normalizedRoleVoices[roleKey] = voiceKey;
+    });
+
+    return {
+        rate: baseParams.rate,
+        volume: baseParams.volume,
+        pitch: baseParams.pitch,
+        format: formats.includes(raw.format) ? raw.format : 'mp3',
+        quality: qualities.includes(raw.quality) ? raw.quality : '128 kbps（标准）',
+        preview: Boolean(raw.preview),
+        default_female_voice: defaultFemaleVoice,
+        default_male_voice: defaultMaleVoice,
+        voice_configs: normalizedVoiceConfigs,
+        role_voices: normalizedRoleVoices,
+    };
+}
+
+function normalizeVoiceEntry(raw) {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    const key = normalizeVoiceKey(item.key || item.voice_key || item.id);
+    const name = String(item.name || item.speakerName || item.speaker_name || key || '未命名音色').trim();
+    const gender = String(item.gender || '').toLowerCase();
+    const genderLabel = item.gender_label || (gender === 'female' ? '女声' : gender === 'male' ? '男声' : '音色');
+    const toList = value => Array.isArray(value)
+        ? value.map(entry => String(entry || '').trim()).filter(Boolean)
+        : String(value || '').split(/[、,，|/]/).map(entry => entry.trim()).filter(Boolean);
+    const language = toList(item.language || item.languages);
+    const tags = toList(item.tags);
+    const categories = [...new Set([...toList(item.categories), ...language, ...tags, genderLabel])].slice(0, 24);
+    return {
+        ...item,
+        key: key || `name:${name.toLocaleLowerCase('zh-CN')}`,
+        name,
+        gender: gender || 'unknown',
+        gender_label: genderLabel,
+        language,
+        tags,
+        categories,
+        img_url: String(item.img_url || item.imgUrl || '').trim(),
+        audio_url: String(item.audio_url || item.audioUrl || '').trim(),
+    };
+}
+
+function getVoiceEntry(key) {
+    const normalizedKey = normalizeVoiceKey(key);
+    return voiceCatalog.find(voice => voice.key === normalizedKey)
+        || normalizeVoiceEntry({ key: normalizedKey, name: normalizedKey || '未选择音色' });
+}
+
+function voiceDisplayName(key) {
+    return getVoiceEntry(key).name;
+}
+
+function getVoiceInitials(name) {
+    const value = String(name || '?').trim();
+    const ascii = value.match(/[A-Za-z0-9]/g);
+    if (ascii?.length) return ascii.slice(0, 2).join('').toUpperCase();
+    return value.slice(0, 1) || '?';
+}
+
+function renderVoiceAvatar(container, voice, large = false) {
+    if (!container) return;
+    container.replaceChildren();
+    container.classList.toggle('voice-avatar-large', large);
+    const fallback = document.createElement('span');
+    fallback.textContent = getVoiceInitials(voice?.name);
+    container.appendChild(fallback);
+    const src = voice?.img_url;
+    if (!src) return;
+    const image = document.createElement('img');
+    image.alt = '';
+    image.loading = 'lazy';
+    image.src = src;
+    image.addEventListener('error', () => image.remove(), { once: true });
+    container.appendChild(image);
+}
+
+function getRecentVoiceKeys() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(VOICE_RECENT_STORAGE_KEY) || '[]');
+        return Array.isArray(raw) ? raw.map(key => normalizeVoiceKey(key)).filter(Boolean).slice(0, 12) : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function rememberVoiceUse(key) {
+    const normalizedKey = normalizeVoiceKey(key);
+    if (!normalizedKey) return;
+    const recent = [normalizedKey, ...getRecentVoiceKeys().filter(item => item !== normalizedKey)].slice(0, 12);
+    try {
+        localStorage.setItem(VOICE_RECENT_STORAGE_KEY, JSON.stringify(recent));
+    } catch (_) {
+        // localStorage 不可用时不影响当前音色选择。
+    }
+}
+
+function setVoiceCatalog(entries, filters = []) {
+    const normalized = Array.isArray(entries) ? entries.map(normalizeVoiceEntry) : [];
+    const byKey = new Map();
+    [...normalized, ...voiceCatalog].forEach(voice => {
+        if (voice?.key && !byKey.has(voice.key)) byKey.set(voice.key, voice);
+    });
+    voiceCatalog = [...byKey.values()];
+    const filterMap = new Map([['all', { key: 'all', label: '全部音色' }], ['recent', { key: 'recent', label: '最近使用' }]]);
+    if (Array.isArray(filters)) {
+        filters.forEach(filter => {
+            const key = String(filter?.key || '').trim();
+            const label = String(filter?.label || '').trim();
+            if (key && label && key !== 'all') filterMap.set(key, { key, label, count: filter.count });
+        });
+    }
+    if (!filterMap.has('female')) filterMap.set('female', { key: 'female', label: '女声' });
+    if (!filterMap.has('male')) filterMap.set('male', { key: 'male', label: '男声' });
+    voiceFilterOptions = [...filterMap.values()];
+}
+
+function roleLooksLikeLabel(label) {
+    const value = String(label || '').trim();
+    return Boolean(value)
+        && value.length <= 48
+        && value.split(/\s+/).length <= 4
+        && !/^\d/.test(value)
+        && !value.includes('://')
+        && !/[\\/.,!?。！？；;，,]/.test(value);
+}
+
+function inferRoleVoice(label) {
+    const value = String(label || '').trim().toLocaleLowerCase('en-US');
+    if (/^(mr|mr\.|sir|男|先生)\b/.test(value)) return selectedDefaultMaleVoice;
+    return selectedDefaultFemaleVoice;
+}
+
 /**
- * 安全设置 <select> 的值。
+ * 从后端已经解析完成的完整文档结果中提取角色名。
  *
- * JavaScript 中 String(1.0) === "1"，但 <option value="1.0"> 的值是 "1.0"，
- * 直接赋值会匹配失败。此函数先尝试精确匹配，再回退到数值匹配。
+ * 一个文档可能包含多个题型、多个录音稿条目；不能只看第一条 item。
+ * 这里只识别录音稿行首的「角色名: 内容」形式，W/M 标记交给音频解析器，
+ * 避免把普通正文中的冒号误当成可配置角色。新版 7 上规则会把一个角色
+ * 单独拆成一个音频，因此解析器同时提供可信的 item.role 元数据。
  */
+function extractParsedRoleLabels(parseResults) {
+    const labels = [];
+    const seen = new Set();
+    if (!Array.isArray(parseResults)) return labels;
+
+    parseResults.forEach(result => {
+        if (!Array.isArray(result?.items)) return;
+        result.items.forEach(item => {
+            const explicitRoles = [];
+            if (typeof item?.role === 'string' && item.role.trim()) {
+                explicitRoles.push(item.role.trim());
+            }
+            if (Array.isArray(item?.roles)) {
+                item.roles.forEach(role => {
+                    if (typeof role === 'string' && role.trim()) explicitRoles.push(role.trim());
+                });
+            }
+            explicitRoles.forEach(label => {
+                if (!roleLooksLikeLabel(label)) return;
+                const key = normalizeRoleKeyClient(label);
+                if (!key || seen.has(key)) return;
+                seen.add(key);
+                labels.push({ key, label });
+            });
+
+            const lines = String(item?.text || '').split(/\r?\n/);
+            const itemLabels = [];
+            const itemSeen = new Set();
+            lines.forEach(line => {
+                const value = line.trim();
+                if (!value || /^[WwMm]\s*[:：]/.test(value) || /^\([WwMm]\)/.test(value)) return;
+                const match = /^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$/.exec(value);
+                const label = match?.[1]?.trim() || '';
+                if (!match || !roleLooksLikeLabel(label)) return;
+                const key = normalizeRoleKeyClient(label);
+                if (!key || itemSeen.has(key)) return;
+                itemSeen.add(key);
+                itemLabels.push({ key, label });
+            });
+            // 没有可信 role 元数据时，至少出现两个不同的行首角色名，
+            // 才把该 item 视为对话题；单独一行的普通说明不进入角色配置。
+            if (itemLabels.length < 2) return;
+            itemLabels.forEach(role => {
+                if (seen.has(role.key)) return;
+                seen.add(role.key);
+                labels.push(role);
+            });
+        });
+    });
+    return labels;
+}
+
+function discoverVoiceRoles(parseResults = currentSession?.parse_results) {
+    const roles = [
+        { key: '__default_female__', label: '默认女声', kind: 'default-female' },
+        { key: '__default_male__', label: '默认男声', kind: 'default-male' },
+    ];
+    const parsedRoles = extractParsedRoleLabels(parseResults);
+    const currentRoleKeys = new Set(parsedRoles.map(role => role.key));
+
+    // 角色映射属于当前文档；切换文档后不把上一份文档的角色配置继续提交。
+    roleVoiceMap = Object.fromEntries(
+        Object.entries(roleVoiceMap).filter(([key]) => currentRoleKeys.has(key)),
+    );
+    parsedRoles.forEach(({ key, label }) => {
+        if (!roleVoiceMap[key]) roleVoiceMap[key] = inferRoleVoice(label);
+        roles.push({ key, label, kind: 'role' });
+    });
+    voiceRoles = roles;
+    if (!roles.some(role => role.key === activeVoiceRole)) activeVoiceRole = roles[0].key;
+    const roleCount = $('voice-role-count');
+    if (roleCount) roleCount.textContent = parsedRoles.length > 0
+        ? `${parsedRoles.length} 个角色`
+        : '2 个默认角色';
+    return roles;
+}
+
+function activeVoiceKeyForRole(role = voiceRoles.find(item => item.key === activeVoiceRole)) {
+    if (role?.kind === 'default-male') return selectedDefaultMaleVoice;
+    if (role?.kind === 'default-female') return selectedDefaultFemaleVoice;
+    return roleVoiceMap[role?.key || activeVoiceRole] || selectedDefaultFemaleVoice;
+}
+
+function activeVoiceParams() {
+    const key = activeVoiceKeyForRole();
+    if (!voiceParamConfigs[key]) voiceParamConfigs[key] = { rate: 50, volume: 50, pitch: 50 };
+    return voiceParamConfigs[key];
+}
+
+function renderRoleList() {
+    const container = $('voice-role-list');
+    if (!container) return;
+    container.replaceChildren();
+    voiceRoles.forEach(role => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `voice-role-item${role.key === activeVoiceRole ? ' is-active' : ''}${role.kind === 'default-male' ? ' is-male' : ''}`;
+        button.dataset.roleKey = role.key;
+        button.setAttribute('role', 'option');
+        button.setAttribute('aria-selected', role.key === activeVoiceRole ? 'true' : 'false');
+
+        const mark = document.createElement('span');
+        mark.className = 'voice-role-mark';
+        mark.textContent = role.kind === 'default-female' ? '女' : role.kind === 'default-male' ? '男' : getVoiceInitials(role.label);
+        const copy = document.createElement('span');
+        copy.className = 'voice-role-copy';
+        const name = document.createElement('strong');
+        name.textContent = role.label;
+        const voice = document.createElement('small');
+        voice.textContent = voiceDisplayName(activeVoiceKeyForRole(role));
+        copy.append(name, voice);
+        button.append(mark, copy);
+        container.appendChild(button);
+    });
+}
+
+function voiceSearchText(voice) {
+    return [voice.name, voice.gender_label, ...(voice.language || []), ...(voice.tags || []), ...(voice.categories || [])]
+        .join(' ').toLocaleLowerCase('zh-CN');
+}
+
+function voiceMatchesFilter(voice, filterKey) {
+    if (!filterKey || filterKey === 'all') return true;
+    if (filterKey === 'recent') return getRecentVoiceKeys().includes(voice.key);
+    if (filterKey === 'female' || filterKey === 'male') return voice.gender === filterKey;
+    const label = filterKey.startsWith('tag:') ? filterKey.slice(4) : filterKey;
+    return [...(voice.categories || []), ...(voice.tags || []), ...(voice.language || [])].includes(label);
+}
+
+function voiceTags(voice, limit = 2) {
+    const values = [voice.gender_label, ...(voice.tags || []), ...(voice.language || []), ...(voice.categories || [])];
+    return [...new Set(values.filter(Boolean))].slice(0, limit);
+}
+
+function renderVoiceFilters() {
+    const container = $('voice-filter-row');
+    if (!container) return;
+    container.replaceChildren();
+    voiceFilterOptions.forEach(filter => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `voice-filter-chip${filter.key === activeVoiceFilter ? ' is-active' : ''}`;
+        button.dataset.voiceFilter = filter.key;
+        button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', filter.key === activeVoiceFilter ? 'true' : 'false');
+        button.textContent = filter.label;
+        container.appendChild(button);
+    });
+}
+
+function renderVoiceCards() {
+    const grid = $('voice-browser-grid');
+    const empty = $('voice-browser-empty');
+    if (!grid || !empty) return;
+    const query = String($('voice-search-input')?.value || '').trim().toLocaleLowerCase('zh-CN');
+    const selectedKey = activeVoiceKeyForRole();
+    const matches = voiceCatalog.filter(voice => voiceMatchesFilter(voice, activeVoiceFilter) && (!query || voiceSearchText(voice).includes(query)));
+    grid.replaceChildren();
+    matches.forEach(voice => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `voice-card${voice.key === selectedKey ? ' is-selected' : ''}`;
+        button.dataset.voiceKey = voice.key;
+        button.setAttribute('role', 'option');
+        button.setAttribute('aria-selected', voice.key === selectedKey ? 'true' : 'false');
+        const avatar = document.createElement('span');
+        avatar.className = 'voice-avatar';
+        renderVoiceAvatar(avatar, voice);
+        const copy = document.createElement('span');
+        copy.className = 'voice-card-copy';
+        const name = document.createElement('strong');
+        name.textContent = voice.name;
+        const tags = document.createElement('span');
+        tags.className = 'voice-card-tags';
+        voiceTags(voice).forEach((tag, index) => {
+            const tagEl = document.createElement('span');
+            if (index === 0) tagEl.classList.add('is-gender');
+            tagEl.textContent = tag;
+            tags.appendChild(tagEl);
+        });
+        copy.append(name, tags);
+        button.append(avatar, copy);
+        grid.appendChild(button);
+    });
+    empty.hidden = matches.length > 0;
+}
+
+function renderRecentVoiceList() {
+    const list = $('voice-recent-list');
+    const empty = $('voice-recent-empty');
+    const count = $('voice-recent-count');
+    if (!list || !empty || !count) return;
+    const recent = getRecentVoiceKeys();
+    count.textContent = String(recent.length);
+    list.replaceChildren();
+    recent.slice(0, 6).forEach(key => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'voice-recent-chip';
+        button.dataset.recentVoiceKey = key;
+        button.textContent = voiceDisplayName(key);
+        list.appendChild(button);
+    });
+    empty.hidden = recent.length > 0;
+}
+
+function setVoiceParamInputs(params) {
+    ['rate', 'pitch', 'volume'].forEach(param => {
+        const value = clampParamValue(params?.[param]);
+        const range = $(`voice-${param}`);
+        const number = $(`voice-${param}-number`);
+        if (range) range.value = String(value);
+        if (number) number.value = String(value);
+    });
+}
+
+function renderVoiceDetails() {
+    const role = voiceRoles.find(item => item.key === activeVoiceRole);
+    const voice = getVoiceEntry(activeVoiceKeyForRole(role));
+    const detailRole = $('voice-detail-role');
+    const detailName = $('voice-detail-name');
+    const detailMeta = $('voice-detail-meta');
+    if (detailRole) detailRole.textContent = role?.label || '当前角色';
+    if (detailName) detailName.textContent = voice.name;
+    if (detailMeta) detailMeta.textContent = [...(voice.language || []), voice.gender_label].filter(Boolean).join(' · ') || voice.gender_label;
+    renderVoiceAvatar($('voice-detail-avatar'), voice, true);
+    setVoiceParamInputs(activeVoiceParams());
+    const previewButton = $('voice-preview-btn');
+    if (previewButton) previewButton.disabled = !voice.audio_url;
+}
+
+function renderVoiceWorkspace() {
+    discoverVoiceRoles();
+    renderRoleList();
+    renderVoiceFilters();
+    renderVoiceCards();
+    renderVoiceDetails();
+    renderRecentVoiceList();
+}
+
+function selectVoiceForActiveRole(key) {
+    const normalizedKey = normalizeVoiceKey(key);
+    if (!normalizedKey) return;
+    const role = voiceRoles.find(item => item.key === activeVoiceRole);
+    if (role?.kind === 'default-male') selectedDefaultMaleVoice = normalizedKey;
+    else if (role?.kind === 'default-female') selectedDefaultFemaleVoice = normalizedKey;
+    else roleVoiceMap[activeVoiceRole] = normalizedKey;
+    if (!voiceParamConfigs[normalizedKey]) voiceParamConfigs[normalizedKey] = { rate: 50, volume: 50, pitch: 50 };
+    rememberVoiceUse(normalizedKey);
+    renderVoiceWorkspace();
+    updateConfigSummary();
+    rememberCurrentConfig();
+}
+
+function updateActiveVoiceParam(param, value) {
+    const params = activeVoiceParams();
+    params[param] = clampParamValue(value);
+    setVoiceParamInputs(params);
+    updateConfigSummary();
+    rememberCurrentConfig();
+}
+
+function stopVoicePreview() {
+    if (voicePreviewAudio) {
+        voicePreviewAudio.pause();
+        voicePreviewAudio.currentTime = 0;
+        voicePreviewAudio = null;
+    }
+    const button = $('voice-preview-btn');
+    if (button) button.classList.remove('is-playing');
+}
+
+function toggleVoicePreview() {
+    const voice = getVoiceEntry(activeVoiceKeyForRole());
+    if (!voice.audio_url) return;
+    if (voicePreviewAudio) {
+        stopVoicePreview();
+        return;
+    }
+    const audio = new Audio(voice.audio_url);
+    voicePreviewAudio = audio;
+    const button = $('voice-preview-btn');
+    if (button) button.classList.add('is-playing');
+    audio.addEventListener('ended', stopVoicePreview, { once: true });
+    audio.addEventListener('error', () => {
+        stopVoicePreview();
+        showToast('当前音色试听暂时不可用', 'warning');
+    }, { once: true });
+    audio.play().catch(() => {
+        stopVoicePreview();
+        showToast('当前音色试听暂时不可用', 'warning');
+    });
+}
+
+function bindVoiceWorkspaceEvents() {
+    $('voice-search-input')?.addEventListener('input', renderVoiceCards);
+    $('voice-filter-row')?.addEventListener('click', event => {
+        const button = event.target.closest('[data-voice-filter]');
+        if (!button) return;
+        activeVoiceFilter = button.dataset.voiceFilter || 'all';
+        renderVoiceFilters();
+        renderVoiceCards();
+    });
+    $('voice-role-list')?.addEventListener('click', event => {
+        const button = event.target.closest('[data-role-key]');
+        if (!button) return;
+        activeVoiceRole = button.dataset.roleKey || '__default_female__';
+        renderVoiceWorkspace();
+    });
+    $('voice-browser-grid')?.addEventListener('click', event => {
+        const button = event.target.closest('[data-voice-key]');
+        if (button) selectVoiceForActiveRole(button.dataset.voiceKey);
+    });
+    $('voice-recent-list')?.addEventListener('click', event => {
+        const button = event.target.closest('[data-recent-voice-key]');
+        if (button) selectVoiceForActiveRole(button.dataset.recentVoiceKey);
+    });
+    $('voice-preview-btn')?.addEventListener('click', toggleVoicePreview);
+    ['rate', 'pitch', 'volume'].forEach(param => {
+        const range = $(`voice-${param}`);
+        const number = $(`voice-${param}-number`);
+        range?.addEventListener('input', () => updateActiveVoiceParam(param, range.value));
+        number?.addEventListener('input', () => updateActiveVoiceParam(param, number.value));
+        number?.addEventListener('blur', () => updateActiveVoiceParam(param, number.value));
+    });
+    $$('[data-voice-param-reset]').forEach(button => {
+        button.addEventListener('click', () => updateActiveVoiceParam(button.dataset.voiceParamReset, 50));
+    });
+}
+
 function setSelectValue(selectEl, value, defaultValue) {
     const str = String(value ?? defaultValue);
     // 精确匹配
@@ -289,14 +835,19 @@ function setSelectValue(selectEl, value, defaultValue) {
  */
 function applyConfigToForm(config) {
     if (!config) return;
-    setSelectValue($('rate'), config.rate, 1.0);
-    setSelectValue($('volume'), config.volume, 1);
-    setSelectValue($('pitch'), config.pitch, 1);
-    setSelectValue($('pause'), config.pause, 0);
-    setSelectValue($('format'), config.format, 'mp3');
-    setSelectValue($('quality'), config.quality, '128 kbps（标准）');
-    $('proxy').value = config.proxy ?? '';
-    $('preview').checked = !!config.preview;
+    const normalized = normalizeClientConfig(config);
+    selectedDefaultFemaleVoice = normalized.default_female_voice;
+    selectedDefaultMaleVoice = normalized.default_male_voice;
+    voiceParamConfigs = Object.fromEntries(
+        Object.entries(normalized.voice_configs || {}).map(([key, value]) => [key, { ...value }]),
+    );
+    roleVoiceMap = { ...(normalized.role_voices || {}) };
+    if (!voiceParamConfigs[selectedDefaultFemaleVoice]) voiceParamConfigs[selectedDefaultFemaleVoice] = { rate: 50, volume: 50, pitch: 50 };
+    if (!voiceParamConfigs[selectedDefaultMaleVoice]) voiceParamConfigs[selectedDefaultMaleVoice] = { rate: 50, volume: 50, pitch: 50 };
+    renderVoiceWorkspace();
+    setSelectValue($('format'), normalized.format, 'mp3');
+    setSelectValue($('quality'), normalized.quality, '128 kbps（标准）');
+    $('preview').checked = normalized.preview;
     enforceOutputCompatibility($('format'));
     rememberCurrentConfig();
 }
@@ -404,7 +955,7 @@ async function startProcessing(useDefaults, presetConfig) {
     if (isGenerating) return;
 
     const session = currentSession;
-    const config = presetConfig || collectConfig(useDefaults);
+    const config = normalizeClientConfig(presetConfig || collectConfig(useDefaults));
     const sourceTotal = summarizeParseResults(session.parse_results).total;
     const isPreviewScope = Boolean(config.preview && sourceTotal > 3);
     const generationTotal = isPreviewScope ? Math.min(sourceTotal, 3) : sourceTotal;
@@ -609,30 +1160,18 @@ function setUploadFeedback(state = '', message = '') {
     }
 }
 
-function selectedOptionLabel(id) {
-    const select = $(id);
-    return select && select.selectedOptions.length
-        ? select.selectedOptions[0].textContent.trim()
-        : '';
-}
-
 function updateConfigSummary() {
-    const mapping = [
-        ['summary-rate', 'rate'],
-        ['summary-volume', 'volume'],
-        ['summary-pitch', 'pitch'],
-        ['summary-pause', 'pause'],
-    ];
-    mapping.forEach(([targetId, selectId]) => {
-        const target = $(targetId);
-        const label = selectedOptionLabel(selectId);
-        if (target && label) target.textContent = label;
-    });
+    const paramsTarget = $('summary-params');
+    if (paramsTarget) {
+        const params = activeVoiceParams();
+        paramsTarget.textContent = `${params.rate} / ${params.pitch} / ${params.volume}`;
+    }
 
-    // 音色摘要：题型自动分配
+    // 音色摘要：显示当前默认男女声，角色音色在音色工作区逐个配置。
     const voiceEl = $('summary-voice');
     if (voiceEl) {
-        voiceEl.textContent = '词汇 Libby · 其他 Jenny/Remy';
+        const roleCount = Math.max(0, voiceRoles.length - 2);
+        voiceEl.textContent = `女 ${voiceDisplayName(selectedDefaultFemaleVoice)} · 男 ${voiceDisplayName(selectedDefaultMaleVoice)}${roleCount ? ` · ${roleCount} 个角色` : ''}`;
     }
 
     const output = $('summary-output');
@@ -922,6 +1461,13 @@ async function connectService(showToastOnStart = false) {
         return false;
     }
 
+    if (currentConfig?.tts_engine === 'xunfei' && currentConfig.xunfei_available === false) {
+        setServiceState('error', '讯飞配音依赖未就绪');
+        if (retryButton) retryButton.hidden = false;
+        showToast('讯飞配音依赖未就绪，请安装 Playwright 浏览器后重试');
+        return false;
+    }
+
     if (pendingCleanupSessionId) {
         setServiceState('', '正在确认任务清理');
         const cleanupConfirmed = await confirmPendingCleanup();
@@ -1060,13 +1606,7 @@ function bindEvents() {
     $('delete-preset-btn').addEventListener('click', handleDeletePreset);
 
     // Step 2: 配置
-    ['rate', 'volume', 'pitch', 'pause'].forEach(id => {
-        const el = $(id);
-        if (el) el.addEventListener('change', () => {
-            updateConfigSummary();
-            rememberCurrentConfig();
-        });
-    });
+    bindVoiceWorkspaceEvents();
     $('format').addEventListener('change', (e) => {
         enforceOutputCompatibility(e.currentTarget);
         rememberCurrentConfig();
@@ -1079,7 +1619,6 @@ function bindEvents() {
         updateConfigSummary();
         rememberCurrentConfig();
     });
-    $('proxy').addEventListener('input', rememberCurrentConfig);
     $('change-file-btn').addEventListener('click', requestRestart);
     $('back-to-upload-btn').addEventListener('click', requestRestart);
     $('retry-generation-btn').addEventListener('click', () => {
@@ -1139,13 +1678,6 @@ function bindEvents() {
     $('new-file-btn').addEventListener('click', requestRestart);
 }
 
-function bindSliderDisplay(slider, display, formatter) {
-    if (!slider || !display) return;
-    const update = () => { display.textContent = formatter(slider.value); };
-    slider.addEventListener('input', update);
-    update();
-}
-
 // ============================================================================
 // 配置加载
 // ============================================================================
@@ -1158,13 +1690,16 @@ async function loadConfig() {
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             currentConfig = await resp.json();
 
-            // 填充音色说明文本（只读展示）
-            const wordVoiceEl = $('word-voice-name');
-            const femaleVoiceEl = $('female-voice-name');
-            const maleVoiceEl = $('male-voice-name');
-            if (wordVoiceEl) wordVoiceEl.textContent = currentConfig.word_voice || 'en-GB-LibbyNeural';
-            if (femaleVoiceEl) femaleVoiceEl.textContent = currentConfig.female_voice || 'en-US-JennyNeural';
-            if (maleVoiceEl) maleVoiceEl.textContent = currentConfig.male_voice || 'fr-FR-RemyMultilingualNeural';
+            setVoiceCatalog(currentConfig.voices, currentConfig.voice_filters);
+            if (!voiceParamConfigs[selectedDefaultFemaleVoice]) {
+                selectedDefaultFemaleVoice = currentConfig.default_female_voice || selectedDefaultFemaleVoice;
+            }
+            if (!voiceParamConfigs[selectedDefaultMaleVoice]) {
+                selectedDefaultMaleVoice = currentConfig.default_male_voice || selectedDefaultMaleVoice;
+            }
+            if (!voiceParamConfigs[selectedDefaultFemaleVoice]) voiceParamConfigs[selectedDefaultFemaleVoice] = { rate: 50, volume: 50, pitch: 50 };
+            if (!voiceParamConfigs[selectedDefaultMaleVoice]) voiceParamConfigs[selectedDefaultMaleVoice] = { rate: 50, volume: 50, pitch: 50 };
+            renderVoiceWorkspace();
 
             // 刷新摘要中的音色显示
             updateConfigSummary();
@@ -1189,6 +1724,7 @@ async function loadConfig() {
 function goToStep(step) {
     currentView = 'workflow';
     currentStep = step;
+    if (step === 2 && currentSession) renderVoiceWorkspace();
 
     const historyNav = $('history-nav-btn');
     historyNav?.classList.remove('active');
@@ -1731,27 +2267,35 @@ async function uploadFile(file) {
 
 function collectConfig(useDefaults) {
     if (useDefaults) {
-        return {
-            rate: 1.0,
-            volume: 1,
-            pitch: 1,
-            pause: 0,
+        return normalizeClientConfig({
+            rate: 50,
+            volume: 50,
+            pitch: 50,
             format: 'mp3',
             quality: '128 kbps（标准）',
-            proxy: '',
             preview: false,
-        };
+            default_female_voice: currentConfig?.default_female_voice || 'amanda',
+            default_male_voice: currentConfig?.default_male_voice || 'george',
+            voice_configs: {
+                [currentConfig?.default_female_voice || 'amanda']: { rate: 50, volume: 50, pitch: 50 },
+                [currentConfig?.default_male_voice || 'george']: { rate: 50, volume: 50, pitch: 50 },
+            },
+            role_voices: {},
+        });
     }
-    return {
-        rate: parseFloat($('rate').value),
-        volume: parseFloat($('volume').value),
-        pitch: parseFloat($('pitch').value),
-        pause: parseInt($('pause').value),
+    const activeParams = activeVoiceParams();
+    return normalizeClientConfig({
+        rate: activeParams.rate,
+        volume: activeParams.volume,
+        pitch: activeParams.pitch,
         format: $('format').value,
         quality: $('quality').value,
-        proxy: $('proxy').value || '',
         preview: $('preview').checked,
-    };
+        default_female_voice: selectedDefaultFemaleVoice,
+        default_male_voice: selectedDefaultMaleVoice,
+        voice_configs: voiceParamConfigs,
+        role_voices: roleVoiceMap,
+    });
 }
 
 // ============================================================================

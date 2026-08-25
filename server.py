@@ -66,9 +66,19 @@ WORD_PARSER_DIR = os.path.join(RESOURCE_DIR, "word_parser")
 if WORD_PARSER_DIR not in sys.path:
     sys.path.insert(0, WORD_PARSER_DIR)
 
-EDGE_TTS_DIR = os.path.join(RESOURCE_DIR, "edge_tts")
-if EDGE_TTS_DIR not in sys.path:
-    sys.path.insert(0, EDGE_TTS_DIR)
+# Playwright 的 PyInstaller 运行时会在 frozen 进程中默认把浏览器目录
+# 解析到 playwright/driver/package/.local-browsers。Electron 打包流程为了
+# 保留 Chromium 的完整目录结构，会把浏览器复制到 _MEIPASS/playwright_browsers；
+# 在导入讯飞客户端之前显式指向这个可读资源目录，避免 Windows 或没有系统
+# Chrome 的环境启动讯飞浏览器时找不到 Chromium。
+if getattr(sys, "frozen", False):
+    _bundled_playwright_browsers = os.path.join(
+        RESOURCE_DIR, "playwright_browsers"
+    )
+    if os.path.isdir(_bundled_playwright_browsers):
+        os.environ.setdefault(
+            "PLAYWRIGHT_BROWSERS_PATH", _bundled_playwright_browsers
+        )
 
 # ============================================================================
 # 导入核心模块（复用 word_tts_app 的全部逻辑）
@@ -76,6 +86,7 @@ if EDGE_TTS_DIR not in sys.path:
 # word_tts_app 在 import 时会执行模块级代码（路径设置、ffmpeg 配置等），
 # 但不会启动 Gradio（有 __name__ == "__main__" 守卫）。
 import word_tts_app as core
+import xunfei_voice_catalog as _voice_catalog
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import (
@@ -128,12 +139,68 @@ class SessionState:
 _sessions: dict[str, SessionState] = {}
 MAX_SESSIONS = 20  # 最大并发会话数，防止内存泄漏
 MAX_HISTORY_RECORDS = 20
-PARSE_CACHE_VERSION = 4
+PARSE_CACHE_VERSION = 6
 SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
 HISTORY_MANIFEST_FILENAME = "history.json"
 HISTORY_SCHEMA_VERSION = 1
 _history_lock = threading.RLock()
+
+# 音色目录在应用进程第一次打开配置页时刷新一次；后续请求复用内存目录。
+# 远端接口失败时由 xunfei_voice_catalog 回退到本地 JSON 缓存。
+_voice_catalog_lock = threading.RLock()
+_voice_catalog_loaded = False
+_voice_catalog_live = False
+_voice_catalog_data: dict = {}
+
+# 讯飞客户端复用一个有头浏览器页面；页面内的选音色、调参数、输入文本和
+# 下载响应都不是可并发操作的。不同会话仍可并行解析/排队，但实际生成必须
+# 串行，否则一个任务可能改写另一个任务刚设置好的音色或参数。锁延迟到
+# 当前运行中的事件循环创建，避免模块导入时绑定到已关闭的临时事件循环。
+_xunfei_generation_lock: Optional[asyncio.Lock] = None
+_xunfei_generation_lock_loop = None
+_xunfei_generation_lock_guard = threading.Lock()
+
+
+def _get_xunfei_generation_lock() -> asyncio.Lock:
+    global _xunfei_generation_lock, _xunfei_generation_lock_loop
+    loop = asyncio.get_running_loop()
+    with _xunfei_generation_lock_guard:
+        if (
+            _xunfei_generation_lock is None
+            or _xunfei_generation_lock_loop is not loop
+        ):
+            _xunfei_generation_lock = asyncio.Lock()
+            _xunfei_generation_lock_loop = loop
+        return _xunfei_generation_lock
+
+
+def _load_voice_catalog_sync(force_refresh: bool = True) -> dict:
+    """加载并注册音色目录；调用方可在 asyncio.to_thread 中运行。"""
+    global _voice_catalog_loaded, _voice_catalog_live, _voice_catalog_data
+    # 成功拿到在线目录后，本次进程不再重复请求；如果首次请求失败而
+    # 回退到缓存/内置目录，则允许后续的 /api/config 重试在线刷新。
+    if _voice_catalog_loaded and (_voice_catalog_live or not force_refresh):
+        return _voice_catalog_data
+    with _voice_catalog_lock:
+        if _voice_catalog_loaded and (_voice_catalog_live or not force_refresh):
+            return _voice_catalog_data
+        if not _voice_catalog_loaded or force_refresh:
+            _voice_catalog_data = _voice_catalog.load_or_refresh_catalog(
+                BASE_DIR,
+                RESOURCE_DIR,
+                force_refresh=force_refresh,
+            )
+            _voice_catalog_loaded = True
+            _voice_catalog_live = (
+                (_voice_catalog_data.get("_meta") or {}).get("catalog_source")
+                == "live"
+            )
+            if core._xunfei is not None:
+                core._xunfei.register_voice_catalog(
+                    _voice_catalog_data.get("voices") or []
+                )
+    return _voice_catalog_data
 
 
 def session_output_dir(session_id: str) -> str:
@@ -564,7 +631,6 @@ def restore_persisted_progress(
         target_audio_dir = os.path.join(target_dir, "audio")
         clear_generated_outputs(target_dir)
         os.makedirs(target_audio_dir, exist_ok=True)
-        os.makedirs(os.path.join(target_dir, ".tmp"), exist_ok=True)
 
         valid = True
         for item in restored.get("items", []):
@@ -651,17 +717,29 @@ async def generate_audio_stream(
     filepath: str,
     config: dict,
 ):
+    """串行化讯飞浏览器任务，避免共享页面发生跨会话竞态。"""
+    async with _get_xunfei_generation_lock():
+        await _generate_audio_stream(session, source_filename, filepath, config)
+
+
+async def _generate_audio_stream(
+    session: SessionState,
+    source_filename: str,
+    filepath: str,
+    config: dict,
+):
     """
     异步生成音频，通过会话事件日志向所有 SSE 连接广播进度。
     复用 word_tts_app.py 中的所有核心函数。
     """
-    config = {
-        **config,
+    config = core.normalize_tts_config(config)
+    # 正常流程会先请求 /api/config；这里仍用缓存兜底注册任意音色，避免
+    # 直接调用生成接口时 catalog 尚未进入讯飞客户端注册表。
+    await asyncio.to_thread(_load_voice_catalog_sync, False)
+    config.update({
         "audio_algorithm_version": core.AUDIO_ALGORITHM_VERSION,
         "parser_version": core.PARSER_VERSION,
-    }
-    # finally 中需要读取该变量；必须在任何可能抛错的 I/O 之前初始化。
-    has_male_voice = False
+    })
     task_started_at = time.perf_counter()
     eta_started_at: Optional[float] = None
     eta_baseline_processed = 0
@@ -879,10 +957,7 @@ async def generate_audio_stream(
     try:
         session_dir = session.session_dir
         audio_dir = os.path.join(session_dir, "audio")
-        tmp_dir = os.path.join(session_dir, ".tmp")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         os.makedirs(audio_dir, exist_ok=True)
-        os.makedirs(tmp_dir, exist_ok=True)
 
         prepare_started_at = time.perf_counter()
         scope_label = "试听前 3 条" if config.get("preview") else "完整文档"
@@ -948,8 +1023,7 @@ async def generate_audio_stream(
             old_config = existing.get("config", {})
             config_changed = any(
                 old_config.get(k) != v for k, v in config.items()
-                if k != "proxy"
-            ) or old_config.get("proxy", "") != config.get("proxy", "")
+            )
 
             if config_changed:
                 reason = "配置已变更"
@@ -1063,7 +1137,6 @@ async def generate_audio_stream(
                 save_parse_cache, session_dir, parse_results, current_fingerprint
             )
             os.makedirs(audio_dir, exist_ok=True)
-            os.makedirs(tmp_dir, exist_ok=True)
 
             type_names = "、".join(r["doc_type"] for r in parse_results)
             progress = core.build_progress(source_filename, filepath, parse_results, config)
@@ -1140,17 +1213,16 @@ async def generate_audio_stream(
         core.save_progress(session_dir, progress)
 
         total = progress["total_items"]
-        rate = config.get("rate", 1.0)
-        volume = config.get("volume", 1)
-        pitch = config.get("pitch", 1)
-        pause = config.get("pause", 0)
-        proxy = config.get("proxy", "")
+        rate = config.get("rate", 50)
+        volume = config.get("volume", 50)
+        pitch = config.get("pitch", 50)
         fmt = config.get("format", "mp3")
         quality = config.get("quality", "128 kbps（标准）")
-        # 音色由题型自动决定，不再从前端读取
-        fv = core.FEMALE_VOICE
-        mv = core.MALE_VOICE
-        wv = core.WORD_VOICE
+        # 音色与参数均来自前端的独立配置；词汇/例句仍强制使用默认女声。
+        fv = config.get("default_female_voice") or core.FEMALE_VOICE
+        mv = config.get("default_male_voice") or core.MALE_VOICE
+        voice_configs = config.get("voice_configs") or {}
+        role_voices = config.get("role_voices") or {}
 
         log(
             "info",
@@ -1162,26 +1234,15 @@ async def generate_audio_stream(
             detail=f"待处理 {max(total - progress['completed'], 0)} 条 · {str(fmt).upper()} · {quality}",
             progress_snapshot=progress,
         )
-        if core._TTSMaker_AVAILABLE:
-            log(
-                "info",
-                "男声使用 TTSMaker 788 (Alfie) 生成，女声使用 edge-tts",
-                stage="prepare",
-                kind="notice",
-                key="engine:plan",
-                title="音色引擎已就绪",
-                detail="女声使用 edge-tts；检测到男声内容时使用 TTSMaker 788 Alfie",
-            )
-        else:
-            log(
-                "warn",
-                "TTSMaker 不可用，男声将使用 edge-tts (Remy) 生成",
-                stage="prepare",
-                kind="notice",
-                key="engine:plan",
-                title="男声引擎已自动切换",
-                detail="TTSMaker 当前不可用，本次男声内容将使用 edge-tts Remy，不影响任务继续",
-            )
+        log(
+            "info",
+            "全部音频使用讯飞配音生成（音色与参数按角色独立配置）",
+            stage="prepare",
+            kind="notice",
+            key="engine:plan",
+            title="音色引擎已就绪",
+            detail="统一使用讯飞配音引擎；W/M 或文本角色名分别使用所选音色，无标识默认女声",
+        )
 
         emit_stats(progress)
         emit_generation_status(progress)
@@ -1189,77 +1250,44 @@ async def generate_audio_stream(
             emit_cancelled_terminal("生成计划准备完成后已停止任务")
             return
 
-        # ---- 检查是否有男声数据，决定是否需要启动 TTSMaker ----
-        # 词汇题型（单词/例句）使用 WORD_VOICE 女声，不参与男声检测
-        has_male_voice = False
-        if core._TTSMaker_AVAILABLE:
-            for item in progress["items"]:
-                if item["status"] == "done":
-                    continue
-                raw_item = item.get("raw_item", {})
-                text = raw_item.get("text", "")
-                cat = raw_item.get("category", "")
-                if cat in core.WORD_CATEGORIES:
-                    # 词汇题型纯女声，跳过男声检测
-                    continue
-                # per-item 音色覆盖（课文跟读等题型）
-                voice_override = item.get("voice_override")
-                if voice_override == "male":
-                    has_male_voice = True
-                    break
-                if text.strip():
-                    dv = mv if voice_override == "male" else fv
-                    speakers = core.parse_speakers(text, default_voice=dv,
-                                                   female_voice=fv, male_voice=mv)
-                    if any(v == mv for v, _ in speakers):
-                        has_male_voice = True
-                        break
-
-        # ---- TTSMaker 登录（仅有男声数据时才唤起浏览器）----
-        if core._TTSMaker_AVAILABLE and has_male_voice:
-            engine_started_at = time.perf_counter()
+        # ---- 讯飞配音会话登录（所有音频都需要浏览器会话）----
+        engine_started_at = time.perf_counter()
+        if core._XUNFEI_AVAILABLE:
             log(
                 "progress",
-                "检测到男声数据，正在连接 TTSMaker",
+                "正在连接讯飞配音（首次需扫码登录，后续自动复用登录状态）",
                 stage="prepare",
                 kind="stage",
-                key="engine:male",
-                title="连接男声音色服务",
-                detail="首次使用可能需要扫码登录，完成后会自动继续生成",
+                key="engine:xunfei",
+                title="连接讯飞配音服务",
+                detail="将在浏览器中打开讯飞配音，完成后自动继续生成",
             )
             try:
-                await core._ttsmaker.ensure_session(voice_key="alfie")
+                await core._xunfei.ensure_session(voice_key=fv)
                 log(
                     "success",
-                    "TTSMaker 登录成功，开始生成音频",
+                    "讯飞配音登录成功，开始生成音频",
                     stage="prepare",
                     kind="stage",
-                    key="engine:male",
-                    title="男声音色服务已连接",
-                    detail="TTSMaker 788 Alfie 已就绪",
+                    key="engine:xunfei",
+                    title="讯飞配音服务已连接",
+                    detail="默认女声与男声，以及文本中配置的角色音色已就绪",
                     duration_ms=round((time.perf_counter() - engine_started_at) * 1000),
                 )
             except Exception as login_err:
                 log(
-                    "warn",
-                    f"TTSMaker 登录失败: {login_err}，男声将回退到 edge-tts",
+                    "error",
+                    f"讯飞配音登录失败: {login_err}",
                     stage="prepare",
                     kind="notice",
-                    key="engine:male",
-                    title="男声音色服务连接失败，已启用备用方案",
-                    detail=f"将使用 edge-tts Remy 继续生成。原因：{login_err}",
+                    key="engine:xunfei",
+                    title="讯飞配音服务连接失败",
+                    detail=f"请重新开始任务并完成扫码登录。原因：{login_err}",
                     duration_ms=round((time.perf_counter() - engine_started_at) * 1000),
                 )
-        elif core._TTSMaker_AVAILABLE and not has_male_voice:
-            log(
-                "info",
-                "未检测到男声数据，跳过 TTSMaker 浏览器启动",
-                stage="prepare",
-                kind="notice",
-                key="engine:male",
-                title="本次无需连接男声服务",
-                detail="文档内容将全部使用 edge-tts 生成",
-            )
+                raise RuntimeError(f"讯飞配音登录失败: {login_err}")
+        else:
+            raise RuntimeError("讯飞配音引擎不可用（缺少 playwright），无法生成音频")
 
         synthesis_started_at = time.perf_counter()
         eta_started_at = synthesis_started_at
@@ -1315,34 +1343,29 @@ async def generate_audio_stream(
                 emit_generation_status(progress)
                 continue
 
-            # per-item 音色覆盖（课文跟读等题型）
-            cat = raw_item.get("category", "")
-            voice_override = item.get("voice_override")
-            if cat in core.WORD_CATEGORIES:
-                # 词汇题型统一使用单词专用女声
-                item_default_voice = wv
-                speakers = core.parse_speakers(text, default_voice=wv,
-                                               female_voice=wv, male_voice=mv)
-            else:
-                item_default_voice = mv if voice_override == "male" else fv
-                speakers = core.parse_speakers(text, default_voice=item_default_voice,
-                                               female_voice=fv, male_voice=mv)
+            # 词汇题型没有独立音色；其他题型按解析器的男女声与角色映射分配。
+            is_word_item = raw_item.get("category") in core.WORD_CATEGORIES
+            item_default_voice = core.default_voice_for_item(
+                raw_item,
+                female_voice=fv,
+                male_voice=mv,
+            )
+            item_female_voice = fv
+            item_male_voice = fv if is_word_item else mv
+            item_role_voices = {} if is_word_item else role_voices
+            speakers = core.parse_speakers_with_roles(
+                text,
+                default_voice=fv if is_word_item else item_default_voice,
+                female_voice=item_female_voice,
+                male_voice=item_male_voice,
+                role_voices=item_role_voices,
+            )
             speaker_info = ""
             voice_label = "女声"
-            if cat in core.WORD_CATEGORIES:
-                speaker_info = " [单词专用女声]"
-                voice_label = "单词专用女声"
-            elif len(speakers) > 1 or speakers[0][0] != fv:
-                voices_used = set(v for v, _ in speakers)
-                if voices_used == {fv, mv}:
-                    speaker_info = " [混合音色]"
-                    voice_label = "混合音色"
-                elif mv in voices_used:
-                    speaker_info = " [男声]"
-                    voice_label = "男声"
-                else:
-                    speaker_info = " [女声]"
-                    voice_label = "女声"
+            if len(speakers) > 1 or speakers[0][1] != fv:
+                voices_used = {voice for _role, voice, _text in speakers}
+                voice_label = "、".join(sorted(voices_used))[:120] or "女声"
+                speaker_info = f" [音色: {voice_label}]"
             item_context = {
                 "id": item_id,
                 "filename": item.get("filename"),
@@ -1365,17 +1388,14 @@ async def generate_audio_stream(
             )
             emit_generation_status(progress, item_id)
 
-            # per-item 语速/停顿覆盖（课文跟读等题型）
-            item_rate = item.get("rate_override") or rate
-            item_pause = item.get("pause_override")
-            item_pause = item_pause if item_pause is not None else pause
             try:
-                # 词汇题型用 WORD_VOICE 作为女声，其他题型用 fv
-                item_fv = wv if cat in core.WORD_CATEGORIES else fv
                 audio_seg = await core._synth_item(
-                    text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
-                    default_voice=item_default_voice,
-                    female_voice=item_fv, male_voice=mv,
+                    text, rate, volume, pitch,
+                    default_voice=fv if is_word_item else item_default_voice,
+                    female_voice=item_female_voice,
+                    male_voice=item_male_voice,
+                    voice_configs=voice_configs,
+                    role_voices=item_role_voices,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 await asyncio.to_thread(core.export_audio, audio_seg, fmt, quality, out_path)
@@ -1442,7 +1462,6 @@ async def generate_audio_stream(
         if session.cancelled:
             emit_cancelled_terminal("音频生成阶段结束后已停止交付整理")
             return
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         progress["status"] = "packaging"
         core.save_progress(session_dir, progress)
         package_started_at = time.perf_counter()
@@ -1606,14 +1625,14 @@ async def generate_audio_stream(
             status_text="生成任务未能完成",
         )
     finally:
-        # 无论成功/失败/取消，都关闭 TTSMaker 浏览器会话，防止进程泄漏
-        if core._TTSMaker_AVAILABLE and has_male_voice:
+        # 无论成功/失败/取消，都关闭讯飞配音浏览器会话，防止进程泄漏
+        if core._XUNFEI_AVAILABLE:
             try:
-                await core._ttsmaker.close_session()
+                await core._xunfei.close_session()
             except asyncio.CancelledError:
                 pass
             except Exception as close_err:
-                print(f"[wordtts] 关闭 TTSMaker 浏览器异常: {close_err}", file=sys.stderr)
+                print(f"[wordtts] 关闭讯飞配音浏览器异常: {close_err}", file=sys.stderr)
         push_event(session, {"type": "end"})
 
 
@@ -1676,15 +1695,27 @@ async def health():
 @app.get("/api/config")
 async def get_config():
     """返回前端所需的配置选项。"""
+    catalog = await asyncio.to_thread(_load_voice_catalog_sync, True)
+    default_female = core.FEMALE_VOICE
+    default_male = core.MALE_VOICE
     return {
         "formats": list(core.FORMAT_MAP.keys()),
         "qualities": list(core.QUALITY_BITRATE.keys()),
         "supported_types": list(core.PARSER_MAP.keys()),
         "type_colors": core.TYPE_COLORS,
-        "ttsmaker_available": core._TTSMaker_AVAILABLE,
-        "female_voice": core.FEMALE_VOICE,
-        "male_voice": core.MALE_VOICE,
-        "word_voice": core.WORD_VOICE,
+        "tts_engine": "xunfei",
+        "tts_parameters": ["rate", "pitch", "volume"],
+        "tts_param_min": core.TTS_PARAM_MIN,
+        "tts_param_max": core.TTS_PARAM_MAX,
+        "tts_param_default": core.TTS_PARAM_DEFAULT,
+        "xunfei_available": core._XUNFEI_AVAILABLE,
+        "default_female_voice": default_female,
+        "default_male_voice": default_male,
+        "female_voice": "Amanda",
+        "male_voice": "George",
+        "voices": catalog.get("voices") or [],
+        "voice_filters": catalog.get("filters") or [],
+        "voice_catalog_meta": catalog.get("_meta") or {},
     }
 
 
@@ -1859,7 +1890,7 @@ async def parse_document_upload(file: UploadFile = File(...)):
     safe_filename = os.path.basename(file.filename)
     if not safe_filename or safe_filename != file.filename:
         raise HTTPException(status_code=400, detail="非法文件名")
-    upload_dir = os.path.join(BASE_DIR, "edge_tts", "uploads")
+    upload_dir = os.path.join(BASE_DIR, "tts_output", "uploads")
     os.makedirs(upload_dir, exist_ok=True)
 
     # 添加时间戳后缀防止同名文件覆盖
@@ -1976,9 +2007,12 @@ async def generate_endpoint(req: GenerateRequest):
     session.event_journal.clear()
     session.event_signal.clear()
 
+    # 只接受当前讯飞配置；旧版 proxy、旧音色和倍率字段在这里被丢弃。
+    normalized_config = core.normalize_tts_config(req.config)
+
     # 在后台启动生成任务（保存引用以防止并发和 orphaned task）
     session.task = asyncio.create_task(
-        generate_audio_stream(session, req.source_filename, req.file_path, req.config)
+        generate_audio_stream(session, req.source_filename, req.file_path, normalized_config)
     )
 
     return {"session_id": req.session_id, "status": "started"}

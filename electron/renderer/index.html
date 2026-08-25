@@ -142,7 +142,7 @@
                                         </li>
                                         <li>
                                             <span class="check-icon">✓</span>
-                                            <div><strong>保留段落结构</strong><small>换行会用于控制语音停顿</small></div>
+                                            <div><strong>保留原文结构</strong><small>换行内容按原文提交给讯飞</small></div>
                                         </li>
                                         <li>
                                             <span class="check-icon">✓</span>
@@ -169,7 +169,7 @@
                                 <div>
                                     <span class="eyebrow">核对与生成</span>
                                     <h1 id="config-title" tabindex="-1">核对内容并设置输出</h1>
-                                    <p>先确认解析数量和声音分配，再调整常用参数；其他选项已收进高级设置。</p>
+                                    <p>先确认解析数量和声音分配，再调整讯飞三项声音参数与输出选项。</p>
                                 </div>
                                 <button type="button" class="source-file-chip" id="change-file-btn" title="更换源文档">
                                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -206,34 +206,82 @@
                                         </div>
                                     </section>
 
-                                    <section class="surface-card config-section">
+                                    <section class="surface-card config-section voice-workspace-section">
                                         <div class="section-heading-row">
                                             <div>
                                                 <span class="section-index">01</span>
-                                                <div><h2>音色说明</h2><p>音色由题型自动分配，无需手动选择。</p></div>
+                                                <div><h2>音色分配</h2><p>先选文本角色，再为角色选择音色；每个音色都保存独立的语速、语调和音量。</p></div>
                                             </div>
-                                            <span class="auto-badge"><span></span>自动匹配</span>
+                                            <span class="auto-badge"><span></span>讯飞音色目录</span>
                                         </div>
-                                        <div class="voice-info-list" id="voice-info-list">
-                                            <div class="voice-info-row">
-                                                <span class="voice-badge voice-female">女声</span>
-                                                <div class="voice-info-text">
-                                                    <strong>词汇题型（单词/例句）</strong>
-                                                    <small id="word-voice-name">en-GB-LibbyNeural</small>
+                                        <div class="voice-workspace" id="voice-workspace">
+                                            <aside class="voice-role-column" aria-label="文本角色">
+                                                <div class="voice-role-heading">
+                                                    <strong>本题角色</strong>
+                                                    <span id="voice-role-count">2 个默认角色</span>
                                                 </div>
-                                            </div>
-                                            <div class="voice-info-row">
-                                                <span class="voice-badge voice-female">女声</span>
-                                                <div class="voice-info-text">
-                                                    <strong>其他题型</strong>
-                                                    <small id="female-voice-name">en-US-JennyNeural</small>
+                                                <div class="voice-role-list" id="voice-role-list" role="listbox" aria-label="选择要配置的角色"></div>
+                                                <p class="voice-role-note">无角色标识的内容使用默认女声；单词和例句始终使用默认女声。</p>
+                                            </aside>
+
+                                            <div class="voice-picker-column">
+                                                <div class="voice-picker-toolbar">
+                                                    <label class="voice-search-field" for="voice-search-input">
+                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                                                        <span class="sr-only">搜索音色</span>
+                                                        <input type="search" id="voice-search-input" placeholder="搜索音色 / 标签" autocomplete="off">
+                                                    </label>
                                                 </div>
-                                            </div>
-                                            <div class="voice-info-row">
-                                                <span class="voice-badge voice-male">男声</span>
-                                                <div class="voice-info-text">
-                                                    <strong>其他题型</strong>
-                                                    <small id="male-voice-name">fr-FR-RemyMultilingualNeural</small>
+                                                <div class="voice-filter-row" id="voice-filter-row" role="tablist" aria-label="音色分类"></div>
+                                                <div class="voice-browser-layout">
+                                                    <div class="voice-browser-grid" id="voice-browser-grid" role="listbox" aria-label="音色列表"></div>
+                                                    <div class="voice-browser-empty" id="voice-browser-empty" hidden>没有匹配的音色，请换个关键词或分类。</div>
+
+                                                    <aside class="voice-detail-panel" id="voice-detail-panel" aria-live="polite">
+                                                        <div class="voice-detail-heading">
+                                                            <div class="voice-avatar voice-avatar-large" id="voice-detail-avatar" aria-hidden="true">A</div>
+                                                            <div class="voice-detail-title">
+                                                                <span class="voice-detail-role" id="voice-detail-role">默认女声</span>
+                                                                <h3 id="voice-detail-name">Amanda</h3>
+                                                                <p id="voice-detail-meta">英语 · 女声</p>
+                                                            </div>
+                                                            <button type="button" class="voice-preview-btn" id="voice-preview-btn" title="试听当前音色" aria-label="试听当前音色">
+                                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                                                            </button>
+                                                        </div>
+                                                        <div class="voice-adjust-heading"><strong>音色调节</strong><span>0-100 · 默认 50</span></div>
+                                                        <div class="voice-param-list">
+                                                            <div class="voice-param-row">
+                                                                <div class="voice-param-label"><span>语速</span><small>慢 · 快</small></div>
+                                                                <div class="voice-param-control">
+                                                                    <input type="range" id="voice-rate" min="0" max="100" step="1" value="50" aria-label="当前音色语速">
+                                                                    <input type="number" id="voice-rate-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色语速数值">
+                                                                    <button type="button" class="voice-param-reset" data-voice-param-reset="rate" title="恢复语速默认值" aria-label="恢复语速默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+                                                                </div>
+                                                            </div>
+                                                            <div class="voice-param-row">
+                                                                <div class="voice-param-label"><span>语调</span><small>低 · 高</small></div>
+                                                                <div class="voice-param-control">
+                                                                    <input type="range" id="voice-pitch" min="0" max="100" step="1" value="50" aria-label="当前音色语调">
+                                                                    <input type="number" id="voice-pitch-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色语调数值">
+                                                                    <button type="button" class="voice-param-reset" data-voice-param-reset="pitch" title="恢复语调默认值" aria-label="恢复语调默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+                                                                </div>
+                                                            </div>
+                                                            <div class="voice-param-row">
+                                                                <div class="voice-param-label"><span>音量</span><small>小 · 大</small></div>
+                                                                <div class="voice-param-control">
+                                                                    <input type="range" id="voice-volume" min="0" max="100" step="1" value="50" aria-label="当前音色音量">
+                                                                    <input type="number" id="voice-volume-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色音量数值">
+                                                                    <button type="button" class="voice-param-reset" data-voice-param-reset="volume" title="恢复音量默认值" aria-label="恢复音量默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="voice-recent-block">
+                                                            <div class="voice-recent-heading"><strong>最近使用</strong><span id="voice-recent-count">0</span></div>
+                                                            <div class="voice-recent-list" id="voice-recent-list"></div>
+                                                            <p class="voice-recent-empty" id="voice-recent-empty">暂无最近使用音色</p>
+                                                        </div>
+                                                    </aside>
                                                 </div>
                                             </div>
                                         </div>
@@ -243,61 +291,6 @@
                                         <div class="section-heading-row">
                                             <div>
                                                 <span class="section-index">02</span>
-                                                <div><h2>声音节奏</h2><p>控制朗读速度、响度和段落之间的呼吸感。</p></div>
-                                            </div>
-                                        </div>
-                                        <div class="config-grid">
-                                            <div class="config-field">
-                                                <span class="field-label">语速<small>朗读快慢</small></span>
-                                                <select id="rate" aria-label="语速">
-                                                    <option value="0.5">0.5x · 很慢</option>
-                                                    <option value="0.6">0.6x · 较慢</option>
-                                                    <option value="0.7">0.7x · 慢速</option>
-                                                    <option value="0.8">0.8x · 稍慢</option>
-                                                    <option value="0.85">0.85x · 稍慢</option>
-                                                    <option value="0.9">0.9x · 舒缓</option>
-                                                    <option value="0.95">0.95x · 自然偏慢</option>
-                                                    <option value="1.0" selected>1.0x · 自然语速</option>
-                                                    <option value="1.05">1.05x · 自然偏快</option>
-                                                    <option value="1.1">1.1x · 稍快</option>
-                                                    <option value="1.15">1.15x · 稍快</option>
-                                                    <option value="1.2">1.2x · 快速</option>
-                                                    <option value="1.3">1.3x · 较快</option>
-                                                    <option value="1.4">1.4x · 很快</option>
-                                                    <option value="1.5">1.5x · 倍速</option>
-                                                    <option value="2.0">2.0x · 两倍速</option>
-                                                </select>
-                                            </div>
-                                            <div class="config-field">
-                                                <span class="field-label">段落停顿<small>换行间隔</small></span>
-                                                <select id="pause" aria-label="段落停顿">
-                                                    <option value="-1">0 秒 · 连续朗读</option>
-                                                    <option value="50">50 毫秒 · 极紧凑</option>
-                                                    <option value="100">100 毫秒 · 紧凑</option>
-                                                    <option value="200">200 毫秒 · 较紧凑</option>
-                                                    <option value="0" selected>约 300 毫秒 · 自然</option>
-                                                    <option value="500">500 毫秒</option>
-                                                    <option value="600">600 毫秒</option>
-                                                    <option value="800">800 毫秒</option>
-                                                    <option value="1000">1 秒</option>
-                                                    <option value="1200">1.2 秒</option>
-                                                    <option value="1500">1.5 秒</option>
-                                                    <option value="1800">1.8 秒</option>
-                                                    <option value="2000">2 秒</option>
-                                                    <option value="2500">2.5 秒</option>
-                                                    <option value="3000">3 秒</option>
-                                                    <option value="4000">4 秒</option>
-                                                    <option value="5000">5 秒</option>
-                                                    <option value="10000">10 秒</option>
-                                                </select>
-                                            </div>
-                                        </div>
-                                    </section>
-
-                                    <section class="surface-card config-section">
-                                        <div class="section-heading-row">
-                                            <div>
-                                                <span class="section-index">03</span>
                                                 <div><h2>输出文件</h2><p>选择兼容性与文件体积之间的平衡。</p></div>
                                             </div>
                                         </div>
@@ -325,50 +318,6 @@
                                         </div>
                                     </section>
 
-                                    <details class="surface-card advanced-section">
-                                        <summary>
-                                            <span class="advanced-icon">
-                                                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.54 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>
-                                            </span>
-                                            <span><strong>高级声音设置</strong><small>音量、音调与网络代理</small></span>
-                                            <svg class="summary-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                        </summary>
-                                        <div class="advanced-content">
-                                            <div class="config-field">
-                                                <span class="field-label">音量<small>输出响度</small></span>
-                                                <select id="volume" aria-label="音量">
-                                                    <option value="0.1">10% · 极低</option>
-                                                    <option value="0.2">20% · 很低</option>
-                                                    <option value="0.5">50% · 较低</option>
-                                                    <option value="0.8">80% · 柔和</option>
-                                                    <option value="1" selected>100% · 标准音量</option>
-                                                    <option value="1.2">120% · 增强</option>
-                                                    <option value="1.5">150% · 较强</option>
-                                                    <option value="1.8">180% · 很强</option>
-                                                    <option value="2.0">200% · 可能破音</option>
-                                                </select>
-                                            </div>
-                                            <div class="config-field">
-                                                <span class="field-label">音调<small>声音高低</small></span>
-                                                <select id="pitch" aria-label="音调">
-                                                    <option value="0.5">0.5x · 大幅降低</option>
-                                                    <option value="0.75">0.75x · 中度降低</option>
-                                                    <option value="0.9">0.9x · 轻微降低</option>
-                                                    <option value="0.95">0.95x · 略微降低</option>
-                                                    <option value="1" selected>1.0x · 原始音调</option>
-                                                    <option value="1.05">1.05x · 略微升高</option>
-                                                    <option value="1.1">1.1x · 轻微升高</option>
-                                                    <option value="1.25">1.25x · 中度升高</option>
-                                                    <option value="1.5">1.5x · 大幅升高</option>
-                                                    <option value="2.0">2.0x · 极高</option>
-                                                </select>
-                                            </div>
-                                            <label class="config-field proxy-field">
-                                                <span class="field-label">代理地址<small>可选</small></span>
-                                                <input type="text" id="proxy" placeholder="例如 http://127.0.0.1:7890" autocomplete="off">
-                                            </label>
-                                        </div>
-                                    </details>
                                 </div>
 
                                 <aside class="config-aside">
@@ -381,16 +330,15 @@
                                         </div>
                                         <div class="summary-list" aria-label="当前生成设置">
                                             <div><span class="summary-key">文档内容</span><strong class="summary-value" id="summary-document">等待解析</strong></div>
-                                            <div><span class="summary-key">音色</span><strong class="summary-value" id="summary-voice">女 Jenny · 男 Remy</strong></div>
-                                            <div><span class="summary-key">语速</span><strong class="summary-value" id="summary-rate">1.0x · 自然语速</strong></div>
-                                            <div><span class="summary-key">段落停顿</span><strong class="summary-value" id="summary-pause">约 300 毫秒 · 自然</strong></div>
+                                            <div><span class="summary-key">音色</span><strong class="summary-value" id="summary-voice">女 Amanda · 男 George</strong></div>
+                                            <div><span class="summary-key">语速 / 语调 / 音量</span><strong class="summary-value" id="summary-params">50 / 50 / 50</strong></div>
                                             <div><span class="summary-key">输出</span><strong class="summary-value" id="summary-output">MP3 · 128 kbps</strong></div>
                                             <div><span class="summary-key">生成范围</span><strong class="summary-value" id="summary-scope">完整文档</strong></div>
                                         </div>
                                         <label class="preview-option preview-option-promoted">
                                             <input type="checkbox" id="preview">
                                             <span class="toggle-control"></span>
-                                            <span><strong>先试听 3 条</strong><small>快速确认声音与节奏，再决定是否生成全文</small></span>
+                                            <span><strong>先试听 3 条</strong><small>快速确认声音与输出，再决定是否生成全文</small></span>
                                         </label>
                                         <div class="summary-note">
                                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
@@ -618,7 +566,7 @@
                                     <label class="audio-search-field" for="audio-search-input">
                                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
                                         <span class="sr-only">筛选音频文件</span>
-                                        <input type="search" id="audio-search-input" placeholder="搜索文件名或内容" autocomplete="off">
+                                        <input type="search" id="audio-search-input" placeholder="搜索文件名、题型或内容" autocomplete="off">
                                     </label>
                                     <label class="sr-only" for="audio-type-filter">按题型筛选</label>
                                     <select id="audio-type-filter" class="audio-type-filter" aria-label="按题型筛选">

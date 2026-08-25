@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Word 文档解析 + Edge TTS 音频生成 — 一体化应用
+Word 文档解析 + 讯飞配音音频生成 — 一体化应用
 ================================================
 1. 上传 Word 文档 → 自动识别题型并解析为 JSON
 2. 解析成功后自动开始生成音频（支持 w/m 说话人标识自动选音色）
@@ -8,12 +8,13 @@ Word 文档解析 + Edge TTS 音频生成 — 一体化应用
 4. 生成完成后可下载 ZIP 包或选择单个文件下载
 5. 文件命名规则：信息获取题目使用问题x；其他题型使用题型-录音稿x
 
-音色规则：
-  - 词汇题型（单词/例句）统一使用 en-GB-LibbyNeural 女声
-  - w/W 标识 → 女声 en-US-JennyNeural
-  - m/M 标识 → 男声 fr-FR-RemyMultilingualNeural
-  - 无标识   → 默认女声 en-US-JennyNeural
+引擎与音色规则（统一使用讯飞配音 peiyin.xunfei.cn）：
+  - w/W 标识 → 女声 Amanda
+  - m/M 标识 → 男声 George
+  - 无标识   → 默认女声 Amanda
+  - 词汇题型（单词/例句）统一使用默认女声 Amanda（无单独音色）
   - 生成音频时自动去除 w/m 标识
+  - 可调参数为讯飞平台三参数：语速 / 语调 / 音量（0-100，50=默认）
 
 用法:
     python word_tts_app.py
@@ -92,9 +93,7 @@ except (ImportError, ModuleNotFoundError):
             return False
     gr = _GrStub()
 
-import edge_tts
 from pydub import AudioSegment
-from pydub.silence import detect_leading_silence, detect_silence
 
 # ---- 配置 pydub 使用 imageio-ffmpeg 自带的静态 ffmpeg ----
 def _find_ffmpeg():
@@ -174,13 +173,13 @@ _pydub_utils.mediainfo_json = _safe_mediainfo_json
 
 from word_parser import parse_document_auto, PARSER_MAP
 
-# ---- TTSMaker 客户端（可选模块，用于男声 788/Alfie 生成）----
+# ---- 讯飞配音客户端（统一 TTS 引擎，女声/男声均使用）----
 try:
-    import ttsmaker_client as _ttsmaker
-    _TTSMaker_AVAILABLE = _ttsmaker.is_available()
+    import xunfei_peiyin as _xunfei
+    _XUNFEI_AVAILABLE = _xunfei.is_available()
 except Exception:
-    _TTSMaker_AVAILABLE = False
-    _ttsmaker = None
+    _XUNFEI_AVAILABLE = False
+    _xunfei = None
 
 
 # ============================================================================
@@ -190,14 +189,14 @@ except Exception:
 OUTPUT_BASE = os.path.join(BASE_DIR, "tts_output")
 os.makedirs(OUTPUT_BASE, exist_ok=True)
 
-# 音色配置
-FEMALE_VOICE = "en-US-JennyNeural"
-MALE_VOICE = "fr-FR-RemyMultilingualNeural"
+# 音色配置 — 讯飞配音发音人 key
+# 女声 → Amanda (英语女声)；词汇题型同样使用该女声（无单独音色）
+FEMALE_VOICE = "amanda"
+# 男声 → George (英语男声)
+MALE_VOICE = "george"
 
-# 词汇题型（单词 / 例句）专用女声。前端不再提供音色选择，一律使用此音色。
-WORD_VOICE = "en-GB-LibbyNeural"
-# 词汇类条目的 category 集合，用于在逐条生成时强制使用 WORD_VOICE。
-WORD_CATEGORIES = {"单词", "例句"}
+# 词汇题型不再使用单独音色，统一走默认女声。
+WORD_CATEGORIES = frozenset({"单词", "例句"})
 
 # 每条解析结果（每道题）独立生成一个音频文件，不做跨题合并
 
@@ -218,22 +217,114 @@ QUALITY_BITRATE = {
     "无损（仅 wav 生效）": None,
 }
 
-# 音频生成算法版本。调整裁边/拼接规则时递增，避免断点续传复用旧算法产物。
-AUDIO_ALGORITHM_VERSION = 2
+# 音频生成算法版本。改变讯飞音频拼接策略时递增，避免复用旧算法产物。
+AUDIO_ALGORITHM_VERSION = 3
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 5
+PARSER_VERSION = 8
 
-# Edge TTS 的 MP3 通常带有较长的首尾数字填充。检测阈值相对于每段峰值计算，
-# 因而用户把音量调低时不会把整段低音量语音误判成静音。
-_EDGE_SILENCE_BELOW_PEAK_DB = 70.0
-_EDGE_MIN_SILENCE_MS = 80
-_EDGE_LEADING_GUARD_MS = 20
-_EDGE_TRAILING_GUARD_MS = 50
-_EDGE_MIN_TRAILING_PADDING_MS = 250
-_EDGE_BOUNDARY_SCAN_MS = 2000
-_FINAL_POST_ROLL_MS = 150
+# 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
+TTS_PARAM_MIN = 0
+TTS_PARAM_MAX = 100
+TTS_PARAM_DEFAULT = 50
+TTS_CONFIG_VERSION = 4
+
+
+def clamp_tts_param(value, default=TTS_PARAM_DEFAULT):
+    """将任意输入收敛为讯飞平台接受的 0-100 整数。"""
+    try:
+        normalized = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        normalized = default
+    return max(TTS_PARAM_MIN, min(TTS_PARAM_MAX, normalized))
+
+
+def normalize_role_key(value):
+    """返回前后端统一使用的角色 key。"""
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    return text.casefold()[:80]
+
+
+def _normalize_voice_key(value, fallback):
+    key = str(value or "").strip()
+    return key[:160] if key else fallback
+
+
+def _normalize_voice_params(raw, fallback):
+    values = raw if isinstance(raw, dict) else {}
+    return {
+        "rate": clamp_tts_param(values.get("rate", fallback["rate"])),
+        "volume": clamp_tts_param(values.get("volume", fallback["volume"])),
+        "pitch": clamp_tts_param(values.get("pitch", fallback["pitch"])),
+    }
+
+
+def normalize_tts_config(config=None):
+    """返回只包含当前产品支持项的规范化声音/输出配置。
+
+    前端校验用于即时反馈，服务端和核心流程也必须独立收敛输入，避免旧版
+    预设或手工请求把倍率、代理、旧音色字段带回讯飞调用链。
+    """
+    raw = config if isinstance(config, dict) else {}
+    fmt = raw.get("format", "mp3")
+    if fmt not in FORMAT_MAP:
+        fmt = "mp3"
+    quality = raw.get("quality", "128 kbps（标准）")
+    if quality not in QUALITY_BITRATE:
+        quality = "128 kbps（标准）"
+
+    base_params = {
+        "rate": clamp_tts_param(raw.get("rate", TTS_PARAM_DEFAULT)),
+        "volume": clamp_tts_param(raw.get("volume", TTS_PARAM_DEFAULT)),
+        "pitch": clamp_tts_param(raw.get("pitch", TTS_PARAM_DEFAULT)),
+    }
+    default_female_voice = _normalize_voice_key(
+        raw.get("default_female_voice"), FEMALE_VOICE
+    )
+    default_male_voice = _normalize_voice_key(
+        raw.get("default_male_voice"), MALE_VOICE
+    )
+
+    voice_configs = {}
+    raw_voice_configs = raw.get("voice_configs")
+    if isinstance(raw_voice_configs, dict):
+        for key, value in raw_voice_configs.items():
+            normalized_key = _normalize_voice_key(key, "")
+            if normalized_key:
+                voice_configs[normalized_key] = _normalize_voice_params(value, base_params)
+    voice_configs.setdefault(
+        default_female_voice,
+        _normalize_voice_params(None, base_params),
+    )
+    voice_configs.setdefault(
+        default_male_voice,
+        _normalize_voice_params(None, base_params),
+    )
+
+    role_voices = {}
+    raw_role_voices = raw.get("role_voices")
+    if isinstance(raw_role_voices, dict):
+        for role, voice in raw_role_voices.items():
+            role_key = normalize_role_key(role)
+            voice_key = _normalize_voice_key(voice, "")
+            if role_key and voice_key:
+                role_voices[role_key] = voice_key
+
+    # 兼容旧前端的全局三参数，同时保留每个音色/角色的独立配置。
+    return {
+        "config_version": TTS_CONFIG_VERSION,
+        "rate": base_params["rate"],
+        "volume": base_params["volume"],
+        "pitch": base_params["pitch"],
+        "format": fmt,
+        "quality": quality,
+        "preview": bool(raw.get("preview", False)),
+        "default_female_voice": default_female_voice,
+        "default_male_voice": default_male_voice,
+        "voice_configs": voice_configs,
+        "role_voices": role_voices,
+    }
 
 TYPE_COLORS = {
     "信息获取": "#0e7490",
@@ -254,11 +345,6 @@ def fmt_pct(v):
 
 def fmt_hz(v):
     return ("+" if v >= 0 else "") + str(int(v)) + "Hz"
-
-
-def ttsmaker_to_edge_pct(multiplier):
-    """将 TTSMaker 倍率 (1.5) 转换为 edge-tts 百分比 (+50)。"""
-    return int(round((float(multiplier) - 1.0) * 100))
 
 
 def export_audio(seg, fmt, quality, out_path):
@@ -350,6 +436,136 @@ def now_str():
 RE_LINE_SPEAKER = re.compile(r'^([WwMm])\s*[:：]\s*(.*)')
 # 匹配行首的 (W) / (M) 标记
 RE_PAREN_SPEAKER = re.compile(r'^\(([WwMm])\)\s*(.*)')
+# 匹配题型录音稿中的通用角色标记，例如 Reporter: / Mr Yan: / Ms Wu:
+RE_ROLE_LINE = re.compile(r'^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$')
+
+
+def _looks_like_role_label(label):
+    """避免把 URL、时间或带句末标点的普通句子误当成角色名。"""
+    value = str(label or "").strip()
+    if not value or len(value) > 48:
+        return False
+    if len(re.split(r"\s+", value)) > 4:
+        return False
+    if value[0].isdigit() or "://" in value or "\\" in value or "/" in value:
+        return False
+    if re.search(r"[.!?。！？；;，,]", value):
+        return False
+    return True
+
+
+def _infer_role_voice(label, female_voice, male_voice):
+    """没有手动分配时，按 Mr/Ms 等常见称谓给角色一个可改的初始音色。"""
+    value = str(label or "").strip().casefold()
+    if re.match(r"^(mr|mr\.|sir|男|先生)\b", value):
+        return male_voice
+    if re.match(r"^(ms|ms\.|mrs|mrs\.|miss|女|女士)\b", value):
+        return female_voice
+    return female_voice
+
+
+def parse_speakers_with_roles(
+    text,
+    default_voice=None,
+    female_voice=None,
+    male_voice=None,
+    role_voices=None,
+):
+    """解析 W/M 和通用角色标记，返回 ``(role, voice, clean_text)``。
+
+    ``role`` 是用户在界面中看到的原始角色名；没有角色名的普通段落为 None。
+    角色映射只决定音色，参数由 ``_synth_item`` 按最终 voice key 查找，因而
+    同一个音色在多个角色中仍然共享同一套独立配置。
+    """
+    if default_voice is None:
+        default_voice = FEMALE_VOICE
+    fv = female_voice if female_voice else FEMALE_VOICE
+    mv = male_voice if male_voice else MALE_VOICE
+    role_map = {}
+    if isinstance(role_voices, dict):
+        role_map = {
+            normalize_role_key(role): str(voice).strip()
+            for role, voice in role_voices.items()
+            if normalize_role_key(role) and str(voice or "").strip()
+        }
+
+    segments = []
+    lines = str(text or "").strip().split('\n')
+    current_voice = default_voice
+    current_role = None
+    current_lines = []
+
+    # 先看完整录音稿里是否至少有两个不同的角色标签。这样即使调用方没有
+    # 传入 role_voices，也能处理真正的多角色对话；单独一行的普通冒号文本
+    # 则不会被误拆。若前端已经明确传入某个角色映射，则允许该角色单独出现。
+    candidate_role_keys = set()
+    for line in lines:
+        candidate = RE_ROLE_LINE.match(line.strip())
+        if candidate and _looks_like_role_label(candidate.group(1)):
+            candidate_role_keys.add(normalize_role_key(candidate.group(1)))
+    allow_inferred_roles = len(candidate_role_keys) >= 2
+
+    def flush():
+        nonlocal current_lines
+        if current_lines:
+            clean = '\n'.join(current_lines).strip()
+            if clean:
+                segments.append((current_role, current_voice, clean))
+            current_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        marker = RE_LINE_SPEAKER.match(stripped)
+        if marker:
+            flush()
+            gender = marker.group(1).upper()
+            current_voice = fv if gender == 'W' else mv
+            current_role = None
+            content = marker.group(2).strip()
+            if content:
+                current_lines.append(content)
+            continue
+
+        paren_marker = RE_PAREN_SPEAKER.match(stripped)
+        if paren_marker:
+            flush()
+            gender = paren_marker.group(1).upper()
+            current_voice = fv if gender == 'W' else mv
+            current_role = None
+            content = paren_marker.group(2).strip()
+            if content:
+                current_lines.append(content)
+            continue
+
+        role_marker = RE_ROLE_LINE.match(stripped)
+        if role_marker and _looks_like_role_label(role_marker.group(1)):
+            candidate_role = role_marker.group(1).strip()
+            role_key = normalize_role_key(candidate_role)
+            # 通用角色名由前端根据完整解析结果识别并写入 role_voices。
+            # 没有当前文档角色映射时，保留普通的「说明: 内容」原文，
+            # 避免无角色题被误拆成角色段落。
+            if role_key not in role_map and not allow_inferred_roles:
+                current_lines.append(stripped)
+                continue
+            flush()
+            current_role = candidate_role
+            current_voice = role_map.get(role_key) or _infer_role_voice(current_role, fv, mv)
+            content = role_marker.group(2).strip()
+            if content:
+                current_lines.append(content)
+            continue
+
+        current_lines.append(stripped)
+
+    flush()
+    if not segments:
+        clean = str(text or "").strip()
+        if clean:
+            segments.append((None, default_voice, clean))
+    return segments
 
 
 def parse_speakers(text, default_voice=None, female_voice=None, male_voice=None):
@@ -370,355 +586,114 @@ def parse_speakers(text, default_voice=None, female_voice=None, male_voice=None)
     male_voice:   M/m 标识映射到的男声 ShortName，None 时用 MALE_VOICE。
                   传入后，男声标识将使用该音色，而非模块级常量。
     """
-    if default_voice is None:
-        default_voice = FEMALE_VOICE
-    fv = female_voice if female_voice else FEMALE_VOICE
-    mv = male_voice if male_voice else MALE_VOICE
-    segments = []
-    lines = text.strip().split('\n')
+    return [
+        (voice, clean_text)
+        for _role, voice, clean_text in parse_speakers_with_roles(
+            text,
+            default_voice=default_voice,
+            female_voice=female_voice,
+            male_voice=male_voice,
+        )
+    ]
 
-    current_voice = default_voice
-    current_lines = []
 
-    def flush():
-        nonlocal current_lines
-        if current_lines:
-            clean = '\n'.join(current_lines).strip()
-            if clean:
-                segments.append((current_voice, clean))
-            current_lines = []
+def default_voice_for_item(raw_item, female_voice=None, male_voice=None):
+    """按统一的 Amanda/George 规则决定条目的无标识默认音色。
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        # 检查 W: / M: 前缀
-        m = RE_LINE_SPEAKER.match(stripped)
-        if m:
-            flush()
-            gender = m.group(1).upper()
-            current_voice = fv if gender == 'W' else mv
-            content = m.group(2).strip()
-            if content:
-                current_lines.append(content)
-            continue
-
-        # 检查 (W) / (M) 前缀
-        m2 = RE_PAREN_SPEAKER.match(stripped)
-        if m2:
-            flush()
-            gender = m2.group(1).upper()
-            current_voice = fv if gender == 'W' else mv
-            content = m2.group(2).strip()
-            if content:
-                current_lines.append(content)
-            continue
-
-        # 普通行，加入当前段
-        current_lines.append(stripped)
-
-    flush()
-
-    # 如果没有检测到任何说话人标识，整段用默认音色
-    if not segments:
-        clean = text.strip()
-        if clean:
-            segments.append((default_voice, clean))
-
-    return segments
+    单词和例句没有独立音色：即使历史解析结果带有旧的 per-item 音色字段，
+    也始终回到默认女声。其他题型才使用解析器给出的男女声分配。
+    """
+    item = raw_item if isinstance(raw_item, dict) else {}
+    fv = female_voice or FEMALE_VOICE
+    mv = male_voice or MALE_VOICE
+    if item.get("category") in WORD_CATEGORIES:
+        return fv
+    return mv if item.get("voice") == "male" else fv
 
 
 # ============================================================================
 # 音频生成核心
 # ============================================================================
 
-def _relative_silence_threshold(seg, below_peak_db=_EDGE_SILENCE_BELOW_PEAK_DB):
-    """返回相对本段峰值的静音阈值，兼容用户降低整体音量的场景。"""
-    peak_db = seg.max_dBFS
-    if peak_db == float("-inf"):
-        return 0.0
-    return peak_db - max(0.0, float(below_peak_db))
-
-
-def _strip_edge_silence(
-    seg,
-    silence_thresh_db=None,
-    min_silence_ms=_EDGE_MIN_SILENCE_MS,
-    leading_guard_ms=_EDGE_LEADING_GUARD_MS,
-    trailing_guard_ms=_EDGE_TRAILING_GUARD_MS,
-    min_trailing_padding_ms=_EDGE_MIN_TRAILING_PADDING_MS,
-):
-    """保守裁剪 Edge TTS 音频段首尾的引擎填充。
-
-    edge-tts 生成的 MP3 通常带有 200-500ms 的尾部静音，
-    导致女声→男声切换时间隔远大于设定的段落停顿。
-
-    与旧实现不同，本函数使用相对峰值的保守阈值，并且只有尾部填充
-    足够长时才裁剪；裁剪后仍保留少量首尾余量，避免把弱尾音、爆破音
-    或用户降低音量后的正常语音误判为静音。
-
-    Args:
-        seg: pydub.AudioSegment 音频段
-        silence_thresh_db: 可选的绝对静音阈值；默认按本段峰值动态计算
-        min_silence_ms: 静音段最小长度
-        leading_guard_ms/trailing_guard_ms: 裁剪后保留的安全余量
-        min_trailing_padding_ms: 尾部静音达到此长度才视为引擎填充
-
-    Returns:
-        裁剪后的 AudioSegment；若检测失败则返回原始音频
-    """
-    min_silence_ms = max(1, int(min_silence_ms))
-    if len(seg) < min_silence_ms * 3:
-        return seg
-    try:
-        silence_threshold = (
-            float(silence_thresh_db)
-            if silence_thresh_db is not None
-            else _relative_silence_threshold(seg)
-        )
-        silent_ranges = detect_silence(
-            seg,
-            min_silence_len=min_silence_ms,
-            silence_thresh=silence_threshold,
-        )
-        if not silent_ranges:
-            return seg
-
-        start_ms = 0
-        end_ms = len(seg)
-
-        # 裁剪首部静音（第一个静音段从 0 附近开始）
-        if silent_ranges[0][0] <= 10:
-            start_ms = max(
-                0,
-                silent_ranges[0][1] - max(0, int(leading_guard_ms)),
-            )
-
-        # 仅裁明显较长的尾部填充；短暂弱音或自然衰减原样保留。
-        trailing_range = silent_ranges[-1]
-        trailing_padding_ms = len(seg) - trailing_range[0]
-        if (
-            trailing_range[1] >= len(seg) - 10
-            and trailing_padding_ms >= max(
-                min_silence_ms,
-                int(min_trailing_padding_ms),
-            )
-        ):
-            end_ms = min(
-                len(seg),
-                trailing_range[0] + max(0, int(trailing_guard_ms)),
-            )
-
-        if start_ms >= end_ms:
-            # 全静音或裁剪后为空，返回原始音频
-            return seg
-
-        return seg[start_ms:end_ms]
-    except Exception:
-        # 检测失败时不裁剪，返回原始音频
-        return seg
-
-
-def _edge_silence_ms(seg, *, leading, max_scan_ms=_EDGE_BOUNDARY_SCAN_MS):
-    """测量一段音频边缘的确认静音，只扫描有限窗口。"""
-    if not seg or max_scan_ms <= 0:
-        return 0
-    scan_ms = min(len(seg), max(1, int(max_scan_ms)))
-    probe = seg[:scan_ms] if leading else seg[-scan_ms:].reverse()
-    return detect_leading_silence(
-        probe,
-        silence_threshold=_relative_silence_threshold(seg),
-        chunk_size=5,
-    )
-
-
-def _fit_boundary_to_pause(previous, current, pause_ms):
-    """用确认的边缘静音归一段间距，并优先保护上一句的尾音。"""
-    pause_ms = max(0, int(pause_ms))
-    previous_tail_ms = _edge_silence_ms(previous, leading=False)
-    current_head_ms = _edge_silence_ms(current, leading=True)
-    existing_silence_ms = previous_tail_ms + current_head_ms
-
-    if existing_silence_ms > pause_ms:
-        excess_ms = existing_silence_ms - pause_ms
-
-        # 优先移除下一段的开头数字填充，尽量不碰上一句尾部安全余量。
-        trim_head_ms = min(excess_ms, current_head_ms)
-        if trim_head_ms:
-            current = current[trim_head_ms:]
-            current_head_ms -= trim_head_ms
-            excess_ms -= trim_head_ms
-
-        if excess_ms:
-            trim_tail_ms = min(excess_ms, previous_tail_ms)
-            if trim_tail_ms:
-                previous = previous[:-trim_tail_ms]
-                previous_tail_ms -= trim_tail_ms
-
-    remaining_silence_ms = previous_tail_ms + current_head_ms
-    inserted_pause_ms = max(0, pause_ms - remaining_silence_ms)
-    return previous, current, inserted_pause_ms
-
-
-def _pause_value_to_ms(pause):
-    """把界面停顿值转换为应用层毫秒数。"""
-    pause_val = int(float(pause))
-    if pause_val == -1:
-        return 0
-    if pause_val == 0:
-        return 300
-    return max(0, pause_val)
-
-
-def _silent_segment(duration_ms, *segments):
-    """按相邻音频的最高采样率创建静音，避免隐式低采样率重采样。"""
-    frame_rates = [seg.frame_rate for seg in segments if seg]
-    frame_rate = max(frame_rates) if frame_rates else 44100
-    return AudioSegment.silent(
-        duration=max(0, int(duration_ms)),
-        frame_rate=frame_rate,
-    )
-
-
-async def _synth_segment(text, voice, rate, volume, pitch, proxy, tmp_dir, pause=0,
-                         male_voice=None):
+async def _synth_segment(text, voice, speed, volume, pitch):
     """合成单段文本的音频，返回 AudioSegment。
 
-    男声 (male_voice，默认 MALE_VOICE) 优先使用 TTSMaker 788 (Alfie) 生成；
-    女声 (FEMALE_VOICE) 使用 edge-tts 生成。
-    TTSMaker 不可用或失败时回退到 edge-tts。
+    统一使用讯飞配音 (peiyin.xunfei.cn) 生成音频，女声和男声均走同一引擎。
+    voice 参数为讯飞配音发音人 key（"amanda"/"george"）。
 
-    段落间的停顿由 _synth_item 统一归一；本函数只负责生成单段音频。
-
-    rate/volume/pitch: TTSMaker 格式 (float 倍率, 如 1.5)
-    pause: 应用层停顿值 (int ms, -1=不停顿, 0=默认300ms, N=N ms)；
-           TTSMaker 始终接收 -1，实际间隔由 _synth_item 处理。
-    male_voice: 用于判断走 TTSMaker 的男声 ShortName，None 时用 MALE_VOICE。
+    speed/volume/pitch: 讯飞平台三参数（0-100，50=默认）。
     """
-    effective_male_voice = male_voice if male_voice else MALE_VOICE
-    # ---- 男声：优先使用 TTSMaker ----
-    if voice == effective_male_voice and _TTSMaker_AVAILABLE:
-        try:
-            print(f"[tts] 使用 TTSMaker 788 (Alfie) 生成男声: {text[:50]}...", file=sys.stdout)
-            # TTSMaker 内部不添加停顿；用户设置的段间距统一由 _synth_item
-            # 处理。男声音频不做幅度裁剪，避免弱尾音被误判。
-            seg = await _ttsmaker.synth_male_ttsmaker(
-                text, tmp_dir, voice_key="alfie",
-                rate=rate, volume=volume, pitch=pitch, pause=-1,
-            )
-            return seg
-        except Exception as e:
-            print(f"[tts] TTSMaker 生成失败，回退到 edge-tts: {e}", file=sys.stdout)
-            # 继续执行 edge-tts 回退逻辑
-
-    # ---- 女声 / 回退：使用 edge-tts ----
-    # 将 TTSMaker 倍率格式转换为 edge-tts 百分比格式
-    edge_rate = fmt_pct(ttsmaker_to_edge_pct(rate))
-    edge_volume = fmt_pct(ttsmaker_to_edge_pct(volume))
-    edge_pitch = fmt_hz(ttsmaker_to_edge_pct(pitch))
-
-    uid = uuid.uuid4().hex[:8]
-    tmp_path = os.path.join(tmp_dir, f".seg_{uid}.mp3")
-    try:
-        communicate = edge_tts.Communicate(
-            text, voice,
-            rate=edge_rate,
-            volume=edge_volume,
-            pitch=edge_pitch,
-            proxy=proxy or None,
-        )
-        await communicate.save(tmp_path)
-        fsize = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
-        print(f"[tts] edge_tts 保存完成: {tmp_path} ({fsize} bytes)", file=sys.stdout)
-        if fsize < 100:
-            # 小于 100 字节几乎不可能是有效音频
-            raise RuntimeError(f"edge_tts 返回的音频过小 ({fsize} bytes)，可能网络异常")
-        seg = AudioSegment.from_file(tmp_path, format="mp3", codec="mp3")
-        dur_ms = len(seg)
-        print(f"[tts] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}", file=sys.stdout)
-        if dur_ms < 50:
-            raise RuntimeError(f"解码后音频时长过短 ({dur_ms}ms)，可能 edge_tts 返回了空音频")
-        if seg.channels == 0 or seg.frame_rate == 0:
-            raise RuntimeError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
-        # 仅裁剪确认的长填充；精确段间距由 _synth_item 在拼接时归一。
-        seg = _strip_edge_silence(seg)
-        print(f"[tts] 裁剪静音后: duration={len(seg)}ms", file=sys.stdout)
-        return seg
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+    print(f"[tts] 使用讯飞配音生成: voice={voice} text={text[:50]}...", file=sys.stdout)
+    seg = await _xunfei.synth_xunfei(
+        text, voice_key=voice,
+        speed=speed, volume=volume, pitch=pitch,
+    )
+    dur_ms = len(seg)
+    print(f"[tts] 讯飞配音解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}", file=sys.stdout)
+    if dur_ms < 50:
+        raise RuntimeError(f"解码后音频时长过短 ({dur_ms}ms)")
+    if seg.channels == 0 or seg.frame_rate == 0:
+        raise RuntimeError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
+    return seg
 
 
-async def _synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None,
-                      female_voice=None, male_voice=None):
+async def _synth_item(text, rate, volume, pitch, default_voice=None,
+                      female_voice=None, male_voice=None, voice_configs=None,
+                      role_voices=None):
     """
     为一条解析结果生成完整音频。
-    自动处理 w/m 说话人切换，段落间插入停顿。
+    自动处理 W/M 与通用角色切换，并按讯飞原始音频顺序直接拼接。
 
-    rate/volume/pitch: TTSMaker 格式 (float 倍率)
-    pause: 应用层停顿值 (int ms, -1=不停顿, 0=默认300ms, N=N ms)
+    rate/volume/pitch: 讯飞平台三参数（0-100，50=默认）
     default_voice: 无 w/m 标识时的默认音色，None 表示女声
-    female_voice: W/w 标识映射的女声 ShortName，None 时用 FEMALE_VOICE。
-    male_voice:   M/m 标识映射的男声 ShortName，None 时用 MALE_VOICE。
+    female_voice: W/w 标识使用的女声发音人 key，None 时用 FEMALE_VOICE。
+    male_voice:   M/m 标识使用的男声发音人 key，None 时用 MALE_VOICE。
+    voice_configs: 每个音色独立的 rate/volume/pitch 配置。
+    role_voices: 角色名到音色 key 的映射。
     """
-    segments = parse_speakers(text, default_voice=default_voice,
-                              female_voice=female_voice, male_voice=male_voice)
+    segments = parse_speakers_with_roles(
+        text,
+        default_voice=default_voice,
+        female_voice=female_voice,
+        male_voice=male_voice,
+        role_voices=role_voices,
+    )
     if not segments:
         raise ValueError("文本为空")
 
-    # 引擎内部停顿已关闭，段间距完全由应用层按界面标注的毫秒数控制。
-    pause_ms = _pause_value_to_ms(pause)
+    base_params = {
+        "rate": clamp_tts_param(rate),
+        "volume": clamp_tts_param(volume),
+        "pitch": clamp_tts_param(pitch),
+    }
+    configs = voice_configs if isinstance(voice_configs, dict) else {}
 
     audio_parts = []
-    for voice, seg_text in segments:
-        # 段内按换行分段落
-        paragraphs = [p.strip() for p in seg_text.splitlines() if p.strip()]
-        for para in paragraphs:
-            part = await _synth_segment(para, voice, rate, volume, pitch, proxy, tmp_dir,
-                                        pause=pause, male_voice=male_voice)
-            audio_parts.append(part)
+    for _role, voice, seg_text in segments:
+        params = _normalize_voice_params(configs.get(voice), base_params)
+        # 不切割首尾，也不额外插入或归一化段落停顿；保留讯飞返回的音频内容。
+        part = await _synth_segment(
+            seg_text,
+            voice,
+            params["rate"],
+            params["volume"],
+            params["pitch"],
+        )
+        audio_parts.append(part)
 
     if not audio_parts:
         raise RuntimeError("合成失败，未生成任何音频")
 
-    normalized_parts = [audio_parts[0]]
-    inserted_pauses = []
+    full = audio_parts[0]
     for seg in audio_parts[1:]:
-        previous, current, inserted_pause_ms = _fit_boundary_to_pause(
-            normalized_parts[-1],
-            seg,
-            pause_ms,
-        )
-        normalized_parts[-1] = previous
-        normalized_parts.append(current)
-        inserted_pauses.append(inserted_pause_ms)
-
-    full = normalized_parts[0]
-    for inserted_pause_ms, seg in zip(inserted_pauses, normalized_parts[1:]):
-        if inserted_pause_ms:
-            full = full + _silent_segment(inserted_pause_ms, full, seg)
         full = full + seg
-
-    # 确保最后一句后至少有一小段真静音，避免播放器在有效波形处直接 EOF。
-    trailing_silence_ms = _edge_silence_ms(
-        full,
-        leading=False,
-        max_scan_ms=_FINAL_POST_ROLL_MS,
-    )
-    post_roll_ms = max(0, _FINAL_POST_ROLL_MS - trailing_silence_ms)
-    if post_roll_ms:
-        full = full + _silent_segment(post_roll_ms, full)
     return full
 
 
-def generate_item_audio(text, rate, volume, pitch, pause, proxy, tmp_dir, default_voice=None,
+def generate_item_audio(text, rate, volume, pitch, default_voice=None,
                         female_voice=None, male_voice=None):
     """同步包装：为一条文本生成音频。"""
-    return asyncio.run(_synth_item(text, rate, volume, pitch, pause, proxy, tmp_dir,
+    return asyncio.run(_synth_item(text, rate, volume, pitch,
                                    default_voice=default_voice,
                                    female_voice=female_voice, male_voice=male_voice))
 
@@ -843,14 +818,8 @@ def build_progress(source_filename, source_path, parse_results, config):
                 )
                 item_id = filename_stem
             text_preview = raw_item.get("text", "")[:80].replace('\n', ' ')
-            # 课文跟读等题型可在解析阶段指定 per-item 音色/语速/停顿覆盖
+            # 解析器只负责题型音色与文件命名；三项声音参数统一由当前配置提供。
             voice_override = raw_item.get("voice") or None      # "male" / "female" / None
-            rate_override = raw_item.get("rate") or None         # float 倍率, e.g. 0.7
-            pause_override = raw_item.get("pause")               # int ms, 可能为 0
-            if pause_override is not None:
-                pause_override = int(pause_override)
-            else:
-                pause_override = None
             items.append({
                 "id": item_id,
                 "doc_type": doc_type,
@@ -865,8 +834,6 @@ def build_progress(source_filename, source_path, parse_results, config):
                 "merged_count": 1,
                 "raw_item": raw_item,
                 "voice_override": voice_override,
-                "rate_override": rate_override,
-                "pause_override": pause_override,
             })
 
     return {
@@ -1139,8 +1106,7 @@ def get_supported_types_html():
 # 核心处理流程（生成器，支持流式进度更新）
 # ============================================================================
 
-def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
-                     preview):
+def process_document(file_obj, rate, volume, pitch, fmt, quality, preview):
     """
     主处理函数（生成器）：
     1. 解析 Word 文档
@@ -1150,9 +1116,9 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
 
     Yields: (log_html, download_html, stats_html, status_text, zip_file, file_dropdown, single_file, current_file_path)
 
-    音色规则：
-      - 词汇题型（单词/例句）统一使用 WORD_VOICE（en-GB-LibbyNeural 女声）
-      - 其他题型沿用 w/m 标识规则：Jenny 女声 / Remy 男声
+    音色规则（讯飞配音）：
+      - 全部题型统一：w/W → 女声 Amanda，m/M → 男声 George，无标识默认女声
+      - 词汇题型同样使用默认女声（无单独单词音色）
     """
     filepath = _get_filepath(file_obj)
     if not filepath:
@@ -1165,30 +1131,29 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
     source_filename = os.path.basename(filepath)
     session_dir = get_session_dir(source_filename)
     audio_dir = os.path.join(session_dir, "audio")
-    tmp_dir = os.path.join(session_dir, ".tmp")
-    # 清理上次中断可能残留的临时目录
-    shutil.rmtree(tmp_dir, ignore_errors=True)
     os.makedirs(audio_dir, exist_ok=True)
-    os.makedirs(tmp_dir, exist_ok=True)
 
-    # 音色由题型自动决定，不再从前端读取
+    # 音色由题型自动决定，不再从前端读取；三项平台参数统一收敛为 0-100。
     fv = FEMALE_VOICE
     mv = MALE_VOICE
-    wv = WORD_VOICE
-
-    config = {
+    config = normalize_tts_config({
         "rate": rate,
         "volume": volume,
         "pitch": pitch,
-        "pause": pause,
         "format": fmt,
         "quality": quality,
-        "proxy": proxy or "",
         "preview": preview,
-        "word_voice": wv,
+    })
+    rate = config["rate"]
+    volume = config["volume"]
+    pitch = config["pitch"]
+    fmt = config["format"]
+    quality = config["quality"]
+    preview = config["preview"]
+    config.update({
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
         "parser_version": PARSER_VERSION,
-    }
+    })
 
     log_entries = []
 
@@ -1200,14 +1165,13 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         # 检查配置是否一致
         old_config = existing.get("config", {})
         config_changed = (
-            old_config.get("rate") != rate
+            old_config.get("config_version") != TTS_CONFIG_VERSION
+            or old_config.get("rate") != rate
             or old_config.get("volume") != volume
             or old_config.get("pitch") != pitch
-            or old_config.get("pause") != pause
             or old_config.get("format") != fmt
             or old_config.get("quality") != quality
             or old_config.get("preview") != preview
-        or old_config.get("word_voice") != wv
             or old_config.get("audio_algorithm_version") != AUDIO_ALGORITHM_VERSION
             or old_config.get("parser_version") != PARSER_VERSION
         )
@@ -1321,67 +1285,20 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
         "time": now_str(), "level": "info",
         "msg": f"开始生成音频（{progress['completed']}/{total}）..."
     })
-    if _TTSMaker_AVAILABLE:
-        log_entries.append({
-            "time": now_str(), "level": "info",
-            "msg": "男声使用 TTSMaker 788 (Alfie) 生成，女声使用 edge-tts"
-        })
-        log_entries.append({
-            "time": now_str(), "level": "warn",
-            "msg": "正在启动 TTSMaker 浏览器（首次需扫码登录，后续自动复用登录状态）"
-        })
-    else:
-        log_entries.append({
-            "time": now_str(), "level": "warn",
-            "msg": "TTSMaker 不可用，男声将使用 edge-tts (Remy) 生成"
-        })
-    yield (
-        build_progress_log_html(log_entries),
-        build_download_html(progress, get_completed_file_list(progress)),
-        build_stats_bar(progress),
-        f"生成中 — {progress['completed']}/{total}",
-        gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
-    )
-
-    # ---- 检查是否有男声数据，决定是否需要启动 TTSMaker ----
-    # 词汇题型（单词/例句）使用 WORD_VOICE 女声，不参与男声检测
-    has_male_voice = False
-    if _TTSMaker_AVAILABLE:
-        for item in progress["items"]:
-            if item["status"] == "done":
-                continue
-            raw_item = item.get("raw_item", {})
-            text = raw_item.get("text", "")
-            cat = raw_item.get("category", "")
-            if cat in WORD_CATEGORIES:
-                # 词汇题型纯女声，跳过男声检测
-                continue
-            # per-item 音色覆盖（课文跟读等题型）
-            voice_override = item.get("voice_override")
-            if voice_override == "male":
-                has_male_voice = True
-                break
-            if text.strip():
-                dv = mv if voice_override == "male" else fv
-                speakers = parse_speakers(text, default_voice=dv,
-                                         female_voice=fv, male_voice=mv)
-                if any(v == mv for v, _ in speakers):
-                    has_male_voice = True
-                    break
-
-    # ---- TTSMaker 登录（仅有男声数据时才唤起浏览器）----
-    if _TTSMaker_AVAILABLE and has_male_voice:
+    # ---- 讯飞配音会话登录（所有音频都通过讯飞配音生成）----
+    if _XUNFEI_AVAILABLE:
         try:
-            asyncio.run(_ttsmaker.ensure_session(voice_key="alfie"))
+            asyncio.run(_xunfei.ensure_session(voice_key=FEMALE_VOICE))
             log_entries.append({
                 "time": now_str(), "level": "success",
-                "msg": "TTSMaker 登录成功，开始生成音频"
+                "msg": "讯飞配音登录成功，开始生成音频"
             })
         except Exception as login_err:
             log_entries.append({
                 "time": now_str(), "level": "error",
-                "msg": f"TTSMaker 登录失败: {login_err}，男声将回退到 edge-tts"
+                "msg": f"讯飞配音登录失败: {login_err}"
             })
+            raise RuntimeError(f"讯飞配音登录失败: {login_err}")
         yield (
             build_progress_log_html(log_entries),
             build_download_html(progress, get_completed_file_list(progress)),
@@ -1389,18 +1306,8 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             f"生成中 — {progress['completed']}/{total}",
             gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
         )
-    elif _TTSMaker_AVAILABLE and not has_male_voice:
-        log_entries.append({
-            "time": now_str(), "level": "info",
-            "msg": "未检测到男声数据，跳过 TTSMaker 浏览器启动"
-        })
-        yield (
-            build_progress_log_html(log_entries),
-            build_download_html(progress, get_completed_file_list(progress)),
-            build_stats_bar(progress),
-            f"生成中 — {progress['completed']}/{total}",
-            gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
-        )
+    else:
+        raise RuntimeError("讯飞配音引擎不可用（缺少 playwright），无法生成音频")
 
     try:
         # ---- 逐条生成音频 ----
@@ -1429,22 +1336,16 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 )
                 continue
 
-            # per-item 音色覆盖（课文跟读等题型）
-            cat = raw_item.get("category", "")
-            voice_override = item.get("voice_override")
-            if cat in WORD_CATEGORIES:
-                # 词汇题型统一使用单词专用女声
-                item_default_voice = wv
-                speakers = parse_speakers(text, default_voice=wv,
-                                         female_voice=wv, male_voice=mv)
-            else:
-                item_default_voice = mv if voice_override == "male" else fv
-                speakers = parse_speakers(text, default_voice=item_default_voice,
-                                         female_voice=fv, male_voice=mv)
+            # 词汇题型没有独立音色；其他题型按解析器的男女声规则分配。
+            item_default_voice = default_voice_for_item(
+                raw_item,
+                female_voice=fv,
+                male_voice=mv,
+            )
+            speakers = parse_speakers(text, default_voice=item_default_voice,
+                                      female_voice=fv, male_voice=mv)
             speaker_info = ""
-            if cat in WORD_CATEGORIES:
-                speaker_info = " [单词专用女声]"
-            elif len(speakers) > 1 or speakers[0][0] != fv:
+            if len(speakers) > 1 or speakers[0][0] != fv:
                 voices_used = set(v for v, _ in speakers)
                 if voices_used == {fv, mv}:
                     speaker_info = " [混合音色]"
@@ -1464,17 +1365,11 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
             )
 
-            # per-item 语速/停顿覆盖（课文跟读等题型）
-            item_rate = item.get("rate_override") or rate
-            item_pause = item.get("pause_override")
-            item_pause = item_pause if item_pause is not None else pause
             try:
-                # 词汇题型用 WORD_VOICE 作为女声，其他题型用 fv
-                item_fv = wv if cat in WORD_CATEGORIES else fv
                 audio_seg = generate_item_audio(
-                    text, item_rate, volume, pitch, item_pause, proxy, tmp_dir,
+                    text, rate, volume, pitch,
                     default_voice=item_default_voice,
-                    female_voice=item_fv, male_voice=mv,
+                    female_voice=fv, male_voice=mv,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 export_audio(audio_seg, fmt, quality, out_path)
@@ -1506,9 +1401,6 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
                 f"生成中 — {progress['completed']}/{total}",
                 gr.update(visible=False), gr.update(), gr.update(value=None), filepath,
             )
-
-        # ---- 清理临时目录 ----
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
         # ---- 打包 ZIP ----
         progress["status"] = "packaging"
@@ -1559,18 +1451,18 @@ def process_document(file_obj, rate, volume, pitch, pause, fmt, quality, proxy,
             filepath,
         )
     finally:
-        # 无论成功/失败/取消，都关闭 TTSMaker 浏览器会话
-        if _TTSMaker_AVAILABLE and has_male_voice:
+        # 无论成功/失败/取消，都关闭讯飞配音浏览器会话
+        if _XUNFEI_AVAILABLE:
             try:
-                asyncio.run(_ttsmaker.close_session())
+                asyncio.run(_xunfei.close_session())
                 log_entries.append({
                     "time": now_str(), "level": "info",
-                    "msg": "TTSMaker 浏览器已关闭"
+                    "msg": "讯飞配音浏览器已关闭"
                 })
             except Exception as close_err:
                 log_entries.append({
                     "time": now_str(), "level": "warn",
-                    "msg": f"关闭 TTSMaker 浏览器异常: {close_err}"
+                    "msg": f"关闭讯飞配音浏览器异常: {close_err}"
                 })
 
 
@@ -2065,19 +1957,20 @@ body.dark #start-btn { color: #0c0a09 !important; }
 #sidebar-config {
     flex: 0 0 auto !important;
 }
-.config-slider {
-    padding: 0 16px !important;
+/* 讯飞风格参数滑块（语速/语调/音量）：滑轨 + 数字输入框 */
+.config-slider-param {
+    padding: 6px 16px 2px !important;
 }
-.config-slider .svelte-1pkg2y {
+.config-slider-param label {
     font-size: 11.5px !important;
     color: var(--c-text-sub) !important;
     font-weight: 400 !important;
 }
-.config-slider input[type="range"] {
+.config-slider-param input[type="range"] {
     height: 4px !important;
     border-radius: 2px !important;
 }
-.config-slider input[type="range"]::-webkit-slider-thumb {
+.config-slider-param input[type="range"]::-webkit-slider-thumb {
     width: 14px !important;
     height: 14px !important;
     border-radius: 50% !important;
@@ -2085,6 +1978,10 @@ body.dark #start-btn { color: #0c0a09 !important; }
     border: 2px solid var(--c-panel) !important;
     box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
     cursor: pointer;
+}
+.config-slider-param input[type="number"] {
+    font-size: 12px !important;
+    color: var(--c-text) !important;
 }
 .config-dropdown {
     padding: 0 16px !important;
@@ -2386,78 +2283,28 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
                 gr.HTML(
                     '<div class="voice-info-box">'
                     '<div class="voice-info-row"><span class="voice-badge voice-female">女声</span>'
-                    '<span>词汇题型（单词/例句）：en-GB-LibbyNeural</span></div>'
-                    '<div class="voice-info-row"><span class="voice-badge voice-female">女声</span>'
-                    '<span>其他题型：en-US-JennyNeural（w/W 标识）</span></div>'
+                    '<span>全部题型：Amanda（讯飞英语女声）</span></div>'
                     '<div class="voice-info-row"><span class="voice-badge voice-male">男声</span>'
-                    '<span>其他题型：fr-FR-RemyMultilingualNeural（m/M 标识）</span></div>'
+                    '<span>全部题型：George（讯飞英语男声）</span></div>'
                     '</div>'
                 )
-                with gr.Group(elem_classes="config-dropdown"):
-                    rate = gr.Dropdown(
-                        choices=[
-                            ("0.5x 降速", "0.5"), ("0.6x 降速", "0.6"),
-                            ("0.7x 降速", "0.7"), ("0.8x 降速", "0.8"),
-                            ("0.85x 降速", "0.85"), ("0.9x 降速", "0.9"),
-                            ("0.95x 降速", "0.95"), ("1.0x (默认语速)", "1.0"),
-                            ("1.05x 加速", "1.05"), ("1.1x 加速", "1.1"),
-                            ("1.15x 加速", "1.15"), ("1.2x 加速", "1.2"),
-                            ("1.3x 加速", "1.3"), ("1.4x 加速", "1.4"),
-                            ("1.5x 加速", "1.5"), ("2.0x 加速", "2.0"),
-                        ],
-                        value="1.0",
+                with gr.Group(elem_classes="config-slider-param"):
+                    rate = gr.Slider(
+                        minimum=0, maximum=100, value=50, step=1,
                         label="语速",
-                        info="调节语音播放速度",
+                        info="0-100，50 为正常语速",
                     )
-                with gr.Group(elem_classes="config-dropdown"):
-                    volume = gr.Dropdown(
-                        choices=[
-                            ("10% 降低音量", "0.1"), ("20% 降低音量", "0.2"),
-                            ("50% 降低音量", "0.5"), ("80% 降低音量", "0.8"),
-                            ("100% (默认音量)", "1"),
-                            ("120% 提升音量", "1.2"), ("150% 提升音量", "1.5"),
-                            ("180% 提升音量", "1.8"), ("200% 提升音量 (可能破音)", "2.0"),
-                        ],
-                        value="1",
+                with gr.Group(elem_classes="config-slider-param"):
+                    pitch = gr.Slider(
+                        minimum=0, maximum=100, value=50, step=1,
+                        label="语调",
+                        info="0-100，50 为默认音调",
+                    )
+                with gr.Group(elem_classes="config-slider-param"):
+                    volume = gr.Slider(
+                        minimum=0, maximum=100, value=50, step=1,
                         label="音量",
-                        info="调节语音音量大小",
-                    )
-                with gr.Group(elem_classes="config-dropdown"):
-                    pitch = gr.Dropdown(
-                        choices=[
-                            ("0.5x 重度降低 (-50%)", "0.5"),
-                            ("0.75x 中度降低 (-25%)", "0.75"),
-                            ("0.9x 轻微降低 (-10%)", "0.9"),
-                            ("0.95x 微微降低 (-5%)", "0.95"),
-                            ("1.0x (默认)", "1"),
-                            ("1.05x 微微升高 (+5%)", "1.05"),
-                            ("1.1x 轻度升高 (+10%)", "1.1"),
-                            ("1.25x 中度升高 (+25%)", "1.25"),
-                            ("1.5x 重度升高 (+50%)", "1.5"),
-                            ("2.0x 超级升高 (+100%)", "2.0"),
-                        ],
-                        value="1",
-                        label="音调",
-                        info="调节语音音调高低",
-                    )
-                with gr.Group(elem_classes="config-dropdown"):
-                    pause = gr.Dropdown(
-                        choices=[
-                            ("0s (消除停顿，段落连读不停顿)", "-1"),
-                            ("50ms 紧凑", "50"), ("100ms 紧凑", "100"),
-                            ("200ms 紧凑", "200"),
-                            ("300ms (默认，听感最自然)", "0"),
-                            ("500ms", "500"), ("600ms", "600"),
-                            ("800ms", "800"), ("1000ms (1s)", "1000"),
-                            ("1200ms", "1200"), ("1500ms", "1500"),
-                            ("1800ms", "1800"), ("2000ms (2s)", "2000"),
-                            ("2500ms", "2500"), ("3000ms (3s)", "3000"),
-                            ("4000ms", "4000"), ("5000ms (5s)", "5000"),
-                            ("10000ms (10s)", "10000"),
-                        ],
-                        value="0",
-                        label="段落停顿时间",
-                        info="调节每一个段落（换行）的停顿时间",
+                        info="0-100，50 为标准音量",
                     )
                 with gr.Group(elem_classes="config-dropdown"):
                     fmt = gr.Dropdown(
@@ -2472,12 +2319,6 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
                         value="128 kbps（标准）",
                         label="音频质量",
                         info="音频码率（MP3/AAC/OPUS；OGG 用默认质量、WAV 无损）",
-                    )
-                with gr.Group(elem_classes="config-textbox"):
-                    proxy = gr.Textbox(
-                        label="代理地址（可选）",
-                        placeholder="如 http://127.0.0.1:7890",
-                        info="遇到 403 / 网络问题时可填入代理",
                     )
 
             # 高级选项
@@ -2494,17 +2335,15 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
             # 音色说明
             gr.HTML(
                 '<div class="voice-info">'
-                '<strong>音色分配规则：</strong><br>'
-                '<span class="voice-female">● 女声</span>：en-US-JennyNeural（词汇题型用 en-GB-LibbyNeural）<br>'
+                '<strong>音色分配规则（讯飞配音）：</strong><br>'
+                '<span class="voice-female">● 女声</span>：Amanda（英语女声）<br>'
                 '　└ w/W 标识 → 女声<br>'
                 '　└ 无标识 → 默认女声<br>'
-                '<span class="voice-male">● 男声</span>：'
-                + ('TTSMaker 788 Alfie' if _TTSMaker_AVAILABLE else 'fr-FR-RemyMultilingualNeural (edge-tts)')
-                + '<br>'
+                '　└ 词汇题型（单词/例句）→ 默认女声<br>'
+                '<span class="voice-male">● 男声</span>：George（英语男声）<br>'
                 '　└ m/M 标识 → 男声<br>'
                 '<em style="font-size:10px; color:var(--c-text-muted);">'
-                + ('男声通过 TTSMaker 网站生成，需要 Playwright + Chrome' if _TTSMaker_AVAILABLE else 'TTSMaker 不可用，男声回退到 edge-tts')
-                + ' · en-GB-LibbyNeural 为单词专用女声 · 生成音频时自动去除 w/m 标识</em>'
+                '通过讯飞配音生成，首次使用需在弹出的浏览器中扫码登录 · 生成音频时自动去除 w/m 标识</em>'
                 '</div>'
             )
 
@@ -2609,8 +2448,7 @@ with gr.Blocks(title="Word → TTS 一体化工具") as app:
     # 开始处理
     start_btn.click(
         fn=process_document,
-        inputs=[file_input, rate, volume, pitch, pause, fmt, quality, proxy,
-                preview],
+        inputs=[file_input, rate, volume, pitch, fmt, quality, preview],
         outputs=[
             progress_output,    # log_html
             download_html,      # download_html

@@ -9,7 +9,7 @@
 #   bash build_mac.sh --dmg     → 同时创建 .dmg 安装包
 #
 # 前置条件:
-#   pip install gradio edge-tts pydub python-docx pyinstaller
+#   pip install gradio playwright pydub python-docx pyinstaller
 #   brew install ffmpeg
 # ============================================================================
 
@@ -38,7 +38,7 @@ fi
 # 检查依赖
 echo "[检查] 依赖包..."
 python3 -c "import gradio; print(f'  gradio {gradio.__version__}')"
-python3 -c "import edge_tts; print(f'  edge_tts {edge_tts.__version__}')"
+python3 -c "import playwright; print('  playwright OK')"
 python3 -c "import pydub; print('  pydub OK')"
 python3 -c "import docx; print('  python-docx OK')"
 python3 -c "import aiohttp; print(f'  aiohttp {aiohttp.__version__}')"
@@ -69,7 +69,6 @@ pyinstaller \
     --workpath "$PROJECT_ROOT/build/WordTTS" \
     --collect-all gradio \
     --collect-all gradio_client \
-    --collect-all edge_tts \
     --collect-all docx \
     --collect-all lxml \
     --collect-all PIL \
@@ -100,14 +99,11 @@ pyinstaller \
     --collect-all imageio_ffmpeg \
     --hidden-import docx \
     --hidden-import lxml.etree \
-    --hidden-import edge_tts \
+    --hidden-import xunfei_peiyin \
+    --hidden-import playwright.sync_api \
     --hidden-import pydub \
     --hidden-import aiohttp \
     --add-data "word_parser/word_parser.py:word_parser" \
-    --add-data "edge_tts/voice_match_788.py:edge_tts" \
-    --add-data "edge_tts/voice_profiles/:edge_tts/voice_profiles/" \
-    --add-data "edge_tts/bgm/:edge_tts/bgm/" \
-    --hidden-import voice_match_788 \
     --exclude-module mysql \
     --exclude-module mysql_mcp_server \
     --exclude-module pymysql \
@@ -118,7 +114,6 @@ pyinstaller \
     --exclude-module redis \
     --exclude-module celery \
     --exclude-module pytest \
-    --exclude-module playwright \
     --exclude-module IPython \
     --exclude-module notebook \
     --exclude-module jupyter \

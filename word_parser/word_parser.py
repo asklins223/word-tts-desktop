@@ -457,8 +457,11 @@ class TextReadingParser(BaseParser):
       - 段落跟读：整段英文
       - 语篇跟读：按「语篇N」分组，每组可含多段
 
+    Section A/B 新格式优先：显式 Conversation 对话按角色边界拆分，
+    普通文章按标题/段落边界生成音频；旧版章节格式继续使用历史规则。
+
     音色/命名规则（仅 Understanding Idea / Reading for writing 章节）：
-      语速和停顿由前端动态配置，解析器不固定。
+      讯飞声音参数由前端动态配置，解析器不固定。
       Understanding Idea (前缀 U)：
         - 句子跟读：男声，命名 U-句子1、U-句子2 …
         - 段落跟读：男声，逐句切分，命名 U-段落1、U-段落2 …
@@ -552,7 +555,704 @@ class TextReadingParser(BaseParser):
     # 子章节名称集合，用于排除 heading 样式误匹配
     _SUB_SECTION_NAMES = frozenset({SUB_SENTENCE, SUB_PARAGRAPH, SUB_DISCOURSE})
 
+    # ------------------------------------------------------------------
+    # Section A/B 新版课文跟读格式
+    # ------------------------------------------------------------------
+    # 新版样本中 Section A/B 和子题型有时只是 Normal 样式，不能依赖
+    # Heading 层级判断；而且「段落/语篇跟读」的音频边界由 Conversation
+    # 或 Word 段落决定，不能套用旧版的逐句切分规则。
+    RE_SECTION_AB = re.compile(r'^Section\s+([A-Za-z])\s*[：:]?\s*$', re.I)
+    RE_CONVERSATION = re.compile(r'^Conversation\s*(\d+)\s*[：:]?\s*$', re.I)
+    RE_NEW_SUB_SECTION = re.compile(r'^(句子跟读|段落跟读|语篇跟读)\s*[：:]?\s*$')
+    RE_ROLE_LABEL = re.compile(r'^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$')
+    RE_ARTICLE_SUBTITLE = re.compile(r'^//\s*(.*)$')
+    RE_CONTENT_HEADING = re.compile(r'^(Reading\s+Plus)\s*[：:]?\s*$', re.I)
+
+    def __init__(self, filepath):
+        super().__init__(filepath)
+        self._section_ab_profile_cache = None
+
     def parse(self):
+        """按格式优先级解析课文跟读。
+
+        新版不是由某一个标题字符串单独决定的：只有 Section 标记、跟读
+        子题型和有效内容形成连续结构时，才切换到新版解析；否则继续走
+        原有 Understanding Idea / Reading for writing 逻辑，避免旧文档中
+        偶然出现的 ``Section A`` 被误判。
+        """
+        if self._is_section_ab_format():
+            return self._parse_section_ab_format()
+        return self._parse_legacy_format()
+
+    def _is_section_ab_format(self):
+        """判断是否为新版 Section A/B 课文跟读文档。
+
+        Section A/B 只是候选信号。真正的判定要求至少有一个 Section
+        标记，后面紧跟一个跟读子题型，并且该子题型下存在可朗读内容。
+        这样旧文档正文、目录或备注中的孤立 ``Section A`` 不会触发新版
+        状态机；如果新旧结构都完整存在，则按产品要求让新版优先。
+        """
+        return self._detect_section_ab_profile()["is_new"]
+
+    @classmethod
+    def _normalized_heading(cls, text):
+        """统一标题末尾中英文冒号和空白，供结构检测使用。"""
+        value = str(text or '').strip()
+        return re.sub(r'[：:]\s*$', '', value).strip()
+
+    @classmethod
+    def _new_subsection_name(cls, text):
+        """返回新版跟读子题型名；普通正文返回 None。"""
+        value = cls._normalized_heading(text)
+        return value if value in cls._SUB_SECTION_NAMES else None
+
+    @classmethod
+    def _is_reading_plus_heading(cls, text):
+        """只做内容层面的候选匹配，是否为结构标题由 profile 决定。"""
+        return bool(cls.RE_CONTENT_HEADING.match(str(text or '').strip()))
+
+    def _detect_section_ab_profile(self):
+        """从段落序列提取新版格式证据，不依赖文件名或年级名称。
+
+        ``Section A`` 只有在同一 Section 范围内连接到跟读子题型，且子
+        题型下有英文/角色等有效载荷时才算成立。这里还同时提取
+        Reading Plus 的结构位置和对话的角色拆分模式，解析阶段复用这份
+        profile，避免不同分支各自用启发式重新猜测。
+        """
+        if self._section_ab_profile_cache is not None:
+            return self._section_ab_profile_cache
+
+        entries = list(self.paras)
+        section_positions = []
+        legacy_section_positions = []
+        subsection_positions = []
+        reading_plus_candidates = []
+        conversation_positions = []
+        role_line_positions = []
+        article_marker_positions = []
+
+        for position, (_, text, _) in enumerate(entries):
+            value = str(text or '').strip()
+            if self.RE_SECTION_AB.match(value):
+                section_positions.append(position)
+            if self._normalized_heading(value).casefold() in self.KNOWN_SECTIONS:
+                legacy_section_positions.append(position)
+            subsection = self._new_subsection_name(value)
+            if subsection:
+                subsection_positions.append((position, subsection))
+            if self._is_reading_plus_heading(value):
+                reading_plus_candidates.append(position)
+            if self.RE_CONVERSATION.match(value):
+                conversation_positions.append(position)
+            if self.RE_ARTICLE_SUBTITLE.match(value):
+                article_marker_positions.append(position)
+            if any(self._role_label(line) for line in value.splitlines()):
+                role_line_positions.append(position)
+
+        def next_section_after(position):
+            return next(
+                (
+                    candidate
+                    for candidate in sorted(section_positions + legacy_section_positions)
+                    if candidate > position
+                ),
+                len(entries),
+            )
+
+        # Section 与子题型必须在同一个 Section 范围内，避免文档前言中的
+        # Section A 和后面完全无关的跟读标题被拼成新版结构。
+        linked_subsections = []
+        for section_position in section_positions:
+            section_end = next_section_after(section_position)
+            linked_subsections.extend(
+                (position, name)
+                for position, name in subsection_positions
+                if section_position < position < section_end
+            )
+
+        # 仅把跟读子题型之后、下一个结构标题之前的英文/角色内容算作
+        # 有效载荷。标题、Conversation 编号、语篇编号本身不算内容。
+        payload_subsections = []
+        all_boundary_positions = sorted(
+            section_positions
+            + legacy_section_positions
+            + [position for position, _ in subsection_positions]
+            + reading_plus_candidates
+        )
+        for subsection_position, subsection_name in linked_subsections:
+            next_boundary = next(
+                (candidate for candidate in all_boundary_positions
+                 if candidate > subsection_position),
+                len(entries),
+            )
+            has_payload = False
+            for position in range(subsection_position + 1, next_boundary):
+                value = str(entries[position][1] or '').strip()
+                if not value:
+                    continue
+                if self.RE_CONVERSATION.match(value):
+                    continue
+                if self.RE_DISCOURSE_NUM.match(value):
+                    continue
+                if self._is_reading_plus_heading(value):
+                    continue
+                if self._new_english_lines(value):
+                    has_payload = True
+                    break
+            if has_payload:
+                payload_subsections.append((subsection_position, subsection_name))
+
+        # Reading Plus 只有在短距离内确实引出新的跟读子题型时才视为章节
+        # 边界；普通正文中提到这个词不会改变前面的 Section 和命名空间。
+        reading_plus_positions = set()
+        for candidate in reading_plus_candidates:
+            candidate_end = next_section_after(candidate)
+            if any(
+                candidate < subsection_position <= candidate + 8
+                and subsection_position < candidate_end
+                for subsection_position, _ in subsection_positions
+            ):
+                reading_plus_positions.add(candidate)
+
+        # 对话模式同样从结构判断：显式 Conversation 块中出现至少两个
+        # 有效角色时，说明文档给出了“按角色分块”的边界；没有这种块而
+        # 只是普通多角色段落时，保留整段，供用户分别配置角色音色。
+        conversation_blocks = []
+        active_block = None
+        current_subsection = None
+        in_new_section = False
+
+        def flush_conversation_block():
+            nonlocal active_block
+            if active_block is not None:
+                conversation_blocks.append(active_block)
+                active_block = None
+
+        for position, (_, text, _) in enumerate(entries):
+            value = str(text or '').strip()
+            section_match = self.RE_SECTION_AB.match(value)
+            if section_match:
+                flush_conversation_block()
+                current_subsection = None
+                in_new_section = True
+                continue
+            if self._normalized_heading(value).casefold() in self.KNOWN_SECTIONS:
+                flush_conversation_block()
+                current_subsection = None
+                in_new_section = False
+                continue
+            if not in_new_section:
+                continue
+            subsection = self._new_subsection_name(value)
+            if subsection:
+                flush_conversation_block()
+                current_subsection = subsection
+                continue
+            if self.RE_CONVERSATION.match(value):
+                flush_conversation_block()
+                if current_subsection in (self.SUB_PARAGRAPH, self.SUB_DISCOURSE):
+                    active_block = {
+                        "position": position,
+                        "roles": set(),
+                        "role_lines": 0,
+                    }
+                continue
+            if active_block is not None:
+                for line in self._new_english_lines(value):
+                    role = self._role_label(line)
+                    if role:
+                        active_block["roles"].add(
+                            re.sub(r'\s+', ' ', role).casefold()
+                        )
+                        active_block["role_lines"] += 1
+        flush_conversation_block()
+
+        role_dialogue_blocks = [
+            block for block in conversation_blocks
+            if len(block["roles"]) >= 2 and block["role_lines"] >= 2
+        ]
+        role_audio_mode = "per_role" if role_dialogue_blocks else "aggregate"
+
+        # 新版置信条件：Section 标记、同范围跟读子题型、子题型载荷三者
+        # 缺一不可。没有使用单个字符串、文件名、标题或年级名做决策。
+        is_new = bool(
+            section_positions
+            and linked_subsections
+            and payload_subsections
+        )
+        self._section_ab_profile_cache = {
+            "is_new": is_new,
+            "section_positions": tuple(section_positions),
+            "legacy_section_positions": tuple(legacy_section_positions),
+            "subsection_positions": tuple(subsection_positions),
+            "reading_plus_positions": frozenset(reading_plus_positions),
+            "conversation_positions": tuple(conversation_positions),
+            "role_line_positions": tuple(role_line_positions),
+            "article_marker_positions": tuple(article_marker_positions),
+            "role_audio_mode": role_audio_mode,
+            "conversation_blocks": tuple(conversation_blocks),
+        }
+        return self._section_ab_profile_cache
+
+    @staticmethod
+    def _role_label_is_valid(label):
+        """判断冒号前文本是否更像角色名，而不是普通正文。"""
+        value = str(label or '').strip()
+        if not value or len(value) > 48:
+            return False
+        if len(re.split(r'\s+', value)) > 4:
+            return False
+        if value[0].isdigit() or '://' in value or '/' in value or '\\' in value:
+            return False
+        if re.search(r'[.!?。！？；;，,]', value):
+            return False
+        return True
+
+    @classmethod
+    def _role_label(cls, text):
+        """返回一行中的角色名；普通带冒号文本返回 None。"""
+        match = cls.RE_ROLE_LABEL.match(str(text or '').strip())
+        if not match or not cls._role_label_is_valid(match.group(1)):
+            return None
+        return match.group(1).strip()
+
+    @classmethod
+    def _contains_multiple_roles(cls, texts):
+        """新版对话至少出现两个不同角色时，按对话整体保留换行。"""
+        labels = set()
+        for text in texts:
+            for line in str(text or '').splitlines():
+                label = cls._role_label(line)
+                if label:
+                    labels.add(re.sub(r'\s+', ' ', label).casefold())
+        return len(labels) >= 2
+
+    @staticmethod
+    def _new_english_lines(text):
+        """从新版内容中去掉中文翻译行，保留英文/角色行。"""
+        lines = []
+        for line in str(text or '').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if TextReadingParser.RE_CHINESE_PREFIX.match(line) or is_chinese(line):
+                continue
+            lines.append(line)
+        return lines
+
+    @classmethod
+    def _new_clean_text(cls, texts):
+        """清理新版音频文本，同时保留角色行之间的换行。"""
+        lines = []
+        for text in texts:
+            lines.extend(cls._new_english_lines(text))
+        return sanitize('\n'.join(lines))
+
+    @classmethod
+    def _new_article_units(cls, text):
+        """按新版文章中的 ``//`` 小标题标记拆分同一 Word 段落。"""
+        units = []
+        current_lines = []
+        for line in cls._new_english_lines(text):
+            if cls.RE_ARTICLE_SUBTITLE.match(line):
+                if current_lines:
+                    units.append('\n'.join(current_lines))
+                    current_lines = []
+                # 双斜杠本身是结构标记，不与下一行正文混为一个原始段落；
+                # 后续 append_article_items 会把它和紧邻段落合并成一个音频。
+                units.append(line)
+                continue
+            current_lines.append(line)
+        if current_lines:
+            units.append('\n'.join(current_lines))
+        return units
+
+    @classmethod
+    def _article_heading(cls, text):
+        """返回文章标题/小标题文本及是否显式使用 // 标记。"""
+        value = sanitize(text)
+        if not value:
+            return '', False
+        match = cls.RE_ARTICLE_SUBTITLE.match(value)
+        if match:
+            return match.group(1).strip(), True
+        return value, False
+
+    @classmethod
+    def _looks_like_article_heading(cls, text):
+        """识别新规则中的文章大标题/小标题。
+
+        新样本的标题使用短文本、粗体或字号区分，但解析主流程只保留
+        统一的段落文本；短文本且没有句末标点是对未带 // 标记样本的
+        稳定兜底规则，显式 // 始终优先。
+        """
+        value, explicit = cls._article_heading(text)
+        if not value:
+            return False
+        if explicit:
+            return True
+        if cls._role_label(value):
+            return False
+        if len(value) > 80 or len(re.split(r'\s+', value)) > 12:
+            return False
+        if re.match(r'^\d+\s*[.、）)]', value):
+            return False
+        if re.search(r'[.!?。！？]$', value):
+            return False
+        return True
+
+    @staticmethod
+    def _section_ab_code(section):
+        match = re.match(r'^Section\s+([A-Za-z])$', str(section or '').strip(), re.I)
+        return f"S{match.group(1).upper()}" if match else "S"
+
+    @classmethod
+    def _role_segments(cls, text):
+        """按角色行拆分一条对话，返回 ``[(角色名, 文本), ...]``。"""
+        segments = []
+        current_role = None
+        current_lines = []
+
+        def flush():
+            nonlocal current_lines
+            clean = sanitize('\n'.join(current_lines))
+            if clean:
+                segments.append((current_role, clean))
+            current_lines = []
+
+        for line in str(text or '').splitlines():
+            value = line.strip()
+            if not value:
+                continue
+            role = cls._role_label(value)
+            if role:
+                flush()
+                current_role = role
+            current_lines.append(value)
+        flush()
+        return segments or [(None, sanitize(text))]
+
+    def _parse_section_ab_format(self):
+        """解析讯飞新版 Section A/B 课文跟读格式。
+
+        新版规则：
+          - 句子跟读按编号输出，默认女声；
+          - 没有显式 Conversation 的多角色段落保留为一个音频，角色名
+            通过结构元数据提供给用户配置；显式 Conversation 块中每个
+            角色单独输出，拆分模式由文档结构 profile 决定；
+          - 语篇跟读的对话遵循同样的角色拆分规则；文章按段落输出，
+            大标题单独一个音频，// 小标题与其紧邻的一个段落合并。
+        """
+        format_profile = self._detect_section_ab_profile()
+        split_role_audio = format_profile["role_audio_mode"] == "per_role"
+        reading_plus_positions = format_profile["reading_plus_positions"]
+        items = []
+        current_section = ''
+        current_sub = None
+        current_audio_prefix = 'S'
+        in_new_section = False
+
+        sentence_buf = []
+        paragraph_units = []
+        paragraph_blocks = []
+        paragraph_conversation_mode = False
+        paragraph_current_number = None
+        paragraph_current_lines = []
+
+        discourse_units = []
+        discourse_blocks = []
+        discourse_conversation_mode = False
+        discourse_current_number = None
+        discourse_current_lines = []
+        new_sequence_by_category = {}
+
+        def reset_paragraph_state():
+            nonlocal paragraph_units, paragraph_blocks
+            nonlocal paragraph_conversation_mode, paragraph_current_number
+            nonlocal paragraph_current_lines
+            paragraph_units = []
+            paragraph_blocks = []
+            paragraph_conversation_mode = False
+            paragraph_current_number = None
+            paragraph_current_lines = []
+
+        def reset_discourse_state():
+            nonlocal discourse_units, discourse_blocks
+            nonlocal discourse_conversation_mode, discourse_current_number
+            nonlocal discourse_current_lines
+            discourse_units = []
+            discourse_blocks = []
+            discourse_conversation_mode = False
+            discourse_current_number = None
+            discourse_current_lines = []
+
+        def reset_section_sequences():
+            new_sequence_by_category.clear()
+
+        def flush_sentences():
+            nonlocal sentence_buf
+            if not sentence_buf:
+                return
+            for number, text in sorted(sentence_buf, key=lambda value: value[0]):
+                items.append({
+                    "category": self.SUB_SENTENCE,
+                    "section": current_section,
+                    "number": number,
+                    "filename_stem": f"{current_audio_prefix}句子{number}",
+                    "voice": "female",
+                    "text": text,
+                })
+            sentence_buf = []
+
+        def append_new_block_item(category, text, conversation_number=None, role=None):
+            clean = sanitize(text)
+            if not clean:
+                return
+            sequence_key = f"{current_audio_prefix}:{category}"
+            new_sequence_by_category[sequence_key] = new_sequence_by_category.get(sequence_key, 0) + 1
+            sequence = new_sequence_by_category[sequence_key]
+            item = {
+                "category": category,
+                "section": current_section,
+                "number": sequence,
+                "filename_stem": f"{current_audio_prefix}{category[:2]}{sequence}",
+                "text": clean,
+            }
+            # 对话可能有多个角色，不能给整条结果写死男女声；未知角色
+            # 在合成阶段按默认女声处理，已选择的角色由 role_voices 覆盖。
+            if role:
+                item["role"] = role
+            elif not self._contains_multiple_roles(clean.splitlines()):
+                item["voice"] = "female"
+            if conversation_number is not None:
+                item["conversation_number"] = conversation_number
+            items.append(item)
+
+        def flush_dialogue_buffer(category, units, blocks, conversation_mode):
+            """输出新版段落/语篇对话。"""
+            if conversation_mode:
+                groups = blocks
+            else:
+                groups = []
+                if self._contains_multiple_roles(units):
+                    groups.append((None, self._new_clean_text(units)))
+                else:
+                    groups.extend((None, self._new_clean_text([unit])) for unit in units)
+            for conversation_number, text in groups:
+                if isinstance(text, list):
+                    text = self._new_clean_text(text)
+                if (
+                    split_role_audio
+                    and conversation_mode
+                    and self._contains_multiple_roles([text])
+                ):
+                    for role, role_text in self._role_segments(text):
+                        append_new_block_item(
+                            category,
+                            role_text,
+                            conversation_number,
+                            role=role,
+                        )
+                else:
+                    append_new_block_item(category, text, conversation_number)
+
+        def flush_paragraph():
+            nonlocal paragraph_current_lines, paragraph_current_number
+            if paragraph_conversation_mode and paragraph_current_lines:
+                paragraph_blocks.append((
+                    paragraph_current_number,
+                    self._new_clean_text(paragraph_current_lines),
+                ))
+                paragraph_current_lines = []
+                paragraph_current_number = None
+            if paragraph_conversation_mode:
+                flush_dialogue_buffer(
+                    self.SUB_PARAGRAPH,
+                    paragraph_units,
+                    paragraph_blocks,
+                    True,
+                )
+            elif paragraph_units:
+                flush_dialogue_buffer(
+                    self.SUB_PARAGRAPH,
+                    paragraph_units,
+                    [],
+                    False,
+                )
+            reset_paragraph_state()
+
+        def append_article_items(units):
+            """按文章标题/小标题规则输出语篇音频。"""
+            cleaned = []
+            for unit in units:
+                value = self._new_clean_text([unit])
+                if value:
+                    cleaned.append(value)
+            if not cleaned:
+                return
+
+            # 第一个短标题是文章大标题，单独一个音频；显式 // 作为
+            # 小标题时不触发大标题判断，后续按小标题+下一段合并。
+            index = 0
+            first_value, first_explicit = self._article_heading(cleaned[0])
+            if len(cleaned) > 1 and self._looks_like_article_heading(cleaned[0]) and not first_explicit:
+                append_new_block_item(self.SUB_DISCOURSE, first_value)
+                index = 1
+
+            while index < len(cleaned):
+                value, explicit = self._article_heading(cleaned[index])
+                if explicit or self._looks_like_article_heading(value):
+                    if index + 1 < len(cleaned):
+                        next_value = cleaned[index + 1]
+                        append_new_block_item(
+                            self.SUB_DISCOURSE,
+                            f"{value}\n{next_value}",
+                        )
+                        index += 2
+                    else:
+                        append_new_block_item(self.SUB_DISCOURSE, value)
+                        index += 1
+                    continue
+                append_new_block_item(self.SUB_DISCOURSE, cleaned[index])
+                index += 1
+
+        def flush_discourse():
+            nonlocal discourse_current_lines, discourse_current_number
+            if discourse_conversation_mode and discourse_current_lines:
+                discourse_blocks.append((
+                    discourse_current_number,
+                    self._new_clean_text(discourse_current_lines),
+                ))
+                discourse_current_lines = []
+                discourse_current_number = None
+            if discourse_conversation_mode:
+                flush_dialogue_buffer(
+                    self.SUB_DISCOURSE,
+                    discourse_units,
+                    discourse_blocks,
+                    True,
+                )
+            elif discourse_units:
+                # 兼容旧式「语篇1」标记：标记本身不朗读，组内仍按新版
+                # “一段一个音频/标题规则”处理。
+                groups = []
+                current = []
+                for unit in discourse_units:
+                    if self.RE_DISCOURSE_NUM.match(unit):
+                        if current:
+                            groups.append(current)
+                            current = []
+                        continue
+                    current.append(unit)
+                if current:
+                    groups.append(current)
+                if not groups:
+                    groups = [discourse_units]
+                for group in groups:
+                    append_article_items(group)
+            reset_discourse_state()
+
+        def flush_all_new():
+            flush_sentences()
+            flush_paragraph()
+            flush_discourse()
+
+        def append_new_content(target, text):
+            lines = self._new_english_lines(text)
+            if not lines:
+                return
+            if target == self.SUB_PARAGRAPH:
+                if paragraph_conversation_mode:
+                    paragraph_current_lines.extend(lines)
+                else:
+                    paragraph_units.append('\n'.join(lines))
+            elif target == self.SUB_DISCOURSE:
+                if discourse_conversation_mode:
+                    discourse_current_lines.extend(lines)
+                else:
+                    discourse_units.extend(self._new_article_units(text))
+
+        for position, (_, text, _) in enumerate(self.paras):
+            section_match = self.RE_SECTION_AB.match(text)
+            if section_match:
+                flush_all_new()
+                current_section = f"Section {section_match.group(1).upper()}"
+                current_audio_prefix = self._section_ab_code(current_section)
+                reset_section_sequences()
+                current_sub = None
+                in_new_section = True
+                continue
+
+            # 混合文档中如果在新版 Section 之间出现完整的旧章节，先把
+            # 它从新版状态机隔离出来，避免旧章节的「句子跟读」被错误
+            # 命名成 S句子N。新版分支只处理已经确认属于新版的 Section
+            # 范围；完整旧格式文档仍由 legacy 入口处理。
+            if self._normalized_heading(text).casefold() in self.KNOWN_SECTIONS:
+                flush_all_new()
+                current_section = ''
+                current_audio_prefix = 'S'
+                reset_section_sequences()
+                current_sub = None
+                in_new_section = False
+                continue
+
+            if not in_new_section:
+                continue
+
+            # 样本中的 Reading Plus 是语篇跟读下一个内容组的标题，
+            # 不属于上一篇文章的音频文本；下一个「语篇跟读」会再次建立
+            # 音频边界。样式可能是 Normal，因此用内容标记兜底。
+            if position in reading_plus_positions:
+                flush_all_new()
+                current_section = "Reading Plus"
+                current_audio_prefix = "RP"
+                reset_section_sequences()
+                current_sub = None
+                continue
+
+            sub_match = self.RE_NEW_SUB_SECTION.match(text)
+            if sub_match:
+                flush_all_new()
+                current_sub = sub_match.group(1)
+                continue
+
+            if current_sub == self.SUB_SENTENCE:
+                self._handle_sentence(text, sentence_buf)
+                continue
+
+            if current_sub == self.SUB_PARAGRAPH:
+                conversation_match = self.RE_CONVERSATION.match(text)
+                if conversation_match:
+                    if paragraph_conversation_mode and paragraph_current_lines:
+                        paragraph_blocks.append((
+                            paragraph_current_number,
+                            self._new_clean_text(paragraph_current_lines),
+                        ))
+                    paragraph_conversation_mode = True
+                    paragraph_current_number = int(conversation_match.group(1))
+                    paragraph_current_lines = []
+                    continue
+                append_new_content(self.SUB_PARAGRAPH, text)
+                continue
+
+            if current_sub == self.SUB_DISCOURSE:
+                conversation_match = self.RE_CONVERSATION.match(text)
+                if conversation_match:
+                    if discourse_conversation_mode and discourse_current_lines:
+                        discourse_blocks.append((
+                            discourse_current_number,
+                            self._new_clean_text(discourse_current_lines),
+                        ))
+                    discourse_conversation_mode = True
+                    discourse_current_number = int(conversation_match.group(1))
+                    discourse_current_lines = []
+                    continue
+                append_new_content(self.SUB_DISCOURSE, text)
+
+        flush_all_new()
+        return self._result(items)
+
+    def _parse_legacy_format(self):
         items = []
         current_sub = None        # 当前子章节类型
         current_section = ""      # 当前章节名
@@ -943,8 +1643,8 @@ class ExcelVocabularyParser(BaseParser):
     解析 Excel 单词导入模板（.xlsx），提取「单词名称」和「例句」两列。
 
     每个单词生成两条 TTS 条目：
-      1. 单词本身 — 英文男声，命名「单词1」「单词2」…
-      2. 例句     — 英文男声，命名「句子1」「句子2」…
+      1. 单词本身 — 使用默认女声 Amanda，命名「单词1」「单词2」…
+      2. 例句     — 使用默认女声 Amanda，命名「句子1」「句子2」…
 
     Excel 结构（第一行为表头）：
       A: 单元    (如 Unit 6)
@@ -1027,7 +1727,7 @@ class ExcelVocabularyParser(BaseParser):
             if not word_text and not sentence_text:
                 continue
 
-            # 单词条目（voice=female，由 TTS 引擎统一映射为单词专用女声 en-GB-LibbyNeural）
+            # 单词条目：使用统一默认女声 Amanda，不设置单词专用音色。
             if word_text:
                 word_seq += 1
                 items.append({
@@ -1038,7 +1738,7 @@ class ExcelVocabularyParser(BaseParser):
                     "text": word_text,
                 })
 
-            # 例句条目（同上，使用单词专用女声）
+            # 例句条目：同样使用统一默认女声 Amanda。
             if sentence_text:
                 sentence_seq += 1
                 items.append({

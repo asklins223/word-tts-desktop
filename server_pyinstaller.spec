@@ -32,6 +32,8 @@ datas = [
     # word_parser 没有 __init__.py；运行时会把这个目录加入 sys.path。
     # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
     ('word_parser/word_parser.py', 'word_parser'),
+    # 首次启动在线刷新失败时使用的音色目录种子缓存。
+    ('xunfei_voices', 'xunfei_voices'),
 ]
 
 # Playwright 官方 hook（playwright/_impl/__pyinstaller/）在某些 PyInstaller
@@ -45,8 +47,8 @@ hiddenimports = [
     # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx / openpyxl 的导入。
     'docx',
     'openpyxl',
-    'ttsmaker_client',
-    'ttsmaker.ttsmaker',
+    'xunfei_peiyin',
+    'xunfei_voice_catalog',
     # 只使用同步 Playwright API。playwright 自带的官方 PyInstaller hook
     # 会收集 driver/package；下方在 Analysis 后剔除重复的 Node 可执行文件。
     'playwright.sync_api',

@@ -9,8 +9,8 @@
 ## 主要能力
 
 - 四步桌面流程：导入文档、核对与设置、生成音频、试听与下载。
-- `w / W` 内容默认使用 Jenny 女声，`m / M` 内容使用 TTSMaker 788 Alfie 男声；男声服务不可用时提供明确回退状态。
-- 支持语速、段落停顿、音量、音调、输出格式与质量配置，并可保存常用预设。
+- 统一使用讯飞配音：`w / W` 使用 Amanda 女声，`m / M` 使用 George 男声；无标识内容默认使用 Amanda。
+- 讯飞语速、语调、音量均支持 0-100 任意整数值（默认 50），另可配置输出格式与质量并保存常用预设；讯飞返回的 MP3 首尾音频保持原样。
 - 支持 MP3、OGG、AAC、OPUS、WAV 输出，提供逐条试听、单文件保存和 ZIP 打包保存。
 - 本机历史中心最多保留最近 20 个任务，可重新查看、试听、下载或删除。
 - 生成过程提供结构化时间线、断线恢复、取消与失败重试信息。
@@ -63,7 +63,7 @@ build_electron_windows.bat
 ## 测试
 
 ```bash
-python3 -m unittest tests.test_desktop_server tests.test_audio_spacing -v
+python3 -m unittest tests.test_desktop_server tests.test_xunfei_config tests.test_audio_assembly -v
 cd electron && npm test
 ```
 
@@ -73,10 +73,8 @@ cd electron && npm test
 python3 -m unittest discover -s tests -v
 ```
 
-声音训练相关测试需要仓库外的训练语料；音色校准测试还要求 FFmpeg 包含 `rubberband`、`firequalizer` 和 `alimiter` 滤镜。
-
 ## 数据与升级兼容
 
-品牌升级后仍沿用原 `WordTTS` 用户数据目录、应用 ID、API Header、环境变量和本地配置 Key，因此旧版本生成历史与设置不会因改名而消失。任务文件只保存在本机，文件打开、下载和历史访问均经过目录边界校验。
+应用沿用原 `WordTTS` 用户数据目录、应用 ID、API Header 和环境变量；已生成历史不会丢失。讯飞版配置使用独立的本地存储命名空间，旧版倍率/音色预设不会误套用。首次生成时需要在讯飞配音浏览器窗口完成登录，登录状态会保存在本机。
 
 完整版本说明见 [CHANGELOG.md](CHANGELOG.md)。

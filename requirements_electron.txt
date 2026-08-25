@@ -7,9 +7,8 @@ fastapi>=0.115.0
 uvicorn>=0.30.0
 pydantic>=2.0.0
 
-# ---- TTS 核心 ----
-edge-tts>=7.2.0
-aiohttp
+# ---- TTS 核心（讯飞配音浏览器自动化）----
+playwright==1.56.0
 
 # ---- 文档解析 ----
 python-docx>=1.0.0
@@ -29,8 +28,3 @@ python-multipart
 
 # ---- 打包工具 ----
 pyinstaller>=6.0.0
-
-# ---- TTSMaker 男声生成（打包内置）----
-# Playwright: 浏览器自动化，操控 TTSMaker.cn 网站生成男声
-# 固定到已验证版本；Chromium revision 必须与它的 browsers.json 精确匹配。
-playwright==1.56.0

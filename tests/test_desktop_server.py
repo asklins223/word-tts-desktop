@@ -305,11 +305,9 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         return {
             "format": "mp3",
             "quality": "128 kbps（标准）",
-            "rate": 1,
-            "volume": 1,
-            "pitch": 1,
-            "pause": 0,
-            "proxy": "",
+            "rate": 50,
+            "volume": 50,
+            "pitch": 50,
             "preview": False,
         }
 
