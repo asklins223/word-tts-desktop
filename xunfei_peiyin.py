@@ -25,6 +25,8 @@ import time
 import json
 import threading
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from playwright.sync_api import sync_playwright
 from app_paths import ensure_data_dir
@@ -213,7 +215,8 @@ class JS:
     CHECK_MODAL_HAS_TEXT = """
     (keywords) => {
         const modals = document.querySelectorAll(
-            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
             const style = window.getComputedStyle(el);
@@ -238,7 +241,8 @@ class JS:
     CLICK_BTN_IN_MODAL = """
     (buttonText) => {
         const modals = document.querySelectorAll(
-            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
             const style = window.getComputedStyle(el);
@@ -435,7 +439,8 @@ class JS:
     CHECK_NO_REMIND = """
     () => {
         const modals = document.querySelectorAll(
-            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
             const style = window.getComputedStyle(el);
@@ -488,7 +493,8 @@ class JS:
     CLICK_AI_SWITCH = """
     () => {
         const modals = document.querySelectorAll(
-            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
             const style = window.getComputedStyle(el);
@@ -526,7 +532,8 @@ class JS:
     CLICK_AI_CONFIRM = """
     () => {
         const modals = document.querySelectorAll(
-            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
             const style = window.getComputedStyle(el);
@@ -557,7 +564,8 @@ class JS:
     SNAPSHOT_DIALOGS = """
     () => {
         const roots = document.querySelectorAll(
-            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
             const style = window.getComputedStyle(el);
@@ -613,7 +621,6 @@ AI_FLAG_KEYWORD_VARIANTS = [
     ["AI生成", "不再提示"],
     ["标识", "不再提示"],
     ["AI", "不再提示"],
-    ["AI", "标识"],
     ["不再提示"],
 ]
 
@@ -956,7 +963,7 @@ class XunFeiSession:
         """按文案找到可见弹窗，兼容 Ant Design 和新版通用 dialog。"""
         try:
             dialogs = page.locator(
-                '.ant-modal:visible, [role="dialog"]:visible, '
+                '.ant-modal:visible, .ant-modal-content:visible, [role="dialog"]:visible, '
                 '.el-dialog:visible, .el-message-box:visible'
             )
             for index in range(min(dialogs.count(), 20)):
@@ -1011,7 +1018,7 @@ class XunFeiSession:
         """用 locator 兜底点击确认合成弹窗中的 AI 标识开关。"""
         try:
             dialogs = page.locator(
-                '.ant-modal:visible, [role="dialog"]:visible, '
+                '.ant-modal:visible, .ant-modal-content:visible, [role="dialog"]:visible, '
                 '.el-dialog:visible, .el-message-box:visible'
             )
             for index in range(min(dialogs.count(), 20)):
@@ -1066,6 +1073,11 @@ class XunFeiSession:
         if not checked:
             checked = self._click_no_remind_with_locator(page)
         _log(f"[xunfei]   AI 标识弹窗‘不再提示’: {'✓' if checked else '✗'}{f' ({checked})' if checked else ''}")
+        if not checked:
+            snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+            if snapshot:
+                _log(f"[xunfei]   AI 弹窗未勾选‘不再提示’，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
+            return False
         self._pause(page, 0.35, 0.15)
 
         def click_switch():
@@ -1089,8 +1101,25 @@ class XunFeiSession:
             if snapshot:
                 _log(f"[xunfei]   AI 弹窗仍未关闭，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
         _log(f"[xunfei]   AI 标识弹窗确认: {'✓' if confirmed else '✗'}")
+        if not confirmed:
+            return False
+
+        closed = _poll(
+            lambda: not any(
+                _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, keywords)
+                for keywords in AI_FLAG_KEYWORD_VARIANTS
+            ),
+            timeout=5,
+            interval=0.25,
+            page=page,
+        )
+        if not closed:
+            snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+            if snapshot:
+                _log(f"[xunfei]   AI 标识确认后弹窗仍存在: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
+            return False
         self._pause(page, 0.5, 0.2)
-        return confirmed
+        return True
 
     def _wait_order_or_error(self, page, timeout):
         def probe():
@@ -1139,7 +1168,9 @@ class XunFeiSession:
         ai_modal_seen = outcome == "ai_modal"
         if outcome == "ai_modal":
             _log("[xunfei]   检测到 AI 标识说明弹窗")
-            self._handle_ai_flag_dialog(page)
+            if not self._handle_ai_flag_dialog(page):
+                _log("[xunfei]   AI 标识弹窗未完成确认，停止本次合成")
+                return "failed"
         elif outcome in ("order", "insufficient", "rate_limited"):
             return "ok" if outcome == "order" else outcome
 
@@ -1164,7 +1195,9 @@ class XunFeiSession:
             ai_modal_seen = True
             # 少数页面会在第一次 AI 弹窗确认后重新挂载一次弹窗，允许再处理一轮。
             _log("[xunfei]   AI 标识弹窗仍在，重新处理")
-            self._handle_ai_flag_dialog(page)
+            if not self._handle_ai_flag_dialog(page):
+                _log("[xunfei]   AI 标识弹窗二次处理失败，停止本次合成")
+                return "failed"
             followup = _poll(probe_followup, timeout=10, interval=0.35, page=page)
         _log(f"[xunfei]   二次确认前页面状态: {followup or '未发现明确状态'}")
         if followup in ("order", "insufficient", "rate_limited"):
@@ -1558,6 +1591,29 @@ class XunFeiSession:
 
 _session = None
 _session_lock = threading.Lock()
+_playwright_executor = None
+_playwright_executor_lock = threading.Lock()
+
+
+def _get_playwright_executor():
+    """返回专供 Playwright Sync API 使用的单线程执行器。"""
+    global _playwright_executor
+    with _playwright_executor_lock:
+        if _playwright_executor is None:
+            _playwright_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="xunfei-playwright",
+            )
+        return _playwright_executor
+
+
+async def _run_playwright_sync(function, *args, **kwargs):
+    """把同一讯飞会话的所有 Sync API 调用固定到同一个线程。"""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    call = partial(function, *args, **kwargs)
+    return await loop.run_in_executor(_get_playwright_executor(), call)
 
 
 def is_available():
@@ -1627,8 +1683,9 @@ async def ensure_session(voice_key="amanda"):
             return session
 
     # Playwright Sync API 的所有 page/context 操作（包括健康检查）都必须
-    # 留在同一个工作线程，不能在 FastAPI/asyncio 事件循环线程调用。
-    return await asyncio.to_thread(_locked_create)
+    # 留在同一个专用线程，不能在 FastAPI/asyncio 事件循环线程或其它
+    # 默认线程池线程调用，否则会触发 greenlet 跨线程异常。
+    return await _run_playwright_sync(_locked_create)
 
 
 async def synth_xunfei(
@@ -1659,7 +1716,7 @@ async def synth_xunfei(
     import uuid
     output_name = f".xunfei_{uuid.uuid4().hex[:8]}.mp3"
 
-    result_path = await asyncio.to_thread(
+    result_path = await _run_playwright_sync(
         session.synth_one,
         text,
         output_name,
@@ -1705,7 +1762,7 @@ async def close_session():
         _session = None
     if old is not None:
         try:
-            await asyncio.to_thread(old.close)
+            await _run_playwright_sync(old.close)
             _log("[xunfei] 浏览器会话已关闭")
         except Exception as e:
             _log(f"[xunfei] 关闭浏览器会话异常: {e}")

@@ -1,5 +1,14 @@
 # 更新日志
 
+## v2.7.6
+
+### 修复讯飞生成线程与 AI 标识确认
+
+- 讯飞 Playwright Sync API 统一固定到专用单线程执行器，修复 Electron 任务中偶发的 `Cannot switch to a different thread`。
+- AI 标识弹窗兼容真实 `.ant-modal-content` 结构；未成功勾选“不再提示”或确认、以及确认后弹窗未关闭时，任务会明确失败并记录弹窗状态。
+- 收紧 AI 弹窗关键词，避免把仍在显示的“作品设置 / AI 标识”误判为 AI 说明弹窗。
+- 修复本机 `npm run build:python` 在没有全局 `pyinstaller` 命令时无法构建的问题。
+
 ## v2.7.5
 
 ### 修复音色头像与讯飞会话线程问题

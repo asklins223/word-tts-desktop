@@ -65,6 +65,22 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(len(seen_threads), 1)
         self.assertIsNot(seen_threads[0], threading.current_thread())
 
+    def test_all_playwright_sync_calls_share_one_dedicated_thread(self):
+        seen_threads = []
+
+        def record_thread():
+            seen_threads.append(threading.current_thread())
+
+        async def run_calls():
+            await xunfei._run_playwright_sync(record_thread)
+            await xunfei._run_playwright_sync(record_thread)
+
+        asyncio.run(run_calls())
+
+        self.assertEqual(len(seen_threads), 2)
+        self.assertIs(seen_threads[0], seen_threads[1])
+        self.assertIsNot(seen_threads[0], threading.current_thread())
+
     def test_concurrent_first_session_creation_reuses_one_sync_session(self):
         original_session = xunfei._session
         original_available = xunfei.is_available

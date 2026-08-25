@@ -14,7 +14,7 @@
     "dev": "electron . --dev",
     "test": "node --test test/*.test.js",
     "build:icons": "cd .. && node scripts/run_python.js scripts/build_app_icons.py",
-    "build:python": "cd .. && pyinstaller server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp && node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend",
+    "build:python": "cd .. && node scripts/run_pyinstaller.js server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp && node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend",
     "build": "npm run build:icons && npm run build:python && electron-builder",
     "build:mac": "npm run build:icons && npm run build:python && electron-builder --mac",
     "build:win": "npm run build:icons && npm run build:python && electron-builder --win"
