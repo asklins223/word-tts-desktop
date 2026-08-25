@@ -30,7 +30,7 @@ from playwright.sync_api import sync_playwright
 
 
 def _log(*args, **kwargs):
-    """所有日志输出到 stdout/stderr，确保 Electron / Gradio 能捕获。"""
+    """所有日志输出到 stdout/stderr，确保 Electron 后端能捕获。"""
     kwargs.setdefault('file', sys.stdout)
     print(*args, **kwargs)
 

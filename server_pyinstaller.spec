@@ -71,8 +71,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # 不需要旧版 UI 框架
-        'gradio', 'gradio_client',
+        # 不需要旧版桌面/UI 框架
         'webview', 'bottle', 'proxy_tools',
         # 构建工具/可选 Web 功能不属于后端运行时。
         'PIL',

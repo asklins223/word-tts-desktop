@@ -84,7 +84,7 @@ if getattr(sys, "frozen", False):
 # 导入核心模块（复用 word_tts_app 的全部逻辑）
 # ============================================================================
 # word_tts_app 在 import 时会执行模块级代码（路径设置、ffmpeg 配置等），
-# 但不会启动 Gradio（有 __name__ == "__main__" 守卫）。
+# 这里只加载解析、音频和讯飞配音核心函数。
 import word_tts_app as core
 import xunfei_voice_catalog as _voice_catalog
 

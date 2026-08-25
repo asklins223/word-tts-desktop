@@ -1,4 +1,4 @@
-# Electron 打包专用依赖（不含 gradio / pywebview）
+# Electron 后端打包专用依赖
 # 用于 PyInstaller 打包 server.py → server_backend
 # 安装: pip install -r requirements_electron.txt
 
