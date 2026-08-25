@@ -212,13 +212,24 @@ def get_voice_info(voice_key):
 class JS:
     CHECK_MODAL_HAS_TEXT = """
     (keywords) => {
-        const modals = document.querySelectorAll('.ant-modal');
+        const modals = document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '');
+        const expected = (keywords || []).map(normalize);
         for (const modal of modals) {
-            const style = window.getComputedStyle(modal);
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
-            if (modal.getBoundingClientRect().width === 0) continue;
-            const text = modal.textContent || '';
-            if (keywords.every(kw => text.includes(kw))) return true;
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
+            if (expected.every(kw => kw && text.includes(kw))) return true;
         }
         return false;
     }
@@ -226,14 +237,26 @@ class JS:
 
     CLICK_BTN_IN_MODAL = """
     (buttonText) => {
-        const modals = document.querySelectorAll('.ant-modal');
+        const modals = document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const target = String(buttonText || '').replace(/\\s+/g, '');
         for (const modal of modals) {
-            const style = window.getComputedStyle(modal);
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
-            if (modal.getBoundingClientRect().width === 0) continue;
-            const btns = modal.querySelectorAll('button');
+            if (!visible(modal)) continue;
+            const btns = modal.querySelectorAll('button, [role="button"], .ant-btn');
             for (const b of btns) {
-                if (b.textContent?.trim() === buttonText && b.offsetParent !== null) {
+                if (!visible(b)) continue;
+                const label = String(b.textContent || '').replace(/\\s+/g, '').trim();
+                if (label === target) {
                     b.click();
                     return true;
                 }
@@ -411,24 +434,51 @@ class JS:
 
     CHECK_NO_REMIND = """
     () => {
-        const modals = document.querySelectorAll('.ant-modal');
+        const modals = document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '');
         for (const modal of modals) {
-            const style = window.getComputedStyle(modal);
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
-            if (modal.getBoundingClientRect().width === 0) continue;
-            const text = modal.textContent || '';
-            if (!text.includes('不再提示')) continue;
-            const wrappers = modal.querySelectorAll('.ant-checkbox-wrapper');
-            for (const w of wrappers) {
-                const input = w.querySelector('.ant-checkbox-input');
-                if (input && !input.checked) { w.click(); return 'clicked'; }
-                if (input && input.checked) return 'already';
-            }
-            // 兼容没有 .ant-checkbox-wrapper 包裹层的新版复选框结构。
-            const inputs = modal.querySelectorAll('.ant-checkbox-input');
+            if (!visible(modal)) continue;
+            if (!normalize(modal.textContent || '').includes('不再提示')) continue;
+
+            // 优先点真实 checkbox input。Ant Design 的 input 可能是透明的，
+            // 不能依赖 offsetParent/可见尺寸判断它是否可点击。
+            const inputs = modal.querySelectorAll('input[type="checkbox"], .ant-checkbox-input');
             for (const input of inputs) {
-                if (!input.checked) { input.click(); return 'clicked_input'; }
-                return 'already';
+                if (!input.checked) {
+                    input.click();
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return 'clicked_input';
+                }
+            }
+            for (const input of inputs) {
+                if (input.checked) return 'already';
+            }
+
+            // 兼容没有 input 的自定义 checkbox：按“ 不再提示 ”文字找到
+            // 最近的 label / role=checkbox 容器并点击。
+            const controls = modal.querySelectorAll(
+                '.ant-checkbox-wrapper, label, [role="checkbox"], button'
+            );
+            for (const control of controls) {
+                if (!normalize(control.textContent || '').includes('不再提示')) continue;
+                const ariaChecked = control.getAttribute('aria-checked');
+                if (ariaChecked === 'true' || control.classList.contains('ant-checkbox-checked')) {
+                    return 'already';
+                }
+                control.click();
+                return 'clicked_label';
             }
         }
         return 'not_found';
@@ -437,18 +487,37 @@ class JS:
 
     CLICK_AI_SWITCH = """
     () => {
-        const modals = document.querySelectorAll('.ant-modal');
+        const modals = document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '');
         for (const modal of modals) {
-            const style = window.getComputedStyle(modal);
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
-            if (modal.getBoundingClientRect().width === 0) continue;
-            const text = modal.textContent || '';
-            if (!text.includes('作品设置') && !text.includes('确认合成')) continue;
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
+            if (!text.includes('作品设置') && !text.includes('确认合成') && !text.includes('作品名称')) continue;
             if (text.includes('不再提示')) continue;
-            const handle = modal.querySelector('.ant-switch-handle');
-            if (handle) { handle.click(); return 'handle'; }
-            const sw = modal.querySelector('button.ant-switch, .ant-switch, [role="switch"]');
-            if (sw) { sw.click(); return 'switch'; }
+            const candidate = modal.querySelector(
+                '[role="switch"], .ant-switch, button[aria-pressed], .ant-switch-handle'
+            );
+            if (!candidate) continue;
+            const sw = candidate.closest('[role="switch"], .ant-switch, button') || candidate;
+            if (!visible(sw)) continue;
+            const ariaChecked = sw.getAttribute('aria-checked');
+            const ariaPressed = sw.getAttribute('aria-pressed');
+            if (ariaChecked === 'true' || ariaPressed === 'true' || sw.classList.contains('ant-switch-checked')) {
+                return 'already';
+            }
+            sw.click();
+            return 'switch';
         }
         return 'not_found';
     }
@@ -456,20 +525,66 @@ class JS:
 
     CLICK_AI_CONFIRM = """
     () => {
-        const modals = document.querySelectorAll('.ant-modal');
+        const modals = document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const confirmLabels = new Set(['确认', '确定', '知道了', '我知道了', '继续']);
         for (const modal of modals) {
-            const style = window.getComputedStyle(modal);
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
-            if (modal.getBoundingClientRect().width === 0) continue;
-            const text = modal.textContent || '';
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
             if (!text.includes('不再提示')) continue;
-            const btns = modal.querySelectorAll('button');
+            const btns = modal.querySelectorAll('button, [role="button"], .ant-btn');
             for (const b of btns) {
-                const label = b.textContent?.trim() || '';
-                if (label === '确认' || label === '确定') { b.click(); return true; }
+                if (!visible(b)) continue;
+                const label = normalize(b.textContent || '');
+                if (confirmLabels.has(label)) { b.click(); return true; }
             }
         }
         return false;
+    }
+    """
+
+    SNAPSHOT_DIALOGS = """
+    () => {
+        const roots = document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        return Array.from(roots)
+            .filter(visible)
+            .map((root) => ({
+                className: String(root.className || '').slice(0, 160),
+                text: String(root.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 500),
+                buttons: Array.from(root.querySelectorAll('button, [role="button"]'))
+                    .filter(visible)
+                    .map((button) => String(button.textContent || '').replace(/\\s+/g, ' ').trim())
+                    .filter(Boolean)
+                    .slice(0, 12),
+                checkboxes: Array.from(root.querySelectorAll('input[type="checkbox"], [role="checkbox"]'))
+                    .map((input) => ({
+                        checked: Boolean(input.checked) || input.getAttribute('aria-checked') === 'true',
+                        className: String(input.className || '').slice(0, 100),
+                    }))
+                    .slice(0, 8),
+            }));
     }
     """
 
@@ -494,9 +609,12 @@ class JS:
 AI_FLAG_KEYWORD_VARIANTS = [
     ["AI", "标识", "不再提示"],
     ["AI", "标识", "说明"],
+    ["人工智能", "不再提示"],
+    ["AI生成", "不再提示"],
     ["标识", "不再提示"],
     ["AI", "不再提示"],
     ["AI", "标识"],
+    ["不再提示"],
 ]
 
 
@@ -833,12 +951,120 @@ class XunFeiSession:
 
         return _poll(probe, timeout=7, interval=0.4, page=page) or "none"
 
+    @staticmethod
+    def _find_visible_dialog(page, text_fragment):
+        """按文案找到可见弹窗，兼容 Ant Design 和新版通用 dialog。"""
+        try:
+            dialogs = page.locator(
+                '.ant-modal:visible, [role="dialog"]:visible, '
+                '.el-dialog:visible, .el-message-box:visible'
+            )
+            for index in range(min(dialogs.count(), 20)):
+                dialog = dialogs.nth(index)
+                try:
+                    text = re.sub(r"\s+", "", dialog.inner_text(timeout=500))
+                except Exception:
+                    continue
+                if text_fragment in text:
+                    return dialog
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _click_no_remind_with_locator(cls, page):
+        """JS 找不到复选框时，用 Playwright 强制点击真实控件兜底。"""
+        dialog = cls._find_visible_dialog(page, "不再提示")
+        if dialog is None:
+            return None
+        try:
+            inputs = dialog.locator('input[type="checkbox"], .ant-checkbox-input')
+            unchecked = []
+            for index in range(inputs.count()):
+                checkbox = inputs.nth(index)
+                try:
+                    if checkbox.is_checked():
+                        continue
+                except Exception:
+                    continue
+                unchecked.append(checkbox)
+            if unchecked:
+                unchecked[0].click(force=True, timeout=2000)
+                return "clicked_locator_input"
+            if inputs.count() > 0:
+                return "already_locator"
+
+            labels = dialog.locator('.ant-checkbox-wrapper, label, [role="checkbox"], button')
+            for index in range(labels.count()):
+                label = labels.nth(index)
+                label_text = re.sub(r"\s+", "", label.inner_text(timeout=500))
+                if "不再提示" not in label_text:
+                    continue
+                label.click(force=True, timeout=2000)
+                return "clicked_locator_label"
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _click_ai_switch_with_locator(cls, page):
+        """用 locator 兜底点击确认合成弹窗中的 AI 标识开关。"""
+        try:
+            dialogs = page.locator(
+                '.ant-modal:visible, [role="dialog"]:visible, '
+                '.el-dialog:visible, .el-message-box:visible'
+            )
+            for index in range(min(dialogs.count(), 20)):
+                dialog = dialogs.nth(index)
+                text = re.sub(r"\s+", "", dialog.inner_text(timeout=500))
+                if "不再提示" in text:
+                    continue
+                if not any(marker in text for marker in ("作品设置", "确认合成", "作品名称")):
+                    continue
+                switches = dialog.locator(
+                    '[role="switch"], .ant-switch, button[aria-pressed]'
+                )
+                for switch_index in range(switches.count()):
+                    switch = switches.nth(switch_index)
+                    aria_checked = switch.get_attribute("aria-checked")
+                    aria_pressed = switch.get_attribute("aria-pressed")
+                    class_name = switch.get_attribute("class") or ""
+                    if aria_checked == "true" or aria_pressed == "true" or "ant-switch-checked" in class_name:
+                        return "already_locator"
+                    switch.click(force=True, timeout=2000)
+                    return "clicked_locator"
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _click_ai_confirm_with_locator(cls, page):
+        """用 locator 兜底点击 AI 标识弹窗的确认按钮。"""
+        dialog = cls._find_visible_dialog(page, "不再提示")
+        if dialog is None:
+            return False
+        try:
+            buttons = dialog.locator('button, [role="button"], .ant-btn')
+            labels = {"确认", "确定", "知道了", "我知道了", "继续"}
+            for index in range(buttons.count()):
+                button = buttons.nth(index)
+                label = re.sub(r"\s+", "", button.inner_text(timeout=500)).strip()
+                if label not in labels:
+                    continue
+                button.click(force=True, timeout=2000)
+                return True
+        except Exception:
+            pass
+        return False
+
     def _handle_ai_flag_dialog(self, page):
         def check_no_remind():
             result = _safe_eval(page, JS.CHECK_NO_REMIND)
-            return result if result in {"clicked", "clicked_input", "already"} else None
+            return result if result in {"clicked", "clicked_input", "clicked_label", "already"} else None
 
         checked = _poll(check_no_remind, timeout=5, interval=0.25, page=page)
+        if not checked:
+            checked = self._click_no_remind_with_locator(page)
         _log(f"[xunfei]   AI 标识弹窗‘不再提示’: {'✓' if checked else '✗'}{f' ({checked})' if checked else ''}")
         self._pause(page, 0.35, 0.15)
 
@@ -847,6 +1073,8 @@ class XunFeiSession:
             return result if result and result != "not_found" else None
 
         switch_result = _poll(click_switch, timeout=5, interval=0.3, page=page)
+        if not switch_result:
+            switch_result = self._click_ai_switch_with_locator(page)
         _log(f"[xunfei]   AI 标识开关: {'✓' if switch_result else '未找到/无需切换'}")
         self._pause(page, 0.35, 0.15)
 
@@ -854,6 +1082,12 @@ class XunFeiSession:
             lambda: _safe_eval(page, JS.CLICK_AI_CONFIRM),
             timeout=8, interval=0.35, page=page,
         ))
+        if not confirmed:
+            confirmed = self._click_ai_confirm_with_locator(page)
+        if not confirmed:
+            snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+            if snapshot:
+                _log(f"[xunfei]   AI 弹窗仍未关闭，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
         _log(f"[xunfei]   AI 标识弹窗确认: {'✓' if confirmed else '✗'}")
         self._pause(page, 0.5, 0.2)
         return confirmed
@@ -901,6 +1135,8 @@ class XunFeiSession:
             return "failed"
 
         outcome = self._observe_after_first_confirm(page)
+        _log(f"[xunfei]   第一次确认后的页面状态: {outcome}")
+        ai_modal_seen = outcome == "ai_modal"
         if outcome == "ai_modal":
             _log("[xunfei]   检测到 AI 标识说明弹窗")
             self._handle_ai_flag_dialog(page)
@@ -925,10 +1161,12 @@ class XunFeiSession:
 
         followup = _poll(probe_followup, timeout=15, interval=0.35, page=page)
         if followup == "ai_modal":
+            ai_modal_seen = True
             # 少数页面会在第一次 AI 弹窗确认后重新挂载一次弹窗，允许再处理一轮。
             _log("[xunfei]   AI 标识弹窗仍在，重新处理")
             self._handle_ai_flag_dialog(page)
             followup = _poll(probe_followup, timeout=10, interval=0.35, page=page)
+        _log(f"[xunfei]   二次确认前页面状态: {followup or '未发现明确状态'}")
         if followup in ("order", "insufficient", "rate_limited"):
             return "ok" if followup == "order" else followup
 
@@ -937,7 +1175,20 @@ class XunFeiSession:
             timeout=8, interval=0.35, page=page,
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
-        return self._wait_order_or_error(page, 90) or ("ok" if clicked2 else "failed")
+        if clicked2:
+            return self._wait_order_or_error(page, 90) or "ok"
+
+        # 讯飞部分账号/版本在没有 AI 说明弹窗时，第一次“确认合成”就
+        # 已经提交任务，不会再显示第二个确认按钮。等待一小段时间确认
+        # 没有额度、登录或频控错误后，按已提交处理，避免误重试造成频控。
+        settled = self._wait_order_or_error(page, 12)
+        if settled:
+            return settled
+        if ai_modal_seen:
+            for kws in AI_FLAG_KEYWORD_VARIANTS:
+                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
+                    return "failed"
+        return "ok"
 
     # ------------------------------------------------------------------
     # 下载
