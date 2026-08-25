@@ -424,6 +424,12 @@ class JS:
                 if (input && !input.checked) { w.click(); return 'clicked'; }
                 if (input && input.checked) return 'already';
             }
+            // 兼容没有 .ant-checkbox-wrapper 包裹层的新版复选框结构。
+            const inputs = modal.querySelectorAll('.ant-checkbox-input');
+            for (const input of inputs) {
+                if (!input.checked) { input.click(); return 'clicked_input'; }
+                return 'already';
+            }
         }
         return 'not_found';
     }
@@ -441,7 +447,7 @@ class JS:
             if (text.includes('不再提示')) continue;
             const handle = modal.querySelector('.ant-switch-handle');
             if (handle) { handle.click(); return 'handle'; }
-            const sw = modal.querySelector('button.ant-switch, .ant-switch');
+            const sw = modal.querySelector('button.ant-switch, .ant-switch, [role="switch"]');
             if (sw) { sw.click(); return 'switch'; }
         }
         return 'not_found';
@@ -459,7 +465,8 @@ class JS:
             if (!text.includes('不再提示')) continue;
             const btns = modal.querySelectorAll('button');
             for (const b of btns) {
-                if (b.textContent?.trim() === '确认') { b.click(); return true; }
+                const label = b.textContent?.trim() || '';
+                if (label === '确认' || label === '确定') { b.click(); return true; }
             }
         }
         return false;
@@ -582,31 +589,24 @@ class XunFeiSession:
     @staticmethod
     def _type_text(page, text):
         """
-        在已聚焦的编辑器中拟人输入：
-        短文本全量逐字符击键（间隔抖动、标点停顿）；
-        长文本开头手打一小段、其余 insertText（浏览器受信输入事件）。
+        在已聚焦的编辑器中一次性插入文本，等价于用户粘贴。
+
+        讯飞编辑器对长文本逐字符击键非常慢，也容易让页面在输入期间
+        进入半更新状态；这里不再按字符调用 keyboard.type。若编辑器不
+        接受键盘插入，再用 contenteditable 的 fill 做一次性兜底。
         """
-        if len(text) > 80:
-            head_len = 4 + int((time.time() * 13) % 8)
-            head, tail = text[:head_len], text[head_len:]
-        else:
-            head, tail = text, ""
-
-        for ch in head:
-            page.keyboard.type(ch)
-            delay = 0.03 + ((time.time() * 11) % 1) * 0.06
-            if ch in ",.!?;:\n。，！？；：、":
-                delay += 0.08 + ((time.time() * 17) % 1) * 0.2
-            page.wait_for_timeout(int(delay * 1000))
-
-        if tail:
-            try:
-                page.keyboard.insertText(tail)
-                page.wait_for_timeout(300)
-            except Exception:
-                for ch in tail:
-                    page.keyboard.type(ch)
-                    page.wait_for_timeout(60)
+        value = str(text or "")
+        try:
+            page.keyboard.insert_text(value)
+            return True
+        except Exception as exc:
+            _log(f"[xunfei]   一次性插入文本失败，尝试编辑器填充: {exc}")
+        try:
+            page.locator(".ssml-editor").first.fill(value, timeout=5000)
+            return True
+        except Exception as exc:
+            _log(f"[xunfei]   编辑器一次性填充失败: {exc}")
+            return False
 
     # ------------------------------------------------------------------
     # worksId 捕获
@@ -696,7 +696,7 @@ class XunFeiSession:
         page.keyboard.press("Backspace")
         self._pause(page, 0.1, 0.05)
         self._type_text(page, text)
-        page.wait_for_timeout(350)
+        page.wait_for_timeout(150)
 
         for attempt in range(2):
             actual = _safe_eval(page, JS.GET_EDITOR_TEXT) or ""
@@ -706,7 +706,7 @@ class XunFeiSession:
             self._clear_editor(page)
             page.locator(".ssml-editor").first.click(timeout=5000)
             self._type_text(page, text)
-            page.wait_for_timeout(350)
+            page.wait_for_timeout(150)
         return False
 
     def _select_voice(self, page, voice_name):
@@ -834,12 +834,29 @@ class XunFeiSession:
         return _poll(probe, timeout=7, interval=0.4, page=page) or "none"
 
     def _handle_ai_flag_dialog(self, page):
-        _safe_eval(page, JS.CHECK_NO_REMIND)
+        def check_no_remind():
+            result = _safe_eval(page, JS.CHECK_NO_REMIND)
+            return result if result in {"clicked", "clicked_input", "already"} else None
+
+        checked = _poll(check_no_remind, timeout=5, interval=0.25, page=page)
+        _log(f"[xunfei]   AI 标识弹窗‘不再提示’: {'✓' if checked else '✗'}{f' ({checked})' if checked else ''}")
         self._pause(page, 0.35, 0.15)
-        _safe_eval(page, JS.CLICK_AI_SWITCH)
+
+        def click_switch():
+            result = _safe_eval(page, JS.CLICK_AI_SWITCH)
+            return result if result and result != "not_found" else None
+
+        switch_result = _poll(click_switch, timeout=5, interval=0.3, page=page)
+        _log(f"[xunfei]   AI 标识开关: {'✓' if switch_result else '未找到/无需切换'}")
         self._pause(page, 0.35, 0.15)
-        _safe_eval(page, JS.CLICK_AI_CONFIRM)
+
+        confirmed = bool(_poll(
+            lambda: _safe_eval(page, JS.CLICK_AI_CONFIRM),
+            timeout=8, interval=0.35, page=page,
+        ))
+        _log(f"[xunfei]   AI 标识弹窗确认: {'✓' if confirmed else '✗'}")
         self._pause(page, 0.5, 0.2)
+        return confirmed
 
     def _wait_order_or_error(self, page, timeout):
         def probe():
@@ -890,14 +907,34 @@ class XunFeiSession:
         elif outcome in ("order", "insufficient", "rate_limited"):
             return "ok" if outcome == "order" else outcome
 
-        # 弹窗仍在 → 需要第二次确认
-        still_there = _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, ["确认合成"])
-        if not still_there:
-            return self._wait_order_or_error(page, 8) or "ok"
+        # AI 弹窗关闭、页面切换和确认合成按钮重新出现之间存在异步延迟。
+        # 这里必须继续轮询状态，不能用一次立即查询把任务误判为已完成。
+        def probe_followup():
+            if _safe_eval(page, JS.CHECK_INSUFFICIENT):
+                return "insufficient"
+            if _safe_eval(page, JS.CHECK_RATE_LIMITED):
+                return "rate_limited"
+            if _safe_eval(page, JS.CHECK_GO_DOWNLOAD) or _safe_eval(page, JS.CHECK_FREE_MODAL):
+                return "order"
+            for kws in AI_FLAG_KEYWORD_VARIANTS:
+                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
+                    return "ai_modal"
+            if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, ["确认合成"]):
+                return "confirm"
+            return None
+
+        followup = _poll(probe_followup, timeout=15, interval=0.35, page=page)
+        if followup == "ai_modal":
+            # 少数页面会在第一次 AI 弹窗确认后重新挂载一次弹窗，允许再处理一轮。
+            _log("[xunfei]   AI 标识弹窗仍在，重新处理")
+            self._handle_ai_flag_dialog(page)
+            followup = _poll(probe_followup, timeout=10, interval=0.35, page=page)
+        if followup in ("order", "insufficient", "rate_limited"):
+            return "ok" if followup == "order" else followup
 
         clicked2 = bool(_poll(
             lambda: _safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"),
-            timeout=6, interval=0.4, page=page,
+            timeout=8, interval=0.35, page=page,
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
         return self._wait_order_or_error(page, 90) or ("ok" if clicked2 else "failed")

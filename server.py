@@ -1202,6 +1202,7 @@ async def _generate_audio_stream(
         fv = config.get("default_female_voice") or core.FEMALE_VOICE
         mv = config.get("default_male_voice") or core.MALE_VOICE
         voice_configs = config.get("voice_configs") or {}
+        role_configs = config.get("role_configs") or {}
         role_voices = config.get("role_voices") or {}
 
         log(
@@ -1333,12 +1334,19 @@ async def _generate_audio_stream(
             item_female_voice = fv
             item_male_voice = fv if is_word_item else mv
             item_role_voices = {} if is_word_item else role_voices
+            item_default_role = (
+                core.DEFAULT_FEMALE_ROLE_KEY
+                if is_word_item or raw_item.get("voice") != "male"
+                else core.DEFAULT_MALE_ROLE_KEY
+            )
             speakers = core.parse_speakers_with_roles(
                 text,
                 default_voice=fv if is_word_item else item_default_voice,
                 female_voice=item_female_voice,
                 male_voice=item_male_voice,
                 role_voices=item_role_voices,
+                default_role=item_default_role,
+                preserve_default_roles=True,
             )
             speaker_info = ""
             voice_label = "女声"
@@ -1376,6 +1384,8 @@ async def _generate_audio_stream(
                     male_voice=item_male_voice,
                     voice_configs=voice_configs,
                     role_voices=item_role_voices,
+                    role_configs=role_configs,
+                    default_role=item_default_role,
                 )
                 out_path = os.path.join(audio_dir, item["filename"])
                 await asyncio.to_thread(core.export_audio, audio_seg, fmt, quality, out_path)

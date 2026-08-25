@@ -178,8 +178,9 @@ QUALITY_BITRATE = {
     "无损（仅 wav 生效）": None,
 }
 
-# 音频生成算法版本。改变讯飞音频拼接策略时递增，避免复用旧算法产物。
-AUDIO_ALGORITHM_VERSION = 3
+# 音频生成算法版本。改变讯飞音频拼接策略或参数寻址方式时递增，避免
+# 复用旧算法产物。
+AUDIO_ALGORITHM_VERSION = 4
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
@@ -189,7 +190,10 @@ PARSER_VERSION = 8
 TTS_PARAM_MIN = 0
 TTS_PARAM_MAX = 100
 TTS_PARAM_DEFAULT = 50
-TTS_CONFIG_VERSION = 4
+TTS_CONFIG_VERSION = 5
+DEFAULT_FEMALE_ROLE_KEY = "__default_female__"
+DEFAULT_MALE_ROLE_KEY = "__default_male__"
+ROLE_CONFIG_PREFIX = "role:"
 
 
 def clamp_tts_param(value, default=TTS_PARAM_DEFAULT):
@@ -205,6 +209,22 @@ def normalize_role_key(value):
     """返回前后端统一使用的角色 key。"""
     text = re.sub(r"\s+", " ", str(value or "").strip())
     return text.casefold()[:80]
+
+
+def normalize_role_config_key(value):
+    """规范化默认角色和文档角色的参数配置 key。"""
+    raw = str(value or "").strip()
+    if raw in {DEFAULT_FEMALE_ROLE_KEY, DEFAULT_MALE_ROLE_KEY}:
+        return raw
+    if raw.startswith(ROLE_CONFIG_PREFIX):
+        raw = raw[len(ROLE_CONFIG_PREFIX):]
+    role_key = normalize_role_key(raw)
+    return f"{ROLE_CONFIG_PREFIX}{role_key}" if role_key else ""
+
+
+def role_config_key(role):
+    """把解析出来的角色名映射到独立的参数配置槽位。"""
+    return normalize_role_config_key(role)
 
 
 def _normalize_voice_key(value, fallback):
@@ -272,6 +292,25 @@ def normalize_tts_config(config=None):
             if role_key and voice_key:
                 role_voices[role_key] = voice_key
 
+    # 新配置按“角色/默认槽位”保存参数，而不是按最终音色 key 保存。
+    # 这样同一个音色同时被默认男声、默认女声或多个角色使用时，各自仍
+    # 能保留独立的语速、语调、音量。旧版 voice_configs 仅作为迁移兜底。
+    role_configs = {}
+    raw_role_configs = raw.get("role_configs")
+    if isinstance(raw_role_configs, dict):
+        for key, value in raw_role_configs.items():
+            normalized_key = normalize_role_config_key(key)
+            if normalized_key:
+                role_configs[normalized_key] = _normalize_voice_params(value, base_params)
+    role_configs.setdefault(
+        DEFAULT_FEMALE_ROLE_KEY,
+        _normalize_voice_params(voice_configs.get(default_female_voice), base_params),
+    )
+    role_configs.setdefault(
+        DEFAULT_MALE_ROLE_KEY,
+        _normalize_voice_params(voice_configs.get(default_male_voice), base_params),
+    )
+
     # 兼容旧前端的全局三参数，同时保留每个音色/角色的独立配置。
     return {
         "config_version": TTS_CONFIG_VERSION,
@@ -284,6 +323,7 @@ def normalize_tts_config(config=None):
         "default_female_voice": default_female_voice,
         "default_male_voice": default_male_voice,
         "voice_configs": voice_configs,
+        "role_configs": role_configs,
         "role_voices": role_voices,
     }
 
@@ -405,12 +445,15 @@ def parse_speakers_with_roles(
     female_voice=None,
     male_voice=None,
     role_voices=None,
+    default_role=None,
+    preserve_default_roles=False,
 ):
     """解析 W/M 和通用角色标记，返回 ``(role, voice, clean_text)``。
 
     ``role`` 是用户在界面中看到的原始角色名；没有角色名的普通段落为 None。
-    角色映射只决定音色，参数由 ``_synth_item`` 按最终 voice key 查找，因而
-    同一个音色在多个角色中仍然共享同一套独立配置。
+    角色映射只决定音色；参数槽位由角色名决定，因此同一个音色被多个角色
+    使用时仍能分别配置。未启用 ``preserve_default_roles`` 时保持旧的 None
+    返回行为，供只需要音色解析的调用方兼容使用。
     """
     if default_voice is None:
         default_voice = FEMALE_VOICE
@@ -427,7 +470,7 @@ def parse_speakers_with_roles(
     segments = []
     lines = str(text or "").strip().split('\n')
     current_voice = default_voice
-    current_role = None
+    current_role = default_role if preserve_default_roles else None
     current_lines = []
 
     # 先看完整录音稿里是否至少有两个不同的角色标签。这样即使调用方没有
@@ -458,7 +501,9 @@ def parse_speakers_with_roles(
             flush()
             gender = marker.group(1).upper()
             current_voice = fv if gender == 'W' else mv
-            current_role = None
+            current_role = (
+                DEFAULT_FEMALE_ROLE_KEY if gender == 'W' else DEFAULT_MALE_ROLE_KEY
+            ) if preserve_default_roles else None
             content = marker.group(2).strip()
             if content:
                 current_lines.append(content)
@@ -469,7 +514,9 @@ def parse_speakers_with_roles(
             flush()
             gender = paren_marker.group(1).upper()
             current_voice = fv if gender == 'W' else mv
-            current_role = None
+            current_role = (
+                DEFAULT_FEMALE_ROLE_KEY if gender == 'W' else DEFAULT_MALE_ROLE_KEY
+            ) if preserve_default_roles else None
             content = paren_marker.group(2).strip()
             if content:
                 current_lines.append(content)
@@ -499,7 +546,11 @@ def parse_speakers_with_roles(
     if not segments:
         clean = str(text or "").strip()
         if clean:
-            segments.append((None, default_voice, clean))
+            segments.append((
+                current_role if preserve_default_roles else None,
+                default_voice,
+                clean,
+            ))
     return segments
 
 
@@ -574,7 +625,7 @@ async def _synth_segment(text, voice, speed, volume, pitch):
 
 async def _synth_item(text, rate, volume, pitch, default_voice=None,
                       female_voice=None, male_voice=None, voice_configs=None,
-                      role_voices=None):
+                      role_voices=None, role_configs=None, default_role=None):
     """
     为一条解析结果生成完整音频。
     自动处理 W/M 与通用角色切换，并按讯飞原始音频顺序直接拼接。
@@ -583,8 +634,10 @@ async def _synth_item(text, rate, volume, pitch, default_voice=None,
     default_voice: 无 w/m 标识时的默认音色，None 表示女声
     female_voice: W/w 标识使用的女声发音人 key，None 时用 FEMALE_VOICE。
     male_voice:   M/m 标识使用的男声发音人 key，None 时用 MALE_VOICE。
-    voice_configs: 每个音色独立的 rate/volume/pitch 配置。
+    voice_configs: 旧版按音色保存的 rate/volume/pitch 配置，作为兼容兜底。
+    role_configs: 按默认角色或文档角色保存的独立参数配置。
     role_voices: 角色名到音色 key 的映射。
+    default_role: 没有说话人标识时使用的默认角色槽位。
     """
     segments = parse_speakers_with_roles(
         text,
@@ -592,6 +645,8 @@ async def _synth_item(text, rate, volume, pitch, default_voice=None,
         female_voice=female_voice,
         male_voice=male_voice,
         role_voices=role_voices,
+        default_role=default_role,
+        preserve_default_roles=isinstance(role_configs, dict) or default_role is not None,
     )
     if not segments:
         raise ValueError("文本为空")
@@ -602,10 +657,15 @@ async def _synth_item(text, rate, volume, pitch, default_voice=None,
         "pitch": clamp_tts_param(pitch),
     }
     configs = voice_configs if isinstance(voice_configs, dict) else {}
+    role_param_configs = role_configs if isinstance(role_configs, dict) else {}
 
     audio_parts = []
     for _role, voice, seg_text in segments:
-        params = _normalize_voice_params(configs.get(voice), base_params)
+        role_params = role_param_configs.get(role_config_key(_role)) if _role else None
+        params = _normalize_voice_params(
+            role_params if role_params is not None else configs.get(voice),
+            base_params,
+        )
         # 不切割首尾，也不额外插入或归一化段落停顿；保留讯飞返回的音频内容。
         part = await _synth_segment(
             seg_text,

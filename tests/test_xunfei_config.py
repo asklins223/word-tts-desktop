@@ -96,6 +96,31 @@ class XunfeiConfigTests(unittest.TestCase):
         self.assertEqual(config["voice_configs"]["speaker:male"], {"rate": 71, "volume": 72, "pitch": 73})
         self.assertEqual(config["role_voices"], {"reporter": "speaker:male"})
 
+    def test_same_voice_keeps_default_and_role_parameter_slots_independent(self):
+        config = core.normalize_tts_config({
+            "default_female_voice": "speaker:shared",
+            "default_male_voice": "speaker:shared",
+            "role_voices": {"Reporter": "speaker:shared"},
+            "role_configs": {
+                core.DEFAULT_FEMALE_ROLE_KEY: {"rate": 10, "volume": 20, "pitch": 30},
+                core.DEFAULT_MALE_ROLE_KEY: {"rate": 40, "volume": 50, "pitch": 60},
+                "role:Reporter": {"rate": 70, "volume": 80, "pitch": 90},
+            },
+        })
+
+        self.assertEqual(
+            config["role_configs"][core.DEFAULT_FEMALE_ROLE_KEY],
+            {"rate": 10, "volume": 20, "pitch": 30},
+        )
+        self.assertEqual(
+            config["role_configs"][core.DEFAULT_MALE_ROLE_KEY],
+            {"rate": 40, "volume": 50, "pitch": 60},
+        )
+        self.assertEqual(
+            config["role_configs"]["role:reporter"],
+            {"rate": 70, "volume": 80, "pitch": 90},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

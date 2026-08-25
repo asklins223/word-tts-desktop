@@ -73,6 +73,38 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_same_voice_uses_separate_default_and_role_parameters(self):
+        calls = []
+
+        async def fake_synth_segment(text, voice, rate, volume, pitch):
+            calls.append((text, voice, rate, volume, pitch))
+            return self._raw_segment()
+
+        with mock.patch.object(core, "_synth_segment", side_effect=fake_synth_segment):
+            await core._synth_item(
+                "M: default male\nReporter: role text",
+                rate=50,
+                volume=50,
+                pitch=50,
+                female_voice="speaker:shared",
+                male_voice="speaker:shared",
+                role_voices={"Reporter": "speaker:shared"},
+                role_configs={
+                    core.DEFAULT_FEMALE_ROLE_KEY: {"rate": 10, "volume": 11, "pitch": 12},
+                    core.DEFAULT_MALE_ROLE_KEY: {"rate": 20, "volume": 21, "pitch": 22},
+                    "role:reporter": {"rate": 80, "volume": 81, "pitch": 82},
+                },
+                default_role=core.DEFAULT_MALE_ROLE_KEY,
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("default male", "speaker:shared", 20, 21, 22),
+                ("role text", "speaker:shared", 80, 81, 82),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
