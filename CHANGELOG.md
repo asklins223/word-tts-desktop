@@ -14,3 +14,8 @@
 - 新格式通过 `Section`、跟读子题型和有效内容的结构组合判定，不再因单独出现 `Section A`、文件名或年级名而误切换；历史 `Understanding Idea/Reading for writing` 规则继续保留。
 - 显式 `Conversation` 对话按角色边界拆分并把角色元数据交给音色配置；普通多角色段落保留为一个音频，多个 Conversation、角色名和 `SA/SB` 文件命名均保留。
 - 文章按大标题、段落和“小标题 + 紧邻段落”生成音频，兼容 `//` 分割标记；结构化识别的 `Reading Plus` 使用 `RP` 命名前缀。
+
+### 整理项目资源与运行路径
+
+- 解析示例文档和结果统一移至 `examples/`，讯飞音色种子目录统一移至 `resources/`。
+- 统一源码、Electron 开发版和 PyInstaller 版的资源/用户数据路径；音色缓存、音频输出和登录状态不再写入只读打包资源。

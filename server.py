@@ -30,34 +30,14 @@ from collections import deque
 from datetime import datetime
 
 # ============================================================================
-# 路径设置（与 word_tts_app.py 一致）
+# 路径设置
 # ============================================================================
-# PyInstaller 兼容：打包后 __file__ 指向临时解压目录，
-# BASE_DIR 需要指向可执行文件所在目录（用于写入输出文件），
-# RESOURCE_DIR 指向 _MEIPASS（用于读取打包的只读资源）。
-_configured_data_dir = os.environ.get("WORDTTS_DATA_DIR", "").strip()
-if _configured_data_dir:
-    BASE_DIR = os.path.abspath(os.path.expanduser(_configured_data_dir))
-    os.makedirs(BASE_DIR, exist_ok=True)
-    RESOURCE_DIR = (
-        getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-        if getattr(sys, 'frozen', False)
-        else os.path.dirname(os.path.abspath(__file__))
-    )
-elif getattr(sys, 'frozen', False):
-    # 打包模式：BASE_DIR 指向用户数据目录（可写、持久化），
-    # 避免写入 .app 包内部（代码签名后不可写，更新时会被擦除）。
-    if sys.platform == 'darwin':
-        BASE_DIR = os.path.join(os.path.expanduser('~'), 'Library', 'Application Support', 'WordTTS')
-    elif sys.platform == 'win32':
-        BASE_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'WordTTS')
-    else:
-        BASE_DIR = os.path.join(os.path.expanduser('~'), '.wordtts')
-    os.makedirs(BASE_DIR, exist_ok=True)
-    RESOURCE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    RESOURCE_DIR = BASE_DIR
+# 资源根目录和可写数据目录由同一个模块解析，避免 server、核心 TTS 和
+# 讯飞客户端在开发/打包模式下各自计算出不同的位置。
+from app_paths import ensure_data_dir, resource_dir
+
+BASE_DIR = ensure_data_dir()
+RESOURCE_DIR = resource_dir()
 
 if RESOURCE_DIR not in sys.path:
     sys.path.insert(0, RESOURCE_DIR)

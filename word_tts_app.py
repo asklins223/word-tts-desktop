@@ -40,32 +40,14 @@ from datetime import datetime
 # ============================================================================
 # 路径与模块导入
 # ============================================================================
-# ---- PyInstaller 兼容：将打包资源路径加入 sys.path ----
-_configured_data_dir = os.environ.get("WORDTTS_DATA_DIR", "").strip()
-if _configured_data_dir:
-    BASE_DIR = os.path.abspath(os.path.expanduser(_configured_data_dir))
-    os.makedirs(BASE_DIR, exist_ok=True)
-    _RESOURCE_DIR = (
-        getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-        if getattr(sys, 'frozen', False)
-        else os.path.dirname(os.path.abspath(__file__))
-    )
-elif getattr(sys, 'frozen', False):
-    # 打包模式：BASE_DIR 指向用户数据目录（可写、持久化），
-    # 避免写入 .app 包内部（代码签名后只读，App Translocation 后只读）。
-    if sys.platform == 'darwin':
-        BASE_DIR = os.path.join(os.path.expanduser('~'), 'Library', 'Application Support', 'WordTTS')
-    elif sys.platform == 'win32':
-        BASE_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'WordTTS')
-    else:
-        BASE_DIR = os.path.join(os.path.expanduser('~'), '.wordtts')
-    os.makedirs(BASE_DIR, exist_ok=True)
-    _RESOURCE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-    if _RESOURCE_DIR not in sys.path:
-        sys.path.insert(0, _RESOURCE_DIR)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    _RESOURCE_DIR = BASE_DIR
+# 统一区分只读资源目录和可写应用数据目录。
+from app_paths import ensure_data_dir, resource_dir
+
+BASE_DIR = ensure_data_dir()
+_RESOURCE_DIR = resource_dir()
+
+if _RESOURCE_DIR not in sys.path:
+    sys.path.insert(0, _RESOURCE_DIR)
 
 WORD_PARSER_DIR = os.path.join(_RESOURCE_DIR, "word_parser")
 

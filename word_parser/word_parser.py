@@ -2,7 +2,7 @@
 """
 Word 文档解析脚本
 =================
-从 /word 文件夹下的 Word 文档中提取各类英语听说考试素材。
+从 examples/documents 文件夹下的 Word 文档中提取各类英语听说考试素材。
 
 支持文档类型：
   1. 信息获取        — 提取「听选信息」「回答问题」的题目与录音稿
@@ -18,10 +18,10 @@ Word 文档解析脚本
   - 输出结构化 JSON，方便后续 TTS 处理
 
 用法:
-    python word_parser.py
+    python word_parser/word_parser.py
 
 输出:
-    word_parsed/parsed_results.json
+    examples/parsed/parsed_results.json
 """
 
 import os
@@ -36,17 +36,12 @@ except ImportError:
     _OPENPYXL_AVAILABLE = False
 
 # ============================================================================
-# 路径配置
+# 路径配置（仅供解析器命令行示例使用）
 # ============================================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-WORD_DIR = os.path.join(BASE_DIR, "word")
-OUTPUT_DIR = os.path.join(BASE_DIR, "word_parsed")
-# OUTPUT_DIR 仅在 __main__ 独立运行时使用；打包模式下 .app 内部只读，
-# 跳过创建以避免 PermissionError 导致 import 失败。
-try:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-except (PermissionError, OSError):
-    pass
+PARSER_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(PARSER_DIR)
+WORD_DIR = os.path.join(PROJECT_ROOT, "examples", "documents")
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "examples", "parsed")
 
 
 # ============================================================================
@@ -1908,12 +1903,16 @@ def parse_document_auto(filepath):
 # ============================================================================
 
 def main():
-    """主函数：遍历 word 文件夹，解析所有 Word/Excel 文档"""
+    """主函数：遍历 examples/documents，解析所有 Word/Excel 文档。"""
     print("=" * 70)
     print("文档解析脚本")
     print(f"输入目录: {WORD_DIR}")
     print(f"输出目录: {OUTPUT_DIR}")
     print("=" * 70)
+
+    if not os.path.isdir(WORD_DIR):
+        print(f"[警告] 输入目录不存在: {WORD_DIR}")
+        return
 
     word_files = [
         f for f in os.listdir(WORD_DIR)
@@ -1921,7 +1920,7 @@ def main():
     ]
 
     if not word_files:
-        print("[警告] word 文件夹中没有找到 .docx 或 .xlsx 文件")
+        print("[警告] 输入目录中没有找到 .docx 或 .xlsx 文件")
         return
 
     all_results = []
@@ -1968,6 +1967,7 @@ def main():
                 print(f"  · [{cat}] {preview}...")
 
     # 保存汇总 JSON
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     output_path = os.path.join(OUTPUT_DIR, "parsed_results.json")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(all_results, f, ensure_ascii=False, indent=2)

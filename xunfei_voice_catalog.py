@@ -401,11 +401,19 @@ def normalize_catalog(
 
 
 def _cache_candidates(base_dir: str, resource_dir: str | None) -> list[str]:
-    candidates = [os.path.join(base_dir, "xunfei_voices", "voices.json")]
+    # cache/voices.json 是新的可写缓存；resources/voices.json 是只读种子资源。
+    # 旧版 base_dir/resources 和 xunfei_voices 路径继续兼容读取，避免升级后
+    # 丢失已经下载的音色目录。
+    candidates = [
+        os.path.join(base_dir, "cache", "voices.json"),
+        os.path.join(base_dir, "resources", "voices.json"),
+        os.path.join(base_dir, "xunfei_voices", "voices.json"),
+    ]
     if resource_dir:
-        resource_path = os.path.join(resource_dir, "xunfei_voices", "voices.json")
-        if resource_path not in candidates:
-            candidates.append(resource_path)
+        for folder in ("resources", "xunfei_voices"):
+            resource_path = os.path.join(resource_dir, folder, "voices.json")
+            if resource_path not in candidates:
+                candidates.append(resource_path)
     return candidates
 
 
@@ -428,7 +436,7 @@ def load_cached_catalog(base_dir: str, resource_dir: str | None = None) -> dict[
 
 
 def save_catalog(catalog: dict[str, Any], base_dir: str) -> str:
-    output_dir = os.path.join(base_dir, "xunfei_voices")
+    output_dir = os.path.join(base_dir, "cache")
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, "voices.json")
     temp_path = f"{path}.tmp"

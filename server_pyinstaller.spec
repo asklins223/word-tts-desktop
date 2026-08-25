@@ -33,7 +33,7 @@ datas = [
     # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
     ('word_parser/word_parser.py', 'word_parser'),
     # 首次启动在线刷新失败时使用的音色目录种子缓存。
-    ('xunfei_voices', 'xunfei_voices'),
+    ('resources/voices.json', 'resources'),
 ]
 
 # Playwright 官方 hook（playwright/_impl/__pyinstaller/）在某些 PyInstaller

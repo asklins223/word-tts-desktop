@@ -1,5 +1,7 @@
+import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import xunfei_voice_catalog as catalog
@@ -33,7 +35,12 @@ class XunfeiCatalogTests(unittest.TestCase):
                 [{"speakerNo": "cached-1", "speakerName": "Cached Voice"}],
                 source="test",
             )
-            catalog.save_catalog(saved, base_dir)
+            cache_path = catalog.save_catalog(saved, base_dir)
+            self.assertEqual(
+                cache_path,
+                os.path.join(base_dir, "cache", "voices.json"),
+            )
+            self.assertFalse((Path(base_dir) / "resources").exists())
 
             with patch.object(catalog, "refresh_catalog", side_effect=RuntimeError("offline")):
                 loaded = catalog.load_or_refresh_catalog(base_dir, force_refresh=True)

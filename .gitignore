@@ -157,6 +157,7 @@ ref_samples/
 experiments/
 _tmp_xvect/
 tts_output/
+xunfei_output/
 # 全局 gitignore 可能忽略 vendor；显式保留离线运行所需的 WaveSurfer。
 !electron/renderer/vendor/
 !electron/renderer/vendor/wavesurfer.min.js
@@ -166,6 +167,10 @@ tts_output/
 
 # PyInstaller 构建产物
 electron/server_backend_build/server_backend/_internal/
+
+# 源码直接运行时的本地数据（音频、讯飞缓存和浏览器登录状态）
+.runtime/
+xunfei_chrome_profile/
 
 # 敏感文件
 *.env

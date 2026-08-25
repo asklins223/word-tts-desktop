@@ -27,6 +27,7 @@ import threading
 import urllib.request
 
 from playwright.sync_api import sync_playwright
+from app_paths import ensure_data_dir
 
 
 def _log(*args, **kwargs):
@@ -35,25 +36,25 @@ def _log(*args, **kwargs):
     print(*args, **kwargs)
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = ensure_data_dir()
 
-# PyInstaller 打包环境下 _MEIPASS 是只读的，输出目录需要用可写位置
-if getattr(sys, 'frozen', False):
-    _OUTPUT_BASE = os.path.join(
-        os.path.expanduser("~"), ".wordtts", "xunfei_output"
-    )
-else:
-    _OUTPUT_BASE = os.path.join(BASE_DIR, "xunfei_output")
-OUTPUT_DIR = _OUTPUT_BASE
+# 合成临时文件必须和后端其它输出共用可写数据目录，不能写入
+# PyInstaller 的 _MEIPASS，也不能在 Electron 开发时散落到代码目录。
+OUTPUT_DIR = os.path.join(BASE_DIR, "xunfei_output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 HOME_URL = "https://peiyin.xunfei.cn/make"
 API_SIGN_URL = "https://peiyin.xunfei.cn/video-api/synth/get_work_sign_url"
 
-# 持久化浏览器配置目录（保存 cookies / 登录状态）
-PROFILE_DIR = os.path.join(
+# 持久化浏览器配置目录（保存 cookies / 登录状态）。
+# 首次升级时优先复用旧目录，避免用户被迫重新扫码登录；新安装统一放在
+# WordTTS 数据目录内，和音频、音色缓存保持同一数据边界。
+_legacy_profile_dir = os.path.join(
     os.path.expanduser("~"), ".xunfei_chrome_profile"
 )
+PROFILE_DIR = os.path.join(BASE_DIR, "xunfei_chrome_profile")
+if not os.path.exists(PROFILE_DIR) and os.path.isdir(_legacy_profile_dir):
+    PROFILE_DIR = _legacy_profile_dir
 
 # Chrome 可执行文件路径候选（macOS 自定义安装位置 + Linux 常见位置）
 _CHROME_CANDIDATES = [
