@@ -623,21 +623,15 @@ async def _synth_segment(text, voice, speed, volume, pitch):
     return seg
 
 
-async def _synth_item(text, rate, volume, pitch, default_voice=None,
-                      female_voice=None, male_voice=None, voice_configs=None,
-                      role_voices=None, role_configs=None, default_role=None):
-    """
-    为一条解析结果生成完整音频。
-    自动处理 W/M 与通用角色切换，并按讯飞原始音频顺序直接拼接。
+def build_synthesis_segments(text, rate, volume, pitch, default_voice=None,
+                             female_voice=None, male_voice=None,
+                             voice_configs=None, role_voices=None,
+                             role_configs=None, default_role=None):
+    """把一道题展开为可独立分组的讯飞合成段。
 
-    rate/volume/pitch: 讯飞平台三参数（0-100，50=默认）
-    default_voice: 无 w/m 标识时的默认音色，None 表示女声
-    female_voice: W/w 标识使用的女声发音人 key，None 时用 FEMALE_VOICE。
-    male_voice:   M/m 标识使用的男声发音人 key，None 时用 MALE_VOICE。
-    voice_configs: 旧版按音色保存的 rate/volume/pitch 配置，作为兼容兜底。
-    role_configs: 按默认角色或文档角色保存的独立参数配置。
-    role_voices: 角色名到音色 key 的映射。
-    default_role: 没有说话人标识时使用的默认角色槽位。
+    多角色题目可能同时包含多个音色；这里先保留题内顺序，再由批量引擎
+    按 ``音色 + 语速 + 语调 + 音量`` 重新分组提交。调用方最后按
+    ``segment_index`` 拼回原题音频，因此分组不会改变成品顺序。
     """
     segments = parse_speakers_with_roles(
         text,
@@ -658,21 +652,60 @@ async def _synth_item(text, rate, volume, pitch, default_voice=None,
     }
     configs = voice_configs if isinstance(voice_configs, dict) else {}
     role_param_configs = role_configs if isinstance(role_configs, dict) else {}
-
-    audio_parts = []
-    for _role, voice, seg_text in segments:
+    result = []
+    for segment_index, (_role, voice, seg_text) in enumerate(segments):
         role_params = role_param_configs.get(role_config_key(_role)) if _role else None
         params = _normalize_voice_params(
             role_params if role_params is not None else configs.get(voice),
             base_params,
         )
+        result.append({
+            "segment_index": segment_index,
+            "role": _role,
+            "text": seg_text,
+            "voice_key": voice,
+            "speed": params["rate"],
+            "pitch": params["pitch"],
+            "volume": params["volume"],
+        })
+    return result
+
+
+async def _synth_item(text, rate, volume, pitch, default_voice=None,
+                      female_voice=None, male_voice=None, voice_configs=None,
+                      role_voices=None, role_configs=None, default_role=None):
+    """
+    为一条解析结果生成完整音频。
+    自动处理 W/M 与通用角色切换，并按讯飞原始音频顺序直接拼接。
+
+    rate/volume/pitch: 讯飞平台三参数（0-100，50=默认）
+    default_voice: 无 w/m 标识时的默认音色，None 表示女声
+    female_voice: W/w 标识使用的女声发音人 key，None 时用 FEMALE_VOICE。
+    male_voice:   M/m 标识使用的男声发音人 key，None 时用 MALE_VOICE。
+    voice_configs: 旧版按音色保存的 rate/volume/pitch 配置，作为兼容兜底。
+    role_configs: 按默认角色或文档角色保存的独立参数配置。
+    role_voices: 角色名到音色 key 的映射。
+    default_role: 没有说话人标识时使用的默认角色槽位。
+    """
+    segment_specs = build_synthesis_segments(
+        text, rate, volume, pitch,
+        default_voice=default_voice,
+        female_voice=female_voice,
+        male_voice=male_voice,
+        voice_configs=voice_configs,
+        role_voices=role_voices,
+        role_configs=role_configs,
+        default_role=default_role,
+    )
+    audio_parts = []
+    for segment in segment_specs:
         # 不切割首尾，也不额外插入或归一化段落停顿；保留讯飞返回的音频内容。
         part = await _synth_segment(
-            seg_text,
-            voice,
-            params["rate"],
-            params["volume"],
-            params["pitch"],
+            segment["text"],
+            segment["voice_key"],
+            segment["speed"],
+            segment["volume"],
+            segment["pitch"],
         )
         audio_parts.append(part)
 
@@ -683,6 +716,78 @@ async def _synth_item(text, rate, volume, pitch, default_voice=None,
     for seg in audio_parts[1:]:
         full = full + seg
     return full
+
+
+async def _synth_items_batch(item_specs):
+    """批量生成多道题，讯飞端先按音色/参数分组后统一下载。
+
+    返回 ``item_id -> {audio, error}``。每道题的多角色段落仍按照原文顺序
+    拼接；单个题目失败不会丢弃同一批里已经成功生成的其它题目。
+    """
+    if not item_specs:
+        return {}
+    if not _XUNFEI_AVAILABLE or _xunfei is None:
+        raise RuntimeError("讯飞配音引擎不可用（缺少 playwright）")
+
+    jobs = []
+    item_job_ids = {}
+    for item_index, spec in enumerate(item_specs):
+        item_id = str(spec["item_id"])
+        segment_specs = build_synthesis_segments(
+            spec.get("text", ""),
+            spec.get("rate", TTS_PARAM_DEFAULT),
+            spec.get("volume", TTS_PARAM_DEFAULT),
+            spec.get("pitch", TTS_PARAM_DEFAULT),
+            default_voice=spec.get("default_voice"),
+            female_voice=spec.get("female_voice"),
+            male_voice=spec.get("male_voice"),
+            voice_configs=spec.get("voice_configs"),
+            role_voices=spec.get("role_voices"),
+            role_configs=spec.get("role_configs"),
+            default_role=spec.get("default_role"),
+        )
+        ids = []
+        for segment in segment_specs:
+            job_id = f"{item_id}::segment:{segment['segment_index']}"
+            ids.append(job_id)
+            jobs.append({
+                "job_id": job_id,
+                "item_id": item_id,
+                "segment_index": segment["segment_index"],
+                "text": segment["text"],
+                "voice_key": segment["voice_key"],
+                "speed": segment["speed"],
+                "pitch": segment["pitch"],
+                "volume": segment["volume"],
+            })
+        item_job_ids[item_id] = ids
+
+    batch_results = await _xunfei.synth_xunfei_batch(jobs)
+    item_results = {}
+    for spec in item_specs:
+        item_id = str(spec["item_id"])
+        parts = []
+        error = None
+        for job_id in item_job_ids.get(item_id, []):
+            result = batch_results.get(job_id) if isinstance(batch_results, dict) else None
+            segment = result.get("segment") if isinstance(result, dict) else None
+            if segment is None:
+                error = (result or {}).get("error") if isinstance(result, dict) else None
+                error = error or "讯飞批量下载未返回音频"
+                break
+            parts.append(segment)
+
+        if error:
+            item_results[item_id] = {"audio": None, "error": str(error)}
+            continue
+        if not parts:
+            item_results[item_id] = {"audio": None, "error": "未生成任何音频段"}
+            continue
+        full = parts[0]
+        for part in parts[1:]:
+            full = full + part
+        item_results[item_id] = {"audio": full, "error": None}
+    return item_results
 
 
 def generate_item_audio(text, rate, volume, pitch, default_voice=None,

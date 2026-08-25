@@ -1284,13 +1284,18 @@ async def _generate_audio_stream(
             progress_snapshot=progress,
         )
 
-        # ---- 逐条生成 ----
+        # ---- 先按音色/参数分组提交全部合成，再统一下载 ----
+        # 题目级别的进度仍保留；真正提交的是每道题展开后的角色音频段。
+        # 这样多角色题可以同时复用同一音色/参数分组，最后再按题内顺序拼接。
+        item_specs = []
+        item_contexts = {}
+        item_started_at = {}
+        empty_items = []
+
         for item in progress["items"]:
-            # 检查是否被用户取消
             if session.cancelled:
                 emit_cancelled_terminal("已收到取消请求，未开始的内容不会继续处理")
                 return
-
             if item["status"] == "done":
                 continue
 
@@ -1301,35 +1306,12 @@ async def _generate_audio_stream(
                 item["status"] = "error"
                 item["error"] = "文本为空"
                 progress["failed"] += 1
-                log(
-                    "warn",
-                    f"{item_id} — 文本为空，跳过",
-                    stage="synthesize",
-                    kind="item",
-                    status="error",
-                    key=f"item:{item_id}",
-                    title=f"{item_id} 未生成",
-                    detail="对应内容为空，已跳过这一条",
-                    item={
-                        "id": item_id,
-                        "filename": item.get("filename"),
-                        "doc_type": item.get("doc_type"),
-                        "category": item.get("category"),
-                        "text_preview": item.get("text_preview"),
-                    },
-                    progress_snapshot=progress,
-                )
-                core.save_progress(session_dir, progress)
-                emit_stats(progress)
-                emit_generation_status(progress)
+                empty_items.append(item)
                 continue
 
-            # 词汇题型没有独立音色；其他题型按解析器的男女声与角色映射分配。
             is_word_item = raw_item.get("category") in core.WORD_CATEGORIES
             item_default_voice = core.default_voice_for_item(
-                raw_item,
-                female_voice=fv,
-                male_voice=mv,
+                raw_item, female_voice=fv, male_voice=mv
             )
             item_female_voice = fv
             item_male_voice = fv if is_word_item else mv
@@ -1348,12 +1330,10 @@ async def _generate_audio_stream(
                 default_role=item_default_role,
                 preserve_default_roles=True,
             )
-            speaker_info = ""
             voice_label = "女声"
             if len(speakers) > 1 or speakers[0][1] != fv:
                 voices_used = {voice for _role, voice, _text in speakers}
                 voice_label = "、".join(sorted(voices_used))[:120] or "女声"
-                speaker_info = f" [音色: {voice_label}]"
             item_context = {
                 "id": item_id,
                 "filename": item.get("filename"),
@@ -1362,34 +1342,93 @@ async def _generate_audio_stream(
                 "voice": voice_label,
                 "text_preview": item.get("text_preview"),
             }
-            item_started_at = time.perf_counter()
+            item_contexts[item_id] = item_context
+            item_started_at[item_id] = time.perf_counter()
+            item_specs.append({
+                "item_id": item_id,
+                "text": text,
+                "rate": rate,
+                "volume": volume,
+                "pitch": pitch,
+                "default_voice": fv if is_word_item else item_default_voice,
+                "female_voice": item_female_voice,
+                "male_voice": item_male_voice,
+                "voice_configs": voice_configs,
+                "role_voices": item_role_voices,
+                "role_configs": role_configs,
+                "default_role": item_default_role,
+            })
             log(
                 "progress",
-                f"正在生成: {item_id}{speaker_info}",
+                f"已加入批量生成: {item_id}",
                 stage="synthesize",
                 kind="item",
                 key=f"item:{item_id}",
-                title=f"正在生成 {item_id}",
+                title=f"已排队 {item_id}",
                 detail=" · ".join(filter(None, [item.get("doc_type"), item.get("category"), voice_label])),
                 item=item_context,
                 progress_snapshot=progress,
             )
-            emit_generation_status(progress, item_id)
 
+        for item in empty_items:
+            log(
+                "warn",
+                f"{item['id']} — 文本为空，跳过",
+                stage="synthesize",
+                kind="item",
+                status="error",
+                key=f"item:{item['id']}",
+                title=f"{item['id']} 未生成",
+                detail="对应内容为空，已跳过这一条",
+                item={
+                    "id": item["id"],
+                    "filename": item.get("filename"),
+                    "doc_type": item.get("doc_type"),
+                    "category": item.get("category"),
+                    "text_preview": item.get("text_preview"),
+                },
+                progress_snapshot=progress,
+            )
+        if empty_items:
+            core.save_progress(session_dir, progress)
+            emit_stats(progress)
+            emit_generation_status(progress)
+
+        batch_results = {}
+        batch_error = None
+        if item_specs:
+            log(
+                "progress",
+                f"按音色与参数分组提交 {len(item_specs)} 道题",
+                stage="synthesize",
+                kind="stage",
+                key="stage:synthesize:batch",
+                title="分组生成音频",
+                detail="相同音色、语速、语调、音量只切换一次；全部提交后统一按 worksId 下载",
+                progress_snapshot=progress,
+            )
+            emit_status(f"按音色分组生成中 — 待处理 {len(item_specs)} 道题")
             try:
-                audio_seg = await core._synth_item(
-                    text, rate, volume, pitch,
-                    default_voice=fv if is_word_item else item_default_voice,
-                    female_voice=item_female_voice,
-                    male_voice=item_male_voice,
-                    voice_configs=voice_configs,
-                    role_voices=item_role_voices,
-                    role_configs=role_configs,
-                    default_role=item_default_role,
-                )
+                batch_results = await core._synth_items_batch(item_specs)
+            except Exception as error:
+                batch_error = str(error)
+
+        for item in progress["items"]:
+            item_id = item["id"]
+            if item["status"] == "done" or item_id not in item_contexts:
+                continue
+            item_context = item_contexts[item_id]
+            item_started = item_started_at.get(item_id, time.perf_counter())
+            result = batch_results.get(item_id) if isinstance(batch_results, dict) else None
+            audio_seg = result.get("audio") if isinstance(result, dict) else None
+            error = batch_error or (
+                result.get("error") if isinstance(result, dict) else None
+            )
+            try:
+                if error or audio_seg is None:
+                    raise RuntimeError(error or "讯飞批量生成未返回音频")
                 out_path = os.path.join(audio_dir, item["filename"])
                 await asyncio.to_thread(core.export_audio, audio_seg, fmt, quality, out_path)
-
                 item["status"] = "done"
                 item["output_path"] = out_path
                 item["error"] = None
@@ -1401,34 +1440,34 @@ async def _generate_audio_stream(
                     kind="item",
                     key=f"item:{item_id}",
                     title=f"{item_id} 已生成",
-                    detail=f"{item.get('filename')} · {voice_label} · 第 {progress['completed']} / {total} 条",
+                    detail=f"{item.get('filename')} · {item_context['voice']} · 第 {progress['completed']} / {total} 条",
                     item=item_context,
                     progress_snapshot=progress,
-                    duration_ms=round((time.perf_counter() - item_started_at) * 1000),
+                    duration_ms=round((time.perf_counter() - item_started) * 1000),
                 )
-            except Exception as e:
+            except Exception as error:
                 item["status"] = "error"
-                item["error"] = str(e)
+                item["error"] = str(error)
                 progress["failed"] += 1
                 log(
                     "error",
-                    f"{item_id} 失败: {e}",
+                    f"{item_id} 失败: {error}",
                     stage="synthesize",
                     kind="item",
                     key=f"item:{item_id}",
                     title=f"{item_id} 生成失败",
-                    detail=str(e),
+                    detail=str(error),
                     item=item_context,
                     progress_snapshot=progress,
-                    duration_ms=round((time.perf_counter() - item_started_at) * 1000),
+                    duration_ms=round((time.perf_counter() - item_started) * 1000),
                 )
-
             core.save_progress(session_dir, progress)
             emit_stats(progress)
             emit_generation_status(progress)
-            if session.cancelled:
-                emit_cancelled_terminal("当前音频处理结束后已停止后续任务")
-                return
+
+        if session.cancelled:
+            emit_cancelled_terminal("批量音频生成与统一下载完成后已停止后续任务")
+            return
 
         synthesis_duration_ms = round((time.perf_counter() - synthesis_started_at) * 1000)
         synthesis_all_failed = progress["completed"] == 0 and progress["failed"] > 0

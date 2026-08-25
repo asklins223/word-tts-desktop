@@ -23,8 +23,9 @@ import re
 import sys
 import time
 import json
+import hashlib
 import threading
-import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -35,6 +36,7 @@ from app_paths import ensure_data_dir
 def _log(*args, **kwargs):
     """所有日志输出到 stdout/stderr，确保 Electron 后端能捕获。"""
     kwargs.setdefault('file', sys.stdout)
+    kwargs.setdefault('flush', True)
     print(*args, **kwargs)
 
 
@@ -46,6 +48,9 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "xunfei_output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 HOME_URL = "https://peiyin.xunfei.cn/make"
+# 讯飞当前“我的作品/下载”页实际路由是 /user；旧版 /myworks 已经返回 404。
+DOWNLOAD_PAGE_URL = "https://peiyin.xunfei.cn/user"
+API_WORKS_LIST_URL = "https://peiyin.xunfei.cn/video-api/synth/qry_works_synth_list"
 API_SIGN_URL = "https://peiyin.xunfei.cn/video-api/synth/get_work_sign_url"
 
 # 持久化浏览器配置目录（保存 cookies / 登录状态）。
@@ -82,6 +87,36 @@ def clamp_param(value, default=PARAM_DEFAULT):
     except (TypeError, ValueError, OverflowError):
         v = default
     return max(PARAM_MIN, min(PARAM_MAX, v))
+
+
+def _canonical_sign_value(value):
+    """按讯飞网页 Axios 拦截器的规则生成签名原文。"""
+    if isinstance(value, dict):
+        parts = []
+        for key in sorted(value):
+            child = _canonical_sign_value(value[key])
+            # 网页端会忽略空字符串/空值，但保留数组字段。
+            if child or isinstance(value[key], list):
+                parts.append(f"{key}={child}")
+        return "&".join(parts)
+    if isinstance(value, list):
+        return ",".join(_canonical_sign_value(item) for item in value)
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _build_api_sign(param, base):
+    """生成讯飞 video-api 请求需要的 sign 请求头。"""
+    base_digest = hashlib.md5(
+        _canonical_sign_value(base).encode("utf-8")
+    ).hexdigest()
+    payload = {"param": param, "base": base}
+    return hashlib.md5(
+        (_canonical_sign_value(payload) + base_digest).encode("utf-8")
+    ).hexdigest()
 
 
 def _find_chrome():
@@ -215,7 +250,7 @@ class JS:
     CHECK_MODAL_HAS_TEXT = """
     (keywords) => {
         const modals = document.querySelectorAll(
-            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
             '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
@@ -241,7 +276,7 @@ class JS:
     CLICK_BTN_IN_MODAL = """
     (buttonText) => {
         const modals = document.querySelectorAll(
-            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
             '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
@@ -391,6 +426,162 @@ class JS:
     }
     """
 
+    CHECK_DOWNLOAD_PAGE = """
+    () => {
+        const text = String(document.body?.innerText || '').replace(/\\s+/g, '');
+        const checkboxes = document.querySelectorAll('input.ant-checkbox-input, input[type="checkbox"]');
+        return text.includes('作品名称') && text.includes('审核通过') && checkboxes.length > 0;
+    }
+    """
+
+    GET_DOWNLOAD_ROWS = """
+    () => {
+        const rowFromInput = (input) => {
+            let parent = input;
+            for (let level = 0; parent && level < 9; level += 1) {
+                const classes = Array.from(parent.classList || []);
+                if (classes.some((name) => name.endsWith('__item'))) return parent;
+                parent = parent.parentElement;
+            }
+            const button = input.closest('[class*="__botton"]');
+            return button ? button.parentElement : null;
+        };
+        const rows = [];
+        const seen = new Set();
+        for (const input of document.querySelectorAll('input.ant-checkbox-input, input[type="checkbox"]')) {
+            const row = rowFromInput(input);
+            if (!row || seen.has(row)) continue;
+            const name = row.querySelector('[class*="__name"]');
+            seen.add(row);
+            rows.push({
+                index: rows.length,
+                text: String(row.innerText || '').replace(/\\s+/g, ' ').trim(),
+                works_name: String(name?.innerText || '').replace(/\\s+/g, ' ').trim(),
+            });
+        }
+        return rows;
+    }
+    """
+
+    SELECT_DOWNLOAD_ROWS = """
+    (targets) => {
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const rowFromInput = (input) => {
+            let parent = input;
+            for (let level = 0; parent && level < 9; level += 1) {
+                const classes = Array.from(parent.classList || []);
+                if (classes.some((name) => name.endsWith('__item'))) return parent;
+                parent = parent.parentElement;
+            }
+            const button = input.closest('[class*="__botton"]');
+            return button ? button.parentElement : null;
+        };
+        const rows = [];
+        const seen = new Set();
+        for (const input of document.querySelectorAll('input.ant-checkbox-input, input[type="checkbox"]')) {
+            const row = rowFromInput(input);
+            if (!row || seen.has(row)) continue;
+            seen.add(row);
+            rows.push({
+                row,
+                input: row.querySelector('input.ant-checkbox-input, input[type="checkbox"]'),
+                text: normalize(row.innerText || ''),
+                name: normalize(row.querySelector('[class*="__name"]')?.innerText || ''),
+            });
+        }
+
+        const used = new Set();
+        const selected = [];
+        const missing = [];
+        for (const target of Array.isArray(targets) ? targets : []) {
+            const orderNo = normalize(target?.order_no);
+            const worksName = normalize(target?.works_name);
+            let found = -1;
+            if (orderNo) {
+                found = rows.findIndex((row, index) => (
+                    !used.has(index) && row.text.includes(orderNo)
+                ));
+            }
+            if (found < 0 && Number.isInteger(target?.row_index)) {
+                const index = target.row_index;
+                if (index >= 0 && index < rows.length && !used.has(index)) found = index;
+            }
+            if (found < 0 && worksName) {
+                found = rows.findIndex((row, index) => (
+                    !used.has(index) && row.name === worksName
+                ));
+            }
+            if (found < 0) {
+                missing.push({
+                    works_id: String(target?.works_id || ''),
+                    order_no: String(target?.order_no || ''),
+                    works_name: String(target?.works_name || ''),
+                });
+                continue;
+            }
+
+            const checkbox = rows[found].input;
+            if (!checkbox) {
+                missing.push({
+                    works_id: String(target?.works_id || ''),
+                    order_no: String(target?.order_no || ''),
+                    works_name: String(target?.works_name || ''),
+                });
+                continue;
+            }
+            if (!checkbox.checked) checkbox.click();
+            if (!checkbox.checked) {
+                missing.push({
+                    works_id: String(target?.works_id || ''),
+                    order_no: String(target?.order_no || ''),
+                    works_name: String(target?.works_name || ''),
+                });
+                continue;
+            }
+            used.add(found);
+            selected.push({
+                works_id: String(target?.works_id || ''),
+                order_no: String(target?.order_no || ''),
+                works_name: String(target?.works_name || ''),
+                row_index: found,
+            });
+        }
+        return {selected, missing, row_count: rows.length};
+    }
+    """
+
+    SCROLL_DOWNLOAD_LIST = """
+    () => {
+        let moved = false;
+        const containers = document.querySelectorAll(
+            '[class*="__scrolledList"], [class*="scrolledList"], [class*="scroll"]'
+        );
+        for (const container of containers) {
+            if (container.scrollHeight > container.clientHeight) {
+                container.scrollTop = container.scrollHeight;
+                moved = true;
+            }
+        }
+        window.scrollTo(0, document.body.scrollHeight);
+        return moved;
+    }
+    """
+
+    CLICK_DOWNLOAD_PAGE_BUTTON = """
+    () => {
+        for (const button of document.querySelectorAll('button')) {
+            const style = window.getComputedStyle(button);
+            const rect = button.getBoundingClientRect();
+            const label = String(button.textContent || '').replace(/\\s+/g, '').trim();
+            if (label !== '下载' || style.display === 'none' || style.visibility === 'hidden'
+                || rect.width === 0 || rect.height === 0 || button.disabled) continue;
+            button.click();
+            return true;
+        }
+        return false;
+    }
+    """
+
     CHECK_FREE_MODAL = """
     () => {
         const modals = document.querySelectorAll('.ant-modal');
@@ -408,7 +599,9 @@ class JS:
     () => {
         const body = document.body;
         if (!body) return false;
-        const text = body.textContent || '';
+        // textContent 会包含 display:none 的模板、历史提示和隐藏弹窗，
+        // 不能据此判断本次合成是否真的出现了额度错误。
+        const text = body.innerText || '';
         return text.includes('余额不足') || text.includes('次数不足') || text.includes('额度不足');
     }
     """
@@ -417,7 +610,9 @@ class JS:
     () => {
         const body = document.body;
         if (!body) return false;
-        const text = body.textContent || '';
+        // 只读取当前页面的可见文本，避免把隐藏 DOM 中的旧提示误判为
+        // 本次生成的频控错误。
+        const text = body.innerText || '';
         return text.includes('操作频繁') || text.includes('稍后再试') || text.includes('请求过于频繁');
     }
     """
@@ -439,7 +634,7 @@ class JS:
     CHECK_NO_REMIND = """
     () => {
         const modals = document.querySelectorAll(
-            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
             '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
@@ -493,7 +688,7 @@ class JS:
     CLICK_AI_SWITCH = """
     () => {
         const modals = document.querySelectorAll(
-            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
             '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
@@ -506,24 +701,138 @@ class JS:
                 && rect.height > 0;
         };
         const normalize = (value) => String(value || '').replace(/\\s+/g, '');
+        const switchSelector = '[role="switch"], .ant-switch, button[aria-pressed]';
+        const findSwitch = (modal) => {
+            const switches = Array.from(modal.querySelectorAll(switchSelector));
+            // 讯飞当前 DOM 的开关和“AI 标识”文字在同一行；先按这行找，
+            // 避免弹窗里存在其它开关时误点到别的设置。
+            const aiLabel = Array.from(modal.querySelectorAll('*')).find((el) => {
+                return el.children.length === 0 && normalize(el.textContent) === 'AI标识';
+            });
+            let parent = aiLabel;
+            for (let level = 0; parent && level < 6; level += 1) {
+                const rowSwitch = parent.querySelector(switchSelector);
+                if (rowSwitch) return rowSwitch;
+                parent = parent.parentElement;
+            }
+            return switches[0] || null;
+        };
         for (const modal of modals) {
             if (!visible(modal)) continue;
             const text = normalize(modal.textContent || '');
             if (!text.includes('作品设置') && !text.includes('确认合成') && !text.includes('作品名称')) continue;
             if (text.includes('不再提示')) continue;
-            const candidate = modal.querySelector(
-                '[role="switch"], .ant-switch, button[aria-pressed], .ant-switch-handle'
-            );
-            if (!candidate) continue;
-            const sw = candidate.closest('[role="switch"], .ant-switch, button') || candidate;
+            const sw = findSwitch(modal);
+            if (!sw) continue;
             if (!visible(sw)) continue;
             const ariaChecked = sw.getAttribute('aria-checked');
             const ariaPressed = sw.getAttribute('aria-pressed');
-            if (ariaChecked === 'true' || ariaPressed === 'true' || sw.classList.contains('ant-switch-checked')) {
-                return 'already';
+            const isOn = ariaChecked === 'true'
+                || ariaPressed === 'true'
+                || sw.classList.contains('ant-switch-checked');
+            if (!isOn) {
+                return 'already_off';
             }
+            // 直接调用真实 button 的 click，确保 React/Ant Design 的事件
+            // 处理器收到的是 button[role=switch] 的点击，而不是只点内部装饰节点。
             sw.click();
-            return 'switch';
+            return 'clicked';
+        }
+        return 'not_found';
+    }
+    """
+
+    CHECK_AI_SWITCH_OFF = """
+    () => {
+        const modals = document.querySelectorAll(
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
+            '.el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '');
+        const switchSelector = '[role="switch"], .ant-switch, button[aria-pressed]';
+        const findSwitch = (modal) => {
+            const switches = Array.from(modal.querySelectorAll(switchSelector));
+            const aiLabel = Array.from(modal.querySelectorAll('*')).find((el) => {
+                return el.children.length === 0 && normalize(el.textContent) === 'AI标识';
+            });
+            let parent = aiLabel;
+            for (let level = 0; parent && level < 6; level += 1) {
+                const rowSwitch = parent.querySelector(switchSelector);
+                if (rowSwitch) return rowSwitch;
+                parent = parent.parentElement;
+            }
+            return switches[0] || null;
+        };
+        for (const modal of modals) {
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
+            if (!text.includes('作品设置') && !text.includes('确认合成') && !text.includes('作品名称')) continue;
+            if (text.includes('不再提示')) continue;
+            const sw = findSwitch(modal);
+            if (!sw || !visible(sw)) continue;
+            const ariaChecked = sw.getAttribute('aria-checked');
+            const ariaPressed = sw.getAttribute('aria-pressed');
+            const isOn = ariaChecked === 'true'
+                || ariaPressed === 'true'
+                || sw.classList.contains('ant-switch-checked');
+            return !isOn;
+        }
+        return false;
+    }
+    """
+
+    GET_AI_SWITCH_STATE = """
+    () => {
+        const modals = document.querySelectorAll(
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
+            '.el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '');
+        const switchSelector = '[role="switch"], .ant-switch, button[aria-pressed]';
+        const findSwitch = (modal) => {
+            const switches = Array.from(modal.querySelectorAll(switchSelector));
+            const aiLabel = Array.from(modal.querySelectorAll('*')).find((el) => {
+                return el.children.length === 0 && normalize(el.textContent) === 'AI标识';
+            });
+            let parent = aiLabel;
+            for (let level = 0; parent && level < 6; level += 1) {
+                const rowSwitch = parent.querySelector(switchSelector);
+                if (rowSwitch) return rowSwitch;
+                parent = parent.parentElement;
+            }
+            return switches[0] || null;
+        };
+        for (const modal of modals) {
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
+            if (!text.includes('作品设置') && !text.includes('确认合成') && !text.includes('作品名称')) continue;
+            if (text.includes('不再提示')) continue;
+            const sw = findSwitch(modal);
+            if (!sw || !visible(sw)) continue;
+            const ariaChecked = sw.getAttribute('aria-checked');
+            const ariaPressed = sw.getAttribute('aria-pressed');
+            const isOn = ariaChecked === 'true'
+                || ariaPressed === 'true'
+                || sw.classList.contains('ant-switch-checked');
+            return isOn ? 'on' : 'off';
         }
         return 'not_found';
     }
@@ -532,7 +841,7 @@ class JS:
     CLICK_AI_CONFIRM = """
     () => {
         const modals = document.querySelectorAll(
-            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
             '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
@@ -564,7 +873,7 @@ class JS:
     SNAPSHOT_DIALOGS = """
     () => {
         const roots = document.querySelectorAll(
-            '.ant-modal, .ant-modal-content, [role="dialog"], '
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
             '.el-dialog, .el-message-box'
         );
         const visible = (el) => {
@@ -596,21 +905,45 @@ class JS:
     }
     """
 
-    FETCH_SIGN_URL = """
-    (worksId) => {
-        return fetch('%s', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                param: {worksId: worksId, worksType: 1},
-                base: {appid: "xfpy", sid: "", channelId: "40000001", osid: 0}
-            })
-        }).then(r => r.json()).then(d => {
-            if (d.code === 0 && d.data && d.data.url) return d.data.url;
-            return null;
-        }).catch(() => null);
+    GET_API_CREDENTIALS = """
+    () => {
+        const readCookie = (name) => {
+            try {
+                if (typeof window.getCookie === 'function') {
+                    return window.getCookie(name) || '';
+                }
+            } catch (_) {}
+            const prefix = `${name}=`;
+            const item = document.cookie.split('; ').find(v => v.startsWith(prefix));
+            return item ? decodeURIComponent(item.slice(prefix.length)) : '';
+        };
+        let sessid = '';
+        try {
+            if (typeof window.getSessid === 'function') {
+                sessid = window.getSessid() || '';
+            }
+        } catch (_) {}
+        return {userId: readCookie('uid'), sessid};
     }
-    """ % API_SIGN_URL
+    """
+
+    POST_API_JSON = """
+    async ([url, param, base, headers]) => {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                credentials: 'include',
+                headers: Object.assign({'Content-Type': 'application/json'}, headers || {}),
+                body: JSON.stringify({param, base})
+            });
+            let data = null;
+            try { data = await response.json(); } catch (_) {}
+            return {httpStatus: response.status, data};
+        } catch (error) {
+            return {httpStatus: 0, error: String(error)};
+        }
+    }
+    """
 
 
 # AI 标识弹窗关键词变体（文案可能变化，逐个尝试）
@@ -697,8 +1030,17 @@ class XunFeiSession:
         self._works_lock = threading.Lock()
         self._works_entries = []     # [(works_id, ts)]
         self._works_cutoff = 0.0
-        # sign_url 兜底通道捕获
-        self._sign_urls = []
+        # sign_url 兜底通道捕获：必须和 worksId 绑定，禁止拿“最新 URL”串条目。
+        self._sign_urls = []     # [(works_id, sign_url, ts)]
+        # 讯飞网页会为每次 video-api 请求动态生成 sid，并在请求头中补充
+        # authorization/sign。这里只保存网页请求暴露的稳定字段，sid 每次
+        # 由 _signed_api_post 重新生成，避免复用已消费的请求签名。
+        self._api_base = {
+            "appid": "xfpy",
+            "channelId": "40000001",
+            "osid": 0,
+        }
+        self._api_authorization = None
         self._response_handler = None
 
     # ------------------------------------------------------------------
@@ -737,9 +1079,33 @@ class XunFeiSession:
     # worksId 捕获
     # ------------------------------------------------------------------
 
+    def _remember_api_request(self, request):
+        """记录网页真实请求中的认证信息，供列表/签名接口复用。"""
+        try:
+            payload = request.post_data_json
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            base = payload.get("base")
+            if isinstance(base, dict):
+                with self._works_lock:
+                    for key in ("appid", "channelId", "userId", "osid"):
+                        if key in base and base[key] not in (None, ""):
+                            self._api_base[key] = base[key]
+
+        try:
+            headers = request.all_headers()
+        except Exception:
+            headers = {}
+        authorization = headers.get("authorization") or headers.get("Authorization")
+        if authorization:
+            with self._works_lock:
+                self._api_authorization = authorization
+
     def _on_response(self, response):
         url = response.url
         try:
+            self._remember_api_request(response.request)
             wid = None
             if "makeMultipleSpeakerWork" in url:
                 data = response.json()
@@ -752,7 +1118,17 @@ class XunFeiSession:
             elif "get_work_sign_url" in url:
                 data = response.json()
                 if data.get("code") == 0 and data.get("data", {}).get("url"):
-                    self._sign_urls.append(data["data"]["url"])
+                    sign_works_id = None
+                    try:
+                        request_payload = response.request.post_data_json
+                        sign_works_id = (request_payload.get("param", {}) or {}).get("worksId")
+                    except Exception:
+                        pass
+                    if sign_works_id:
+                        with self._works_lock:
+                            self._sign_urls.append(
+                                (str(sign_works_id), data["data"]["url"], time.time())
+                            )
             if wid:
                 with self._works_lock:
                     self._works_entries.append((wid, time.time()))
@@ -937,6 +1313,74 @@ class XunFeiSession:
         _log("[xunfei]   已点击生成音频")
         self._pause(page, 0.6, 0.3)
 
+    @staticmethod
+    def _normalize_works_name(value):
+        """收敛讯飞作品名称，避免下载页名称被截断或包含非法字符。"""
+        text = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", str(value or "")).strip()
+        return text[:25] or f"wordtts_{uuid.uuid4().hex[:10]}"
+
+    def _set_works_name(self, page, works_name):
+        """在作品设置弹窗中写入唯一名称，便于下载页人工核对。"""
+        normalized = self._normalize_works_name(works_name)
+        try:
+            field = page.locator('input[placeholder*="作品名称"]:visible').first
+            if field.count() == 0:
+                return False
+            field.click(timeout=3000)
+            page.keyboard.press(_SELECT_ALL)
+            page.keyboard.insert_text(normalized)
+            page.keyboard.press("Tab")
+            self._pause(page, 0.2, 0.08)
+            actual = field.input_value(timeout=1000)
+            if actual == normalized:
+                _log(f"[xunfei]   作品名称已设置: {normalized}")
+                return True
+        except Exception as error:
+            _log(f"[xunfei]   作品名称设置失败（继续使用默认名称）: {error}")
+        return False
+
+    @staticmethod
+    def _visible_confirm_synth_buttons(page):
+        """返回当前页面可见的“确认合成”按钮，兼容讯飞弹窗 DOM 变化。"""
+        buttons = []
+        try:
+            candidates = page.locator('button:visible')
+            for index in range(min(candidates.count(), 200)):
+                button = candidates.nth(index)
+                try:
+                    label = re.sub(r"\s+", "", button.inner_text(timeout=500)).strip()
+                except Exception:
+                    continue
+                if label != "确认合成":
+                    continue
+                try:
+                    disabled = button.is_disabled()
+                except Exception:
+                    disabled = None
+                buttons.append((button, disabled))
+        except Exception:
+            pass
+        return buttons
+
+    @classmethod
+    def _click_confirm_synth_button(cls, page):
+        """用可见按钮 locator 点击“确认合成”，并记录现场状态。"""
+        buttons = cls._visible_confirm_synth_buttons(page)
+        if buttons:
+            _log(
+                "[xunfei]   确认合成按钮现场: "
+                + ", ".join(f"visible disabled={disabled}" for _, disabled in buttons)
+            )
+        for button, disabled in buttons:
+            if disabled is True:
+                continue
+            try:
+                button.click(force=True, timeout=3000)
+                return True
+            except Exception as error:
+                _log(f"[xunfei]   locator 点击确认合成失败: {error}")
+        return False
+
     # ------------------------------------------------------------------
     # 确认合成弹窗流程
     # ------------------------------------------------------------------
@@ -945,18 +1389,27 @@ class XunFeiSession:
         """第一次点击确认合成后的状态探测。"""
 
         def probe():
+            # 先识别 AI 说明弹窗。作品设置页或页面残留提示不应抢先
+            # 把真实弹窗判成其它状态。
+            for kws in AI_FLAG_KEYWORD_VARIANTS:
+                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
+                    return "ai_modal"
             if _safe_eval(page, JS.CHECK_INSUFFICIENT):
                 return "insufficient"
             if _safe_eval(page, JS.CHECK_RATE_LIMITED):
                 return "rate_limited"
             if _safe_eval(page, JS.CHECK_GO_DOWNLOAD) or _safe_eval(page, JS.CHECK_FREE_MODAL):
                 return "order"
-            for kws in AI_FLAG_KEYWORD_VARIANTS:
-                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
-                    return "ai_modal"
             return None
 
-        return _poll(probe, timeout=7, interval=0.4, page=page) or "none"
+        result = _poll(probe, timeout=7, interval=0.4, page=page) or "none"
+        if result == "none":
+            snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+            if snapshot:
+                _log(f"[xunfei]   第一次确认后未检测到 AI 标识弹窗，当前可见弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
+            else:
+                _log("[xunfei]   第一次确认后未检测到 AI 标识弹窗（可能已选择‘不再提示’，或讯飞本次未展示）")
+        return result
 
     @staticmethod
     def _find_visible_dialog(page, text_fragment):
@@ -1029,20 +1482,80 @@ class XunFeiSession:
                 if not any(marker in text for marker in ("作品设置", "确认合成", "作品名称")):
                     continue
                 switches = dialog.locator(
-                    '[role="switch"], .ant-switch, button[aria-pressed]'
+                    'button[role="switch"], [role="switch"], .ant-switch, button[aria-pressed]'
                 )
                 for switch_index in range(switches.count()):
                     switch = switches.nth(switch_index)
                     aria_checked = switch.get_attribute("aria-checked")
                     aria_pressed = switch.get_attribute("aria-pressed")
                     class_name = switch.get_attribute("class") or ""
-                    if aria_checked == "true" or aria_pressed == "true" or "ant-switch-checked" in class_name:
+                    is_on = (
+                        aria_checked == "true"
+                        or aria_pressed == "true"
+                        or "ant-switch-checked" in class_name
+                    )
+                    if not is_on:
                         return "already_locator"
+                    # 优先点击真实 button[role=switch]，让 Ant Design/React
+                    # 收到完整的开关事件；不要只点击内部装饰 handle。
                     switch.click(force=True, timeout=2000)
                     return "clicked_locator"
         except Exception:
             pass
         return None
+
+    def _ensure_ai_switch_off(self, page, timeout=8):
+        """确保作品设置中的 AI 标识开关为关闭状态。
+
+        讯飞有时跳过“AI 标识说明”弹窗，直接展示“作品设置”；因此这个
+        检查必须独立于说明弹窗流程，并且必须回读 aria-checked/class 状态。
+        返回 ``off``、``on`` 或 ``not_found``。
+        """
+        deadline = time.time() + timeout
+        last_state = "not_found"
+        js_click_attempted = False
+        while time.time() < deadline:
+            # 部分账号第一次操作 AI 标识时会先弹出“AI 标识说明”。这个
+            # 弹窗没有 switch，必须先勾选“不再提示”并确认，才能回到
+            # “作品设置”继续关闭真实的 button[role=switch]。
+            if any(
+                _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, keywords)
+                for keywords in AI_FLAG_KEYWORD_VARIANTS
+            ):
+                if self._handle_ai_flag_dialog(page, ensure_switch=False):
+                    js_click_attempted = False
+                    continue
+                page.wait_for_timeout(250)
+                continue
+
+            state = _safe_eval(page, JS.GET_AI_SWITCH_STATE)
+            if state in {"off", "on", "not_found"}:
+                last_state = state
+            if state == "off":
+                return "off"
+            if state == "on":
+                clicked = _safe_eval(page, JS.CLICK_AI_SWITCH)
+                if clicked == "already_off":
+                    self._pause(page, 0.15, 0.05)
+                    continue
+                if clicked == "clicked" and not js_click_attempted:
+                    js_click_attempted = True
+                    self._pause(page, 0.25, 0.08)
+                    # 下一轮先回读真实 DOM，不能把调用 click 当成关闭成功。
+                    continue
+                # JS click 没有让 Ant Design 的受控状态变化时，必须改用
+                # Playwright 点击真实 button[role=switch]，再回读状态。
+                clicked = self._click_ai_switch_with_locator(page)
+                if clicked:
+                    self._pause(page, 0.3, 0.1)
+                    continue
+            elif state == "not_found":
+                clicked = self._click_ai_switch_with_locator(page)
+                if clicked:
+                    self._pause(page, 0.3, 0.1)
+                    continue
+            page.wait_for_timeout(250)
+        return last_state
 
     @classmethod
     def _click_ai_confirm_with_locator(cls, page):
@@ -1064,7 +1577,7 @@ class XunFeiSession:
             pass
         return False
 
-    def _handle_ai_flag_dialog(self, page):
+    def _handle_ai_flag_dialog(self, page, ensure_switch=True):
         def check_no_remind():
             result = _safe_eval(page, JS.CHECK_NO_REMIND)
             return result if result in {"clicked", "clicked_input", "clicked_label", "already"} else None
@@ -1080,15 +1593,19 @@ class XunFeiSession:
             return False
         self._pause(page, 0.35, 0.15)
 
-        def click_switch():
-            result = _safe_eval(page, JS.CLICK_AI_SWITCH)
-            return result if result and result != "not_found" else None
-
-        switch_result = _poll(click_switch, timeout=5, interval=0.3, page=page)
-        if not switch_result:
-            switch_result = self._click_ai_switch_with_locator(page)
-        _log(f"[xunfei]   AI 标识开关: {'✓' if switch_result else '未找到/无需切换'}")
-        self._pause(page, 0.35, 0.15)
+        if ensure_switch:
+            switch_state = self._ensure_ai_switch_off(page, timeout=8)
+            _log(
+                f"[xunfei]   AI 标识开关关闭: "
+                f"{'✓' if switch_state == 'off' else '未出现' if switch_state == 'not_found' else '✗'}"
+                f" ({switch_state})"
+            )
+            if switch_state == "on":
+                snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+                if snapshot:
+                    _log(f"[xunfei]   AI 标识开关未确认关闭，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
+                return False
+            self._pause(page, 0.35, 0.15)
 
         confirmed = bool(_poll(
             lambda: _safe_eval(page, JS.CLICK_AI_CONFIRM),
@@ -1135,32 +1652,70 @@ class XunFeiSession:
 
         return _poll(probe, timeout=timeout, interval=0.8, page=page)
 
-    def _confirm_synth(self, page):
+    def _confirm_synth(self, page, works_name=None):
         """
         处理确认合成弹窗完整流程。
 
         返回: 'ok' | 'insufficient' | 'rate_limited' | 'login' | 'failed'
         """
+        initial_ai_state = None
+
+        def ensure_ai_setting(allow_missing=False):
+            state = self._ensure_ai_switch_off(page, timeout=8)
+            if state == "not_found" and allow_missing and initial_ai_state == "off":
+                _log("[xunfei]   作品设置弹窗已关闭，沿用第一次确认前已验证的 AI 标识关闭状态")
+                return True
+            _log(f"[xunfei]   合成前 AI 标识开关状态: {state}")
+            return state == "off"
+
         appeared = _poll(
-            lambda: _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, ["确认合成"]),
+            lambda: (
+                _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, ["确认合成"])
+                or bool(self._visible_confirm_synth_buttons(page))
+            ),
             timeout=10, interval=0.6, page=page,
         )
         if not appeared:
             # 无弹窗也可能直接开始合成；若出现订单/错误则按其处理
-            return self._wait_order_or_error(page, 4) or "failed"
+            snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+            if snapshot:
+                _log(f"[xunfei]   未找到确认合成按钮，当前可见弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
+            else:
+                _log("[xunfei]   未找到确认合成按钮，当前没有可识别的可见弹窗")
+            settled = self._wait_order_or_error(page, 4) or "failed"
+            if settled == "ok" and not ensure_ai_setting():
+                return "failed"
+            return settled
 
         self._pause(page, 0.6, 0.3)
 
+        if works_name:
+            self._set_works_name(page, works_name)
+
+        # “作品设置”就是这次提交使用的最终设置，真实 DOM 中开关位于这里：
+        # role="switch"、aria-checked="true"。必须在第一次确认合成前关闭，
+        # 不能等弹窗切换或订单完成后再处理，否则水印配置已经被提交。
+        initial_ai_state = self._ensure_ai_switch_off(page, timeout=8)
+        _log(f"[xunfei]   第一次确认前 AI 标识开关状态: {initial_ai_state}")
+        if initial_ai_state != "off":
+            snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+            if snapshot:
+                _log(
+                    "[xunfei]   AI 标识开关未找到可关闭的作品设置弹窗: "
+                    + json.dumps(snapshot, ensure_ascii=False)[:1800]
+                )
+            _log("[xunfei]   AI 标识开关无法确认关闭，停止提交，避免生成带水印音频")
+            return "failed"
+
         # 第一次点击"确认合成"
-        clicked = bool(_safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"))
+        clicked = self._click_confirm_synth_button(page)
         if not clicked:
-            try:
-                page.locator('button:text-is("确认合成")').first.click(timeout=3000)
-                clicked = True
-            except Exception:
-                pass
+            clicked = bool(_safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"))
         _log(f"[xunfei]   第一次确认合成: {'✓' if clicked else '✗'}")
         if not clicked:
+            snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+            if snapshot:
+                _log(f"[xunfei]   第一次确认合成点击失败，当前可见弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return "failed"
 
         outcome = self._observe_after_first_confirm(page)
@@ -1168,24 +1723,27 @@ class XunFeiSession:
         ai_modal_seen = outcome == "ai_modal"
         if outcome == "ai_modal":
             _log("[xunfei]   检测到 AI 标识说明弹窗")
-            if not self._handle_ai_flag_dialog(page):
+            if not self._handle_ai_flag_dialog(page, ensure_switch=False):
                 _log("[xunfei]   AI 标识弹窗未完成确认，停止本次合成")
                 return "failed"
         elif outcome in ("order", "insufficient", "rate_limited"):
+            if outcome == "order" and not ensure_ai_setting(allow_missing=True):
+                return "failed"
             return "ok" if outcome == "order" else outcome
 
         # AI 弹窗关闭、页面切换和确认合成按钮重新出现之间存在异步延迟。
         # 这里必须继续轮询状态，不能用一次立即查询把任务误判为已完成。
         def probe_followup():
+            # 与第一次确认后的探测保持相同优先级：先处理 AI 弹窗。
+            for kws in AI_FLAG_KEYWORD_VARIANTS:
+                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
+                    return "ai_modal"
             if _safe_eval(page, JS.CHECK_INSUFFICIENT):
                 return "insufficient"
             if _safe_eval(page, JS.CHECK_RATE_LIMITED):
                 return "rate_limited"
             if _safe_eval(page, JS.CHECK_GO_DOWNLOAD) or _safe_eval(page, JS.CHECK_FREE_MODAL):
                 return "order"
-            for kws in AI_FLAG_KEYWORD_VARIANTS:
-                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
-                    return "ai_modal"
             if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, ["确认合成"]):
                 return "confirm"
             return None
@@ -1195,99 +1753,211 @@ class XunFeiSession:
             ai_modal_seen = True
             # 少数页面会在第一次 AI 弹窗确认后重新挂载一次弹窗，允许再处理一轮。
             _log("[xunfei]   AI 标识弹窗仍在，重新处理")
-            if not self._handle_ai_flag_dialog(page):
+            if not self._handle_ai_flag_dialog(page, ensure_switch=False):
                 _log("[xunfei]   AI 标识弹窗二次处理失败，停止本次合成")
                 return "failed"
             followup = _poll(probe_followup, timeout=10, interval=0.35, page=page)
         _log(f"[xunfei]   二次确认前页面状态: {followup or '未发现明确状态'}")
         if followup in ("order", "insufficient", "rate_limited"):
+            if followup == "order" and not ensure_ai_setting(allow_missing=True):
+                return "failed"
             return "ok" if followup == "order" else followup
 
+        # 真实“作品设置”弹窗的结构是 role="switch" + aria-checked，
+        # 它可能不会触发 AI 说明弹窗；二次确认前再次强制回读并关闭。
+        if not ensure_ai_setting(allow_missing=True):
+            return "failed"
         clicked2 = bool(_poll(
-            lambda: _safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"),
+            lambda: self._click_confirm_synth_button(page)
+            or _safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"),
             timeout=8, interval=0.35, page=page,
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
         if clicked2:
-            return self._wait_order_or_error(page, 90) or "ok"
+            settled = self._wait_order_or_error(page, 90) or "ok"
+            if settled == "ok" and not ensure_ai_setting(allow_missing=True):
+                return "failed"
+            return settled
 
         # 讯飞部分账号/版本在没有 AI 说明弹窗时，第一次“确认合成”就
         # 已经提交任务，不会再显示第二个确认按钮。等待一小段时间确认
         # 没有额度、登录或频控错误后，按已提交处理，避免误重试造成频控。
         settled = self._wait_order_or_error(page, 12)
         if settled:
+            if settled == "ok" and not ensure_ai_setting(allow_missing=True):
+                return "failed"
             return settled
         if ai_modal_seen:
             for kws in AI_FLAG_KEYWORD_VARIANTS:
                 if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
                     return "failed"
+        if not ensure_ai_setting(allow_missing=True):
+            return "failed"
         return "ok"
 
     # ------------------------------------------------------------------
     # 下载
     # ------------------------------------------------------------------
 
-    def _download_file(self, url, output_path, attempts=2):
-        """使用 urllib 下载文件，带 MP3 魔数校验。"""
-        ua = self._real_ua or (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
-        for attempt in range(1, attempts + 1):
-            try:
-                req = urllib.request.Request(url, headers={"User-Agent": ua})
-                with urllib.request.urlopen(req, timeout=60) as response:
-                    with open(output_path, 'wb') as f:
-                        while True:
-                            chunk = response.read(64 * 1024)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                size = os.path.getsize(output_path)
-                if size == 0:
-                    _log("[xunfei]   下载失败: 文件为空")
-                elif not _looks_like_mp3(output_path):
-                    _log("[xunfei]   下载内容不是有效 MP3，丢弃重试")
-                    try:
-                        os.remove(output_path)
-                    except OSError:
-                        pass
-                else:
-                    return True
-            except Exception as e:
-                _log(f"[xunfei]   下载异常 (attempt {attempt}): {e}")
-            page = self._page
-            if page:
-                page.wait_for_timeout(1500)
-        return False
+    def _signed_api_post(self, page, url, param):
+        """按讯飞网页真实 Axios 规则调用 video-api。"""
+        credentials = _safe_eval(page, JS.GET_API_CREDENTIALS) or {}
+        with self._works_lock:
+            stable_base = dict(self._api_base)
+            fallback_authorization = self._api_authorization
 
-    def _fetch_sign_url_in_page(self, page, works_id):
-        """直接在页面上下文里调用签名接口（不离开编辑页）。"""
-        return _safe_eval(page, JS.FETCH_SIGN_URL, works_id)
+        user_id = credentials.get("userId") or stable_base.get("userId")
+        authorization = credentials.get("sessid") or fallback_authorization
+        if not user_id or not authorization:
+            _log("[xunfei]   video-api 认证信息未就绪，无法请求作品数据")
+            return None
 
-    def _download_via_intercept(self, page, output_path):
-        """兜底：点击'去下载'跳转下载页，拦截 get_work_sign_url 响应获取音频 URL。"""
-        if not _safe_eval(page, JS.CLICK_GO_DOWNLOAD):
-            return False
-        deadline = time.time() + 20
-        sign_url = None
+        # 网页端 uuid(32, 50) 每个请求生成一个新的 sid；不能复用之前
+        # response 里捕获的 sid，否则会被讯飞接口判为要素认证失败。
+        base = {
+            "appid": stable_base.get("appid") or "xfpy",
+            "sid": uuid.uuid4().hex,
+            "channelId": stable_base.get("channelId") or "40000001",
+            "userId": str(user_id),
+            "osid": stable_base.get("osid", 0),
+        }
+        headers = {
+            "X-Channel-No": str(base["channelId"]),
+            "authorization": authorization,
+            "sign": _build_api_sign(param, base),
+            "x-accept-language": "zh_CN",
+        }
+        result = _safe_eval(page, JS.POST_API_JSON, [url, param, base, headers])
+        if not isinstance(result, dict):
+            _log(f"[xunfei]   video-api 请求无响应: {url.rsplit('/', 1)[-1]}")
+            return None
+        data = result.get("data")
+        if not isinstance(data, dict):
+            _log(
+                f"[xunfei]   video-api 返回异常: "
+                f"{url.rsplit('/', 1)[-1]} HTTP {result.get('httpStatus')}"
+            )
+            return None
+        if data.get("code") != 0:
+            _log(
+                f"[xunfei]   video-api 失败: "
+                f"{url.rsplit('/', 1)[-1]} code={data.get('code')} "
+                f"desc={data.get('desc') or data.get('message') or '未知错误'}"
+            )
+            return None
+        return data
+
+    def _fetch_works_list_in_page(self, page, needed_count=1):
+        """获取已完成作品列表，返回讯飞原始作品对象。"""
+        param = {
+            "needCount": 1,
+            "pageIndex": 1,
+            "pageSize": max(200, int(needed_count or 1) + 50),
+            "worksName": "",
+        }
+        data = self._signed_api_post(page, API_WORKS_LIST_URL, param)
+        if not data:
+            return []
+        items = (data.get("data") or {}).get("userWorksList") or []
+        return items if isinstance(items, list) else []
+
+    def _wait_for_works_entry(self, page, works_id, timeout=120):
+        """等待同一个 worksId 出现在作品列表中，严禁按名称或最新记录替代。"""
+        expected = str(works_id)
+        deadline = time.time() + timeout
+        logged_wait = False
         while time.time() < deadline:
-            if self._sign_urls:
-                sign_url = self._sign_urls[-1]
-                break
-            page.wait_for_timeout(500)
-        if not sign_url:
-            return False
-        if not self._download_file(sign_url, output_path):
-            return False
-        # 该路径离开了编辑页，重置页面状态
-        self._recover_and_retry(page)
-        return True
+            for item in self._fetch_works_list_in_page(page, needed_count=1):
+                if not isinstance(item, dict):
+                    continue
+                item_id = item.get("id") or item.get("worksId")
+                if item_id is not None and str(item_id) == expected:
+                    _log(f"[xunfei]   ✅ 作品列表已匹配 worksId: {expected}")
+                    return item
+            if not logged_wait:
+                _log(f"[xunfei]   ⏳ 等待作品列表匹配 worksId: {expected}")
+                logged_wait = True
+            page.wait_for_timeout(2000)
+        _log(f"[xunfei]   ⚠️ 作品列表未匹配到 worksId: {expected}")
+        return None
+
+    def _wait_for_works_ready(self, page, works_id, timeout=180):
+        """等待精确 worksId 对应的音频文件真正可下载。"""
+        expected = str(works_id)
+        deadline = time.time() + timeout
+        matched_logged = False
+        waiting_logged = False
+        while time.time() < deadline:
+            items = self._fetch_works_list_in_page(page, needed_count=1)
+            exact = None
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_id = item.get("id") or item.get("worksId")
+                if item_id is not None and str(item_id) == expected:
+                    exact = item
+                    break
+
+            if exact:
+                if not matched_logged:
+                    _log(f"[xunfei]   ✅ 作品列表已匹配 worksId: {expected}")
+                    matched_logged = True
+
+                # 作品列表有时先返回记录，再异步补齐音频地址；优先使用
+                # 该精确记录自身的地址，绝不使用其它作品的最新地址。
+                audio_url = exact.get("audioUrl")
+                if audio_url:
+                    exact["_download_url"] = audio_url
+                    _log(f"[xunfei]   ✅ 匹配作品音频已就绪 worksId: {expected}")
+                    return exact
+
+                # audioUrl 尚未补齐时，继续用同一个 worksId 请求签名 URL。
+                # 接口可能先返回 code=0/url 为空，不能把这种状态当成功。
+                sign_url = self._fetch_sign_url_in_page(
+                    page, expected, log_result=False
+                )
+                if sign_url:
+                    exact["_download_url"] = sign_url
+                    _log(f"[xunfei]   ✅ 匹配作品签名 URL 已就绪 worksId: {expected}")
+                    return exact
+
+                if not waiting_logged:
+                    _log(f"[xunfei]   ⏳ worksId 已匹配，等待音频文件就绪: {expected}")
+                    waiting_logged = True
+
+            elif not matched_logged and not waiting_logged:
+                _log(f"[xunfei]   ⏳ 等待作品列表匹配 worksId: {expected}")
+                waiting_logged = True
+
+            page.wait_for_timeout(2000)
+
+        _log(f"[xunfei]   ⚠️ 匹配作品在限定时间内仍不可下载 worksId: {expected}")
+        return None
+
+    def _fetch_sign_url_in_page(self, page, works_id, log_result=True):
+        """在确认作品列表包含该 worksId 后请求对应签名 URL。"""
+        param = {"worksId": str(works_id), "worksType": 1}
+        data = self._signed_api_post(page, API_SIGN_URL, param)
+        if not data:
+            if log_result:
+                _log(f"[xunfei]   签名接口未返回数据 worksId: {works_id}")
+            return None
+        url = (data.get("data") or {}).get("url")
+        if log_result:
+            _log(
+                f"[xunfei]   签名接口结果 worksId={works_id}: "
+                f"{'有 URL' if url else '无 URL'}"
+            )
+        return url
 
     def _cleanup_after_item(self, page):
-        """单条完成后关闭残留弹窗，回到可继续输入的状态。"""
+        """单条提交后关闭残留弹窗并清空编辑器，不刷新页面。"""
         _safe_eval(page, JS.CLOSE_ALL_MODALS, [])
         self._pause(page, 0.3, 0.15)
+        # 讯飞页面的音色和三项参数状态要跨条复用；这里只清空输入内容，
+        # 不能用 goto/reload，否则同一音色分组会被迫重复选择和设置参数。
+        self._clear_editor(page)
+        self._pause(page, 0.2, 0.1)
 
     def _recover_and_retry(self, page):
         """合成失败后恢复页面状态（重新加载编辑页，重置音色/参数记忆）。"""
@@ -1441,6 +2111,452 @@ class XunFeiSession:
     # 单条合成
     # ------------------------------------------------------------------
 
+    def _generate_pending_one(
+        self,
+        text,
+        output_name=None,
+        works_name=None,
+        max_retries=4,
+        voice_key=None,
+        speed=PARAM_DEFAULT,
+        pitch=PARAM_DEFAULT,
+        volume=PARAM_DEFAULT,
+    ):
+        """只提交一条合成并返回 worksId，不在本处下载。
+
+        这是批量流程的第一阶段：页面始终停留在编辑页，成功后只关闭弹窗、
+        清空编辑器，保留当前音色和参数缓存给同组下一条任务复用。
+        """
+        if not self._logged_in:
+            raise XunfeiError("尚未登录，请先调用 login()")
+
+        vk = voice_key if voice_key else self.voice_key
+        voice_name = get_voice_info(vk)["name"]
+        if not output_name:
+            output_name = f".xunfei_{uuid.uuid4().hex}.mp3"
+        output_path = os.path.join(OUTPUT_DIR, output_name)
+
+        page = self._page
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            _log(f"[xunfei]   第 {attempt}/{max_retries} 次尝试提交...")
+            try:
+                if page.locator(".ssml-editor").count() == 0:
+                    if not self._recover_and_retry(page):
+                        raise XunfeiError("页面恢复失败")
+
+                # 同组任务命中这两个缓存时，不会重复切换音色或设置参数。
+                self._select_voice(page, voice_name)
+                self._apply_params(page, speed, pitch, volume)
+
+                if not self._input_text(page, text):
+                    raise XunfeiError("文本输入失败")
+
+                self._mark_works_cutoff()
+                self._click_generate(page)
+                status = self._confirm_synth(page, works_name=works_name)
+                if status == "insufficient":
+                    raise XunfeiQuotaExceeded("讯飞配音额度不足")
+                if status == "login":
+                    raise XunfeiLoginRequired("合成过程中弹出登录框，请重新登录")
+                if status == "rate_limited":
+                    raise XunfeiRateLimited("触发讯飞频控")
+                if status != "ok":
+                    raise XunfeiError("确认合成弹窗流程未完成")
+
+                works_id = self._consume_works_id(timeout=30)
+                if not works_id:
+                    raise XunfeiError("合成已提交但未捕获本条 worksId")
+
+                pending = {
+                    "works_id": str(works_id),
+                    "output_path": output_path,
+                    "voice_key": vk,
+                    "voice_name": voice_name,
+                    "works_name": self._normalize_works_name(works_name) if works_name else "",
+                    "speed": clamp_param(speed),
+                    "pitch": clamp_param(pitch),
+                    "volume": clamp_param(volume),
+                }
+                _log(
+                    f"[xunfei] ✅ 已提交待下载任务 worksId={pending['works_id']} "
+                    f"voice={voice_name}"
+                )
+                self._cleanup_after_item(page)
+                self._pause(page, 1.2, 0.6)
+                return pending
+
+            except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+                raise
+            except XunfeiRateLimited as error:
+                last_error = error
+                cooldown = 18 + (time.time() % 10) * 2
+                _log(f"[xunfei]   频控冷却 {cooldown:.0f}s 后重试提交")
+                page.wait_for_timeout(int(cooldown * 1000))
+                self._recover_and_retry(page)
+            except Exception as attempt_error:
+                last_error = attempt_error
+                _log(f"[xunfei]   第 {attempt} 次提交异常: {attempt_error}")
+                if not self._recover_and_retry(page):
+                    break
+
+        raise XunfeiError(f"讯飞配音生成失败：{last_error or '已重试仍未成功'}")
+
+    def _wait_for_pending_ready(self, page, pending_items, timeout=180):
+        """批量等待精确 worksId 对应的音频地址就绪。"""
+        remaining = {
+            str(item["works_id"]): item
+            for item in pending_items
+            if item.get("works_id")
+        }
+        ready = {}
+        if not remaining:
+            return ready
+
+        deadline = time.time() + timeout
+        matched = set()
+        while remaining and time.time() < deadline:
+            records = self._fetch_works_list_in_page(
+                page, needed_count=max(len(remaining), 1)
+            )
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                record_id = record.get("id") or record.get("worksId")
+                expected = str(record_id) if record_id is not None else ""
+                item = remaining.get(expected)
+                if item is None:
+                    continue
+                if expected not in matched:
+                    _log(f"[xunfei]   ✅ 作品列表已匹配 worksId: {expected}")
+                    matched.add(expected)
+
+                audio_url = record.get("audioUrl")
+                if not audio_url:
+                    # 列表记录可能先出现、音频地址后补齐；只对同一个
+                    # worksId 请求签名 URL，绝不复用其它记录的最新地址。
+                    audio_url = self._fetch_sign_url_in_page(
+                        page, expected, log_result=False
+                    )
+                if audio_url:
+                    ready[expected] = {
+                        **item,
+                        "record": dict(record),
+                        "download_url": audio_url,
+                    }
+                    remaining.pop(expected, None)
+                    _log(f"[xunfei]   ✅ 匹配作品音频已就绪 worksId: {expected}")
+
+            if remaining:
+                if not matched:
+                    _log(
+                        f"[xunfei]   ⏳ 等待 {len(remaining)} 条作品匹配 worksId"
+                    )
+                else:
+                    _log(
+                        f"[xunfei]   ⏳ 仍有 {len(remaining)} 条作品等待音频就绪"
+                    )
+                page.wait_for_timeout(2000)
+
+        if remaining:
+            _log(
+                "[xunfei]   ⚠️ 批量等待音频超时，未就绪 worksId: "
+                + ", ".join(sorted(remaining))
+            )
+        return ready
+
+    @staticmethod
+    def _click_visible_exact_button(page, label, scope=None):
+        """点击可见且文字完全匹配的按钮，返回是否成功。"""
+        root = scope or page
+        try:
+            buttons = root.locator('button:visible')
+            for index in range(min(buttons.count(), 100)):
+                button = buttons.nth(index)
+                try:
+                    if re.sub(r"\\s+", "", button.inner_text(timeout=500)).strip() != label:
+                        continue
+                    if button.is_disabled():
+                        continue
+                    button.click(force=True, timeout=5000)
+                    return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
+    def _select_download_rows(self, page, targets):
+        """在讯飞作品页按 worksId 对应的 orderNo 精确勾选作品行。"""
+        selected = {}
+        missing = list(targets)
+        for attempt in range(8):
+            state = _safe_eval(page, JS.SELECT_DOWNLOAD_ROWS, missing or targets) or {}
+            for item in state.get("selected") or []:
+                selected[str(item.get("works_id") or "")] = item
+            missing_ids = {
+                str(item.get("works_id") or "")
+                for item in state.get("missing") or []
+            }
+            missing = [
+                item for item in targets
+                if str(item.get("works_id") or "") not in selected
+                and str(item.get("works_id") or "") in missing_ids
+            ]
+            if not missing:
+                break
+            if attempt >= 7:
+                break
+            _safe_eval(page, JS.SCROLL_DOWNLOAD_LIST)
+            page.wait_for_timeout(500)
+
+        if selected:
+            _log(
+                f"[xunfei]   下载页已勾选 {len(selected)}/{len(targets)} 条作品"
+            )
+        if missing:
+            _log(
+                "[xunfei]   ⚠️ 下载页未找到 worksId 对应作品: "
+                + ", ".join(str(item.get("works_id") or "") for item in missing)
+            )
+        return selected, missing
+
+    def _download_selected_rows(self, page, selected_targets):
+        """点击下载页“下载”，处理确认弹窗并收集所有浏览器下载事件。"""
+        downloads = []
+
+        def on_download(download):
+            downloads.append(download)
+            _log(f"[xunfei]   📥 下载页浏览器下载事件: {download.suggested_filename}")
+
+        page.on("download", on_download)
+        try:
+            if not self._click_visible_exact_button(page, "下载"):
+                _log("[xunfei]   ❌ 下载页未找到可用的“下载”按钮")
+                return []
+
+            # 当前页面通常直接触发多个 MP3 下载；部分账号会先弹出
+            # Ant Design 下载确认框，再点击确认按钮。
+            page.wait_for_timeout(500)
+            dialog = self._find_visible_dialog(page, "下载")
+            if dialog is not None:
+                if not self._click_visible_exact_button(page, "下载", scope=dialog):
+                    _log("[xunfei]   ❌ 未能点击下载确认弹窗中的“下载”")
+                    return downloads
+                _log("[xunfei]   已确认下载弹窗")
+
+            expected = len(selected_targets)
+            deadline = time.time() + 120
+            while len(downloads) < expected and time.time() < deadline:
+                page.wait_for_timeout(500)
+            _log(
+                f"[xunfei]   下载页事件完成: {len(downloads)}/{expected} 条"
+            )
+            return downloads
+        finally:
+            try:
+                page.remove_listener("download", on_download)
+            except Exception:
+                pass
+
+    def _download_pending_batch(self, pending_items):
+        """进入讯飞作品下载页，按 worksId 勾选本批次作品后统一下载。"""
+        page = self._page
+        if not pending_items:
+            return {}
+
+        _log(
+            f"[xunfei] 进入讯飞作品下载页，准备勾选本批次 {len(pending_items)} 条音频"
+        )
+        try:
+            page.goto(
+                DOWNLOAD_PAGE_URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+        except Exception as error:
+            raise XunfeiError(f"无法打开讯飞作品下载页: {error}")
+
+        if not _poll(
+            lambda: bool(_safe_eval(page, JS.CHECK_DOWNLOAD_PAGE)),
+            timeout=30,
+            interval=0.5,
+            page=page,
+        ):
+            raise XunfeiError("讯飞作品下载页未加载完成")
+
+        _log(f"[xunfei] 下载页已打开: {page.url}")
+        ready = self._wait_for_pending_ready(page, pending_items, timeout=180)
+        records = self._fetch_works_list_in_page(
+            page, needed_count=max(len(pending_items), 1)
+        )
+        record_indexes = {}
+        record_by_id = {}
+        for index, record in enumerate(records):
+            if not isinstance(record, dict):
+                continue
+            record_id = record.get("id") or record.get("worksId")
+            if record_id is None:
+                continue
+            record_id = str(record_id)
+            record_indexes[record_id] = index
+            record_by_id[record_id] = record
+
+        results = {}
+        targets = []
+        for item in pending_items:
+            works_id = str(item.get("works_id") or "")
+            ready_item = ready.get(works_id) or {}
+            record = ready_item.get("record") or record_by_id.get(works_id) or {}
+            target = {
+                "works_id": works_id,
+                "order_no": str(record.get("orderNo") or ""),
+                "works_name": str(record.get("worksName") or item.get("works_name") or ""),
+                "row_index": record_indexes.get(works_id),
+                "item": item,
+            }
+            if works_id not in ready:
+                results[works_id] = {
+                    **item,
+                    "downloaded": False,
+                    "error": "作品未在下载页按 worksId 就绪",
+                }
+                continue
+            targets.append(target)
+
+        # 页面下载事件按下载页行顺序到达；先按 API 返回的行顺序排序，
+        # 同名作品也能稳定映射回各自的 worksId。
+        targets.sort(key=lambda target: (
+            target.get("row_index") is None,
+            target.get("row_index") if target.get("row_index") is not None else 10**9,
+        ))
+        selected, missing = self._select_download_rows(page, targets)
+        selected_targets = [
+            target for target in targets
+            if str(target.get("works_id") or "") in selected
+        ]
+        for target in missing:
+            works_id = str(target.get("works_id") or "")
+            results[works_id] = {
+                **target.get("item", {}),
+                "downloaded": False,
+                "error": "下载页未找到对应作品复选框",
+            }
+
+        if selected_targets:
+            downloads = self._download_selected_rows(page, selected_targets)
+            for index, target in enumerate(selected_targets):
+                item = target["item"]
+                works_id = str(target.get("works_id") or "")
+                download = downloads[index] if index < len(downloads) else None
+                output_path = item.get("output_path")
+                downloaded = False
+                if download and output_path:
+                    try:
+                        download.save_as(output_path)
+                        downloaded = os.path.exists(output_path) and _looks_like_mp3(output_path)
+                    except Exception as error:
+                        _log(f"[xunfei]   保存下载文件失败 worksId={works_id}: {error}")
+                if downloaded:
+                    size = os.path.getsize(output_path)
+                    results[works_id] = {
+                        **item,
+                        "downloaded": True,
+                        "size": size,
+                    }
+                    _log(
+                        f"[xunfei] ✅ 下载页统一下载完成 worksId={works_id} "
+                        f"({size:,} bytes)"
+                    )
+                else:
+                    results[works_id] = {
+                        **item,
+                        "downloaded": False,
+                        "error": "下载页未收到本条浏览器下载文件",
+                    }
+                    _log(f"[xunfei] ❌ 下载页统一下载失败 worksId={works_id}")
+
+        return results
+
+    @staticmethod
+    def _group_batch_jobs(jobs):
+        """按音色 + 三项参数分组，保留每组首次出现的顺序。"""
+        groups = {}
+        for job in jobs:
+            voice_key = str(job.get("voice_key") or DEFAULT_FEMALE)
+            key = (
+                voice_key,
+                clamp_param(job.get("speed")),
+                clamp_param(job.get("pitch")),
+                clamp_param(job.get("volume")),
+            )
+            groups.setdefault(key, []).append(job)
+        return list(groups.values())
+
+    def synth_batch(self, jobs, max_retries=4):
+        """按音色/参数分组，先全部提交合成，最后统一下载。
+
+        返回 ``job_id -> result``。单条失败会记录在对应结果中，已成功提交
+        的其它任务仍会进入统一下载阶段。
+        """
+        if not self._logged_in:
+            raise XunfeiError("尚未登录，请先调用 login()")
+        normalized_jobs = [dict(job) for job in jobs if isinstance(job, dict)]
+        grouped_jobs = self._group_batch_jobs(normalized_jobs)
+        pending = []
+        results = {}
+
+        for group_index, group in enumerate(grouped_jobs, start=1):
+            if not group:
+                continue
+            sample = group[0]
+            _log(
+                f"[xunfei] 批量生成分组 {group_index}/{len(grouped_jobs)}: "
+                f"{get_voice_info(sample.get('voice_key') or DEFAULT_FEMALE)['name']} "
+                f"speed={clamp_param(sample.get('speed'))}, "
+                f"pitch={clamp_param(sample.get('pitch'))}, "
+                f"volume={clamp_param(sample.get('volume'))}，共 {len(group)} 条"
+            )
+            for job in group:
+                job_id = str(job.get("job_id") or uuid.uuid4().hex)
+                try:
+                    pending_item = self._generate_pending_one(
+                        job.get("text", ""),
+                        output_name=job.get("output_name"),
+                        works_name=job.get("works_name"),
+                        max_retries=max_retries,
+                        voice_key=job.get("voice_key"),
+                        speed=job.get("speed", PARAM_DEFAULT),
+                        pitch=job.get("pitch", PARAM_DEFAULT),
+                        volume=job.get("volume", PARAM_DEFAULT),
+                    )
+                    pending_item["job_id"] = job_id
+                    pending.append(pending_item)
+                except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+                    raise
+                except Exception as error:
+                    results[job_id] = {
+                        "job_id": job_id,
+                        "downloaded": False,
+                        "error": str(error),
+                    }
+
+        downloaded = self._download_pending_batch(pending)
+        for item in pending:
+            job_id = str(item["job_id"])
+            works_id = str(item["works_id"])
+            result = downloaded.get(works_id)
+            if result:
+                results[job_id] = {**result, "job_id": job_id}
+            else:
+                results[job_id] = {
+                    **item,
+                    "job_id": job_id,
+                    "downloaded": False,
+                    "error": "合成已提交但统一下载失败",
+                }
+        return results
+
     def synth_one(
         self,
         text,
@@ -1479,79 +2595,21 @@ class XunFeiSession:
             output_name = f"xunfei_{vk}_{int(time.time())}.mp3"
         output_path = os.path.join(OUTPUT_DIR, output_name)
 
-        page = self._page
-        last_error = None
-
-        for attempt in range(1, max_retries + 1):
-            _log(f"[xunfei]   第 {attempt}/{max_retries} 次尝试...")
-
-            try:
-                # 确保编辑页就绪（上一条可能停留在未知状态）
-                if page.locator(".ssml-editor").count() == 0:
-                    if not self._recover_and_retry(page):
-                        raise XunfeiError("页面恢复失败")
-
-                # 选发音人 + 应用参数
-                self._select_voice(page, voice_name)
-                self._apply_params(page, speed, pitch, volume)
-
-                # 输入文本
-                if not self._input_text(page, text):
-                    raise XunfeiError("文本输入失败")
-
-                # 开始计时捕获（防止上一条的迟到响应错配到本条）
-                self._mark_works_cutoff()
-
-                # 点击生成 + 处理确认弹窗
-                self._click_generate(page)
-                status = self._confirm_synth(page)
-
-                if status == "insufficient":
-                    raise XunfeiQuotaExceeded("讯飞配音额度不足")
-                if status == "login":
-                    raise XunfeiLoginRequired("合成过程中弹出登录框，请重新登录")
-                if status == "rate_limited":
-                    raise XunfeiRateLimited("触发讯飞频控")
-                if status != "ok":
-                    raise XunfeiError("确认合成弹窗流程未完成")
-
-                # 拿到 worksId 后直接在页面内请求签名 URL 下载（不离开编辑页）
-                works_id = self._consume_works_id(timeout=12)
-                downloaded = False
-                if works_id:
-                    sign_url = self._fetch_sign_url_in_page(page, works_id)
-                    if sign_url:
-                        downloaded = self._download_file(sign_url, output_path)
-                if not downloaded:
-                    _log("[xunfei]   页面内下载未成功，走'去下载'拦截兜底...")
-                    downloaded = self._download_via_intercept(page, output_path)
-
-                if downloaded and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                    self._cleanup_after_item(page)
-                    self._pause(page, 1.2, 0.6)  # 条目间随机间隙
-                    size = os.path.getsize(output_path)
-                    _log(f"[xunfei] ✅ 生成成功 ({size:,} bytes)")
-                    return output_path
-
-                raise XunfeiError("合成已完成但未能下载音频")
-
-            except (XunfeiQuotaExceeded, XunfeiLoginRequired):
-                # 额度/登录问题向上传播，由调用方决定整体策略
-                raise
-            except XunfeiRateLimited as e:
-                last_error = e
-                cooldown = 18 + (time.time() % 10) * 2
-                _log(f"[xunfei]   ⏳ 频控冷却 {cooldown:.0f}s 后重试")
-                page.wait_for_timeout(int(cooldown * 1000))
-                self._recover_and_retry(page)
-            except Exception as attempt_err:
-                last_error = attempt_err
-                _log(f"[xunfei]   第 {attempt} 次异常: {attempt_err}")
-                if not self._recover_and_retry(page):
-                    break
-
-        _log("[xunfei] ❌ 生成失败")
-        raise XunfeiError(f"讯飞配音生成失败：{last_error or '已重试仍未成功'}")
+        pending = self._generate_pending_one(
+            text,
+            output_name=output_name,
+            max_retries=max_retries,
+            voice_key=voice_key,
+            speed=speed,
+            pitch=pitch,
+            volume=volume,
+        )
+        result = self._download_pending_batch([pending]).get(str(pending["works_id"]))
+        output_path = pending["output_path"]
+        if result and result.get("downloaded") and os.path.exists(output_path):
+            _log(f"[xunfei] ✅ 生成成功 ({os.path.getsize(output_path):,} bytes)")
+            return output_path
+        raise XunfeiError("合成已完成但未能下载音频")
 
     def close(self):
         """关闭浏览器，保留登录状态（持久化目录不被删除）。"""
@@ -1582,6 +2640,12 @@ class XunFeiSession:
             with self._works_lock:
                 self._works_entries = []
                 self._sign_urls = []
+                self._api_base = {
+                    "appid": "xfpy",
+                    "channelId": "40000001",
+                    "osid": 0,
+                }
+                self._api_authorization = None
             _log("[xunfei] 浏览器已关闭（登录状态已保留）")
 
 
@@ -1750,6 +2814,81 @@ async def synth_xunfei(
     except OSError:
         pass
     return seg
+
+
+async def synth_xunfei_batch(jobs):
+    """批量讯飞合成：按音色/参数分组提交，最后统一下载并解码。
+
+    ``jobs`` 中每项至少包含 ``job_id``、``text``、``voice_key``、``speed``、
+    ``pitch``、``volume``。返回 ``job_id -> {segment, error}``，其中 segment
+    是已解码的 pydub.AudioSegment。Playwright 的 Sync API 仍全部固定在同一
+    专用线程内，避免 asyncio loop 与 greenlet 跨线程冲突。
+    """
+    if not jobs:
+        return {}
+    if not is_available():
+        raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
+
+    import asyncio
+    first_voice = str((jobs[0] or {}).get("voice_key") or DEFAULT_FEMALE)
+    session = await ensure_session(voice_key=first_voice)
+    normalized_jobs = []
+    for index, job in enumerate(jobs):
+        item = dict(job)
+        item.setdefault("job_id", f"batch-{index}")
+        item.setdefault("output_name", f".xunfei_{uuid.uuid4().hex}.mp3")
+        # 讯飞下载页文件名不带 worksId；为本批次每段设置短且唯一的作品名，
+        # 既便于页面核对，也避免同名作品的浏览器下载事件无法区分。
+        item.setdefault("works_name", f"wordtts_{index + 1:04d}_{uuid.uuid4().hex[:8]}")
+        normalized_jobs.append(item)
+
+    raw_results = await _run_playwright_sync(session.synth_batch, normalized_jobs, 4)
+    decoded = {}
+    from pydub import AudioSegment
+
+    for job in normalized_jobs:
+        job_id = str(job["job_id"])
+        result = raw_results.get(job_id) if isinstance(raw_results, dict) else None
+        if not isinstance(result, dict) or not result.get("downloaded"):
+            decoded[job_id] = {
+                "segment": None,
+                "error": (result or {}).get("error", "讯飞批量下载失败")
+                if isinstance(result, dict) else "讯飞批量生成无结果",
+            }
+            continue
+
+        path = result.get("output_path")
+        try:
+            if not path or not os.path.exists(path):
+                raise XunfeiError(f"讯飞批量音频文件不存在: {path}")
+            size = os.path.getsize(path)
+            if size < 100:
+                raise XunfeiError(f"讯飞批量音频文件过小: {size} bytes")
+
+            def decode_file(source_path=path):
+                return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
+
+            seg = await asyncio.to_thread(decode_file)
+            if len(seg) < 50:
+                raise XunfeiError(f"解码后音频时长过短 ({len(seg)}ms)")
+            if seg.channels == 0 or seg.frame_rate == 0:
+                raise XunfeiError(
+                    f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})"
+                )
+            _log(
+                f"[xunfei] 批量音频解码完成 job={job_id}: "
+                f"duration={len(seg)}ms size={size:,} bytes"
+            )
+            decoded[job_id] = {"segment": seg, "error": None}
+        except Exception as error:
+            decoded[job_id] = {"segment": None, "error": str(error)}
+        finally:
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return decoded
 
 
 async def close_session():
