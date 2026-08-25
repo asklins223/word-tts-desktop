@@ -161,13 +161,9 @@ WORD_CATEGORIES = frozenset({"单词", "例句"})
 
 # 每条解析结果（每道题）独立生成一个音频文件，不做跨题合并
 
-# 导出格式
+# 导出格式：讯飞音频统一落地为 MP3，保留单一格式避免不同平台产生差异。
 FORMAT_MAP = {
     "mp3": ("mp3", ".mp3"),
-    "ogg": ("ogg", ".ogg"),
-    "aac": ("adts", ".aac"),
-    "opus": ("opus", ".opus"),
-    "wav": ("wav", ".wav"),
 }
 
 QUALITY_BITRATE = {
@@ -175,7 +171,6 @@ QUALITY_BITRATE = {
     "128 kbps（标准）": "128k",
     "192 kbps（高）": "192k",
     "320 kbps（极高）": "320k",
-    "无损（仅 wav 生效）": None,
 }
 
 # 音频生成算法版本。改变讯飞音频拼接策略或参数寻址方式时递增，避免
@@ -248,9 +243,9 @@ def normalize_tts_config(config=None):
     预设或手工请求把倍率、代理、旧音色字段带回讯飞调用链。
     """
     raw = config if isinstance(config, dict) else {}
-    fmt = raw.get("format", "mp3")
-    if fmt not in FORMAT_MAP:
-        fmt = "mp3"
+    # 不再根据平台、旧配置或质量选项切换输出格式；历史配置中的 WAV 等
+    # 值在进入当前流程时统一收敛为 MP3。
+    fmt = "mp3"
     quality = raw.get("quality", "128 kbps（标准）")
     if quality not in QUALITY_BITRATE:
         quality = "128 kbps（标准）"
@@ -345,11 +340,10 @@ def export_audio(seg, fmt, quality, out_path):
     """按指定格式与码率导出音频。"""
     if len(seg) < 50:
         raise RuntimeError(f"音频时长过短 ({len(seg)}ms)，无法导出")
-    fmt_id, _ext = FORMAT_MAP[fmt]
+    fmt_id, _ext = FORMAT_MAP["mp3"]
     kwargs = {"format": fmt_id}
-    br = QUALITY_BITRATE.get(quality)
-    if br and fmt in ("mp3", "aac", "opus"):
-        kwargs["bitrate"] = br
+    br = QUALITY_BITRATE.get(quality, QUALITY_BITRATE["128 kbps（标准）"])
+    kwargs["bitrate"] = br
     print(f"[export] 导出: {out_path} fmt={fmt_id} dur={len(seg)}ms bitrate={br}", file=sys.stdout)
     export_result = seg.export(out_path, **kwargs)
     if hasattr(export_result, "close"):
@@ -883,11 +877,11 @@ def build_progress(source_filename, source_path, parse_results, config):
       - 其他题型：题型-录音稿x.mp3（x 为同题型内的顺序号）
     """
     config = {
-        **config,
+        **normalize_tts_config(config),
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
         "parser_version": PARSER_VERSION,
     }
-    ext = FORMAT_MAP[config['format']][1].lstrip('.')
+    ext = FORMAT_MAP["mp3"][1].lstrip('.')
     items = []
     # 每个子题型独立编号
     seq_by_cat = {}

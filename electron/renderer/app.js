@@ -329,13 +329,12 @@ function normalizeVoiceParams(raw, fallback = { rate: 50, volume: 50, pitch: 50 
 
 function normalizeClientConfig(config = {}) {
     const raw = config && typeof config === 'object' ? config : {};
-    const formats = ['mp3', 'ogg', 'aac', 'opus', 'wav'];
+    const formats = ['mp3'];
     const qualities = [
         '48 kbps（低）',
         '128 kbps（标准）',
         '192 kbps（高）',
         '320 kbps（极高）',
-        '无损（仅 wav 生效）',
     ];
     const baseParams = normalizeVoiceParams(raw);
     const defaultFemaleVoice = normalizeVoiceKey(
@@ -969,7 +968,7 @@ function applyConfigToForm(config) {
     setSelectValue($('format'), normalized.format, 'mp3');
     setSelectValue($('quality'), normalized.quality, '128 kbps（标准）');
     $('preview').checked = normalized.preview;
-    enforceOutputCompatibility($('format'));
+    enforceOutputCompatibility();
     rememberCurrentConfig();
 }
 
@@ -1299,7 +1298,7 @@ function updateConfigSummary() {
     if (output) {
         const format = $('format') ? $('format').value.toUpperCase() : 'MP3';
         const quality = $('quality') ? $('quality').value : '128 kbps（标准）';
-        const qualityShort = quality.match(/^(\d+\s*kbps|无损)/)?.[1] || quality;
+        const qualityShort = quality.match(/^(\d+\s*kbps)/)?.[1] || quality;
         output.textContent = `${format} · ${qualityShort}`;
     }
 
@@ -1308,29 +1307,13 @@ function updateConfigSummary() {
     updateSessionLabels(currentSession?.source_filename || '', currentSession?.parse_results);
 }
 
-function enforceOutputCompatibility(changedControl) {
+function enforceOutputCompatibility() {
     const format = $('format');
-    const quality = $('quality');
-    if (!format || !quality) return;
-
-    const isLossless = quality.value.startsWith('无损');
-    if (changedControl === quality && isLossless && format.value !== 'wav') {
-        format.value = 'wav';
-        showToast('无损质量仅适用于 WAV，已自动切换格式');
-    } else if (changedControl === format && format.value !== 'wav' && isLossless) {
-        setSelectValue(quality, '128 kbps（标准）', '128 kbps（标准）');
-        showToast('当前格式不支持无损质量，已恢复为 128 kbps');
-    }
-    if (format.value === 'wav') {
-        setSelectValue(quality, '无损（仅 wav 生效）', '无损（仅 wav 生效）');
-        quality.disabled = true;
-        quality.title = 'WAV 使用无损输出，无需选择码率';
-    } else {
-        quality.disabled = false;
-        quality.title = '';
-    }
+    if (!format) return;
+    // 输出格式固定为 MP3；质量只代表 MP3 码率，不再驱动格式切换。
+    format.value = 'mp3';
+    format.disabled = true;
     window.WordTTSUI?.syncSelect(format);
-    window.WordTTSUI?.syncSelect(quality);
     updateConfigSummary();
 }
 
@@ -1729,11 +1712,11 @@ function bindEvents() {
     // Step 2: 配置
     bindVoiceWorkspaceEvents();
     $('format').addEventListener('change', (e) => {
-        enforceOutputCompatibility(e.currentTarget);
+        enforceOutputCompatibility();
         rememberCurrentConfig();
     });
     $('quality').addEventListener('change', (e) => {
-        enforceOutputCompatibility(e.currentTarget);
+        updateConfigSummary();
         rememberCurrentConfig();
     });
     $('preview').addEventListener('change', () => {

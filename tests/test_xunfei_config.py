@@ -35,6 +35,17 @@ class XunfeiConfigTests(unittest.TestCase):
         self.assertEqual(config["format"], "mp3")
         self.assertEqual(config["quality"], "128 kbps（标准）")
 
+    def test_output_format_is_always_mp3_and_quality_does_not_switch_it(self):
+        config = core.normalize_tts_config({
+            "format": "wav",
+            "quality": "无损（仅 wav 生效）",
+        })
+
+        self.assertEqual(config["format"], "mp3")
+        self.assertEqual(config["quality"], "128 kbps（标准）")
+        self.assertEqual(list(core.FORMAT_MAP), ["mp3"])
+        self.assertNotIn("无损（仅 wav 生效）", core.QUALITY_BITRATE)
+
     def test_words_and_sentences_always_use_default_female_voice(self):
         self.assertEqual(
             core.default_voice_for_item({"category": "单词", "voice": "male"}),

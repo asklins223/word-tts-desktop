@@ -1728,7 +1728,7 @@ async def get_config():
     default_female = core.FEMALE_VOICE
     default_male = core.MALE_VOICE
     return {
-        "formats": list(core.FORMAT_MAP.keys()),
+        "formats": ["mp3"],
         "qualities": list(core.QUALITY_BITRATE.keys()),
         "supported_types": list(core.PARSER_MAP.keys()),
         "type_colors": core.TYPE_COLORS,
