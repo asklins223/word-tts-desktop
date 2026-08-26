@@ -7,7 +7,8 @@ Word 文档解析 + 讯飞配音音频生成 — 一体化应用
 3. 全程进度记录，支持断点续传
 4. 生成完成后可下载 ZIP 包或选择单个文件下载
 5. 文件命名规则：信息获取题目使用问题x；听后选择使用听后选择-录音稿x；
-   含 Conversation x 的段落跟读使用 SA-段-Cx-y；其他题型使用题型-录音稿x
+   含 Conversation x 的段落/语篇跟读使用 SA-段-Cx-y 或 SA-语-Cx-y；
+   其他题型使用题型-录音稿x
 
 引擎与音色规则（统一使用讯飞配音 peiyin.xunfei.cn）：
   - w/W 标识 → 女声 Amanda
@@ -182,7 +183,7 @@ AUDIO_ALGORITHM_VERSION = 4
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 9
+PARSER_VERSION = 10
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
 TTS_PARAM_MIN = 0

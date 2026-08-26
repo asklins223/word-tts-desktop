@@ -490,8 +490,13 @@ function normalizeVoiceEntry(raw) {
 }
 
 function getVoiceEntry(key) {
-    const normalizedKey = normalizeVoiceKey(key);
-    return voiceCatalog.find(voice => voice.key === normalizedKey)
+    const rawKey = String(key ?? '').trim();
+    const normalizedKey = normalizeVoiceKey(rawKey);
+    const normalizedName = rawKey.toLocaleLowerCase('zh-CN');
+    return voiceCatalog.find(voice => (
+        voice.key === normalizedKey
+        || String(voice.name || '').trim().toLocaleLowerCase('zh-CN') === normalizedName
+    ))
         || normalizeVoiceEntry({ key: normalizedKey, name: normalizedKey || '未选择音色' });
 }
 
@@ -503,51 +508,69 @@ function voiceAssetUrl(key, kind) {
 
 function queueVoiceAssetCache(keys) {
     const values = Array.isArray(keys) ? keys : [keys];
-    const normalizedKeys = [...new Set(values.map(normalizeVoiceKey).filter(Boolean))];
+    const normalizedKeys = [...new Set(values.map(value => normalizeVoiceKey(value)).filter(Boolean))];
     const pendingKeys = normalizedKeys.filter(key => (
         !voiceAssetCacheReady.has(key) && !voiceAssetCacheRequests.has(key)
     ));
-    if (!pendingKeys.length) return Promise.resolve(null);
+    const inFlightRequests = [...new Set(normalizedKeys
+        .map(key => voiceAssetCacheRequests.get(key))
+        .filter(Boolean))];
+    let cacheRequest = null;
 
-    const request = fetch(apiUrl('/api/voice-assets/cache'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice_keys: pendingKeys }),
-    })
-        .then(response => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.json();
+    if (pendingKeys.length) {
+        const request = fetch(apiUrl('/api/voice-assets/cache'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice_keys: pendingKeys }),
         })
-        .then(data => {
-            const cached = data?.cached && typeof data.cached === 'object' ? data.cached : {};
-            pendingKeys.forEach(key => {
-                if (cached[key] && typeof cached[key] === 'object') voiceAssetCacheReady.add(key);
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.json();
+            })
+            .then(data => {
+                const cached = data?.cached && typeof data.cached === 'object' ? data.cached : {};
+                pendingKeys.forEach(key => {
+                    if (cached[key] && typeof cached[key] === 'object') voiceAssetCacheReady.add(key);
+                });
+                return data;
+            })
+            .catch(error => {
+                // 头像/试听缓存是增强项，讯飞资源不可达时结果页仍会回退到原始 URL。
+                console.debug('音色资产缓存暂不可用:', error);
+                return null;
+            })
+            .finally(() => {
+                pendingKeys.forEach(key => {
+                    if (voiceAssetCacheRequests.get(key) === request) voiceAssetCacheRequests.delete(key);
+                });
             });
-            return data;
-        })
-        .catch(error => {
-            // 头像/试听缓存是增强项，讯飞资源不可达时结果页仍会回退到原始 URL。
-            console.debug('音色资产缓存暂不可用:', error);
-            return null;
-        })
-        .finally(() => {
-            pendingKeys.forEach(key => {
-                if (voiceAssetCacheRequests.get(key) === request) voiceAssetCacheRequests.delete(key);
-            });
-        });
-    pendingKeys.forEach(key => voiceAssetCacheRequests.set(key, request));
-    return request;
+        pendingKeys.forEach(key => voiceAssetCacheRequests.set(key, request));
+        cacheRequest = request;
+    }
+
+    // 如果生成流程刚刚发起过同一批缓存请求，结果页必须等待它们完成，
+    // 否则首次渲染会错过缓存完成时机，头像节点被移除后就不会再回来。
+    const requests = [...new Set([...inFlightRequests, cacheRequest].filter(Boolean))];
+    if (!requests.length) return Promise.resolve(null);
+    return Promise.all(requests).then(results => results.find(Boolean) || null);
 }
 
 function getResultVoiceEntry(key) {
     const voice = getVoiceEntry(key);
     const normalizedKey = normalizeVoiceKey(voice.key || key);
+    const useCachedAssets = voiceAssetCacheReady.has(normalizedKey);
     return {
         ...voice,
-        img_url: voice.img_url ? voiceAssetUrl(normalizedKey, 'avatar') : '',
-        fallback_img_url: voice.img_url,
-        audio_url: voice.audio_url ? voiceAssetUrl(normalizedKey, 'sample') : '',
-        fallback_audio_url: voice.audio_url,
+        // 缓存完成前直接使用目录中的远程资源，避免把尚未生成的本地地址
+        // 当成首选地址；缓存完成后再切换到本地资源，减少结果页的网络依赖。
+        img_url: voice.img_url
+            ? (useCachedAssets ? voiceAssetUrl(normalizedKey, 'avatar') : voice.img_url)
+            : '',
+        fallback_img_url: useCachedAssets ? voice.img_url : '',
+        audio_url: voice.audio_url
+            ? (useCachedAssets ? voiceAssetUrl(normalizedKey, 'sample') : voice.audio_url)
+            : '',
+        fallback_audio_url: useCachedAssets ? voice.audio_url : '',
     };
 }
 
@@ -3243,10 +3266,14 @@ function updateLogTimelineHeader(lastEntry = null) {
         : `${logEntryCount} 个节点`;
     $('log-issue-count').textContent = String(issueCount);
     if (lastStats?.total) {
-        const processed = Number(lastStats.processed ?? ((lastStats.completed || 0) + (lastStats.failed || 0)));
-        const pending = Number(lastStats.pending ?? Math.max(lastStats.total - processed, 0));
+        const total = integerProgressCount(lastStats.total);
+        const processed = integerProgressCount(
+            lastStats.processed ?? ((lastStats.completed || 0) + (lastStats.failed || 0)),
+            total,
+        );
+        const pending = Math.max(0, total - processed);
         const eta = formatLogDuration(lastStats.eta_ms);
-        $('log-summary').textContent = `已处理 ${processed} / ${lastStats.total} · 剩余 ${pending}${issueCount ? ` · ${issueCount} 条异常记录` : ''}${eta ? ` · 预计还需 ${eta}` : ''}`;
+        $('log-summary').textContent = `已处理 ${processed} / ${total} · 剩余 ${pending}${issueCount ? ` · ${issueCount} 条异常记录` : ''}${eta ? ` · 预计还需 ${eta}` : ''}`;
     } else if (lastEntry) {
         $('log-summary').textContent = lastEntry.title;
     }
@@ -3391,15 +3418,22 @@ function resetLogTimeline(emptyText = '任务开始后，这里会按阶段展�
 // 进度 & 统计
 // ============================================================================
 
+function integerProgressCount(value, total = Number.POSITIVE_INFINITY) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    const count = Math.max(0, Math.floor(number + 0.5));
+    return Number.isFinite(total) ? Math.min(count, Math.max(0, Math.floor(Number(total) || 0))) : count;
+}
+
 function updateProgress(event) {
-    const total = Math.max(0, Number(event.total) || 0);
-    const completed = Math.max(0, Number(event.completed) || 0);
-    const failed = Math.max(0, Number(event.failed) || 0);
-    const processed = Math.min(
-        Math.max(0, Number(event.processed ?? (completed + failed)) || 0),
+    const total = integerProgressCount(event.total);
+    const completed = integerProgressCount(event.completed, total);
+    const failed = integerProgressCount(event.failed, total);
+    const processed = integerProgressCount(
+        event.processed ?? (completed + failed),
         total,
     );
-    const pct = total > 0 ? (processed / total) * 100 : 0;
+    const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
     const phase = String(event.phase || '');
     const isBatchSubmit = phase === 'batch-submit';
     const isBatchDownload = phase === 'batch-download';
@@ -3408,30 +3442,26 @@ function updateProgress(event) {
     // 统一下载完成后还要做音频解码、拼接、导出和 ZIP 整理；在最终 done
     // 事件到达前保留一点尾部空间，避免用户看到 100% 后还长时间等待。
     const visualPct = isBatchPhase ? Math.min(pct, 98) : pct;
-    const formatProgressValue = (value) => {
-        const number = Number(value) || 0;
-        return Number.isInteger(number) ? String(number) : number.toFixed(1);
-    };
     const eta = formatLogDuration(event.eta_ms);
-    $('progress-bar').style.width = `${visualPct.toFixed(1)}%`;
-    $('progress-bar').parentElement?.setAttribute('aria-valuenow', visualPct.toFixed(1));
+    $('progress-bar').style.width = `${visualPct}%`;
+    $('progress-bar').parentElement?.setAttribute('aria-valuenow', String(visualPct));
     $('progress-completed-label').textContent = isBatchSubmit
         ? '已提交'
         : (isBatchDownload ? '已下载' : (isBatchExport ? '已整理' : '已完成'));
     $('progress-stats').textContent = isBatchSubmit
-        ? `已提交 ${formatProgressValue(processed)} / ${total} · 等待下载`
+        ? `已提交 ${processed} / ${total} · 等待下载`
         : (isBatchDownload
-            ? `已下载 ${formatProgressValue(processed)} / ${total} · 等待整理`
+            ? `已下载 ${processed} / ${total} · 等待整理`
             : (isBatchExport
-                ? `已整理 ${formatProgressValue(processed)} / ${total} · 正在输出`
+                ? `已整理 ${processed} / ${total} · 正在输出`
                 : `${completed} / ${total}`))
         + (failed > 0 ? `  ·  失败 ${failed}` : '')
         + (eta ? `  ·  预计 ${eta}` : '');
     $('progress-percent').textContent = String(Math.round(visualPct));
     $('progress-completed').textContent = isBatchPhase
-        ? formatProgressValue(processed)
+        ? String(processed)
         : String(completed);
-    $('progress-remaining').textContent = formatProgressValue(Math.max(total - processed, 0));
+    $('progress-remaining').textContent = String(Math.max(total - processed, 0));
     $('progress-failed').textContent = String(failed);
     updateLogTimelineHeader();
 }
@@ -3651,6 +3681,38 @@ function scheduleAudioFilter() {
     });
 }
 
+function resultVoiceKeysForFile(file) {
+    const values = (Array.isArray(file?.voice_keys)
+        ? [...file.voice_keys]
+        : (file?.voice_keys ? [file.voice_keys] : []))
+        .concat(file?.voice_key || [])
+        .filter(value => String(value ?? '').trim());
+
+    // 兼容早期历史记录可能保存的单个 voice 字段；只接受能在当前目录
+    // 精确匹配到 key 或名称的值，避免把“女声/男声”等展示文本误当成 key。
+    if (!values.length && file?.voice) {
+        const legacyValue = String(file.voice).trim();
+        const normalizedLegacyName = legacyValue.toLocaleLowerCase('zh-CN');
+        const legacyVoice = voiceCatalog.find(voice => (
+            normalizeVoiceKey(voice.key) === normalizeVoiceKey(legacyValue)
+            || String(voice.name || '').trim().toLocaleLowerCase('zh-CN') === normalizedLegacyName
+        ));
+        if (legacyVoice) values.push(legacyVoice.key);
+    }
+
+    const canonicalize = value => {
+        const normalized = normalizeVoiceKey(value);
+        if (!normalized) return '';
+        const normalizedName = String(value ?? '').trim().toLocaleLowerCase('zh-CN');
+        const catalogVoice = voiceCatalog.find(voice => (
+            voice.key === normalized
+            || String(voice.name || '').trim().toLocaleLowerCase('zh-CN') === normalizedName
+        ));
+        return catalogVoice?.key || normalized;
+    };
+    return [...new Set(values.map(canonicalize).filter(Boolean))];
+}
+
 function createResultVoiceStrip(file) {
     const strip = document.createElement('div');
     strip.className = 'audio-voice-strip';
@@ -3660,9 +3722,7 @@ function createResultVoiceStrip(file) {
     label.textContent = '音色';
     strip.appendChild(label);
 
-    const voiceKeys = Array.isArray(file?.voice_keys)
-        ? [...new Set(file.voice_keys.map(normalizeVoiceKey).filter(Boolean))]
-        : [];
+    const voiceKeys = resultVoiceKeysForFile(file);
     if (!voiceKeys.length) {
         const empty = document.createElement('span');
         empty.className = 'audio-voice-empty';
@@ -3709,6 +3769,24 @@ function createResultVoiceStrip(file) {
         strip.appendChild(chip);
     });
     return strip;
+}
+
+async function refreshResultVoiceAssets(files) {
+    const resultFiles = Array.isArray(files) ? files : [];
+    const voiceKeys = [...new Set(resultFiles.flatMap(resultVoiceKeysForFile))];
+    if (!voiceKeys.length) return;
+
+    const resultContext = activeResultContext;
+    await queueVoiceAssetCache(voiceKeys);
+    if (!resultContext || activeResultContext !== resultContext) return;
+
+    // 只替换音色条，不重建 Audio、波形和原文折叠状态，避免缓存完成后
+    // 造成结果页闪烁或打断用户正在试听的音频。
+    document.querySelectorAll('#audio-list .audio-item').forEach(item => {
+        const strip = item.querySelector('.audio-voice-strip');
+        if (!strip || !item._resultFile) return;
+        strip.replaceWith(createResultVoiceStrip(item._resultFile));
+    });
 }
 
 function buildResultPage(event, suppliedContext = null) {
@@ -3926,9 +4004,11 @@ function buildResultPage(event, suppliedContext = null) {
         header.appendChild(dlBtn);
         item.appendChild(header);
 
-        // 每个生成文件携带本题实际使用的音色；头像使用本机缓存，试听时
-        // 仍保留讯飞原始示例音频作为回退，且全局只允许一个试听同时播放。
+        // 每个生成文件携带本题实际使用的音色；头像优先使用已完成的本机
+        // 缓存，缓存尚未完成时先显示目录资源，试听仍保留原始地址回退。
+        // 全局只允许一个试听同时播放。
         item.appendChild(createResultVoiceStrip(f));
+        item._resultFile = f;
 
         // 原生 Audio 负责流式播放；WaveSurfer 只在后台解码并绘制波形。
         const audio = new Audio();
@@ -4189,6 +4269,7 @@ function buildResultPage(event, suppliedContext = null) {
         waveformItems.push(item);
     });
     audioList.appendChild(itemFragment);
+    void refreshResultVoiceAssets(resultFiles);
 }
 
 // ============================================================================

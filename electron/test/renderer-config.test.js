@@ -27,7 +27,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { normalizePersistedConfig, saveCurrentConfig };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { normalizePersistedConfig, saveCurrentConfig, integerProgressCount, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, voiceAssetCacheReady };`, context);
     return { api: context.__rendererTests, storage };
 }
 
@@ -75,4 +75,56 @@ test('当前配置写入 localStorage 前会清理旧角色数据', () => {
         __default_male__: { rate: 65, volume: 50, pitch: 50 },
     });
     assert.equal('role_voices' in saved, false);
+});
+
+test('进度计数始终按整数四舍五入并限制在总数内', () => {
+    const { api } = loadRendererConfigFunctions();
+
+    assert.equal(api.integerProgressCount(3.6, 37), 4);
+    assert.equal(api.integerProgressCount(33.4, 37), 33);
+    assert.equal(api.integerProgressCount(999.9, 37), 37);
+    assert.equal(api.integerProgressCount('not-a-number', 37), 0);
+});
+
+test('结果页按文件音色元数据去重，并兼容可精确匹配的旧 voice 字段', () => {
+    const { api } = loadRendererConfigFunctions();
+    api.setVoiceCatalog([{ key: 'speaker:linda', name: 'Linda-品质' }]);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile({
+        voice_keys: ['speaker:linda', 'speaker:linda', '', null],
+        voice_key: 'speaker:george',
+    }))), ['speaker:linda', 'speaker:george']);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile({
+        voice_keys: [''],
+        voice: 'Linda-品质',
+    }))), ['speaker:linda']);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile({ voice_keys: 'speaker:linda' }))), ['speaker:linda']);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile({ voice_keys: ['Linda-品质'] }))), ['speaker:linda']);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile({ voice: 'linda-品质' }))), ['speaker:linda']);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile({ voice: 'Amanda' }))), ['amanda']);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile({ voice: '女声' }))), []);
+});
+
+test('结果页头像缓存未完成时先显示目录远程资源，缓存完成后才切换本地地址', () => {
+    const { api } = loadRendererConfigFunctions();
+    const remoteAvatar = 'https://example.test/linda.jpg';
+    const remoteSample = 'https://example.test/linda.mp3';
+    api.setVoiceCatalog([{
+        key: 'speaker:linda',
+        name: 'Linda-品质',
+        img_url: remoteAvatar,
+        audio_url: remoteSample,
+    }]);
+
+    let voice = api.getResultVoiceEntry('speaker:linda');
+    assert.equal(voice.img_url, remoteAvatar);
+    assert.equal(voice.fallback_img_url, '');
+    assert.equal(voice.audio_url, remoteSample);
+
+    api.voiceAssetCacheReady.add('speaker:linda');
+    voice = api.getResultVoiceEntry('speaker:linda');
+    assert.match(voice.img_url, /\/api\/voice-assets\/speaker%3Alinda\/avatar/);
+    assert.equal(voice.fallback_img_url, remoteAvatar);
+    assert.match(voice.audio_url, /\/api\/voice-assets\/speaker%3Alinda\/sample/);
+    assert.equal(voice.fallback_audio_url, remoteSample);
 });

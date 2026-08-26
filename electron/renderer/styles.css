@@ -7345,9 +7345,26 @@ select.app-select-source {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto;
+    flex: 0 0 auto;
     gap: 14px;
     min-height: 0;
     height: auto;
+}
+
+/* 生成页是内容型长页面：滚动应由 page-scroll 接管，不能让内层
+   flex/grid 在窗口较小时把内容压缩或裁掉。 */
+#page-3 .page-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+}
+
+#page-3 .generate-container {
+    flex: 0 0 auto;
+    min-height: 0;
 }
 
 .generation-card {
@@ -7855,6 +7872,7 @@ select.app-select-source {
 .generation-layout > .log-panel {
     min-width: 0;
     min-height: 0;
+    height: auto;
 }
 
 @media (max-width: 980px) {

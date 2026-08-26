@@ -22,6 +22,7 @@ import json
 import shutil
 import asyncio
 import hashlib
+import math
 import argparse
 import secrets
 import threading
@@ -90,6 +91,25 @@ from uvicorn.config import LOGGING_CONFIG as _UVICORN_DEFAULT_LOG_CONFIG
 MAX_LOG_ENTRIES = 500  # 重连时保留最近的结构化日志
 MAX_EVENT_JOURNAL_ENTRIES = 1200  # 每个 SSE 连接按游标独立读取的有界事件日志
 
+
+def _integer_progress_count(value, total=None):
+    """将内部批量阶段进度转换为用户可见的整数计数。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = 0.0
+    if not math.isfinite(number):
+        number = 0.0
+
+    count = max(0, math.floor(number + 0.5))
+    if total is not None:
+        try:
+            upper_bound = max(0, int(total))
+        except (TypeError, ValueError):
+            upper_bound = 0
+        count = min(count, upper_bound)
+    return count
+
 class SessionState:
     """每个处理会话的状态。"""
     def __init__(self, session_id: str):
@@ -138,7 +158,7 @@ MAX_HISTORY_RECORDS = 20
 PROGRESS_SAVE_ITEM_INTERVAL = 5
 PROGRESS_SAVE_INTERVAL_SECONDS = 1.0
 STATS_EMIT_INTERVAL_SECONDS = 0.12
-PARSE_CACHE_VERSION = 6
+PARSE_CACHE_VERSION = 7
 SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
 HISTORY_MANIFEST_FILENAME = "history.json"
@@ -1106,29 +1126,20 @@ async def _generate_audio_stream(
         completed = max(0, int(completed_value or 0))
         failed = max(0, int(failed_value or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
-        processed = (
+        processed_float = (
             completed + failed
             if processed_override is None
             else max(0.0, float(processed_override))
         )
-        processed = min(processed, float(total))
-        processed_value = (
-            int(processed)
-            if float(processed).is_integer()
-            else round(processed, 2)
-        )
-        pending_value = max(0.0, float(total) - processed)
-        pending_value = (
-            int(pending_value)
-            if pending_value.is_integer()
-            else round(pending_value, 2)
-        )
+        processed_float = min(processed_float, float(total))
+        processed_value = _integer_progress_count(processed_float, total)
+        pending_value = max(0, total - processed_value)
         elapsed_ms = max(0, round((time.perf_counter() - task_started_at) * 1000))
         eta_ms = None
-        run_processed = max(0, processed - eta_baseline_processed)
-        if eta_started_at is not None and run_processed > 0 and total > processed:
+        run_processed = max(0, processed_float - eta_baseline_processed)
+        if eta_started_at is not None and run_processed > 0 and total > processed_float:
             run_elapsed_ms = max(0, round((time.perf_counter() - eta_started_at) * 1000))
-            eta_ms = round((run_elapsed_ms / run_processed) * (total - processed))
+            eta_ms = round((run_elapsed_ms / run_processed) * (total - processed_float))
         event = {
             "type": "stats",
             "completed": completed,
@@ -1172,17 +1183,13 @@ async def _generate_audio_stream(
         completed = max(0, int(completed_value or 0))
         failed = max(0, int(failed_value or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
-        processed = (
+        processed_float = (
             completed + failed
             if processed_override is None
             else max(0.0, float(processed_override))
         )
-        processed = min(processed, float(total))
-        processed_value = (
-            str(int(processed))
-            if float(processed).is_integer()
-            else f"{processed:.1f}"
-        )
+        processed_float = min(processed_float, float(total))
+        processed_value = str(_integer_progress_count(processed_float, total))
         text = f"生成中 — 已处理 {processed_value}/{total} · 成功 {completed}"
         if failed:
             text += f" · 失败 {failed}"

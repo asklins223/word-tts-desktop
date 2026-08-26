@@ -73,6 +73,33 @@ class DesktopSessionIsolationTests(unittest.TestCase):
         progress["config"]["parser_version"] = server.core.PARSER_VERSION
         self.assertTrue(server.progress_is_reusable(progress, fingerprint))
 
+    def test_progress_count_is_always_an_integer(self):
+        self.assertEqual(server._integer_progress_count(3.6, 37), 4)
+        self.assertEqual(server._integer_progress_count(33.4, 37), 33)
+        self.assertEqual(server._integer_progress_count(999.9, 37), 37)
+        self.assertEqual(server._integer_progress_count(float('nan'), 37), 0)
+
+    def test_parse_cache_rejects_previous_cache_version(self):
+        with tempfile.TemporaryDirectory() as session_dir:
+            old_fingerprint = {
+                "cache_version": server.PARSE_CACHE_VERSION - 1,
+                "sha256": "same",
+                "size": 1,
+            }
+            Path(session_dir, server.SOURCE_META_FILENAME).write_text(
+                json.dumps(old_fingerprint), encoding="utf-8"
+            )
+            Path(session_dir, "parsed.json").write_text(
+                json.dumps([{"items": [{"filename_stem": "旧命名"}]}]),
+                encoding="utf-8",
+            )
+
+            current_fingerprint = {
+                **old_fingerprint,
+                "cache_version": server.PARSE_CACHE_VERSION,
+            }
+            self.assertIsNone(server.load_parse_cache(session_dir, current_fingerprint))
+
     def test_voice_asset_cache_deduplicates_same_voice_key(self):
         with tempfile.TemporaryDirectory() as cache_dir:
             original_cache_dir = server.VOICE_ASSET_CACHE_DIR

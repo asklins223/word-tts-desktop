@@ -1127,11 +1127,17 @@ class TextReadingParser(BaseParser):
             sequence_key = f"{current_audio_prefix}:{category}"
             new_sequence_by_category[sequence_key] = new_sequence_by_category.get(sequence_key, 0) + 1
             sequence = new_sequence_by_category[sequence_key]
-            if category == self.SUB_PARAGRAPH and conversation_number is not None:
-                # 新题型要求显式 Conversation 的段落跟读保留对话编号：
-                # SA-段-Cx-y，x 为 Conversation 编号，y 为该段生成序号。
+            if (
+                category in (self.SUB_PARAGRAPH, self.SUB_DISCOURSE)
+                and conversation_number is not None
+            ):
+                # 新题型要求显式 Conversation 的段落/语篇跟读保留对话编号：
+                # SA-段-Cx-y / SA-语-Cx-y，x 为 Conversation 编号，y 为
+                # 当前题型内的音频生成序号。
+                mode_prefix = "段" if category == self.SUB_PARAGRAPH else "语"
                 filename_stem = (
-                    f"{current_audio_prefix}-段-C{conversation_number}-{sequence}"
+                    f"{current_audio_prefix}-{mode_prefix}-C"
+                    f"{conversation_number}-{sequence}"
                 )
             else:
                 filename_stem = f"{current_audio_prefix}{category[:2]}{sequence}"

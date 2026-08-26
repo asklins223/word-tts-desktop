@@ -177,8 +177,48 @@ class TextReadingRuleTests(unittest.TestCase):
 
         discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
         self.assertEqual(parser._detect_section_ab_profile()["role_audio_mode"], "per_role")
-        self.assertEqual([item["filename_stem"] for item in discourses], ["SB语篇1", "SB语篇2"])
+        self.assertEqual(
+            [item["filename_stem"] for item in discourses],
+            ["SB-语-C1-1", "SB-语-C1-2"],
+        )
         self.assertEqual([item["role"] for item in discourses], ["Teng Fei", "Emma"])
+
+    def test_conversation_naming_covers_both_reading_modes_and_multiple_blocks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-多Conversation样本.docx")
+            document = Document()
+            for text in [
+                "课程跟读-多Conversation样本",
+                "Section A",
+                "段落跟读",
+                "Conversation 1",
+                "Reporter: First report.",
+                "Student: First reply.",
+                "Conversation 2",
+                "Reporter: Second report.",
+                "Student: Second reply.",
+                "语篇跟读",
+                "Conversation 3",
+                "Reporter: First passage.",
+                "Student: First answer.",
+                "Conversation 4",
+                "Reporter: Second passage.",
+                "Student: Second answer.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        paragraphs = [item for item in result["items"] if item["category"] == "段落跟读"]
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        self.assertEqual(
+            [item["filename_stem"] for item in paragraphs],
+            ["SA-段-C1-1", "SA-段-C1-2", "SA-段-C2-3", "SA-段-C2-4"],
+        )
+        self.assertEqual(
+            [item["filename_stem"] for item in discourses],
+            ["SA-语-C3-1", "SA-语-C3-2", "SA-语-C4-3", "SA-语-C4-4"],
+        )
 
     def test_isolated_section_marker_does_not_switch_to_new_parser(self):
         with tempfile.TemporaryDirectory() as temp_dir:
