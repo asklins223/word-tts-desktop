@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.7.14
+
+### 修复 Windows 打包后渲染器崩溃
+
+- 保留 Windows 系统默认语言回退所需的 Electron `en-US`、英文变体和简体中文语言资源。
+- 修复打包应用创建窗口后 Chromium renderer 以 `0xC0000005` 访问冲突退出，导致 GitHub Actions 冒烟测试超时或失败的问题。
+- 已通过真实 Windows 打包验证：后端、Electron 应用启动、渲染器就绪、安装包查找和产物上传全部成功。
+
 ## v2.7.13
 
 ### 修复 Windows 冒烟模式渲染器崩溃
