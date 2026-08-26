@@ -116,6 +116,69 @@ class XunfeiFlowTests(unittest.TestCase):
 
         self.assertEqual(payload["speakerNo"], 1002)
         self.assertEqual([item["speakerNo"] for item in payload["synthInfos"]], [1002])
+        self.assertEqual(payload["commonId"], 0)
+        self.assertEqual(payload["synthInfos"][0]["commonId"], 0)
+
+    def test_composite_generation_resolves_missing_common_id_before_submit(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+        voice_catalog = {
+            "speaker:lookup": {
+                "name": "Lookup Voice",
+                "speaker_no": 1001,
+            },
+        }
+        work = {
+            "work_id": "composite:lookup",
+            "works_name": "lookup-test",
+            "item_ids": ["q1"],
+            "item_count": 1,
+            "items": [{
+                "segments": [{
+                    "voice_key": "speaker:lookup",
+                    "text": "hello",
+                    "speed": 50,
+                    "pitch": 50,
+                    "volume": 50,
+                }],
+            }],
+        }
+        submitted = []
+
+        def capture_submit(_page, payload):
+            submitted.append(payload)
+            return "temporary-id"
+
+        with mock.patch.dict(xunfei.VOICES, voice_catalog, clear=False), \
+                mock.patch.object(
+                    session,
+                    "_query_common_id_by_speaker_no",
+                    return_value=2001,
+                ) as query_common_id, \
+                mock.patch.object(
+                    session,
+                    "_post_multiple_speaker_work",
+                    side_effect=capture_submit,
+                ), \
+                mock.patch.object(
+                    session,
+                    "_signed_api_post",
+                    return_value={"data": {"payOrder": {"worksId": "final-id"}}},
+                ), \
+                mock.patch.object(
+                    xunfei,
+                    "_safe_eval",
+                    return_value={"fromSpread": "affiliate"},
+                ):
+            pending = session._generate_pending_composite(work)
+
+        query_common_id.assert_called_once_with(page, 1001)
+        self.assertEqual(pending["works_id"], "final-id")
+        self.assertEqual(submitted[0]["commonId"], 2001)
+        self.assertEqual(submitted[0]["synthInfos"][0]["commonId"], 2001)
 
     def test_composite_submit_accepts_numeric_success_code_and_marks_login_expired(self):
         session = XunFeiSession()

@@ -56,6 +56,9 @@ DOWNLOAD_PAGE_URL = "https://peiyin.xunfei.cn/user"
 API_WORKS_LIST_URL = "https://peiyin.xunfei.cn/video-api/synth/qry_works_synth_list"
 API_SIGN_URL = "https://peiyin.xunfei.cn/video-api/synth/get_work_sign_url"
 API_ORDER_GEN_URL = "https://peiyin.xunfei.cn/video-api/pay/order_gen"
+API_COMMON_SPEAKER_URL = (
+    "https://peiyin.xunfei.cn/video-api/asset/qry_common_speaker_by_speaker_no"
+)
 
 # 持久化浏览器配置目录（保存 cookies / 登录状态）。
 # 首次升级时优先复用旧目录，避免用户被迫重新扫码登录；新安装统一放在
@@ -1496,6 +1499,10 @@ class XunFeiSession:
         }
         self._api_authorization = None
         self._response_handler = None
+        # flat/list 音色目录返回的是具体 variant 的 speakerNo，通常不带
+        # commonId。网页提交多人配音前会按 speakerNo 反查 commonId；缓存
+        # 在当前浏览器会话内复用，避免每个合并作品重复查询。
+        self._common_id_cache = {}
 
     # ------------------------------------------------------------------
     # 拟人行为辅助
@@ -2591,6 +2598,82 @@ class XunFeiSession:
             return None
         return data
 
+    @staticmethod
+    def _positive_common_id(value):
+        """把讯飞 commonId 收敛为正整数；网页默认值为 0。"""
+        try:
+            common_id = int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return common_id if common_id > 0 else None
+
+    def _query_common_id_by_speaker_no(self, page, speaker_no):
+        """按讯飞网页流程反查 variant speakerNo 对应的 commonId。"""
+        data = self._signed_api_post(
+            page,
+            API_COMMON_SPEAKER_URL,
+            {"speakerNo": int(speaker_no)},
+        )
+        if not isinstance(data, dict):
+            return None
+        candidates = [
+            data.get("commonId"),
+            data.get("common_id"),
+        ]
+        nested = data.get("data")
+        if isinstance(nested, dict):
+            candidates.extend([nested.get("commonId"), nested.get("common_id")])
+        for candidate in candidates:
+            common_id = self._positive_common_id(candidate)
+            if common_id is not None:
+                return common_id
+        return None
+
+    def _resolve_composite_common_ids(self, page, work):
+        """提交多人作品前补齐所有音色的 commonId。"""
+        voice_keys = []
+        seen = set()
+        for item in work.get("items") or []:
+            for segment in item.get("segments") or []:
+                if not str(segment.get("text") or ""):
+                    continue
+                voice_key = str(segment.get("voice_key") or DEFAULT_FEMALE)
+                if voice_key not in seen:
+                    seen.add(voice_key)
+                    voice_keys.append(voice_key)
+
+        for voice_key in voice_keys:
+            info = dict(get_voice_info(voice_key))
+            raw_common_id = info.get("common_id")
+            if raw_common_id in (None, ""):
+                raw_common_id = info.get("commonId")
+            if self._positive_common_id(raw_common_id) is not None:
+                continue
+
+            meta = self._composite_voice_meta(voice_key)
+            speaker_no = meta["speaker_no"]
+            if speaker_no in self._common_id_cache:
+                continue
+            try:
+                common_id = self._query_common_id_by_speaker_no(page, speaker_no)
+            except Exception as error:
+                _log(
+                    f"[xunfei]   音色 commonId 反查失败 speakerNo={speaker_no}: "
+                    f"{error}；按网页默认值 0 提交"
+                )
+                continue
+            if common_id is None:
+                _log(
+                    f"[xunfei]   未找到音色 commonId speakerNo={speaker_no}；"
+                    "按网页默认值 0 提交"
+                )
+                continue
+            self._common_id_cache[speaker_no] = common_id
+            _log(
+                f"[xunfei]   音色 commonId 反查成功 speakerNo={speaker_no} "
+                f"commonId={common_id}"
+            )
+
     def _fetch_works_list_in_page(self, page, needed_count=1):
         """获取已完成作品列表，返回讯飞原始作品对象。"""
         # 作品页按最新创建时间返回第 1 页；等待 1~3 个新 worksId 时没必要
@@ -2928,10 +3011,9 @@ class XunFeiSession:
         common_id = info.get("common_id")
         if common_id in (None, ""):
             common_id = info.get("commonId")
-        try:
-            common_id = int(float(common_id)) if common_id not in (None, "") else None
-        except (TypeError, ValueError, OverflowError):
-            common_id = None
+        common_id = self._positive_common_id(common_id)
+        if common_id is None:
+            common_id = self._common_id_cache.get(speaker_no, 0)
         try:
             vcn_type = int(float(info.get("vcn_type") or info.get("vcnType") or 1))
         except (TypeError, ValueError, OverflowError):
@@ -2995,6 +3077,8 @@ class XunFeiSession:
                     "speakingVolumn": volume,
                     "language": speaker_language,
                     "lanType": lan_type,
+                    # 讯飞网页的默认 globalTtsConfig.commonId 是 0，不能
+                    # 把缺失目录字段序列化为 null，否则接口会判定参数非法。
                     "commonId": meta["common_id"],
                     "textType": 0,
                     "soundEffectVolume": None,
@@ -3124,9 +3208,13 @@ class XunFeiSession:
         if not output_name:
             output_name = f".xunfei_composite_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(OUTPUT_DIR, output_name)
+        page = self._page
+        # flat/list 音色目录没有 commonId 时，先执行网页同款反查；即使
+        # 反查暂时失败，_build_composite_payload 也会使用网页默认值 0，
+        # 保证请求体不会出现 JSON null。
+        self._resolve_composite_common_ids(page, work)
         payload = self._build_composite_payload(work)
         works_name = payload["worksName"]
-        page = self._page
         last_error = None
         for attempt in range(1, max_retries + 1):
             _log(
@@ -4068,6 +4156,7 @@ class XunFeiSession:
                     "osid": 0,
                 }
                 self._api_authorization = None
+            self._common_id_cache = {}
             _log("[xunfei] 浏览器已关闭（登录状态已保留）")
 
 
