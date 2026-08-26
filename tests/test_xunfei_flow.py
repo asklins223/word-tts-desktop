@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import threading
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import xunfei_peiyin as xunfei
 from xunfei_peiyin import XunFeiSession
@@ -671,6 +674,8 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(
             [(event["job_id"], event["stage"]) for event in events],
             [
+                ("batch-1", "submitted"),
+                ("batch-2", "submitted"),
                 ("batch-1", "downloaded"),
                 ("batch-1", "saved"),
                 ("batch-2", "downloaded"),
@@ -678,6 +683,67 @@ class XunfeiFlowTests(unittest.TestCase):
             ],
         )
         self.assertTrue(all(result[job["job_id"]]["downloaded"] for job in jobs))
+
+    def test_browser_download_matching_does_not_use_arrival_order(self):
+        class FakeDownload:
+            def __init__(self, filename):
+                self.suggested_filename = filename
+
+        targets = [
+            {
+                "works_id": "works-a",
+                "works_name": "wordtts_0001_a1b2c3d4",
+                "item": {},
+            },
+            {
+                "works_id": "works-b",
+                "works_name": "wordtts_0002_e5f6g7h8",
+                "item": {},
+            },
+        ]
+        downloads = [
+            FakeDownload("wordtts_0002_e5f6g7h8.mp3"),
+            FakeDownload("wordtts_0001_a1b2c3d4.mp3"),
+        ]
+
+        first_index = XunFeiSession._match_download_index(downloads, targets[0])
+        first_download = downloads.pop(first_index)
+        second_index = XunFeiSession._match_download_index(downloads, targets[1])
+
+        self.assertEqual(first_download.suggested_filename, "wordtts_0001_a1b2c3d4.mp3")
+        self.assertEqual(downloads[second_index].suggested_filename, "wordtts_0002_e5f6g7h8.mp3")
+
+    def test_signed_url_download_writes_only_valid_mp3(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                if size == -1:
+                    return b"ID3\x04"
+                if not hasattr(self, "sent"):
+                    self.sent = True
+                    return b"ID3\x04"
+                return b""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = str(Path(temp_dir, "audio.mp3"))
+            with mock.patch.object(
+                xunfei.urllib.request,
+                "urlopen",
+                return_value=FakeResponse(),
+            ):
+                self.assertTrue(
+                    XunFeiSession._download_signed_url(
+                        "https://example.test/signed.mp3",
+                        output_path,
+                    )
+                )
+            self.assertEqual(Path(output_path).read_bytes(), b"ID3\x04")
+            self.assertFalse(Path(f"{output_path}.part").exists())
 
     def test_cleanup_clears_editor_without_navigation(self):
         session = XunFeiSession()

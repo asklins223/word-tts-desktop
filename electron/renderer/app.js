@@ -52,6 +52,8 @@ let isVoiceDetailCollapsed = false;
 let voiceAvatarObserver = null;
 let voiceCardsRenderFrame = null;
 const VOICE_RECENT_STORAGE_KEY = 'wordtts_recent_xunfei_voices_v1';
+const voiceAssetCacheRequests = new Map();
+const voiceAssetCacheReady = new Set();
 let eventSource = null;          // SSE 连接
 let sseReconnectTimer = null;    // SSE 延迟重连计时器
 let sseStableTimer = null;       // 连接稳定后重置累计重试次数
@@ -493,6 +495,62 @@ function getVoiceEntry(key) {
         || normalizeVoiceEntry({ key: normalizedKey, name: normalizedKey || '未选择音色' });
 }
 
+function voiceAssetUrl(key, kind) {
+    const normalizedKey = normalizeVoiceKey(key);
+    if (!normalizedKey || !['avatar', 'sample'].includes(kind)) return '';
+    return apiUrl(`/api/voice-assets/${encodeURIComponent(normalizedKey)}/${kind}`);
+}
+
+function queueVoiceAssetCache(keys) {
+    const values = Array.isArray(keys) ? keys : [keys];
+    const normalizedKeys = [...new Set(values.map(normalizeVoiceKey).filter(Boolean))];
+    const pendingKeys = normalizedKeys.filter(key => (
+        !voiceAssetCacheReady.has(key) && !voiceAssetCacheRequests.has(key)
+    ));
+    if (!pendingKeys.length) return Promise.resolve(null);
+
+    const request = fetch(apiUrl('/api/voice-assets/cache'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_keys: pendingKeys }),
+    })
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        })
+        .then(data => {
+            const cached = data?.cached && typeof data.cached === 'object' ? data.cached : {};
+            pendingKeys.forEach(key => {
+                if (cached[key] && typeof cached[key] === 'object') voiceAssetCacheReady.add(key);
+            });
+            return data;
+        })
+        .catch(error => {
+            // 头像/试听缓存是增强项，讯飞资源不可达时结果页仍会回退到原始 URL。
+            console.debug('音色资产缓存暂不可用:', error);
+            return null;
+        })
+        .finally(() => {
+            pendingKeys.forEach(key => {
+                if (voiceAssetCacheRequests.get(key) === request) voiceAssetCacheRequests.delete(key);
+            });
+        });
+    pendingKeys.forEach(key => voiceAssetCacheRequests.set(key, request));
+    return request;
+}
+
+function getResultVoiceEntry(key) {
+    const voice = getVoiceEntry(key);
+    const normalizedKey = normalizeVoiceKey(voice.key || key);
+    return {
+        ...voice,
+        img_url: voice.img_url ? voiceAssetUrl(normalizedKey, 'avatar') : '',
+        fallback_img_url: voice.img_url,
+        audio_url: voice.audio_url ? voiceAssetUrl(normalizedKey, 'sample') : '',
+        fallback_audio_url: voice.audio_url,
+    };
+}
+
 function voiceDisplayName(key) {
     return getVoiceEntry(key).name;
 }
@@ -512,8 +570,8 @@ function renderVoiceAvatar(container, voice, large = false, eager = false) {
     const fallback = document.createElement('span');
     fallback.textContent = getVoiceInitials(voice?.name);
     container.appendChild(fallback);
-    const src = voice?.img_url;
-    if (!src) return;
+    const sources = [...new Set([voice?.img_url, voice?.fallback_img_url].filter(Boolean))];
+    if (!sources.length) return;
     const image = document.createElement('img');
     image.alt = '';
     const loadImmediately = large || eager;
@@ -526,12 +584,23 @@ function renderVoiceAvatar(container, voice, large = false, eager = false) {
         container.classList.add('has-image');
     }, { once: true });
     image.addEventListener('error', () => {
+        const fallbackSrc = image.dataset.fallbackSrc;
+        if (fallbackSrc) {
+            delete image.dataset.fallbackSrc;
+            image.src = fallbackSrc;
+            return;
+        }
         image.remove();
         container.classList.remove('has-image');
-    }, { once: true });
+    });
     container.appendChild(image);
-    if (loadImmediately) image.src = src;
-    else image.dataset.src = src;
+    if (loadImmediately) {
+        image.src = sources[0];
+        if (sources[1]) image.dataset.fallbackSrc = sources[1];
+    } else {
+        image.dataset.src = sources[0];
+        if (sources[1]) image.dataset.fallbackSrc = sources[1];
+    }
 }
 
 function observeVoiceAvatars() {
@@ -913,7 +982,9 @@ function renderVoiceDetails() {
     const previewButton = $('voice-preview-btn');
     if (previewButton) {
         previewButton.disabled = !voice.audio_url;
-        setVoicePreviewButtonState(Boolean(voicePreviewAudio));
+        setVoicePreviewButtonState(
+            voicePreviewAudio?._previewButton?.id === 'voice-preview-btn',
+        );
     }
 }
 
@@ -938,6 +1009,7 @@ function selectVoiceForActiveRole(key) {
     const configKey = roleConfigKeyForRole(role || activeVoiceRole);
     if (!voiceParamConfigs[configKey]) voiceParamConfigs[configKey] = createDefaultVoiceParams();
     rememberVoiceUse(normalizedKey);
+    void queueVoiceAssetCache(normalizedKey);
     renderVoiceWorkspace();
     updateConfigSummary();
     rememberCurrentConfig();
@@ -951,11 +1023,24 @@ function updateActiveVoiceParam(param, value) {
     rememberCurrentConfig();
 }
 
+function setResultVoicePreviewButtonState(button, isPlaying) {
+    if (!button) return;
+    button.classList.toggle('is-playing', Boolean(isPlaying));
+    updatePlayIcon(button, Boolean(isPlaying));
+}
+
 function stopVoicePreview() {
-    if (voicePreviewAudio) {
-        voicePreviewAudio.pause();
-        voicePreviewAudio.currentTime = 0;
+    const audio = voicePreviewAudio;
+    if (audio) {
+        const triggerButton = audio._previewButton;
+        audio.pause();
+        try { audio.currentTime = 0; } catch (_) { /* ignore */ }
         voicePreviewAudio = null;
+        if (triggerButton?.id === 'voice-preview-btn') {
+            setVoicePreviewButtonState(false);
+        } else {
+            setResultVoicePreviewButtonState(triggerButton, false);
+        }
     }
     setVoicePreviewButtonState(false);
 }
@@ -965,6 +1050,78 @@ function setVoicePreviewButtonState(isPlaying) {
     if (!button) return;
     button.classList.toggle('is-playing', Boolean(isPlaying));
     updatePlayIcon(button, Boolean(isPlaying));
+}
+
+function stopGeneratedAudioPlayback() {
+    audioPlayRequestToken++;
+    audioElements.forEach(audio => {
+        audio._playRequestToken = 0;
+        audio.pause();
+        if (audio._playButton) {
+            audio._playButton.classList.remove('is-buffering');
+            updatePlayIcon(audio._playButton, false);
+        }
+    });
+    currentPlayingAudio = null;
+}
+
+function playVoiceSample(voice, triggerButton) {
+    const localSource = String(voice?.audio_url || '').trim();
+    const fallbackSource = String(voice?.fallback_audio_url || '').trim();
+    const source = localSource || fallbackSource;
+    if (!source || !triggerButton) return;
+
+    if (
+        voicePreviewAudio
+        && voicePreviewAudio._previewButton === triggerButton
+        && voicePreviewAudio._previewKey === voice?.key
+    ) {
+        stopVoicePreview();
+        return;
+    }
+
+    stopGeneratedAudioPlayback();
+    stopVoicePreview();
+    const audio = new Audio(source);
+    audio.preload = 'auto';
+    audio._previewButton = triggerButton;
+    audio._previewKey = voice?.key || source;
+    audio._previewSource = source;
+    audio._previewFallbackTried = !localSource || !fallbackSource || localSource === fallbackSource;
+    voicePreviewAudio = audio;
+    let playbackAttempt = 0;
+
+    const setPlaying = isPlaying => {
+        if (triggerButton.id === 'voice-preview-btn') setVoicePreviewButtonState(isPlaying);
+        else setResultVoicePreviewButtonState(triggerButton, isPlaying);
+    };
+    const finish = () => {
+        if (voicePreviewAudio !== audio) return;
+        stopVoicePreview();
+    };
+    const handleFailure = (attempt, attemptedSource) => {
+        if (voicePreviewAudio !== audio) return;
+        if (attempt !== playbackAttempt || attemptedSource !== audio.src) return;
+        if (!audio._previewFallbackTried && fallbackSource && fallbackSource !== attemptedSource) {
+            audio._previewFallbackTried = true;
+            audio.src = fallbackSource;
+            const resolvedFallbackSource = audio.src;
+            playbackAttempt += 1;
+            const fallbackAttempt = playbackAttempt;
+            void audio.play().catch(() => handleFailure(fallbackAttempt, resolvedFallbackSource));
+            return;
+        }
+        finish();
+        showToast('当前音色试听暂时不可用', 'warning');
+    };
+
+    setPlaying(true);
+    audio.addEventListener('ended', finish, { once: true });
+    audio.addEventListener('error', () => handleFailure(playbackAttempt, audio.src));
+    playbackAttempt += 1;
+    const initialAttempt = playbackAttempt;
+    const resolvedInitialSource = audio.src;
+    void audio.play().catch(() => handleFailure(initialAttempt, resolvedInitialSource));
 }
 
 function setVoiceDetailCollapsed(collapsed) {
@@ -990,22 +1147,7 @@ function setVoiceDetailCollapsed(collapsed) {
 function toggleVoicePreview() {
     const voice = getVoiceEntry(activeVoiceKeyForRole());
     if (!voice.audio_url) return;
-    if (voicePreviewAudio) {
-        stopVoicePreview();
-        return;
-    }
-    const audio = new Audio(voice.audio_url);
-    voicePreviewAudio = audio;
-    setVoicePreviewButtonState(true);
-    audio.addEventListener('ended', stopVoicePreview, { once: true });
-    audio.addEventListener('error', () => {
-        stopVoicePreview();
-        showToast('当前音色试听暂时不可用', 'warning');
-    }, { once: true });
-    audio.play().catch(() => {
-        stopVoicePreview();
-        showToast('当前音色试听暂时不可用', 'warning');
-    });
+    playVoiceSample(voice, $('voice-preview-btn'));
 }
 
 function bindVoiceWorkspaceEvents() {
@@ -1263,6 +1405,11 @@ async function startProcessing(useDefaults, presetConfig) {
     $('type-stats').innerHTML = '';
 
     lastGenerationConfig = { ...config };
+    void queueVoiceAssetCache([
+        config.default_female_voice,
+        config.default_male_voice,
+        ...Object.values(config.role_voices || {}),
+    ]);
 
     try {
         const resp = await fetch(apiUrl('/api/generate'), {
@@ -1600,16 +1747,16 @@ function setGenerationVisualState(state) {
     };
     if (badgeLabel) badgeLabel.textContent = labels[state] || labels.running;
     const liveLabels = {
-        running: '音频引擎运行中',
-        done: '所有音频处理完成',
+        running: '批量任务进行中',
+        done: '批量任务已完成',
         warning: '任务完成，部分内容需处理',
         error: '生成遇到问题，请检查记录',
         stopped: '任务已停止',
     };
     if (liveStatus) liveStatus.textContent = liveLabels[state] || liveLabels.running;
     const liveLabelTexts = {
-        running: '实时合成',
-        done: '合成完成',
+        running: '当前阶段',
+        done: '任务完成',
         warning: '部分完成',
         error: '生成异常',
         stopped: '任务停止',
@@ -1823,6 +1970,9 @@ function bindEvents() {
             setLogAutoFollow(false);
         }
     }, { passive: true });
+    const resultScrollPage = $('page-4')?.querySelector('.page-scroll');
+    resultScrollPage?.addEventListener('scroll', updateResultScrollTopButton, { passive: true });
+    $('result-scroll-top')?.addEventListener('click', scrollResultToTop);
 
     // Step 1: 上传
     const uploadZone = $('upload-zone');
@@ -1999,6 +2149,20 @@ async function loadConfig() {
 // 步骤导航
 // ============================================================================
 
+function updateResultScrollTopButton() {
+    const button = $('result-scroll-top');
+    const scrollPage = $('page-4')?.querySelector('.page-scroll');
+    if (!button) return;
+    button.hidden = !scrollPage || scrollPage.scrollTop < 240;
+}
+
+function scrollResultToTop() {
+    const scrollPage = $('page-4')?.querySelector('.page-scroll');
+    if (!scrollPage) return;
+    scrollPage.scrollTo({ top: 0, behavior: 'smooth' });
+    window.setTimeout(updateResultScrollTopButton, 280);
+}
+
 function goToStep(step) {
     currentView = 'workflow';
     currentStep = step;
@@ -2019,6 +2183,7 @@ function goToStep(step) {
     // 滚动到顶部
     const scrollPage = $(`page-${step}`).querySelector('.page-scroll, .page-center');
     if (scrollPage) scrollPage.scrollTop = 0;
+    if (step === 4) updateResultScrollTopButton();
 
     const heading = $(`page-${step}`).querySelector('h1');
     if (heading) requestAnimationFrame(() => heading.focus({ preventScroll: true }));
@@ -2073,6 +2238,7 @@ function activateStandalonePage(pageId, view) {
 
     const scrollPage = page?.querySelector('.page-scroll, .page-center');
     if (scrollPage) scrollPage.scrollTop = 0;
+    if (pageId === 'page-4') updateResultScrollTopButton();
     const heading = page?.querySelector('h1');
     if (heading) requestAnimationFrame(() => heading.focus({ preventScroll: true }));
 }
@@ -3208,7 +3374,7 @@ function resetLogTimeline(emptyText = '任务开始后，这里会按阶段展�
     $('progress-log').appendChild(empty);
     $('log-count').textContent = '0 个节点';
     $('log-issue-count').textContent = '0';
-    $('log-summary').textContent = '准备记录生成阶段与每条音频结果';
+    $('log-summary').textContent = '展开查看阶段记录和异常项';
     $$('#log-stage-rail [data-log-stage]').forEach(stage => {
         stage.classList.remove('is-active', 'is-complete', 'is-warning', 'is-error');
         const stageLabel = LOG_STAGE_LABELS[stage.dataset.logStage] || stage.textContent.trim();
@@ -3217,7 +3383,8 @@ function resetLogTimeline(emptyText = '任务开始后，这里会按阶段展�
     });
     setLogFilter('all');
     setLogAutoFollow(true);
-    setLogDetailsExpanded(true);
+    // 主进度卡是生成页的默认关注点，时间线保留为可展开的诊断详情。
+    setLogDetailsExpanded(false);
 }
 
 // ============================================================================
@@ -3233,22 +3400,38 @@ function updateProgress(event) {
         total,
     );
     const pct = total > 0 ? (processed / total) * 100 : 0;
-    const isBatchDownload = event.phase === 'batch-download';
+    const phase = String(event.phase || '');
+    const isBatchSubmit = phase === 'batch-submit';
+    const isBatchDownload = phase === 'batch-download';
+    const isBatchExport = phase === 'batch-export';
+    const isBatchPhase = isBatchSubmit || isBatchDownload || isBatchExport;
     // 统一下载完成后还要做音频解码、拼接、导出和 ZIP 整理；在最终 done
     // 事件到达前保留一点尾部空间，避免用户看到 100% 后还长时间等待。
-    const visualPct = isBatchDownload ? Math.min(pct, 98) : pct;
+    const visualPct = isBatchPhase ? Math.min(pct, 98) : pct;
+    const formatProgressValue = (value) => {
+        const number = Number(value) || 0;
+        return Number.isInteger(number) ? String(number) : number.toFixed(1);
+    };
     const eta = formatLogDuration(event.eta_ms);
     $('progress-bar').style.width = `${visualPct.toFixed(1)}%`;
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', visualPct.toFixed(1));
-    $('progress-completed-label').textContent = isBatchDownload ? '已下载' : '已完成';
-    $('progress-stats').textContent = isBatchDownload
-        ? `已下载 ${processed} / ${total} · 等待整理`
-        : `${completed} / ${total}`
+    $('progress-completed-label').textContent = isBatchSubmit
+        ? '已提交'
+        : (isBatchDownload ? '已下载' : (isBatchExport ? '已整理' : '已完成'));
+    $('progress-stats').textContent = isBatchSubmit
+        ? `已提交 ${formatProgressValue(processed)} / ${total} · 等待下载`
+        : (isBatchDownload
+            ? `已下载 ${formatProgressValue(processed)} / ${total} · 等待整理`
+            : (isBatchExport
+                ? `已整理 ${formatProgressValue(processed)} / ${total} · 正在输出`
+                : `${completed} / ${total}`))
         + (failed > 0 ? `  ·  失败 ${failed}` : '')
         + (eta ? `  ·  预计 ${eta}` : '');
     $('progress-percent').textContent = String(Math.round(visualPct));
-    $('progress-completed').textContent = String(completed);
-    $('progress-remaining').textContent = String(Math.max(total - processed, 0));
+    $('progress-completed').textContent = isBatchPhase
+        ? formatProgressValue(processed)
+        : String(completed);
+    $('progress-remaining').textContent = formatProgressValue(Math.max(total - processed, 0));
     $('progress-failed').textContent = String(failed);
     updateLogTimelineHeader();
 }
@@ -3468,6 +3651,66 @@ function scheduleAudioFilter() {
     });
 }
 
+function createResultVoiceStrip(file) {
+    const strip = document.createElement('div');
+    strip.className = 'audio-voice-strip';
+
+    const label = document.createElement('span');
+    label.className = 'audio-voice-caption';
+    label.textContent = '音色';
+    strip.appendChild(label);
+
+    const voiceKeys = Array.isArray(file?.voice_keys)
+        ? [...new Set(file.voice_keys.map(normalizeVoiceKey).filter(Boolean))]
+        : [];
+    if (!voiceKeys.length) {
+        const empty = document.createElement('span');
+        empty.className = 'audio-voice-empty';
+        empty.textContent = '历史文件未记录音色信息';
+        strip.appendChild(empty);
+        return strip;
+    }
+
+    voiceKeys.forEach(key => {
+        const voice = getResultVoiceEntry(key);
+        const chip = document.createElement('span');
+        chip.className = 'audio-voice-chip';
+
+        const avatarButton = document.createElement('button');
+        avatarButton.type = 'button';
+        avatarButton.className = 'audio-voice-avatar-button';
+        avatarButton.dataset.audioName = `音色 ${voice.name}`;
+        avatarButton.setAttribute('aria-label', `试听音色 ${voice.name}`);
+        const hasSample = Boolean(voice.audio_url || voice.fallback_audio_url);
+        avatarButton.title = hasSample ? `试听 ${voice.name}` : `${voice.name}暂无示例音频`;
+        avatarButton.disabled = !hasSample;
+
+        const avatar = document.createElement('span');
+        avatar.className = 'voice-avatar audio-result-avatar';
+        renderVoiceAvatar(avatar, voice, false, true);
+        avatarButton.appendChild(avatar);
+
+        const playState = document.createElement('span');
+        playState.className = 'audio-voice-play-state';
+        playState.setAttribute('aria-hidden', 'true');
+        playState.innerHTML = '<svg class="icon-play" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><svg class="icon-pause" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+        avatarButton.appendChild(playState);
+        avatarButton.addEventListener('click', event => {
+            event.stopPropagation();
+            playVoiceSample(voice, avatarButton);
+        });
+
+        const name = document.createElement('span');
+        name.className = 'audio-voice-name';
+        name.textContent = voice.name;
+        name.title = voice.name;
+
+        chip.append(avatarButton, name);
+        strip.appendChild(chip);
+    });
+    return strip;
+}
+
 function buildResultPage(event, suppliedContext = null) {
     destroyWaveSurfers();
     const workflowSourceTotal = summarizeParseResults(currentSession?.parse_results).total;
@@ -3683,6 +3926,10 @@ function buildResultPage(event, suppliedContext = null) {
         header.appendChild(dlBtn);
         item.appendChild(header);
 
+        // 每个生成文件携带本题实际使用的音色；头像使用本机缓存，试听时
+        // 仍保留讯飞原始示例音频作为回退，且全局只允许一个试听同时播放。
+        item.appendChild(createResultVoiceStrip(f));
+
         // 原生 Audio 负责流式播放；WaveSurfer 只在后台解码并绘制波形。
         const audio = new Audio();
         audio.preload = index < 2 ? 'auto' : 'none';
@@ -3740,6 +3987,7 @@ function buildResultPage(event, suppliedContext = null) {
         // --- 原文折叠展示，避免长列表出现嵌套滚动 ---
         const textSection = document.createElement('details');
         textSection.className = 'audio-text-section';
+        textSection.open = true;
 
         const textSummary = document.createElement('summary');
         textSummary.textContent = '查看对应原文';

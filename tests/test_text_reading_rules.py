@@ -147,7 +147,12 @@ class TextReadingRuleTests(unittest.TestCase):
         self.assertEqual(parser._detect_section_ab_profile()["role_audio_mode"], "per_role")
         self.assertEqual(
             [item["filename_stem"] for item in paragraphs],
-            ["SA段落1", "SA段落2", "SA段落3", "SA段落4"],
+            [
+                "SA-段-C2-1",
+                "SA-段-C2-2",
+                "SA-段-C1-3",
+                "SA-段-C1-4",
+            ],
         )
         self.assertEqual(
             [item["role"] for item in paragraphs],

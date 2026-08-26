@@ -13,6 +13,11 @@ from fastapi.testclient import TestClient
 import server
 
 
+async def _anext(iterator):
+    """兼容 Python 3.9；项目支持的最低版本没有内置 anext。"""
+    return await iterator.__anext__()
+
+
 class DesktopServerSecurityTests(unittest.TestCase):
     def setUp(self):
         self.original_token = server._API_TOKEN
@@ -65,7 +70,42 @@ class DesktopSessionIsolationTests(unittest.TestCase):
         progress["config"]["audio_algorithm_version"] = (
             server.core.AUDIO_ALGORITHM_VERSION
         )
+        progress["config"]["parser_version"] = server.core.PARSER_VERSION
         self.assertTrue(server.progress_is_reusable(progress, fingerprint))
+
+    def test_voice_asset_cache_deduplicates_same_voice_key(self):
+        with tempfile.TemporaryDirectory() as cache_dir:
+            original_cache_dir = server.VOICE_ASSET_CACHE_DIR
+            original_catalog = server._voice_catalog_data
+            server.VOICE_ASSET_CACHE_DIR = cache_dir
+            server._voice_catalog_data = {
+                "voices": [{
+                    "key": "speaker:demo",
+                    "name": "Demo",
+                    "img_url": "https://example.test/demo.jpg",
+                    "audio_url": "https://example.test/demo.mp3",
+                }],
+            }
+
+            def fake_download(_url, target_path, _kind):
+                Path(target_path).write_bytes(b"asset")
+                return "image/jpeg" if target_path.endswith("avatar.bin") else "audio/mpeg"
+
+            try:
+                with mock.patch.object(server, "_download_voice_asset", side_effect=fake_download) as download:
+                    first = server._cache_voice_assets_sync(["speaker:demo", "speaker:demo"])
+                    second = server._cache_voice_assets_sync(["speaker:demo"])
+
+                self.assertEqual(download.call_count, 2)
+                self.assertIn("speaker:demo", first)
+                self.assertEqual(first, second)
+                voice_dirs = [path for path in Path(cache_dir).iterdir() if path.is_dir()]
+                self.assertEqual(len(voice_dirs), 1)
+                self.assertTrue((voice_dirs[0] / "avatar.bin").is_file())
+                self.assertTrue((voice_dirs[0] / "sample.bin").is_file())
+            finally:
+                server.VOICE_ASSET_CACHE_DIR = original_cache_dir
+                server._voice_catalog_data = original_catalog
 
     def test_early_generation_error_still_emits_end(self):
         session = server.SessionState("fault-injection")
@@ -210,7 +250,7 @@ class DesktopSessionIsolationTests(unittest.TestCase):
         async def exercise():
             response = await server.progress_sse(session.session_id)
             iterator = response.body_iterator
-            chunks = [await anext(iterator)]  # 冻结 2/2 快照后再制造终态竞态
+            chunks = [await _anext(iterator)]  # 冻结 2/2 快照后再制造终态竞态
             server.push_event(session, {"type": "status", "text": "完成 — 成功 2/2"})
             server.push_event(session, {"type": "stats", "completed": 2, "failed": 0, "total": 2})
             server.push_event(session, {
@@ -267,15 +307,15 @@ class DesktopSessionIsolationTests(unittest.TestCase):
             second_response = await server.progress_sse(session.session_id)
             first_iterator = first_response.body_iterator
             second_iterator = second_response.body_iterator
-            await anext(first_iterator)
-            await anext(second_iterator)
+            await _anext(first_iterator)
+            await _anext(second_iterator)
 
             server.push_event(session, {"type": "status", "text": "生成中 — 已处理 1/2"})
-            first_status = json.loads((await anext(first_iterator)).removeprefix("data: ").strip())
-            second_status = json.loads((await anext(second_iterator)).removeprefix("data: ").strip())
+            first_status = json.loads((await _anext(first_iterator)).removeprefix("data: ").strip())
+            second_status = json.loads((await _anext(second_iterator)).removeprefix("data: ").strip())
             server.push_event(session, {"type": "stats", "completed": 1, "failed": 0, "total": 2})
-            first_stats = json.loads((await anext(first_iterator)).removeprefix("data: ").strip())
-            second_stats = json.loads((await anext(second_iterator)).removeprefix("data: ").strip())
+            first_stats = json.loads((await _anext(first_iterator)).removeprefix("data: ").strip())
+            second_stats = json.loads((await _anext(second_iterator)).removeprefix("data: ").strip())
             await first_iterator.aclose()
             await second_iterator.aclose()
             return first_status, second_status, first_stats, second_stats
@@ -295,8 +335,21 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         self.output_dir = tempfile.TemporaryDirectory()
         self.output_patch = mock.patch.object(server.core, "OUTPUT_BASE", self.output_dir.name)
         self.output_patch.start()
+        self.xunfei_patch = None
+        if getattr(server.core, "_xunfei", None) is not None:
+            async def fake_ensure_session(*_args, **_kwargs):
+                return None
+
+            self.xunfei_patch = mock.patch.object(
+                server.core._xunfei,
+                "ensure_session",
+                new=fake_ensure_session,
+            )
+            self.xunfei_patch.start()
 
     def tearDown(self):
+        if self.xunfei_patch is not None:
+            self.xunfei_patch.stop()
         self.output_patch.stop()
         self.output_dir.cleanup()
 
@@ -390,16 +443,21 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         session = server.SessionState("successful-timeline")
         session.parse_results = self._parse_results("需要生成的内容")
 
-        async def fake_synth(*_args, **_kwargs):
-            return object()
+        async def fake_batch(item_specs, **_kwargs):
+            return {
+                str(spec["item_id"]): {"audio": object(), "error": None}
+                for spec in item_specs
+            }
 
         def fake_export(_audio, _fmt, _quality, output_path):
             Path(output_path).write_bytes(b"audio")
 
         async def exercise():
             with mock.patch.object(server, "source_fingerprint", return_value={"size": 1}), mock.patch.object(
-                server.core, "_synth_item", new=fake_synth
-            ), mock.patch.object(server.core, "export_audio", side_effect=fake_export):
+                server.core, "_synth_items_batch", new=fake_batch
+            ), mock.patch.object(
+                server.core, "export_audio", side_effect=fake_export
+            ):
                 await server.generate_audio_stream(
                     session,
                     "lesson.docx",
@@ -428,17 +486,22 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         session = server.SessionState("cancel-last-item")
         session.parse_results = self._parse_results("需要生成的内容")
 
-        async def fake_synth(*_args, **_kwargs):
+        async def fake_batch(item_specs, **_kwargs):
             session.cancelled = True
-            return object()
+            return {
+                str(spec["item_id"]): {"audio": object(), "error": None}
+                for spec in item_specs
+            }
 
         def fake_export(_audio, _fmt, _quality, output_path):
             Path(output_path).write_bytes(b"audio")
 
         async def exercise():
             with mock.patch.object(server, "source_fingerprint", return_value={"size": 1}), mock.patch.object(
-                server.core, "_synth_item", new=fake_synth
-            ), mock.patch.object(server.core, "export_audio", side_effect=fake_export):
+                server.core, "_synth_items_batch", new=fake_batch
+            ), mock.patch.object(
+                server.core, "export_audio", side_effect=fake_export
+            ):
                 await server.generate_audio_stream(
                     session,
                     "lesson.docx",
@@ -461,12 +524,12 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         async def exercise():
             synth_started = asyncio.Event()
 
-            async def blocked_synth(*_args, **_kwargs):
+            async def blocked_batch(*_args, **_kwargs):
                 synth_started.set()
                 await asyncio.Event().wait()
 
             with mock.patch.object(server, "source_fingerprint", return_value={"size": 1}), mock.patch.object(
-                server.core, "_synth_item", new=blocked_synth
+                server.core, "_synth_items_batch", new=blocked_batch
             ):
                 task = asyncio.create_task(server.generate_audio_stream(
                     session,

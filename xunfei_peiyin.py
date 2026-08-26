@@ -8,7 +8,8 @@
 设计:
   - 使用持久化浏览器配置目录，首次需手动登录，后续自动复用登录状态
   - 单条合成：输入文本 → 选发音人 → 设置语速/语调/音量 → 生成音频 → 确认合成 → 拦截 worksId → 签名 URL 下载
-  - 页面复用：下载通过页面内 API 完成，不离开编辑页，发音人与参数跨条目保持
+  - 页面复用：生成阶段保持编辑页，提交完成后进入作品下载页；按 worksId
+    获取精确签名地址下载，浏览器下载仅作为按作品名匹配的兜底通道
   - 反批量检测采用行为拟真：击键抖动、随机间隙、真实鼠标事件、系统 Chrome 真实指纹
 
 发音人（默认）:
@@ -26,6 +27,8 @@ import json
 import hashlib
 import threading
 import uuid
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -1332,6 +1335,14 @@ def _looks_like_mp3(path):
     if head[:3] == b"ID3":
         return True
     return head[0] == 0xFF and (head[1] & 0xE0) == 0xE0
+
+
+def _normalize_download_label(value):
+    """规范化作品名/浏览器文件名，供下载兜底匹配使用。"""
+    name = os.path.basename(str(value or "")).strip()
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", name).casefold()
 
 
 class XunFeiSession:
@@ -2960,20 +2971,15 @@ class XunFeiSession:
 
         下载事件逐个到达时立即通知上层，不能等全部下载事件收集完成后
         才汇报，否则统一下载期间前端进度条会长时间停在 0%。
+
+        这里只收集事件，不按事件到达顺序绑定作品。浏览器可能并发返回
+        下载文件，真正的作品归属由调用方按唯一 worksName/worksId 匹配。
         """
         downloads = []
 
         def on_download(download):
             downloads.append(download)
             _log(f"[xunfei]   📥 下载页浏览器下载事件: {download.suggested_filename}")
-            index = len(downloads) - 1
-            if index < len(selected_targets):
-                target_item = selected_targets[index].get("item") or {}
-                _notify_batch_progress(progress_callback, {
-                    "job_id": str(target_item.get("job_id") or ""),
-                    "downloaded": True,
-                    "stage": "downloaded",
-                })
 
         page.on("download", on_download)
         try:
@@ -3003,6 +3009,77 @@ class XunFeiSession:
             try:
                 page.remove_listener("download", on_download)
             except Exception:
+                pass
+
+    @staticmethod
+    def _match_download_index(downloads, target):
+        """按唯一作品名/worksId匹配浏览器下载事件，避免乱序错配。"""
+        target_values = [
+            target.get("works_name"),
+            target.get("works_id"),
+            (target.get("item") or {}).get("works_name"),
+        ]
+        normalized_targets = [
+            _normalize_download_label(value)
+            for value in target_values
+            if _normalize_download_label(value)
+        ]
+        if not normalized_targets:
+            return None
+        for index, download in enumerate(downloads):
+            try:
+                filename = download.suggested_filename
+            except Exception:
+                filename = ""
+            normalized_filename = _normalize_download_label(filename)
+            if not normalized_filename:
+                continue
+            if any(
+                normalized_filename == value or value in normalized_filename
+                for value in normalized_targets
+            ):
+                return index
+        return None
+
+    @staticmethod
+    def _download_signed_url(download_url, output_path):
+        """通过精确 worksId 对应的签名地址下载 MP3。"""
+        if (
+            not output_path
+            or not str(download_url or "").startswith(("http://", "https://"))
+        ):
+            return False
+        temporary_path = f"{output_path}.part"
+        try:
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            request = urllib.request.Request(
+                str(download_url),
+                headers={
+                    "User-Agent": "Mozilla/5.0 WordTTS/1.0",
+                    "Referer": HOME_URL,
+                },
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                with open(temporary_path, "wb") as target:
+                    while True:
+                        chunk = response.read(1024 * 256)
+                        if not chunk:
+                            break
+                        target.write(chunk)
+            if not _looks_like_mp3(temporary_path):
+                raise XunfeiError("签名地址返回的文件不是有效 MP3")
+            os.replace(temporary_path, output_path)
+            return True
+        except (OSError, ValueError, urllib.error.URLError, XunfeiError) as error:
+            _log(f"[xunfei]   worksId 签名下载失败: {error}")
+            return False
+        finally:
+            try:
+                if os.path.exists(temporary_path):
+                    os.remove(temporary_path)
+            except OSError:
                 pass
 
     def _download_pending_batch(self, pending_items, progress_callback=None):
@@ -3077,15 +3154,54 @@ class XunFeiSession:
                 continue
             targets.append(target)
 
-        # 页面下载事件按下载页行顺序到达；先按 API 返回的行顺序排序，
-        # 同名作品也能稳定映射回各自的 worksId。
-        targets.sort(key=lambda target: (
+        # 先用精确 worksId 对应的签名地址下载。作品列表和签名接口已经按
+        # worksId 逐条校验过，这条路径不会受浏览器下载事件乱序影响。
+        browser_targets = []
+        for target in targets:
+            works_id = str(target.get("works_id") or "")
+            item = target.get("item") or {}
+            ready_item = ready.get(works_id) or {}
+            if self._download_signed_url(
+                ready_item.get("download_url"),
+                item.get("output_path"),
+            ):
+                output_path = item.get("output_path")
+                size = os.path.getsize(output_path)
+                result = {
+                    **item,
+                    "downloaded": True,
+                    "size": size,
+                }
+                results[works_id] = result
+                _log(
+                    f"[xunfei] ✅ worksId 签名下载完成 worksId={works_id} "
+                    f"({size:,} bytes)"
+                )
+                _notify_batch_progress(progress_callback, {
+                    "job_id": str(item.get("job_id") or ""),
+                    "downloaded": True,
+                    "stage": "downloaded",
+                })
+                _notify_batch_progress(progress_callback, {
+                    "job_id": str(item.get("job_id") or ""),
+                    "downloaded": True,
+                    "stage": "saved",
+                })
+            else:
+                browser_targets.append(target)
+
+        # 浏览器兜底时按 API 返回的行顺序勾选，后续下载事件仍必须按唯一
+        # worksName/worksId 匹配，不能把到达顺序当成作品顺序。
+        browser_targets.sort(key=lambda target: (
             target.get("row_index") is None,
             target.get("row_index") if target.get("row_index") is not None else 10**9,
         ))
-        selected, missing = self._select_download_rows(page, targets)
+        if not browser_targets:
+            return results
+
+        selected, missing = self._select_download_rows(page, browser_targets)
         selected_targets = [
-            target for target in targets
+            target for target in browser_targets
             if str(target.get("works_id") or "") in selected
         ]
         for target in missing:
@@ -3110,10 +3226,23 @@ class XunFeiSession:
                 selected_targets,
                 progress_callback=progress_callback,
             )
-            for index, target in enumerate(selected_targets):
+            remaining_downloads = list(downloads)
+            for target in selected_targets:
                 item = target["item"]
                 works_id = str(target.get("works_id") or "")
-                download = downloads[index] if index < len(downloads) else None
+                download_index = self._match_download_index(
+                    remaining_downloads,
+                    target,
+                )
+                # 只有单条兜底下载时没有歧义可以直接使用；多条下载如果
+                # 文件名不能证明归属，宁可失败也不把音频写错题目。
+                if download_index is None and len(remaining_downloads) == 1:
+                    download_index = 0
+                download = (
+                    remaining_downloads.pop(download_index)
+                    if download_index is not None
+                    else None
+                )
                 output_path = item.get("output_path")
                 downloaded = False
                 if download and output_path:
@@ -3122,6 +3251,11 @@ class XunFeiSession:
                         downloaded = os.path.exists(output_path) and _looks_like_mp3(output_path)
                     except Exception as error:
                         _log(f"[xunfei]   保存下载文件失败 worksId={works_id}: {error}")
+                if not download and remaining_downloads:
+                    _log(
+                        f"[xunfei]   ❌ 下载事件无法按 worksName/worksId 匹配 "
+                        f"worksId={works_id}，拒绝按顺序写入"
+                    )
                 if downloaded:
                     size = os.path.getsize(output_path)
                     result = {
@@ -3145,9 +3279,15 @@ class XunFeiSession:
                 _notify_batch_progress(progress_callback, {
                     "job_id": str(item.get("job_id") or ""),
                     "downloaded": bool(result.get("downloaded")),
-                    "stage": "saved",
+                    "stage": "downloaded" if result.get("downloaded") else "saved",
                     "error": result.get("error"),
                 })
+                if result.get("downloaded"):
+                    _notify_batch_progress(progress_callback, {
+                        "job_id": str(item.get("job_id") or ""),
+                        "downloaded": True,
+                        "stage": "saved",
+                    })
 
         return results
 
@@ -3221,6 +3361,13 @@ class XunFeiSession:
                     )
                     pending_item["job_id"] = job_id
                     pending.append(pending_item)
+                    # 统一下载模式下，提交每个音频段也是可见进度的一部分。
+                    # 如果只等到下载页全部返回，长文档在生成阶段会一直显示 0%。
+                    report_progress({
+                        "job_id": job_id,
+                        "downloaded": False,
+                        "stage": "submitted",
+                    })
                 except (XunfeiQuotaExceeded, XunfeiLoginRequired):
                     raise
                 except Exception as error:

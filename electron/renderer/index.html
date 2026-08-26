@@ -380,53 +380,93 @@
 
                             <div class="generation-layout is-log-collapsed">
                                 <div class="surface-card generation-card">
-                                    <div class="generation-visual-column">
-                                        <div class="generate-animation" id="gen-animation" aria-hidden="true">
-                                            <div class="generation-core">
-                                                <div class="eq-bars">
-                                                    <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
-                                                    <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
-                                                </div>
-                                                <div class="gen-done-icon">
-                                                    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                                                </div>
+                                    <header class="generation-console-header">
+                                        <div class="generation-console-heading">
+                                            <span class="generation-console-icon" aria-hidden="true">
+                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 7v10"/><path d="M20 10v4"/></svg>
+                                            </span>
+                                            <div>
+                                                <h2>批量生成音频</h2>
+                                                <p>讯飞会按音色与参数分组提交，随后统一下载并整理文件。</p>
                                             </div>
                                         </div>
-                                        <div class="generation-live-copy">
-                                            <span class="generation-live-label"><i></i><span id="generation-live-label-text">实时合成</span></span>
-                                            <strong id="generation-live-status">正在启动音频引擎</strong>
+                                        <span class="generation-strategy"><i></i>批量处理</span>
+                                    </header>
+
+                                    <div class="log-stage-rail generation-stage-rail" id="log-stage-rail" role="list" aria-label="任务阶段">
+                                        <span role="listitem" data-log-stage="prepare" aria-label="准备任务：未开始"><i aria-hidden="true"></i><b>准备</b><small>校验设置</small></span>
+                                        <span role="listitem" data-log-stage="parse" aria-label="识别文档：未开始"><i aria-hidden="true"></i><b>识别</b><small>读取内容</small></span>
+                                        <span role="listitem" data-log-stage="synthesize" aria-label="生成音频：未开始"><i aria-hidden="true"></i><b>生成</b><small>按组提交</small></span>
+                                        <span role="listitem" data-log-stage="package" aria-label="整理交付：未开始"><i aria-hidden="true"></i><b>整理</b><small>输出文件</small></span>
+                                        <span role="listitem" data-log-stage="archive" aria-label="保存记录：未开始"><i aria-hidden="true"></i><b>归档</b><small>保存任务</small></span>
+                                        <span role="listitem" data-log-stage="complete" aria-label="任务完成：未开始"><i aria-hidden="true"></i><b>完成</b><small>可试听下载</small></span>
+                                    </div>
+
+                                    <div class="generation-console-main">
+                                        <section class="generation-progress-panel" aria-labelledby="progress-panel-title">
+                                            <div class="progress-panel-heading">
+                                                <div>
+                                                    <span class="progress-panel-label" id="progress-panel-title">当前任务进度</span>
+                                                    <p>实时同步提交、下载和文件整理状态</p>
+                                                </div>
+                                                <div class="progress-percent" aria-hidden="true"><strong id="progress-percent">0</strong><span>%</span></div>
+                                            </div>
+                                            <div class="progress-copy">
+                                                <strong id="progress-stats" aria-live="polite">准备中...</strong>
+                                                <span>完整文档</span>
+                                            </div>
+                                            <div class="progress-bar-track" role="progressbar" aria-label="生成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                                                <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
+                                            </div>
+                                            <div class="generation-metrics" aria-label="任务处理统计">
+                                                <div><span id="progress-completed-label">已完成</span><strong id="progress-completed">0</strong></div>
+                                                <div><span>待处理</span><strong id="progress-remaining">—</strong></div>
+                                                <div><span>失败</span><strong id="progress-failed">0</strong></div>
+                                            </div>
+                                        </section>
+
+                                        <aside class="generation-active-card" aria-label="当前处理状态">
+                                            <div class="generation-active-heading"><span>当前处理</span><span class="generation-active-dot"><i></i>实时</span></div>
+                                            <div class="generation-active-body">
+                                                <div class="generate-animation" id="gen-animation" aria-hidden="true">
+                                                    <div class="generation-core">
+                                                        <div class="eq-bars">
+                                                            <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
+                                                            <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
+                                                        </div>
+                                                        <div class="gen-done-icon">
+                                                            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="generation-live-copy">
+                                                    <span class="generation-live-label"><i></i><span id="generation-live-label-text">当前阶段</span></span>
+                                                    <strong id="generation-live-status">正在启动音频引擎</strong>
+                                                </div>
+                                            </div>
+                                            <p class="generation-active-note">请保持应用开启，讯飞浏览器会在后台完成当前批次。</p>
+                                        </aside>
+                                    </div>
+
+                                    <div class="generation-console-footer">
+                                        <div class="generation-type-summary">
+                                            <span>内容分类</span>
+                                            <div class="type-stats" id="type-stats"></div>
+                                        </div>
+                                        <div class="processing-tip">
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+                                            完成后可进入下一步试听并统一保存
                                         </div>
                                     </div>
-                                    <div class="generation-progress-panel">
-                                        <div class="progress-copy">
-                                            <div>
-                                                <span>总体任务进度</span>
-                                                <strong id="progress-stats" aria-live="polite">准备中...</strong>
-                                            </div>
-                                            <div class="progress-percent" aria-hidden="true"><strong id="progress-percent">0</strong><span>%</span></div>
-                                        </div>
-                                        <div class="progress-bar-track" role="progressbar" aria-label="生成进度" aria-valuemin="0" aria-valuemax="100">
-                                            <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
-                                        </div>
-                                        <div class="generation-metrics" aria-label="任务处理统计">
-                                            <div><span id="progress-completed-label">已完成</span><strong id="progress-completed">0</strong></div>
-                                            <div><span>待处理</span><strong id="progress-remaining">—</strong></div>
-                                            <div><span>失败</span><strong id="progress-failed">0</strong></div>
-                                        </div>
-                                        <div class="type-stats" id="type-stats"></div>
-                                        <div class="processing-tip">
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                                            生成完成后可统一保存到本地
-                                        </div>
-                                        <div class="generation-recovery" id="generation-recovery" role="alert" hidden>
-                                            <p id="generation-error-message">生成任务未能继续，请重试或返回调整设置。</p>
-                                            <div>
-                                                <button type="button" class="btn-primary btn-sm" id="retry-generation-btn">
-                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                                                    重试生成
-                                                </button>
-                                                <button type="button" class="btn-ghost btn-sm" id="return-config-btn">返回配置</button>
-                                            </div>
+
+                                    <div class="generation-recovery" id="generation-recovery" role="alert" hidden>
+                                        <p id="generation-error-message">生成任务未能继续，请重试或返回调整设置。</p>
+                                        <div>
+                                            <button type="button" class="btn-primary btn-sm" id="retry-generation-btn">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 1-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                                                重试生成
+                                            </button>
+                                            <button type="button" class="btn-ghost btn-sm" id="return-config-btn">返回配置</button>
                                         </div>
                                     </div>
                                 </div>
@@ -437,7 +477,7 @@
                                             <span class="log-live-dot" aria-hidden="true"></span>
                                             <div>
                                                 <h2 class="log-title" id="log-title">任务时间线</h2>
-                                                <p id="log-summary">准备记录生成阶段与每条音频结果</p>
+                                                <p id="log-summary">展开查看阶段记录和异常项</p>
                                             </div>
                                         </div>
                                         <div class="log-header-meta">
@@ -454,14 +494,6 @@
                                             <button type="button" data-log-filter="success" aria-pressed="false">已完成</button>
                                             <button type="button" data-log-filter="issues" aria-pressed="false">异常 <span id="log-issue-count">0</span></button>
                                         </div>
-                                        <div class="log-stage-rail" id="log-stage-rail" role="list" aria-label="任务阶段">
-                                            <span role="listitem" data-log-stage="prepare" aria-label="准备：未开始"><i aria-hidden="true"></i>准备</span>
-                                            <span role="listitem" data-log-stage="parse" aria-label="解析：未开始"><i aria-hidden="true"></i>解析</span>
-                                            <span role="listitem" data-log-stage="synthesize" aria-label="合成：未开始"><i aria-hidden="true"></i>合成</span>
-                                            <span role="listitem" data-log-stage="package" aria-label="打包：未开始"><i aria-hidden="true"></i>打包</span>
-                                            <span role="listitem" data-log-stage="archive" aria-label="归档：未开始"><i aria-hidden="true"></i>归档</span>
-                                            <span role="listitem" data-log-stage="complete" aria-label="完成：未开始"><i aria-hidden="true"></i>完成</span>
-                                        </div>
                                     </div>
 
                                     <div class="log-body" id="progress-log" role="log" aria-live="off" aria-label="音频生成任务时间线">
@@ -477,6 +509,10 @@
 
                 <!-- Step 4: 结果 -->
                 <section class="step-page" id="page-4" aria-labelledby="result-title">
+                    <button type="button" class="result-scroll-top" id="result-scroll-top" hidden aria-label="回到结果页顶部" title="回到顶部">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>
+                        <span>顶部</span>
+                    </button>
                     <div class="page-scroll">
                         <div class="result-container">
                             <div class="result-hero" id="result-hero">

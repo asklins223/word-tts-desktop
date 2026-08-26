@@ -26,6 +26,8 @@ import argparse
 import secrets
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from datetime import datetime
 
@@ -95,7 +97,12 @@ class SessionState:
         self.session_dir = session_output_dir(session_id)
         self.event_seq: int = 0
         self.event_journal = deque(maxlen=MAX_EVENT_JOURNAL_ENTRIES)
-        self.event_signal = asyncio.Event()
+        # Python 3.9 会在 asyncio.Event() 构造时绑定当前事件循环；会话
+        # 可能先由同步上传/测试代码创建，再由 FastAPI 的事件循环消费，
+        # 因此不能在这里提前绑定。第一次进入异步上下文时再懒创建。
+        self.event_signal: Optional[asyncio.Event] = None
+        self._event_signal_loop = None
+        self._event_signal_lock = threading.Lock()
         self.log_entries: list = []
         self.log_seq: int = 0
         self.progress: Optional[dict] = None
@@ -114,6 +121,15 @@ class SessionState:
         self.final_cancelled: Optional[dict] = None  # 取消终态（供断线重连 SSE 重放）
         self.last_stats: Optional[dict] = None  # 最新 stats 事件（供重连时重放）
         self.lifecycle_version: int = 0  # cleanup 时递增，使并发中的旧启动请求失效
+
+    def ensure_event_signal(self) -> asyncio.Event:
+        """返回绑定到当前运行循环的 SSE 广播事件。"""
+        loop = asyncio.get_running_loop()
+        with self._event_signal_lock:
+            if self.event_signal is None or self._event_signal_loop is not loop:
+                self.event_signal = asyncio.Event()
+                self._event_signal_loop = loop
+            return self.event_signal
 
 # 全局会话注册表
 _sessions: dict[str, SessionState] = {}
@@ -135,6 +151,21 @@ _voice_catalog_lock = threading.RLock()
 _voice_catalog_loaded = False
 _voice_catalog_live = False
 _voice_catalog_data: dict = {}
+_voice_asset_cache_lock = threading.RLock()
+
+VOICE_ASSET_CACHE_DIR = os.path.join(BASE_DIR, "cache", "voice-assets")
+VOICE_ASSET_MAX_BYTES = {
+    "avatar": 8 * 1024 * 1024,
+    "sample": 24 * 1024 * 1024,
+}
+VOICE_ASSET_FIELDS = {
+    "avatar": "img_url",
+    "sample": "audio_url",
+}
+VOICE_ASSET_FALLBACK_MIME = {
+    "avatar": "image/jpeg",
+    "sample": "audio/mpeg",
+}
 
 # 讯飞客户端复用一个有头浏览器页面；页面内的选音色、调参数、输入文本和
 # 下载响应都不是可并发操作的。不同会话仍可并行解析/排队，但实际生成必须
@@ -235,6 +266,156 @@ def _atomic_write_json(path: str, data) -> None:
             pass
 
 
+def _clean_voice_keys(value) -> list[str]:
+    """规范化结果中携带的音色 key，避免历史清单膨胀或写入异常数据。"""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    result = []
+    for raw_key in value:
+        key = str(raw_key or "").strip()
+        if not key or len(key) > 200 or key in result:
+            continue
+        result.append(key)
+        if len(result) >= 32:
+            break
+    return result
+
+
+def _voice_asset_paths(voice_key: str, kind: str) -> tuple[str, str, str]:
+    """返回某音色某类资产的目录、数据文件和元数据文件。"""
+    key_hash = hashlib.sha256(str(voice_key).encode("utf-8")).hexdigest()
+    directory = os.path.join(VOICE_ASSET_CACHE_DIR, key_hash)
+    data_path = os.path.join(directory, f"{kind}.bin")
+    meta_path = os.path.join(directory, "meta.json")
+    return directory, data_path, meta_path
+
+
+def _catalog_voice_by_key(voice_key: str) -> Optional[dict]:
+    normalized = str(voice_key or "").strip()
+    if not normalized:
+        return None
+    for voice in (_voice_catalog_data.get("voices") or []):
+        if isinstance(voice, dict) and str(voice.get("key") or "").strip() == normalized:
+            return voice
+    return None
+
+
+def _download_voice_asset(url: str, target_path: str, kind: str) -> Optional[str]:
+    """下载一个音色资产到本机缓存；失败时不影响主生成流程。"""
+    if not str(url or "").startswith(("http://", "https://")):
+        return None
+    request = urllib.request.Request(
+        str(url),
+        headers={"User-Agent": "Mozilla/5.0 WordTTS/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=6) as response:
+            content_type = response.headers.get_content_type()
+            max_bytes = VOICE_ASSET_MAX_BYTES[kind]
+            payload = response.read(max_bytes + 1)
+            if not payload or len(payload) > max_bytes:
+                return None
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+    media_type = content_type if "/" in str(content_type or "") else VOICE_ASSET_FALLBACK_MIME[kind]
+    temporary_path = f"{target_path}.tmp"
+    try:
+        with open(temporary_path, "wb") as target:
+            target.write(payload)
+        os.replace(temporary_path, target_path)
+    except OSError:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+        return None
+    return media_type
+
+
+def _cache_voice_assets_sync(voice_keys) -> dict:
+    """按音色 key 缓存头像和示例音频，同一个 key 只创建一个缓存目录。"""
+    keys = _clean_voice_keys(voice_keys)
+    if not keys:
+        return {}
+    os.makedirs(VOICE_ASSET_CACHE_DIR, exist_ok=True)
+    cached = {}
+    with _voice_asset_cache_lock:
+        for voice_key in keys:
+            voice = _catalog_voice_by_key(voice_key)
+            if not voice:
+                continue
+            directory, _unused_data_path, meta_path = _voice_asset_paths(voice_key, "avatar")
+            os.makedirs(directory, exist_ok=True)
+            try:
+                with open(meta_path, "r", encoding="utf-8") as source:
+                    meta = json.load(source)
+            except (OSError, ValueError, TypeError):
+                meta = {}
+            asset_meta = meta if isinstance(meta, dict) else {}
+            asset_meta.setdefault("voice_key", voice_key)
+            if not isinstance(asset_meta.get("assets"), dict):
+                asset_meta["assets"] = {}
+
+            for kind, field in VOICE_ASSET_FIELDS.items():
+                _directory, data_path, _meta_path = _voice_asset_paths(voice_key, kind)
+                try:
+                    has_cached_asset = os.path.isfile(data_path) and os.path.getsize(data_path) > 0
+                except OSError:
+                    has_cached_asset = False
+                if has_cached_asset:
+                    cached.setdefault(voice_key, {})[kind] = True
+                    continue
+                url = str(voice.get(field) or "").strip()
+                if not url:
+                    continue
+                try:
+                    media_type = _download_voice_asset(url, data_path, kind)
+                except Exception:
+                    # 头像/试听是结果页增强项，远端响应异常不能让缓存接口
+                    # 影响文档解析或音频生成主流程。
+                    media_type = None
+                if not media_type:
+                    continue
+                asset_meta["assets"][kind] = {
+                    "media_type": media_type,
+                    "source_url": url[:2000],
+                }
+                cached.setdefault(voice_key, {})[kind] = True
+
+            try:
+                _atomic_write_json(meta_path, asset_meta)
+            except (OSError, ValueError, TypeError):
+                # 资产本身已经可用，元数据写入失败不阻塞生成或试听。
+                pass
+    return cached
+
+
+def _cached_voice_asset(voice_key: str, kind: str) -> tuple[Optional[str], str]:
+    if kind not in VOICE_ASSET_FIELDS or not str(voice_key or "").strip():
+        return None, ""
+    _directory, data_path, meta_path = _voice_asset_paths(voice_key, kind)
+    try:
+        has_cached_asset = os.path.isfile(data_path) and os.path.getsize(data_path) > 0
+    except OSError:
+        has_cached_asset = False
+    if not has_cached_asset:
+        return None, ""
+    media_type = VOICE_ASSET_FALLBACK_MIME[kind]
+    try:
+        with open(meta_path, "r", encoding="utf-8") as source:
+            meta = json.load(source)
+        media_type = str(
+            ((meta.get("assets") or {}).get(kind) or {}).get("media_type")
+            or media_type
+        )
+    except (OSError, ValueError, TypeError):
+        pass
+    return data_path, media_type
+
+
 def history_id_for_session(session_id: str) -> str:
     """生成不暴露原始会话名、且可幂等复用的历史记录 ID。"""
     return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:24]
@@ -274,6 +455,7 @@ def _clean_history_file(item: dict, session_dir: str) -> Optional[dict]:
         "category": str(item.get("category") or "")[:160],
         "text": str(item.get("text") or "")[:20000],
         "text_preview": str(item.get("text_preview") or "")[:500],
+        "voice_keys": _clean_voice_keys(item.get("voice_keys")),
         "available": os.path.isfile(file_path),
     }
 
@@ -442,6 +624,7 @@ def archive_history_record(
                 "category": str(item.get("category") or "")[:160],
                 "text": str(item.get("text") or "")[:20000],
                 "text_preview": str(item.get("text_preview") or "")[:500],
+                "voice_keys": _clean_voice_keys(item.get("voice_keys")),
             }
             for item in file_list
             if item.get("filename") and os.path.basename(str(item.get("filename"))) == str(item.get("filename"))
@@ -687,7 +870,12 @@ def push_event(session: SessionState, event: dict):
     session.event_journal.append(event)
     # asyncio.Event 是广播唤醒：所有 SSE 连接都会按各自游标读取同一事件，
     # 不会像单消费者 Queue 那样在重连窗口互相“偷走”进度。
-    session.event_signal.set()
+    # 生成事件通常在 FastAPI 事件循环内推送；同步测试/初始化阶段则没有
+    # 可绑定的 loop，此时只记录 journal，SSE 建立时会从 journal 补发。
+    try:
+        session.ensure_event_signal().set()
+    except RuntimeError:
+        pass
 
 
 # ============================================================================
@@ -892,6 +1080,7 @@ async def _generate_audio_stream(
         force=False,
         completed_override=None,
         failed_override=None,
+        processed_override=None,
         phase=None,
     ):
         nonlocal last_stats_emit_at
@@ -917,7 +1106,23 @@ async def _generate_audio_stream(
         completed = max(0, int(completed_value or 0))
         failed = max(0, int(failed_value or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
-        processed = min(completed + failed, total)
+        processed = (
+            completed + failed
+            if processed_override is None
+            else max(0.0, float(processed_override))
+        )
+        processed = min(processed, float(total))
+        processed_value = (
+            int(processed)
+            if float(processed).is_integer()
+            else round(processed, 2)
+        )
+        pending_value = max(0.0, float(total) - processed)
+        pending_value = (
+            int(pending_value)
+            if pending_value.is_integer()
+            else round(pending_value, 2)
+        )
         elapsed_ms = max(0, round((time.perf_counter() - task_started_at) * 1000))
         eta_ms = None
         run_processed = max(0, processed - eta_baseline_processed)
@@ -929,8 +1134,8 @@ async def _generate_audio_stream(
             "completed": completed,
             "total": total,
             "failed": failed,
-            "processed": processed,
-            "pending": max(total - processed, 0),
+            "processed": processed_value,
+            "pending": pending_value,
             "elapsed_ms": elapsed_ms,
             "eta_ms": eta_ms,
             "failed_items": failed_items,
@@ -951,6 +1156,7 @@ async def _generate_audio_stream(
         force=False,
         completed_override=None,
         failed_override=None,
+        processed_override=None,
     ):
         nonlocal last_generation_status_at
         completed_value = (
@@ -966,8 +1172,18 @@ async def _generate_audio_stream(
         completed = max(0, int(completed_value or 0))
         failed = max(0, int(failed_value or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
-        processed = min(completed + failed, total)
-        text = f"生成中 — 已处理 {processed}/{total} · 成功 {completed}"
+        processed = (
+            completed + failed
+            if processed_override is None
+            else max(0.0, float(processed_override))
+        )
+        processed = min(processed, float(total))
+        processed_value = (
+            str(int(processed))
+            if float(processed).is_integer()
+            else f"{processed:.1f}"
+        )
+        text = f"生成中 — 已处理 {processed_value}/{total} · 成功 {completed}"
         if failed:
             text += f" · 失败 {failed}"
         if current_item:
@@ -992,6 +1208,7 @@ async def _generate_audio_stream(
                     "category": f["category"],
                     "text": f.get("text", ""),
                     "text_preview": f.get("text_preview", ""),
+                    "voice_keys": _clean_voice_keys(f.get("voice_keys")),
                 }
                 for f in file_list
             ],
@@ -1470,12 +1687,19 @@ async def _generate_audio_stream(
             if len(speakers) > 1 or speakers[0][1] != fv:
                 voices_used = {voice for _role, voice, _text in speakers}
                 voice_label = "、".join(sorted(voices_used))[:120] or "女声"
+            voice_keys = []
+            for _role, voice, _text in speakers:
+                normalized_voice = str(voice or "").strip()
+                if normalized_voice and normalized_voice not in voice_keys:
+                    voice_keys.append(normalized_voice)
+            item["voice_keys"] = voice_keys
             item_context = {
                 "id": item_id,
                 "filename": item.get("filename"),
                 "doc_type": item.get("doc_type"),
                 "category": item.get("category"),
                 "voice": voice_label,
+                "voice_keys": voice_keys,
                 "text_preview": item.get("text_preview"),
             }
             item_contexts[item_id] = item_context
@@ -1521,6 +1745,7 @@ async def _generate_audio_stream(
                     "filename": item.get("filename"),
                     "doc_type": item.get("doc_type"),
                     "category": item.get("category"),
+                    "voice_keys": _clean_voice_keys(item.get("voice_keys")),
                     "text_preview": item.get("text_preview"),
                 },
                 progress_snapshot=progress,
@@ -1536,51 +1761,99 @@ async def _generate_audio_stream(
         batch_display_completed = progress["completed"]
         batch_display_failed = progress["failed"]
         batch_display_states = {}
+        batch_display_completed_items = set()
+        # 统一批量阶段还没有把 AudioSegment 导出到最终文件，不能直接修改
+        # progress.completed；用一个单调的显示进度把“提交/下载/整理”阶段
+        # 连起来，避免长时间停在 0% 或从较高进度倒退。
+        batch_processed_floor = float(progress["completed"] + progress["failed"])
+        batch_item_progress = {}
 
         async def on_batch_item_progress(event):
-            """把统一下载期间的题目级结果即时反映到 SSE 进度。"""
-            nonlocal batch_display_completed, batch_display_failed
+            """把批量提交、下载和保存结果即时反映到 SSE 进度。"""
+            nonlocal batch_display_completed, batch_display_failed, batch_processed_floor
             item_id = str(event.get("item_id") or "")
             status = str(event.get("status") or "")
-            if not item_id or status not in {"downloaded", "ready", "error"}:
+            if not item_id or status not in {"submitted", "downloaded", "ready", "error"}:
                 return
 
             previous = batch_display_states.get(item_id, "pending")
+            total_segments = max(1, int(event.get("total_segments") or 1))
+            completed_segments = min(
+                total_segments,
+                max(0, int(event.get("completed_segments") or 0)),
+            )
+            segment_ratio = completed_segments / total_segments
+
+            # 每道题在批量阶段占用一个“进度单位”：提交到 45%，下载到
+            # 85%，保存完成到 95%，最后的导出再由真实 completed 推到 100%。
+            if status == "submitted":
+                item_progress = 0.05 + segment_ratio * 0.40
+            elif status == "downloaded":
+                item_progress = 0.50 + segment_ratio * 0.35
+            elif status == "ready":
+                item_progress = 0.95
+            else:
+                item_progress = 1.0
+            batch_item_progress[item_id] = max(
+                float(batch_item_progress.get(item_id, 0.0)),
+                item_progress,
+            )
+            batch_processed_floor = max(
+                batch_processed_floor,
+                float(progress["completed"] + progress["failed"])
+                + sum(batch_item_progress.values()),
+            )
+
             if status == "downloaded":
                 # 下载事件先于最终 save_as 结果到达，先让用户看到真实的
-                # 下载进度；如果保存失败，下面的 error 状态会回滚这一项。
-                if previous == "pending":
+                # 下载进度；如果保存失败，error 状态会把失败项计入已处理。
+                if (
+                    completed_segments >= total_segments
+                    and item_id not in batch_display_completed_items
+                ):
+                    batch_display_completed_items.add(item_id)
                     batch_display_completed += 1
-                    batch_display_states[item_id] = "downloaded"
+                batch_display_states[item_id] = "downloaded"
+            elif status == "submitted":
+                batch_display_states[item_id] = "submitted"
             elif status == "ready":
-                if previous == "pending":
+                if item_id not in batch_display_completed_items:
+                    batch_display_completed_items.add(item_id)
                     batch_display_completed += 1
                 batch_display_states[item_id] = "ready"
             elif status == "error":
-                if previous in {"downloaded", "ready"}:
+                if item_id in batch_display_completed_items:
+                    batch_display_completed_items.discard(item_id)
                     batch_display_completed = max(0, batch_display_completed - 1)
                 if previous != "error":
                     batch_display_failed += 1
                 batch_display_states[item_id] = "error"
 
+            phase = "batch-submit" if status == "submitted" else "batch-download"
             emit_stats(
                 progress,
                 force=True,
                 completed_override=batch_display_completed,
                 failed_override=batch_display_failed,
-                phase="batch-download",
+                processed_override=batch_processed_floor,
+                phase=phase,
             )
-            item_label = f"{item_id} 已下载，等待整理"
+            item_label = f"{item_id} 已提交，等待下载"
+            if status == "submitted":
+                item_label = f"{item_id} 已提交音频段 {completed_segments}/{total_segments}"
             if status == "ready":
                 item_label = f"{item_id} 下载完成，等待整理"
             elif status == "error":
                 item_label = f"{item_id} 下载失败"
+            elif status == "downloaded":
+                item_label = f"{item_id} 已下载音频段 {completed_segments}/{total_segments}"
             emit_generation_status(
                 progress,
                 current_item=item_label,
                 force=True,
                 completed_override=batch_display_completed,
                 failed_override=batch_display_failed,
+                processed_override=batch_processed_floor,
             )
 
         if item_specs:
@@ -1653,8 +1926,21 @@ async def _generate_audio_stream(
                 )
             update_stats_cache(progress, item)
             await persist_progress(progress)
-            emit_stats(progress)
-            emit_generation_status(progress)
+            if batch_processed_floor > progress["completed"] + progress["failed"]:
+                emit_stats(
+                    progress,
+                    processed_override=batch_processed_floor,
+                    phase="batch-export",
+                )
+                emit_generation_status(
+                    progress,
+                    current_item=f"{item_id} 正在整理音频",
+                    force=True,
+                    processed_override=batch_processed_floor,
+                )
+            else:
+                emit_stats(progress)
+                emit_generation_status(progress)
 
         if session.cancelled:
             await persist_progress(progress, force=True)
@@ -1943,6 +2229,35 @@ async def get_config():
     }
 
 
+@app.post("/api/voice-assets/cache")
+async def cache_voice_assets(payload: dict):
+    """后台缓存用户刚选中的音色头像和示例音频。"""
+    raw_keys = payload.get("voice_keys") if isinstance(payload, dict) else []
+    voice_keys = _clean_voice_keys(raw_keys)[:64]
+    if not voice_keys:
+        return {"status": "ok", "cached": {}}
+    await asyncio.to_thread(_load_voice_catalog_sync, False)
+    cached = await asyncio.to_thread(_cache_voice_assets_sync, voice_keys)
+    return {"status": "ok", "cached": cached}
+
+
+@app.get("/api/voice-assets/{voice_key}/{kind}")
+async def get_voice_asset(voice_key: str, kind: str):
+    """提供已经缓存到本机的音色资产，避免结果页重复请求讯飞资源。"""
+    file_path, media_type = await asyncio.to_thread(
+        _cached_voice_asset,
+        voice_key,
+        kind,
+    )
+    if not file_path:
+        raise HTTPException(status_code=404, detail="音色示例尚未缓存")
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 @app.get("/api/diagnose")
 async def diagnose():
     """返回诊断信息（用于调试）。"""
@@ -2229,7 +2544,7 @@ async def generate_endpoint(req: GenerateRequest):
 
     # 清空上一次生成的事件日志，避免旧终态污染新流。
     session.event_journal.clear()
-    session.event_signal.clear()
+    session.ensure_event_signal().clear()
 
     # 只接受当前讯飞配置；旧版 proxy、旧音色和倍率字段在这里被丢弃。
     normalized_config = core.normalize_tts_config(req.config)
@@ -2250,6 +2565,7 @@ async def progress_sse(session_id: str):
         raise HTTPException(status_code=404, detail="会话不存在")
 
     async def event_stream():
+        event_signal = session.ensure_event_signal()
         # 建立连接时一次性冻结快照及水位线。随后队列里早于该水位线的
         # status/stats/log 已被快照覆盖，必须跳过，避免重连后进度倒退。
         snapshot_event_seq = session.event_seq
@@ -2410,14 +2726,14 @@ async def progress_sse(session_id: str):
                 continue
 
             # 清除后再复查，避免事件恰好落在“检查为空”和 wait 之间而丢唤醒。
-            session.event_signal.clear()
+            event_signal.clear()
             if any(
                 int(event.get("event_seq") or 0) > cursor_event_seq
                 for event in session.event_journal
             ):
                 continue
             try:
-                await asyncio.wait_for(session.event_signal.wait(), timeout=5.0)
+                await asyncio.wait_for(event_signal.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 if not session.done and not session.ended:
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"

@@ -6,7 +6,8 @@ Word 文档解析 + 讯飞配音音频生成 — 一体化应用
 2. 解析成功后自动开始生成音频（支持 w/m 说话人标识自动选音色）
 3. 全程进度记录，支持断点续传
 4. 生成完成后可下载 ZIP 包或选择单个文件下载
-5. 文件命名规则：信息获取题目使用问题x；其他题型使用题型-录音稿x
+5. 文件命名规则：信息获取题目使用问题x；听后选择使用听后选择-录音稿x；
+   含 Conversation x 的段落跟读使用 SA-段-Cx-y；其他题型使用题型-录音稿x
 
 引擎与音色规则（统一使用讯飞配音 peiyin.xunfei.cn）：
   - w/W 标识 → 女声 Amanda
@@ -181,7 +182,7 @@ AUDIO_ALGORITHM_VERSION = 4
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 8
+PARSER_VERSION = 9
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
 TTS_PARAM_MIN = 0
@@ -326,6 +327,7 @@ def normalize_tts_config(config=None):
 
 TYPE_COLORS = {
     "信息获取": "#0e7490",
+    "听后选择": "#2563eb",
     "课文跟读": "#15803d",
     "信息转述及询问": "#b45309",
     "模仿朗读": "#9f1239",
@@ -782,9 +784,9 @@ async def _synth_items_batch(item_specs, progress_callback=None):
     if callable(progress_callback):
         loop = asyncio.get_running_loop()
         progress_queue = asyncio.Queue()
+        submitted_jobs = {item_id: set() for item_id in item_job_ids}
         downloaded_jobs = {item_id: set() for item_id in item_job_ids}
         saved_jobs = {item_id: {} for item_id in item_job_ids}
-        download_progress_sent = set()
         final_progress_sent = set()
 
         async def consume_batch_progress():
@@ -797,13 +799,23 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                 if not item_id:
                     continue
                 stage = str(event.get("stage") or "saved")
-                if stage == "downloaded":
-                    downloaded_jobs[item_id].add(job_id)
-                    if (
-                        len(downloaded_jobs[item_id]) == len(item_job_ids[item_id])
-                        and item_id not in download_progress_sent
-                    ):
-                        download_progress_sent.add(item_id)
+                if stage == "submitted":
+                    if job_id not in submitted_jobs[item_id]:
+                        submitted_jobs[item_id].add(job_id)
+                        try:
+                            callback_result = progress_callback({
+                                "item_id": item_id,
+                                "status": "submitted",
+                                "completed_segments": len(submitted_jobs[item_id]),
+                                "total_segments": len(item_job_ids[item_id]),
+                            })
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
+                        except Exception as error:
+                            _log(f"[xunfei] 题目提交进度回调异常（已忽略）: {error}")
+                elif stage == "downloaded":
+                    if job_id not in downloaded_jobs[item_id]:
+                        downloaded_jobs[item_id].add(job_id)
                         try:
                             callback_result = progress_callback({
                                 "item_id": item_id,
@@ -1073,6 +1085,7 @@ def get_completed_file_list(progress):
                 "category": item["category"],
                 "text": raw_item.get("text", ""),
                 "text_preview": item.get("text_preview", raw_item.get("text", "")[:80]),
+                "voice_keys": list(item.get("voice_keys") or []),
             })
     return files
 

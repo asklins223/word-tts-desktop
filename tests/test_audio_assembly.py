@@ -153,10 +153,16 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [(event["item_id"], event["status"]) for event in events],
-            [("q1", "downloaded"), ("q1", "ready"), ("q2", "downloaded"), ("q2", "ready")],
+            [
+                ("q1", "downloaded"),
+                ("q1", "downloaded"),
+                ("q1", "ready"),
+                ("q2", "downloaded"),
+                ("q2", "ready"),
+            ],
         )
         self.assertEqual(
-            (events[0]["completed_segments"], events[0]["total_segments"]),
+            (events[1]["completed_segments"], events[1]["total_segments"]),
             (2, 2),
         )
         self.assertEqual(set(result), {"q1", "q2"})

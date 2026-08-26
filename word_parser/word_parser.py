@@ -6,10 +6,11 @@ Word 文档解析脚本
 
 支持文档类型：
   1. 信息获取        — 提取「听选信息」「回答问题」的题目与录音稿
-  2. 课文跟读        — 提取句子跟读（去序号、按序号排序）、段落跟读、语篇跟读
-  3. 信息转述及询问   — 提取「第一节 信息转述」的录音稿
-  4. 模仿朗读        — 提取每个单元的「外网」(2篇) 和「教材」(1篇)
-  5. 词汇            — 预留接口，未来接入
+  2. 听后选择        — 仅提取「录音原文」中的 W/M 对话
+  3. 课文跟读        — 提取句子跟读（去序号、按序号排序）、段落跟读、语篇跟读
+  4. 信息转述及询问   — 提取「第一节 信息转述」的录音稿
+  5. 模仿朗读        — 提取每个单元的「外网」(2篇) 和「教材」(1篇)
+  6. 词汇            — 预留接口，未来接入
 
 设计说明：
   - 每种文档类型对应一个 Parser 子类，通过文件名自动识别
@@ -301,6 +302,14 @@ class InfoAcquisitionParser(BaseParser):
     RE_ANSWER_RANGE = re.compile(r'第\s*(\d+)\s*[-—~～至到]\s*(\d+)')
     # 任何「第X节」标记（用于检测其他题型的章节边界）
     RE_ANY_SECTION = re.compile(r'第[一二三四五六七八九十]+节')
+    # 新旧题型混排时，兼容没有使用「第X节」而改用中文序号、Section
+    # 或独立题型标题的边界；按结构识别，不把某个 Section 名称写死。
+    RE_OTHER_MAJOR_HEADING = re.compile(
+        r'^(?:[一二三四五六七八九十百]+\s*[、.．)]|'
+        r'Section\s+[A-Z](?:\s*[：:]|$)|'
+        r'听后选择(?:题型?|[（(【\s:：]|$))',
+        re.I,
+    )
     # 录音稿：（可能后面紧跟内容，也可能单独一行）
     RE_SCRIPT = re.compile(r'录音稿\s*[：:]\s*(.*)')
     # 听第X段对话 → 上一段录音稿结束
@@ -359,6 +368,12 @@ class InfoAcquisitionParser(BaseParser):
                     in_section = False
                     current_category = ""
                     continue
+
+            if in_section and self.RE_OTHER_MAJOR_HEADING.match(text):
+                flush()
+                in_section = False
+                current_category = ""
+                continue
 
             # ---- 参考答案（独立一行）→ 结束所有收集 ----
             if in_section and self.RE_SECTION_END.match(text):
@@ -441,7 +456,113 @@ class InfoAcquisitionParser(BaseParser):
 
 
 # ============================================================================
-# 2. 课文跟读解析器
+# 2. 听后选择解析器
+# ============================================================================
+
+class ListeningSelectionParser(BaseParser):
+    """只提取「听后选择」题型中的录音原文对话。
+
+    这类试卷同时包含题干、选项和计算机提示，但配音任务只需要
+    ``【录音原文】`` 后面的对话。W/w 使用默认女声，M/m 使用默认男声；
+    标记本身保留在结构化文本中，后续合成阶段会负责切换音色并移除标记。
+    """
+
+    DOC_TYPE = "听后选择"
+
+    # 题型标题可能带中文序号、题量说明或括号；只接受行首标题形态，
+    # 避免正文里偶然提到“听后选择”时误启动解析状态机。
+    RE_SECTION_START = re.compile(
+        r'^(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?'
+        r'听后选择(?:题型?|[（(【\s:：]|$)',
+        re.I | re.M,
+    )
+    # 混合试卷中下一大节出现时，结束当前「听后选择」范围；同时兼容
+    # 旧题型的「第X节」和新版 Section 标题。
+    RE_MAJOR_SECTION = re.compile(
+        r'^(?:[一二三四五六七八九十百]+\s*[、.．)]|'
+        r'第[一二三四五六七八九十百]+节|'
+        r'Section\s+[A-Z](?:\s*[：:]|$))',
+        re.I,
+    )
+    # 支持【录音原文】、[录音原文]、（录音原文）以及普通冒号写法。
+    RE_SCRIPT = re.compile(
+        r'^[【\[（(]?\s*录音原文\s*[】\]）)]?\s*[：:]?\s*(.*)$'
+    )
+    RE_PROMPT = re.compile(
+        r'计算机语音提示|语音提示|录音播放|现在，你有|听下面|请听录音|开始录音|停止录音'
+    )
+    RE_NUMBERED_QUESTION = re.compile(r'^\d+\s*[.．、）)]\s*[^A-Za-z]?')
+    RE_OPTION = re.compile(r'^[A-CＡ-Ｃ]\s*[.．、）)]\s*')
+    RE_ANSWER = re.compile(r'^(?:参考答案|答案|解析)\s*[：:]?')
+
+    def parse(self):
+        items = []
+        in_section = False
+        collecting = False
+        current_lines = []
+        script_index = 0
+
+        def flush():
+            nonlocal collecting, current_lines, script_index
+            text = sanitize('\n'.join(current_lines))
+            if collecting and text:
+                script_index += 1
+                items.append({
+                    "category": "听后选择录音稿",
+                    "index": script_index,
+                    "text": text,
+                })
+            collecting = False
+            current_lines = []
+
+        for _, text, _ in self.paras:
+            value = str(text or '').strip()
+
+            # 先处理题型标题，允许同一文档中出现多组听后选择。
+            if self.RE_SECTION_START.search(value):
+                flush()
+                in_section = True
+                continue
+
+            if not in_section:
+                continue
+
+            # 下一大节属于其他题型时，停止采集，避免把后续录音原文混入。
+            if self.RE_MAJOR_SECTION.match(value):
+                flush()
+                in_section = False
+                continue
+
+            script_match = self.RE_SCRIPT.match(value)
+            if script_match:
+                flush()
+                collecting = True
+                remainder = script_match.group(1).strip()
+                if remainder:
+                    current_lines.append(remainder)
+                continue
+
+            if not collecting:
+                continue
+
+            # 下一道题的提示、题干、选项或答案都不是录音内容。
+            if (
+                self.RE_PROMPT.search(value)
+                or self.RE_NUMBERED_QUESTION.match(value)
+                or self.RE_OPTION.match(value)
+                or self.RE_ANSWER.match(value)
+            ):
+                flush()
+                continue
+
+            current_lines.append(value)
+
+        flush()
+        return self._result(items)
+
+
+# ============================================================================
+# 3. 课文跟读解析器
 # ============================================================================
 
 class TextReadingParser(BaseParser):
@@ -1006,11 +1127,19 @@ class TextReadingParser(BaseParser):
             sequence_key = f"{current_audio_prefix}:{category}"
             new_sequence_by_category[sequence_key] = new_sequence_by_category.get(sequence_key, 0) + 1
             sequence = new_sequence_by_category[sequence_key]
+            if category == self.SUB_PARAGRAPH and conversation_number is not None:
+                # 新题型要求显式 Conversation 的段落跟读保留对话编号：
+                # SA-段-Cx-y，x 为 Conversation 编号，y 为该段生成序号。
+                filename_stem = (
+                    f"{current_audio_prefix}-段-C{conversation_number}-{sequence}"
+                )
+            else:
+                filename_stem = f"{current_audio_prefix}{category[:2]}{sequence}"
             item = {
                 "category": category,
                 "section": current_section,
                 "number": sequence,
-                "filename_stem": f"{current_audio_prefix}{category[:2]}{sequence}",
+                "filename_stem": filename_stem,
                 "text": clean,
             }
             # 对话可能有多个角色，不能给整条结果写死男女声；未知角色
@@ -1754,6 +1883,7 @@ class ExcelVocabularyParser(BaseParser):
 
 PARSER_MAP = {
     "信息获取": InfoAcquisitionParser,
+    "听后选择": ListeningSelectionParser,
     "课文跟读": TextReadingParser,
     "信息转述及询问": InfoRetellingParser,
     "模仿朗读": ImitationReadingParser,
@@ -1771,6 +1901,8 @@ def detect_doc_type(filename):
         return "词汇"
     if '信息获取' in filename:
         return "信息获取"
+    if '听后选择' in filename:
+        return "听后选择"
     if '课文跟读' in filename:
         return "课文跟读"
     if '信息转述' in filename:
@@ -1791,6 +1923,11 @@ CONTENT_MARKERS = {
     "信息获取": [
         re.compile(r'第一节\s*听选信息'),
         re.compile(r'听选信息'),
+    ],
+    "听后选择": [
+        # 与「听选信息」区分，避免旧题型被重复解析；沿用解析器的
+        # 行首标题证据，避免普通正文触发新题型。
+        ListeningSelectionParser.RE_SECTION_START,
     ],
     "课文跟读": [
         re.compile(r'句子跟读'),
