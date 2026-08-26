@@ -26,6 +26,8 @@ let serverInstance = null;
 let desktopServicesReady = false;
 let rendererReady = false;
 let rendererFatalShown = false;
+let pythonStopPromise = null;
+let quitCleanupStarted = false;
 const pendingAppNotices = new Map();
 const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
@@ -257,33 +259,76 @@ function startPythonServer() {
  * 用于 will-quit 事件中阻塞应用退出，防止僵尸进程。
  */
 function stopPythonServerAsync() {
-    return new Promise((resolve) => {
-        if (!pythonProcess) {
-            resolve();
-            return;
-        }
-        const proc = pythonProcess;
+    // will-quit、冒烟测试失败分支和窗口关闭可能同时触发清理；复用同一
+    // Promise，避免 Windows 下重复 taskkill 后又被 will-quit 重新拦截。
+    if (pythonStopPromise) return pythonStopPromise;
+    if (!pythonProcess) return Promise.resolve();
+
+    const proc = pythonProcess;
+    pythonStopPromise = new Promise((resolve) => {
         let resolved = false;
+        let forceStarted = false;
+        let forceTimer = null;
+        let safetyTimer = null;
+
+        const clearTimers = () => {
+            if (forceTimer) clearTimeout(forceTimer);
+            if (safetyTimer) clearTimeout(safetyTimer);
+            forceTimer = null;
+            safetyTimer = null;
+        };
 
         const done = () => {
-            if (!resolved) {
-                resolved = true;
-                resolve();
+            if (resolved) return;
+            resolved = true;
+            clearTimers();
+            // Windows 的 taskkill 可能先于 Node 的 exit 事件返回。先释放
+            // 全局引用，防止 app.exit() 再次进入 will-quit 清理死循环。
+            if (pythonProcess === proc) pythonProcess = null;
+            resolve();
+        };
+
+        const forceTerminate = () => {
+            if (resolved || forceStarted) return;
+            forceStarted = true;
+
+            if (process.platform === 'win32' && proc.pid) {
+                // child.kill('SIGKILL') 在 Windows 对带有子进程的打包后端
+                // 不一定能清理完整进程树；taskkill /T /F 可以同时结束后端
+                // 及其可能残留的 Playwright/Chromium 子进程。
+                try {
+                    const killer = spawn(
+                        'taskkill',
+                        ['/PID', String(proc.pid), '/T', '/F'],
+                        { windowsHide: true, stdio: 'ignore' },
+                    );
+                    killer.once('error', done);
+                    killer.once('close', () => setTimeout(done, 250));
+                } catch (_) {
+                    done();
+                }
+                return;
             }
+
+            try { proc.kill('SIGKILL'); } catch (_) { /* already stopped */ }
+            setTimeout(done, 500);
         };
 
         proc.once('exit', done);
-        proc.kill('SIGTERM');
+        proc.once('error', done);
+        try {
+            if (!proc.kill('SIGTERM')) forceTerminate();
+        } catch (_) {
+            forceTerminate();
+        }
 
-        // 3 秒后强制 SIGKILL
-        setTimeout(() => {
-            if (pythonProcess) {
-                pythonProcess.kill('SIGKILL');
-            }
-            // 给 SIGKILL 一点时间生效
-            setTimeout(done, 500);
-        }, 3000);
+        // 正常退出给 3 秒；Windows 超时后按进程树强制结束。
+        forceTimer = setTimeout(forceTerminate, 3000);
+        // 即使系统没有及时派发 exit/close 事件，也不能让 Electron 永久
+        // 卡在 will-quit；强杀请求已发出后最多再等 3 秒释放退出流程。
+        safetyTimer = setTimeout(done, 6000);
     });
+    return pythonStopPromise;
 }
 
 function waitForServer(timeoutMs = 90000) {
@@ -636,13 +681,14 @@ app.on('window-all-closed', () => {
 // 在应用退出前确保 Python 进程被终止，防止僵尸进程
 app.on('will-quit', (event) => {
     isQuitting = true;
-    if (pythonProcess) {
-        event.preventDefault();
-        stopPythonServerAsync().then(() => {
-            // 进程已终止，真正退出
-            app.exit(0);
-        });
-    }
+    if (!pythonProcess || quitCleanupStarted) return;
+    quitCleanupStarted = true;
+    event.preventDefault();
+    stopPythonServerAsync().then(() => {
+        // 进程已终止，真正退出；quitCleanupStarted 防止重复 will-quit
+        // 事件再次创建清理循环。
+        app.exit(0);
+    });
 });
 
 app.on('activate', () => {

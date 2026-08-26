@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.7.10
+
+### 修复 Windows 打包冒烟测试超时
+
+- 修复 Windows 下打包 Electron 退出时后端进程树未及时触发 `exit` 事件，导致 `--smoke-test` 反复进入退出清理流程并最终超时的问题。
+- 后端关闭流程改为幂等 Promise；Windows 超时后使用 `taskkill /T /F` 清理后端及其 Playwright/Chromium 子进程，并增加最终退出兜底。
+- 防止重复 `will-quit` 事件再次启动清理循环，避免 GitHub Actions 等待 120 秒后失败。
+
 ## v2.7.9
 
 ### 优化讯飞浏览器自动化与延迟页面兼容
