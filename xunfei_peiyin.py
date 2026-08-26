@@ -79,6 +79,9 @@ _CHROME_CANDIDATES = [
 PARAM_MIN = 0
 PARAM_MAX = 100
 PARAM_DEFAULT = 50
+# makeMultipleSpeakerWork 的临时 ID 可能先于 order_gen 的正式 ID 到达；
+# 给同一轮 Playwright 网络回调一个很短的缓冲窗口，避免过早消费临时值。
+WORKS_ID_FINAL_GRACE_SECONDS = 0.8
 
 IS_MAC = sys.platform == "darwin"
 _SELECT_ALL = "Meta+A" if IS_MAC else "Control+A"
@@ -1573,6 +1576,11 @@ class XunFeiSession:
         # worksId 捕获（时间戳截止线防跨条错配）
         self._works_lock = threading.Lock()
         self._works_entries = []     # [(works_id, ts)]
+        # order_gen 返回的正式 worksId 与多人编辑页先返回的 tempWorksId
+        # 可能在同一条任务中同时出现。单独保留正式 ID，消费时优先使用，
+        # 防止响应到达顺序把临时 ID 当成最终作品 ID。
+        self._final_works_entries = []  # [(works_id, ts)]
+        self._temporary_works_entries = []  # [(works_id, ts)]
         self._works_cutoff = 0.0
         # sign_url 兜底通道捕获：必须和 worksId 绑定，禁止拿“最新 URL”串条目。
         self._sign_urls = []     # [(works_id, sign_url, ts)]
@@ -1651,6 +1659,8 @@ class XunFeiSession:
         try:
             self._remember_api_request(response.request)
             wid = None
+            is_final_work = False
+            is_temporary_work = False
             if "makeMultipleSpeakerWork" in url:
                 data = response.json()
                 response_code = data.get("retCode")
@@ -1658,6 +1668,7 @@ class XunFeiSession:
                     response_code = data.get("code")
                 if _provider_success_code(response_code):
                     wid = data.get("tempWorksId") or data.get("worksId")
+                    is_temporary_work = bool(wid)
             elif "order_gen" in url:
                 data = response.json()
                 response_code = data.get("code")
@@ -1665,6 +1676,7 @@ class XunFeiSession:
                     response_code = data.get("retCode")
                 if _provider_success_code(response_code):
                     wid = (data.get("data") or {}).get("payOrder", {}).get("worksId")
+                    is_final_work = True
             elif "get_work_sign_url" in url:
                 data = response.json()
                 response_code = data.get("code")
@@ -1684,7 +1696,12 @@ class XunFeiSession:
                             )
             if wid:
                 with self._works_lock:
-                    self._works_entries.append((wid, time.time()))
+                    entry = (wid, time.time())
+                    self._works_entries.append(entry)
+                    if is_final_work:
+                        self._final_works_entries.append(entry)
+                    if is_temporary_work:
+                        self._temporary_works_entries.append(entry)
                 _log(f"[xunfei]   📝 捕获 worksId: {wid}")
         except Exception:
             pass
@@ -1693,6 +1710,8 @@ class XunFeiSession:
         """每条任务开始前调用：之后的捕获才属于本条任务。"""
         with self._works_lock:
             self._works_entries.clear()
+            self._final_works_entries.clear()
+            self._temporary_works_entries.clear()
             self._sign_urls.clear()
             self._works_cutoff = time.time()
 
@@ -1705,14 +1724,37 @@ class XunFeiSession:
         deadline = time.time() + timeout
         while time.time() < deadline:
             with self._works_lock:
+                fresh_final = [
+                    e for e in self._final_works_entries
+                    if e[1] >= self._works_cutoff - 0.5
+                    and str(e[0]) not in excluded
+                ]
                 fresh = [
                     e for e in self._works_entries
                     if e[1] >= self._works_cutoff - 0.5
                     and str(e[0]) not in excluded
                 ]
-                if fresh:
-                    wid = fresh[-1][0]
+                # 同一次可见页面提交可能先捕获 tempWorksId，随后捕获
+                # order_gen 的正式 worksId。正式 ID 才能稳定出现在作品页，
+                # 必须优先于“最新到达”的临时 ID。
+                candidate = fresh_final[-1] if fresh_final else (fresh[-1] if fresh else None)
+                temporary_ids = {
+                    str(e[0]) for e in self._temporary_works_entries
+                    if e[1] >= self._works_cutoff - 0.5
+                    and str(e[0]) not in excluded
+                }
+                is_recent_temporary = (
+                    candidate is not None
+                    and not fresh_final
+                    and str(candidate[0]) in temporary_ids
+                    and time.time() - candidate[1] < WORKS_ID_FINAL_GRACE_SECONDS
+                    and time.time() < deadline
+                )
+                if candidate and not is_recent_temporary:
+                    wid = candidate[0]
                     self._works_entries.clear()
+                    self._final_works_entries.clear()
+                    self._temporary_works_entries.clear()
                     return wid
             # 作品 worksId 是 Playwright response 监听器异步写入的。同步
             # API 线程如果用 time.sleep，会阻塞事件分发，导致已经成功的
@@ -4476,6 +4518,8 @@ class XunFeiSession:
                 cooldown = 18 + (time.time() % 10) * 2
                 _log(f"[xunfei]   多人配音频控冷却 {cooldown:.0f}s 后重试提交")
                 page.wait_for_timeout(int(cooldown * 1000))
+                if attempt < max_retries and not self._recover_and_retry(page):
+                    break
             except Exception as error:
                 last_error = error
                 _log(f"[xunfei]   多人配音提交异常: {error}")
@@ -4960,9 +5004,14 @@ class XunFeiSession:
                     remaining_downloads,
                     target,
                 )
-                # 只有单条兜底下载时没有歧义可以直接使用；多条下载如果
-                # 文件名不能证明归属，宁可失败也不把音频写错题目。
-                if download_index is None and len(remaining_downloads) == 1:
+                # 只有本次确实只选中一条目标、且只收到一条下载时才可
+                # 无歧义兜底；多条目标如果文件名不能证明归属，宁可失败
+                # 也不把音频写错题目。
+                if (
+                    download_index is None
+                    and len(selected_targets) == 1
+                    and len(remaining_downloads) == 1
+                ):
                     download_index = 0
                 download = (
                     remaining_downloads.pop(download_index)
@@ -5351,6 +5400,8 @@ class XunFeiSession:
             self._response_handler = None
             with self._works_lock:
                 self._works_entries = []
+                self._final_works_entries = []
+                self._temporary_works_entries = []
                 self._sign_urls = []
                 self._api_base = {
                     "appid": "xfpy",

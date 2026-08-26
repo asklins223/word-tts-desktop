@@ -62,9 +62,12 @@ WORD_PARSER_DIR = os.path.join(_RESOURCE_DIR, "word_parser")
 if WORD_PARSER_DIR not in sys.path:
     sys.path.insert(0, WORD_PARSER_DIR)
 
-from pydub import AudioSegment
-
-# ---- 配置 pydub 使用 imageio-ffmpeg 自带的静态 ffmpeg ----
+# ---- 查找并配置 imageio-ffmpeg 自带的静态 ffmpeg ----
+#
+# pydub 在导入 AudioSegment 时就会扫描 PATH，并在找不到 ffmpeg 时发出
+# RuntimeWarning。打包应用的 ffmpeg 位于 PyInstaller 的 _internal 目录，
+# 因而必须先找到它并加入 PATH，再导入 pydub；否则即使后面已经设置了
+# AudioSegment.converter，启动日志仍会出现“ffmpeg 不存在”的误导性警告。
 def _find_ffmpeg():
     """查找 ffmpeg 可执行文件路径，兼容 PyInstaller 打包环境。"""
     # 方式 1：imageio_ffmpeg.get_ffmpeg_exe()
@@ -100,12 +103,16 @@ def _find_ffmpeg():
 
 _ffmpeg_path = _find_ffmpeg()
 if _ffmpeg_path:
-    AudioSegment.converter = _ffmpeg_path
     os.environ["FFMPEG_BINARY"] = _ffmpeg_path
     # 将 ffmpeg 所在目录加入 PATH，供其他模块（如 ffmpy）使用
     ff_dir = os.path.dirname(_ffmpeg_path)
     if ff_dir not in os.environ.get('PATH', ''):
         os.environ['PATH'] = ff_dir + os.pathsep + os.environ.get('PATH', '')
+
+from pydub import AudioSegment
+
+if _ffmpeg_path:
+    AudioSegment.converter = _ffmpeg_path
     print(f"[ffmpeg] 使用: {_ffmpeg_path}", file=sys.stdout)
     # 验证 ffmpeg 可执行
     try:

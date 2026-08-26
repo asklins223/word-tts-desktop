@@ -408,6 +408,112 @@ class XunfeiFlowTests(unittest.TestCase):
         cleanup.assert_called_once_with(page)
         self.assertEqual(pending["works_id"], "final-id")
 
+    def test_composite_rate_limit_recovery_reloads_page_before_retry(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+        work = {
+            "work_id": "composite:rate-limit",
+            "works_name": "rate-limit-test",
+            "item_ids": ["q1"],
+            "item_count": 1,
+        }
+
+        with mock.patch.object(session, "_prepare_composite_editor"), \
+                mock.patch.object(session, "_mark_works_cutoff"), \
+                mock.patch.object(session, "_click_generate"), \
+                mock.patch.object(
+                    session,
+                    "_confirm_synth",
+                    side_effect=["rate_limited", "ok"],
+                ), \
+                mock.patch.object(session, "_consume_works_id", return_value="final-id"), \
+                mock.patch.object(session, "_cleanup_after_item"), \
+                mock.patch.object(session, "_recover_and_retry", return_value=True) as recover:
+            pending = session._generate_pending_composite(
+                work,
+                max_retries=2,
+            )
+
+        recover.assert_called_once_with(page)
+        self.assertEqual(pending["works_id"], "final-id")
+
+    def test_works_id_consumer_prefers_final_order_id_over_temporary_id(self):
+        class FakeRequest:
+            post_data_json = None
+
+            @staticmethod
+            def all_headers():
+                return {}
+
+        class FakeResponse:
+            def __init__(self, url, payload):
+                self.url = url
+                self.request = FakeRequest()
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        session = XunFeiSession()
+        session._mark_works_cutoff()
+        session._on_response(FakeResponse(
+            "https://example.test/makeMultipleSpeakerWork",
+            {"retCode": 0, "tempWorksId": "temporary-id"},
+        ))
+        session._on_response(FakeResponse(
+            "https://example.test/order_gen",
+            {
+                "code": 0,
+                "data": {"payOrder": {"worksId": "final-id"}},
+            },
+        ))
+
+        self.assertEqual(session._consume_works_id(timeout=0.05), "final-id")
+
+    def test_works_id_consumer_waits_for_final_id_when_temporary_arrives_first(self):
+        class FakeRequest:
+            post_data_json = None
+
+            @staticmethod
+            def all_headers():
+                return {}
+
+        class FakeResponse:
+            def __init__(self, url, payload):
+                self.url = url
+                self.request = FakeRequest()
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        session = XunFeiSession()
+        session._mark_works_cutoff()
+        session._on_response(FakeResponse(
+            "https://example.test/makeMultipleSpeakerWork",
+            {"retCode": 0, "tempWorksId": "temporary-id"},
+        ))
+
+        def emit_final_id():
+            time.sleep(0.1)
+            session._on_response(FakeResponse(
+                "https://example.test/order_gen",
+                {
+                    "code": 0,
+                    "data": {"payOrder": {"worksId": "final-id"}},
+                },
+            ))
+
+        emitter = threading.Thread(target=emit_final_id)
+        emitter.start()
+        try:
+            self.assertEqual(session._consume_works_id(timeout=1.2), "final-id")
+        finally:
+            emitter.join(timeout=1)
+
     def test_works_id_fallback_can_exclude_temporary_multi_speaker_id(self):
         session = XunFeiSession()
         now = time.time()
@@ -1059,6 +1165,62 @@ class XunfeiFlowTests(unittest.TestCase):
 
         self.assertEqual(first_download.suggested_filename, "wordtts_0001_a1b2c3d4.mp3")
         self.assertEqual(downloads[second_index].suggested_filename, "wordtts_0002_e5f6g7h8.mp3")
+
+    def test_browser_download_does_not_assign_one_unknown_file_to_first_of_two_targets(self):
+        class FakeDownload:
+            suggested_filename = "wordtts_0002_e5f6g7h8.mp3"
+
+            def save_as(self, output_path):
+                Path(output_path).write_bytes(b"ID3\x04")
+
+        session = XunFeiSession()
+        session._page = mock.Mock()
+        pending = [
+            {
+                "job_id": "job-a",
+                "works_id": "works-a",
+                "works_name": "wordtts_0001_a1b2c3d4",
+                "output_path": "",
+            },
+            {
+                "job_id": "job-b",
+                "works_id": "works-b",
+                "works_name": "wordtts_0002_e5f6g7h8",
+                "output_path": "",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pending[0]["output_path"] = str(Path(temp_dir, "a.mp3"))
+            pending[1]["output_path"] = str(Path(temp_dir, "b.mp3"))
+            ready = {
+                "works-a": {"record": {"id": "works-a"}},
+                "works-b": {"record": {"id": "works-b"}},
+            }
+            records = [
+                {"id": "works-a", "worksName": pending[0]["works_name"]},
+                {"id": "works-b", "worksName": pending[1]["works_name"]},
+            ]
+            with mock.patch.object(session, "_wait_for_pending_ready", return_value=ready), \
+                    mock.patch.object(session, "_fetch_works_list_in_page", return_value=records), \
+                    mock.patch.object(session, "_download_signed_url", return_value=False), \
+                    mock.patch.object(
+                        session,
+                        "_select_download_rows",
+                        return_value=({"works-a", "works-b"}, []),
+                    ), \
+                    mock.patch.object(
+                        session,
+                        "_download_selected_rows",
+                        return_value=[FakeDownload()],
+                    ), \
+                    mock.patch.object(xunfei, "_safe_eval", return_value=True):
+                results = session._download_pending_batch(pending)
+
+            self.assertFalse(results["works-a"]["downloaded"])
+            self.assertTrue(results["works-b"]["downloaded"])
+            self.assertFalse(Path(pending[0]["output_path"]).exists())
+            self.assertTrue(Path(pending[1]["output_path"]).exists())
 
     def test_signed_url_download_writes_only_valid_mp3(self):
         class FakeResponse:

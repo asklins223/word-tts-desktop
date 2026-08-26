@@ -25,6 +25,7 @@ let serverUrl = null;
 let serverToken = null;
 let serverInstance = null;
 let desktopServicesReady = false;
+let backendReady = false;
 let rendererReady = false;
 let rendererFatalShown = false;
 let pythonStopPromise = null;
@@ -191,6 +192,8 @@ function startPythonServer() {
         throw new Error('后端端口或会话令牌尚未初始化');
     }
 
+    backendReady = false;
+
     console.log(`[main] 启动后端服务器: ${cmd} ${args.join(' ')} (cwd: ${cwd})`);
     smokeLog(`start backend: ${cmd} ${args.join(' ')}`);
 
@@ -256,6 +259,7 @@ function startPythonServer() {
     });
 
     pythonProcess.on('error', (err) => {
+        backendReady = false;
         console.error(`[main] 无法启动后端进程: ${err.message}`);
         showInAppNotice('backend-start', {
             kicker: '生成服务',
@@ -267,6 +271,7 @@ function startPythonServer() {
     });
 
     pythonProcess.on('exit', (code) => {
+        backendReady = false;
         console.log(`[main] 后端进程退出，代码: ${code}`);
         smokeLog(`backend exit: ${code}`);
         pythonProcess = null;
@@ -295,6 +300,7 @@ function startPythonServer() {
 function stopPythonServerAsync() {
     // will-quit、冒烟测试失败分支和窗口关闭可能同时触发清理；复用同一
     // Promise，避免 Windows 下重复 taskkill 后又被 will-quit 重新拦截。
+    backendReady = false;
     if (pythonStopPromise) return pythonStopPromise;
     if (!pythonProcess) return Promise.resolve();
 
@@ -668,10 +674,17 @@ function registerIpcHandlers() {
     ipcMain.handle('server-ready', async (event) => {
         if (!isTrustedRendererEvent(event)) return false;
         if (!pythonProcess) return false;
+        // 启动阶段已经由主进程完成过一次带 token、instance 和协议版本
+        // 校验的健康检查。渲染器随后再发起一次相同检查会制造无意义的
+        // 竞态（尤其是 macOS CI 刚创建 renderer 的窗口时），直接复用
+        // 已验证状态；后端进程退出时由 exit handler 将它清回 false。
+        if (backendReady) return true;
         try {
             await waitForServer();
+            backendReady = true;
             return true;
-        } catch {
+        } catch (error) {
+            smokeLog(`server-ready failed: ${error.stack || error.message}`);
             return false;
         }
     });
@@ -696,6 +709,7 @@ function registerIpcHandlers() {
 app.whenReady().then(async () => {
     console.log('[main] Electron app ready');
     smokeLog('app ready');
+    backendReady = false;
     if (isSmokeTest) {
         // CI 中若渲染器或 Electron 子进程完全不响应，也必须在有限时间内
         // 输出诊断并退出，不能让 PowerShell 永久等待。
@@ -720,6 +734,7 @@ app.whenReady().then(async () => {
         console.log('[main] 等待 Python 服务器就绪...');
         smokeLog('waiting for backend');
         await waitForServer();
+        backendReady = true;
         if (isSmokeTest) {
             smokeLog('backend ready; creating smoke window');
             const smokeWindow = createWindow();

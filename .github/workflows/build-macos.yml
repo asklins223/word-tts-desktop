@@ -93,7 +93,33 @@ jobs:
         run: bash build_electron.sh
 
       - name: Smoke test packaged macOS app
+        env:
+          # Electron 的 os.tmpdir() 在 macOS 上遵循 TMPDIR；固定到 runner
+          # 临时目录，失败时可以稳定上传 wordtts-electron-smoke.log。
+          TMPDIR: ${{ runner.temp }}
+          WORDTTS_DEBUG_LOGS: '1'
         run: |
+          set -euo pipefail
+
+          smoke_log="$TMPDIR/wordtts-electron-smoke.log"
+          backend_pid=""
+          cleanup() {
+            if [ -n "$backend_pid" ]; then
+              kill "$backend_pid" 2>/dev/null || true
+              wait "$backend_pid" 2>/dev/null || true
+            fi
+          }
+          report_failure() {
+            exit_code=$?
+            if [ "$exit_code" -ne 0 ] && [ -f "$smoke_log" ]; then
+              echo '--- Electron smoke diagnostic log ---' >&2
+              tail -200 "$smoke_log" >&2 || true
+            fi
+            cleanup
+            return "$exit_code"
+          }
+          trap report_failure EXIT
+
           if [ "$(uname -m)" = "arm64" ]; then
             output_dir="mac-arm64"
           else
@@ -124,13 +150,26 @@ jobs:
           done
           kill "$backend_pid" 2>/dev/null || true
           wait "$backend_pid" 2>/dev/null || true
+          backend_pid=""
           test "$ready" -eq 1
 
           PLAYWRIGHT_NODEJS_PATH="$app_path/Contents/MacOS/小猪wordTTS" \
             ELECTRON_RUN_AS_NODE=1 \
             "$backend" --smoke-playwright
 
-          "$app_path/Contents/MacOS/小猪wordTTS" --smoke-test
+          # 主进程启动后端、渲染器并执行完整 IPC 就绪检查；显式清理可能
+          # 来自上游步骤的 Playwright/Electron Node 环境变量，避免把桌面
+          # 壳误启动成 Node 兼容模式。
+          env -u ELECTRON_RUN_AS_NODE -u PLAYWRIGHT_NODEJS_PATH \
+            "$app_path/Contents/MacOS/小猪wordTTS" --smoke-test
+
+      - name: Upload macOS smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 小猪wordTTS-macOS-smoke
+          path: ${{ runner.temp }}/wordtts-electron-smoke.log
+          if-no-files-found: warn
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
