@@ -1903,6 +1903,128 @@ body.platform-win32 #toolbar {
     gap: 16px;
 }
 
+.generation-mode-options {
+    display: grid;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.generation-mode-option {
+    position: relative;
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 10px;
+    min-width: 0;
+    padding: 13px 14px;
+    color: var(--text-sub);
+    background: var(--panel-subtle);
+    border: 1px solid var(--border-light);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.generation-mode-option:hover {
+    background: var(--panel);
+    border-color: var(--accent-light);
+    box-shadow: 0 5px 16px rgba(var(--accent-rgb), 0.08);
+    transform: translateY(-1px);
+}
+
+.generation-mode-option:has(input:checked),
+.generation-mode-option.is-selected {
+    color: var(--text);
+    background: var(--accent-bg);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.10);
+}
+
+.generation-mode-option input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.generation-mode-option input:focus-visible + .generation-mode-radio {
+    outline: 3px solid rgba(var(--accent-rgb), 0.22);
+    outline-offset: 3px;
+}
+
+.generation-mode-radio {
+    position: relative;
+    width: 17px;
+    height: 17px;
+    margin-top: 1px;
+    background: var(--panel);
+    border: 1.5px solid var(--border-strong);
+    border-radius: 50%;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.generation-mode-option input:checked + .generation-mode-radio {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 4px var(--panel);
+    background: var(--accent);
+}
+
+.generation-mode-copy {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.generation-mode-copy strong {
+    color: inherit;
+    font-size: 12px;
+    font-weight: 680;
+}
+
+.generation-mode-copy small {
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.55;
+}
+
+.generation-mode-badge {
+    align-self: start;
+    padding: 3px 7px;
+    color: var(--accent-strong, var(--accent));
+    background: rgba(var(--accent-rgb), 0.10);
+    border: 1px solid rgba(var(--accent-rgb), 0.16);
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.generation-mode-badge.is-legacy {
+    color: var(--text-muted);
+    background: var(--panel);
+    border-color: var(--border-light);
+}
+
+.generation-mode-note {
+    margin: 10px 2px 0;
+    color: var(--text-faint);
+    font-size: 10px;
+    line-height: 1.55;
+}
+
+@media (max-width: 560px) {
+    .generation-mode-option {
+        grid-template-columns: 18px minmax(0, 1fr);
+    }
+
+    .generation-mode-badge {
+        grid-column: 2;
+        justify-self: start;
+    }
+}
+
 .config-field {
     display: flex;
     flex-direction: column;

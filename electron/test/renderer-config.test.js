@@ -52,8 +52,22 @@ test('长期配置只保留默认男女声的独立参数，不保存文档角�
         __default_female__: { rate: 10, volume: 20, pitch: 30 },
         __default_male__: { rate: 40, volume: 50, pitch: 60 },
     });
+    assert.equal(persisted.generation_mode, 'composite_cut');
     assert.equal('role_voices' in persisted, false);
     assert.equal('voice_configs' in persisted, false);
+});
+
+test('生成方式预设支持默认合并模式和原有单条模式', () => {
+    const { api } = loadRendererConfigFunctions();
+
+    assert.equal(
+        api.normalizePersistedConfig({ generation_mode: 'single_segment' }).generation_mode,
+        'single_segment',
+    );
+    assert.equal(
+        api.normalizePersistedConfig({ generation_mode: 'unsupported' }).generation_mode,
+        'composite_cut',
+    );
 });
 
 test('当前配置写入 localStorage 前会清理旧角色数据', () => {

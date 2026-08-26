@@ -50,6 +50,13 @@ class XunfeiCatalogTests(unittest.TestCase):
             self.assertEqual(loaded["_meta"]["catalog_source"], "cache")
             self.assertIn("offline", loaded["_meta"]["refresh_error"])
 
+    def test_builtin_fallback_has_identifiers_for_default_composite_voices(self):
+        payload = catalog.normalize_catalog([], source="builtin")
+
+        by_key = {voice["key"]: voice for voice in payload["voices"]}
+        self.assertEqual(by_key["amanda"]["speaker_no"], 544508087)
+        self.assertEqual(by_key["george"]["speaker_no"], 593031758)
+
 
 if __name__ == "__main__":
     unittest.main()

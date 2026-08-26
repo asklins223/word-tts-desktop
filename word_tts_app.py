@@ -39,6 +39,9 @@ import asyncio
 import inspect
 import threading
 import zipfile
+import hashlib
+import math
+import uuid
 from datetime import datetime
 
 # ============================================================================
@@ -163,7 +166,8 @@ MALE_VOICE = "george"
 # 词汇题型不再使用单独音色，统一走默认女声。
 WORD_CATEGORIES = frozenset({"单词", "例句"})
 
-# 每条解析结果（每道题）独立生成一个音频文件，不做跨题合并
+# 每条解析结果（每道题）最终独立导出一个音频文件；合并模式只在讯飞端
+# 临时合并作品，下载后仍会按安全停顿恢复为题目级文件。
 
 # 导出格式：讯飞音频统一落地为 MP3，保留单一格式避免不同平台产生差异。
 FORMAT_MAP = {
@@ -177,9 +181,10 @@ QUALITY_BITRATE = {
     "320 kbps（极高）": "320k",
 }
 
-# 音频生成算法版本。改变讯飞音频拼接策略或参数寻址方式时递增，避免
-# 复用旧算法产物。
-AUDIO_ALGORITHM_VERSION = 4
+# 音频生成算法版本。改变讯飞音频拼接、合并切割策略或参数寻址方式时递增，
+# 避免复用旧算法产物。4 是原有“单段合成后拼接”算法，保留为历史兼容版本。
+LEGACY_AUDIO_ALGORITHM_VERSION = 4
+AUDIO_ALGORITHM_VERSION = 6
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
@@ -193,6 +198,42 @@ TTS_CONFIG_VERSION = 5
 DEFAULT_FEMALE_ROLE_KEY = "__default_female__"
 DEFAULT_MALE_ROLE_KEY = "__default_male__"
 ROLE_CONFIG_PREFIX = "role:"
+
+# 生成方式。composite_cut 使用讯飞多人配音作品一次提交，再按人工停顿
+# 安全切割；single_segment 保留原有逐逻辑片段生成流程。
+GENERATION_MODE_COMPOSITE = "composite_cut"
+GENERATION_MODE_SINGLE = "single_segment"
+GENERATION_MODES = (
+    GENERATION_MODE_COMPOSITE,
+    GENERATION_MODE_SINGLE,
+)
+DEFAULT_GENERATION_MODE = GENERATION_MODE_COMPOSITE
+
+# 讯飞编辑器当前显示单次最多约 10000 字。为多人配音标记、编辑器 JSON
+# 以及接口字段预留空间，不把上限顶满；拆分只发生在完整题目之间。
+COMPOSITE_MAX_TEXT_LENGTH = 9000
+COMPOSITE_BOUNDARY_MS = 2000
+COMPOSITE_SILENCE_FRAME_MS = 20
+COMPOSITE_SILENCE_CORE_DBFS = -50.0
+COMPOSITE_SILENCE_EDGE_DBFS = -36.0
+COMPOSITE_MIN_CORE_SILENCE_MS = 300
+COMPOSITE_MIN_SAFE_SILENCE_MS = 450
+COMPOSITE_EDGE_KEEP_MS = 90
+COMPOSITE_EDGE_TRIM_MIN_MS = 180
+# 合并作品最外层的静音不属于题目之间的人工边界。只在它确实很长时
+# 才整理，避免把弱首辅音或自然尾音当成可删除的静音；内部边界仍使用
+# 更短的保护间隔，以免每段音频残留约 1 秒的合并停顿。
+COMPOSITE_OUTER_EDGE_KEEP_MS = 120
+COMPOSITE_OUTER_EDGE_TRIM_MIN_MS = 600
+COMPOSITE_MIN_OUTPUT_MS = 40
+
+
+class CompositePlanError(RuntimeError):
+    """多人配音合并批次无法安全构造。"""
+
+
+class CompositeCutError(RuntimeError):
+    """合并音频缺少可验证的安全切割边界。"""
 
 
 def clamp_tts_param(value, default=TTS_PARAM_DEFAULT):
@@ -247,6 +288,11 @@ def normalize_tts_config(config=None):
     预设或手工请求把倍率、代理、旧音色字段带回讯飞调用链。
     """
     raw = config if isinstance(config, dict) else {}
+    generation_mode = str(
+        raw.get("generation_mode", DEFAULT_GENERATION_MODE) or ""
+    ).strip()
+    if generation_mode not in GENERATION_MODES:
+        generation_mode = DEFAULT_GENERATION_MODE
     # 不再根据平台、旧配置或质量选项切换输出格式；历史配置中的 WAV 等
     # 值在进入当前流程时统一收敛为 MP3。
     fmt = "mp3"
@@ -313,6 +359,7 @@ def normalize_tts_config(config=None):
     # 兼容旧前端的全局三参数，同时保留每个音色/角色的独立配置。
     return {
         "config_version": TTS_CONFIG_VERSION,
+        "generation_mode": generation_mode,
         "rate": base_params["rate"],
         "volume": base_params["volume"],
         "pitch": base_params["pitch"],
@@ -730,6 +777,429 @@ def _concat_audio_segments(audio_parts):
     return full
 
 
+def _audio_dbfs(audio):
+    """返回可比较的 dBFS；完全静音和空音频统一视为很低能量。"""
+    try:
+        value = float(audio.dBFS)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return -100.0
+    return value if math.isfinite(value) else -100.0
+
+
+def _find_composite_silence_runs(
+    audio,
+    *,
+    frame_ms=COMPOSITE_SILENCE_FRAME_MS,
+    core_dbfs=COMPOSITE_SILENCE_CORE_DBFS,
+    edge_dbfs=COMPOSITE_SILENCE_EDGE_DBFS,
+):
+    """找出合并音频中的低能量候选区。
+
+    先用更低的 core 阈值确认“确实静音”，再用较宽的 edge 阈值扩展候选区。
+    这样切点不会落在静音刚开始或刚结束的边缘，能给首音、尾音留保护空间。
+    """
+    duration = len(audio)
+    if duration <= 0:
+        return []
+    frame_ms = max(10, int(frame_ms))
+    frames = []
+    for start in range(0, duration, frame_ms):
+        end = min(duration, start + frame_ms)
+        dbfs = _audio_dbfs(audio[start:end])
+        frames.append({
+            "start": start,
+            "end": end,
+            "dbfs": dbfs,
+            "core": dbfs <= core_dbfs,
+            "edge": dbfs <= edge_dbfs,
+        })
+
+    runs = []
+    index = 0
+    while index < len(frames):
+        if not frames[index]["core"]:
+            index += 1
+            continue
+        core_start = index
+        while index + 1 < len(frames) and frames[index + 1]["core"]:
+            index += 1
+        core_end = index
+
+        left = core_start
+        while left > 0 and frames[left - 1]["edge"]:
+            left -= 1
+        right = core_end
+        while right + 1 < len(frames) and frames[right + 1]["edge"]:
+            right += 1
+
+        core_start_ms = frames[core_start]["start"]
+        core_end_ms = frames[core_end]["end"]
+        start_ms = frames[left]["start"]
+        end_ms = frames[right]["end"]
+        core_length = max(0, core_end_ms - core_start_ms)
+        safe_length = max(0, end_ms - start_ms)
+        if (
+            core_length >= COMPOSITE_MIN_CORE_SILENCE_MS
+            and safe_length >= COMPOSITE_MIN_SAFE_SILENCE_MS
+        ):
+            runs.append({
+                "start": start_ms,
+                "end": end_ms,
+                "center": (start_ms + end_ms) // 2,
+                "core_start": core_start_ms,
+                "core_end": core_end_ms,
+                "core_length": core_length,
+                "length": safe_length,
+            })
+        index += 1
+    return runs
+
+
+def _select_composite_silence_runs(audio, runs, boundary_count, item_lengths=None):
+    """按顺序选择每个题目之间的安全静音区，不按字符比例直接切音频。"""
+    if boundary_count <= 0:
+        return []
+    if len(runs) < boundary_count:
+        raise CompositeCutError(
+            f"合并音频只找到 {len(runs)} 个安全停顿，需要 {boundary_count} 个"
+        )
+
+    total_duration = max(1, len(audio))
+    expected_positions = []
+    lengths = [max(1, int(value or 0)) for value in (item_lengths or [])]
+    if len(lengths) == boundary_count + 1 and sum(lengths) > 0:
+        accumulated = 0
+        total_length = sum(lengths)
+        for value in lengths[:-1]:
+            accumulated += value
+            expected_positions.append(round(total_duration * accumulated / total_length))
+    else:
+        expected_positions = [
+            round(total_duration * index / (boundary_count + 1))
+            for index in range(1, boundary_count + 1)
+        ]
+
+    ordered_runs = sorted(
+        (
+            run for run in runs
+            if run["start"] > 0 and run["end"] < total_duration
+        ),
+        key=lambda run: run["center"],
+    )
+    if len(ordered_runs) < boundary_count:
+        raise CompositeCutError(
+            f"合并音频只找到 {len(ordered_runs)} 个内部安全停顿，需要 {boundary_count} 个"
+        )
+
+    selected = []
+    start_index = 0
+    for boundary_index, expected in enumerate(expected_positions):
+        remaining_boundaries = boundary_count - boundary_index - 1
+        available = []
+        for run_index in range(start_index, len(ordered_runs)):
+            run = ordered_runs[run_index]
+            if selected and run["center"] <= selected[-1]["center"] + COMPOSITE_MIN_OUTPUT_MS:
+                continue
+            future_runs = ordered_runs[run_index + 1:]
+            if sum(
+                future["center"] > run["center"] + COMPOSITE_MIN_OUTPUT_MS
+                for future in future_runs
+            ) < remaining_boundaries:
+                continue
+            available.append((run_index, run))
+        if not available:
+            raise CompositeCutError("安全停顿顺序不连续，拒绝按比例强行切割")
+
+        def score(run):
+            # 人工停顿应明显长于普通语句停顿；距离只做次级排序，避免
+            # 因语速或中英文比例不同而把候选区锁死在字符比例位置。
+            length_score = min(run["length"], COMPOSITE_BOUNDARY_MS * 1.5) * 2.0
+            distance_penalty = abs(run["center"] - expected) / total_duration * 500.0
+            return length_score - distance_penalty
+
+        chosen_index, chosen = max(available, key=lambda item: score(item[1]))
+        selected.append(chosen)
+        start_index = chosen_index + 1
+
+    if any(
+        right["center"] - left["center"] < COMPOSITE_MIN_OUTPUT_MS
+        for left, right in zip(selected, selected[1:])
+    ):
+        raise CompositeCutError("候选停顿之间的音频过短，无法安全恢复题目")
+    return selected
+
+
+def _edge_silence_length(
+    audio,
+    *,
+    leading,
+    dbfs_threshold=COMPOSITE_SILENCE_CORE_DBFS,
+):
+    """返回音频首部或尾部连续的低能量长度。
+
+    首尾整理使用更严格的 core 阈值，不把低音量尾音或弱首辅音误判成
+    可删除的保护空档。
+    """
+    duration = len(audio)
+    if duration <= 0:
+        return 0
+    frame_ms = max(10, COMPOSITE_SILENCE_FRAME_MS)
+    starts = range(0, duration, frame_ms)
+    frames = [
+        _audio_dbfs(audio[start:min(duration, start + frame_ms)])
+        <= dbfs_threshold
+        for start in starts
+    ]
+    if leading:
+        count = 0
+        for is_silent in frames:
+            if not is_silent:
+                break
+            count += 1
+        return min(duration, count * frame_ms)
+    count = 0
+    for is_silent in reversed(frames):
+        if not is_silent:
+            break
+        count += 1
+    return min(duration, count * frame_ms)
+
+
+def _trim_composite_edge_silence(
+    audio,
+    *,
+    trim_leading=True,
+    trim_trailing=True,
+    leading_is_outer=False,
+    trailing_is_outer=False,
+):
+    """去掉边界人工停顿残留，同时保护真实首音和尾音。
+
+    内部切点两侧已知来自人工 break，因此可以在较短阈值下整理；合并
+    作品最外层没有这个确定性，只处理明显过长的静音，并保留更长保护。
+    """
+    leading = _edge_silence_length(audio, leading=True)
+    trailing = _edge_silence_length(audio, leading=False)
+    start = 0
+    end = len(audio)
+    leading_min = (
+        COMPOSITE_OUTER_EDGE_TRIM_MIN_MS
+        if leading_is_outer
+        else COMPOSITE_EDGE_TRIM_MIN_MS
+    )
+    leading_keep = (
+        COMPOSITE_OUTER_EDGE_KEEP_MS
+        if leading_is_outer
+        else COMPOSITE_EDGE_KEEP_MS
+    )
+    trailing_min = (
+        COMPOSITE_OUTER_EDGE_TRIM_MIN_MS
+        if trailing_is_outer
+        else COMPOSITE_EDGE_TRIM_MIN_MS
+    )
+    trailing_keep = (
+        COMPOSITE_OUTER_EDGE_KEEP_MS
+        if trailing_is_outer
+        else COMPOSITE_EDGE_KEEP_MS
+    )
+    if trim_leading and leading >= leading_min:
+        start = min(max(0, leading - leading_keep), end)
+    if trim_trailing and trailing >= trailing_min:
+        end = max(start, end - max(0, trailing - trailing_keep))
+    trimmed = audio[start:end]
+    if len(trimmed) < COMPOSITE_MIN_OUTPUT_MS:
+        raise CompositeCutError("切割后得到的音频段过短，可能存在首尾边界异常")
+    return trimmed
+
+
+def cut_composite_audio(audio, item_count, item_lengths=None):
+    """按多人配音作品中的人工停顿恢复每道题的音频。
+
+    切点只允许落在通过双阈值静音检测的停顿中；找不到足够安全的停顿时
+    抛出 CompositeCutError，由上层保留合并音频并提示用户，不按时长比例
+    猜测边界。
+    """
+    count = int(item_count or 0)
+    if audio is None or count <= 0:
+        raise CompositeCutError("没有可切割的合并音频或题目数量")
+    if count == 1:
+        # 单题作品没有内部 break 可供定位，但讯飞仍可能在作品最外层
+        # 留下较长首尾空档；沿用外层保护规则，避免默认合并模式下单题
+        # 音频与单条生成相比出现明显的首尾停顿。
+        return [_trim_composite_edge_silence(
+            audio,
+            leading_is_outer=True,
+            trailing_is_outer=True,
+        )]
+
+    runs = _find_composite_silence_runs(audio)
+    selected = _select_composite_silence_runs(
+        audio,
+        runs,
+        count - 1,
+        item_lengths=item_lengths,
+    )
+    cut_positions = [run["center"] for run in selected]
+    pieces = []
+    start = 0
+    for piece_index, cut_position in enumerate([*cut_positions, len(audio)]):
+        piece = audio[start:cut_position]
+        pieces.append(_trim_composite_edge_silence(
+            piece,
+            # 切点内部的这一侧是人工 break 的残留；真正作品首尾使用
+            # 更高阈值，避免误伤弱首音或自然尾音。
+            trim_leading=True,
+            trim_trailing=True,
+            leading_is_outer=piece_index == 0,
+            trailing_is_outer=piece_index == count - 1,
+        ))
+        start = cut_position
+    if len(pieces) != count:
+        raise CompositeCutError(
+            f"安全切割段数异常：期望 {count}，实际 {len(pieces)}"
+        )
+    return pieces
+
+
+def _composite_item_from_spec(spec):
+    """把一道题展开为可写入进度文件的多人配音单元。"""
+    raw_item_id = spec.get("item_id")
+    if not isinstance(raw_item_id, (str, int)) or isinstance(raw_item_id, bool):
+        raise CompositePlanError("多人配音批次的 item_id 格式异常")
+    item_id = str(raw_item_id).strip()
+    if not item_id:
+        raise CompositePlanError("多人配音批次缺少 item_id")
+    segments = build_synthesis_segments(
+        spec.get("text", ""),
+        spec.get("rate", TTS_PARAM_DEFAULT),
+        spec.get("volume", TTS_PARAM_DEFAULT),
+        spec.get("pitch", TTS_PARAM_DEFAULT),
+        default_voice=spec.get("default_voice"),
+        female_voice=spec.get("female_voice"),
+        male_voice=spec.get("male_voice"),
+        voice_configs=spec.get("voice_configs"),
+        role_voices=spec.get("role_voices"),
+        role_configs=spec.get("role_configs"),
+        default_role=spec.get("default_role"),
+    )
+    char_count = sum(len(str(segment.get("text") or "")) for segment in segments)
+    if char_count <= 0:
+        raise CompositePlanError(f"{item_id} 文本为空，无法加入多人配音作品")
+    if char_count > COMPOSITE_MAX_TEXT_LENGTH:
+        raise CompositePlanError(
+            f"{item_id} 单题文本超过讯飞多人配音安全上限 "
+            f"{COMPOSITE_MAX_TEXT_LENGTH} 字，不能从题目内部强行拆分"
+        )
+    return {
+        "item_id": item_id,
+        "segments": [dict(segment) for segment in segments],
+        "char_count": char_count,
+    }
+
+
+def _stable_composite_work_id(item_ids):
+    raw = "|".join(str(item_id) for item_id in item_ids)
+    return f"composite:{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
+
+
+def build_composite_work_plan(item_specs, max_chars=COMPOSITE_MAX_TEXT_LENGTH,
+                              existing_plan=None):
+    """按完整题目构造多人配音作品批次。
+
+    ``existing_plan`` 用于断点续传：已有合并作品的题目组合必须保持不变，
+    避免程序中断后重新分批导致 worksId 无法复用。
+    """
+    try:
+        max_chars = max(1, int(max_chars))
+    except (TypeError, ValueError):
+        max_chars = COMPOSITE_MAX_TEXT_LENGTH
+    raw_specs = list(item_specs or [])
+    if any(not isinstance(spec, dict) for spec in raw_specs):
+        raise CompositePlanError("多人配音批次包含格式异常的题目")
+    specs = raw_specs
+    units = [_composite_item_from_spec(spec) for spec in specs]
+    unit_ids = [unit["item_id"] for unit in units]
+    if len(set(unit_ids)) != len(unit_ids):
+        raise CompositePlanError("多人配音批次存在重复 item_id，拒绝覆盖切割结果")
+    by_id = {unit["item_id"]: unit for unit in units}
+    works = []
+    used_ids = set()
+    stored_work_ids = set()
+
+    def append_work(item_units, work_id=None):
+        if not item_units:
+            return
+        item_ids = [unit["item_id"] for unit in item_units]
+        resolved_work_id = str(work_id or _stable_composite_work_id(item_ids))
+        if any(work["work_id"] == resolved_work_id for work in works):
+            raise CompositePlanError("多人配音断点中存在重复作品 ID")
+        works.append({
+            "work_id": resolved_work_id,
+            "item_ids": item_ids,
+            "items": item_units,
+            "item_count": len(item_units),
+            "char_count": sum(unit["char_count"] for unit in item_units),
+            "boundary_ms": COMPOSITE_BOUNDARY_MS,
+        })
+
+    for stored_work in existing_plan or []:
+        if not isinstance(stored_work, dict):
+            raise CompositePlanError("断点中的多人配音作品格式异常")
+        stored_work_id = str(stored_work.get("work_id") or "").strip()
+        if not stored_work_id:
+            raise CompositePlanError("断点中的多人配音作品缺少作品 ID")
+        if stored_work_id in stored_work_ids:
+            raise CompositePlanError("多人配音断点中存在重复作品 ID")
+        stored_work_ids.add(stored_work_id)
+        raw_stored_ids = stored_work.get("item_ids") or []
+        if not isinstance(raw_stored_ids, (list, tuple)):
+            raise CompositePlanError("断点中的多人配音作品 item_ids 格式异常")
+        stored_ids = []
+        for raw_item_id in raw_stored_ids:
+            if not isinstance(raw_item_id, (str, int)) or isinstance(raw_item_id, bool):
+                raise CompositePlanError("断点中的多人配音作品包含异常题目 ID")
+            item_id = str(raw_item_id).strip()
+            if not item_id:
+                raise CompositePlanError("断点中的多人配音作品包含空题目 ID")
+            stored_ids.append(item_id)
+        if not stored_ids:
+            raise CompositePlanError("断点中的多人配音作品缺少题目")
+        if len(set(stored_ids)) != len(stored_ids):
+            raise CompositePlanError("断点中的多人配音作品存在重复题目")
+        present_ids = [item_id for item_id in stored_ids if item_id in by_id]
+        if not present_ids:
+            continue
+        if len(present_ids) != len(stored_ids):
+            raise CompositePlanError(
+                "断点中的多人配音作品缺少原始题目，拒绝改变作品边界"
+            )
+        if any(item_id in used_ids for item_id in present_ids):
+            raise CompositePlanError("断点中的多人配音作品存在重复题目")
+        item_units = [by_id[item_id] for item_id in present_ids]
+        if sum(unit["char_count"] for unit in item_units) > max_chars:
+            raise CompositePlanError(
+                "断点中的多人配音作品超过当前字数上限，拒绝改变作品边界"
+            )
+        append_work(item_units, stored_work_id)
+        used_ids.update(present_ids)
+
+    current = []
+    current_chars = 0
+    for unit in units:
+        if unit["item_id"] in used_ids:
+            continue
+        unit_chars = unit["char_count"]
+        if current and current_chars + unit_chars > max_chars:
+            append_work(current)
+            current = []
+            current_chars = 0
+        current.append(unit)
+        current_chars += unit_chars
+    append_work(current)
+
+    return works
+
+
 async def _synth_items_batch(item_specs, progress_callback=None):
     """批量生成多道题，讯飞端先按音色/参数分组后统一下载。
 
@@ -908,6 +1378,203 @@ async def _synth_items_batch(item_specs, progress_callback=None):
             item_results[item_id] = {"audio": None, "error": "未生成任何音频段"}
             continue
         item_results[item_id] = {"audio": _concat_audio_segments(parts), "error": None}
+    return item_results
+
+
+async def _synth_items_batch_composite(
+    item_specs,
+    progress_callback=None,
+    *,
+    work_plan=None,
+    resume=None,
+    debug_dir=None,
+):
+    """一次提交多人配音作品，再按安全停顿恢复为题目音频。
+
+    这里的“批量”单位是合并作品，而不是音色组。一个作品可包含多个音色
+    和各自参数；只有网页字数上限或断点计划要求时才会有多个作品。
+    """
+    if not item_specs:
+        return {}
+    if not _XUNFEI_AVAILABLE or _xunfei is None:
+        raise RuntimeError("讯飞配音引擎不可用（缺少 playwright）")
+
+    works = build_composite_work_plan(
+        item_specs,
+        existing_plan=work_plan,
+    )
+    if not works:
+        return {}
+    work_by_id = {str(work["work_id"]): work for work in works}
+    resume_map = resume if isinstance(resume, dict) else {}
+    request_works = []
+    for index, work in enumerate(works, start=1):
+        request = dict(work)
+        request["job_id"] = str(work["work_id"])
+        request["work_index"] = index
+        request["work_total"] = len(works)
+        request.setdefault(
+            "works_name",
+            f"wordtts_composite_{index:04d}_{uuid.uuid4().hex[:8]}",
+        )
+        request_works.append(request)
+
+    submitted_work_ids = set()
+    downloaded_work_ids = set()
+    progress_consumer = None
+    progress_queue = None
+    progress_futures = []
+    progress_futures_lock = threading.Lock()
+
+    async def forward_progress(event):
+        if not callable(progress_callback):
+            return
+        payload = dict(event or {})
+        work_id = str(payload.get("work_id") or payload.get("job_id") or "")
+        work = work_by_id.get(work_id) or {}
+        stage = str(payload.get("stage") or "saved")
+        if stage == "submitted":
+            submitted_work_ids.add(work_id)
+            status = "submitted"
+        elif stage == "downloaded":
+            downloaded_work_ids.add(work_id)
+            status = "downloaded"
+        elif stage == "cut":
+            status = "cut"
+        elif stage in {"cut_error", "error", "saved"} and payload.get("error"):
+            status = "error"
+        else:
+            status = "downloaded" if work_id in downloaded_work_ids else "submitted"
+        callback_payload = {
+            "work_id": work_id,
+            "job_id": work_id,
+            "status": status,
+            "stage": stage,
+            "works_id": payload.get("works_id"),
+            "item_count": int(work.get("item_count") or 0),
+            "item_ids": list(work.get("item_ids") or []),
+            "total_works": len(works),
+            "submitted_works": len(submitted_work_ids),
+            "downloaded_works": len(downloaded_work_ids),
+            "error": payload.get("error"),
+        }
+        callback_result = progress_callback(callback_payload)
+        if inspect.isawaitable(callback_result):
+            await callback_result
+
+    if callable(progress_callback):
+        loop = asyncio.get_running_loop()
+        progress_queue = asyncio.Queue()
+
+        async def consume_work_progress():
+            while True:
+                event = await progress_queue.get()
+                if event is None:
+                    return
+                try:
+                    await forward_progress(event)
+                except Exception as error:
+                    print(
+                        f"[tts] 多人配音进度回调异常（已忽略）: {error}",
+                        file=sys.stdout,
+                    )
+
+        progress_consumer = asyncio.create_task(consume_work_progress())
+
+        def queue_work_progress(event):
+            if not isinstance(event, dict):
+                return
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    progress_queue.put(dict(event)),
+                    loop,
+                )
+            except RuntimeError:
+                return
+            with progress_futures_lock:
+                progress_futures.append(future)
+    else:
+        queue_work_progress = None
+
+    try:
+        raw_results = await _xunfei.synth_xunfei_composite(
+            request_works,
+            progress_callback=queue_work_progress,
+            resume=resume_map,
+        )
+    finally:
+        if progress_consumer is not None:
+            with progress_futures_lock:
+                queued_futures = list(progress_futures)
+            if queued_futures:
+                await asyncio.gather(
+                    *(asyncio.wrap_future(future) for future in queued_futures),
+                    return_exceptions=True,
+                )
+            progress_queue.put_nowait(None)
+            await progress_consumer
+
+    item_results = {}
+    from pydub import AudioSegment
+
+    for work in works:
+        work_id = str(work["work_id"])
+        raw = raw_results.get(work_id) if isinstance(raw_results, dict) else None
+        audio = raw.get("audio") if isinstance(raw, dict) else None
+        error = raw.get("error") if isinstance(raw, dict) else None
+        if audio is None:
+            message = str(error or "讯飞多人配音作品未返回音频")
+            for item_id in work["item_ids"]:
+                item_results[str(item_id)] = {"audio": None, "error": message}
+            await forward_progress({
+                "work_id": work_id,
+                "stage": "error",
+                "works_id": raw.get("works_id") if isinstance(raw, dict) else None,
+                "error": message,
+            })
+            continue
+
+        try:
+            pieces = cut_composite_audio(
+                audio,
+                work["item_count"],
+                item_lengths=[
+                    unit.get("char_count") for unit in work.get("items") or []
+                ],
+            )
+            if len(pieces) != len(work["item_ids"]):
+                raise CompositeCutError("多人配音安全切割数量与题目数量不一致")
+            for item_id, piece in zip(work["item_ids"], pieces):
+                if not isinstance(piece, AudioSegment) or len(piece) < COMPOSITE_MIN_OUTPUT_MS:
+                    raise CompositeCutError(f"{item_id} 切割后的音频过短")
+                item_results[str(item_id)] = {"audio": piece, "error": None}
+            await forward_progress({
+                "work_id": work_id,
+                "stage": "cut",
+                "works_id": raw.get("works_id") if isinstance(raw, dict) else None,
+                "cut_item_count": len(pieces),
+            })
+        except Exception as cut_error:
+            message = str(cut_error)
+            if debug_dir:
+                try:
+                    os.makedirs(debug_dir, exist_ok=True)
+                    debug_path = os.path.join(
+                        debug_dir,
+                        f"{re.sub(r'[^0-9A-Za-z_.-]+', '_', work_id)}.mp3",
+                    )
+                    await asyncio.to_thread(audio.export, debug_path, format="mp3")
+                    message = f"{message}；合并音频已保留：{debug_path}"
+                except Exception as save_error:
+                    message = f"{message}；保留合并音频失败：{save_error}"
+            for item_id in work["item_ids"]:
+                item_results[str(item_id)] = {"audio": None, "error": message}
+            await forward_progress({
+                "work_id": work_id,
+                "stage": "cut_error",
+                "works_id": raw.get("works_id") if isinstance(raw, dict) else None,
+                "error": message,
+            })
     return item_results
 
 

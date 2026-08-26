@@ -168,6 +168,194 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(result), {"q1", "q2"})
         self.assertTrue(all(result[item_id]["audio"] is not None for item_id in result))
 
+    async def test_composite_batch_downloads_once_then_cuts_each_item(self):
+        events = []
+        tone = Sine(440).to_audio_segment(duration=700).apply_gain(-3)
+
+        async def fake_composite(works, progress_callback=None, resume=None):
+            self.assertEqual(len(works), 1)
+            work = works[0]
+            works_id = "works-composite-test"
+            if progress_callback:
+                progress_callback({
+                    "work_id": work["work_id"],
+                    "stage": "submitted",
+                    "works_id": works_id,
+                })
+                progress_callback({
+                    "work_id": work["work_id"],
+                    "stage": "downloaded",
+                    "works_id": works_id,
+                })
+            full_audio = tone
+            for _ in work["items"][1:]:
+                full_audio += AudioSegment.silent(duration=800) + tone
+            return {
+                work["work_id"]: {
+                    "audio": full_audio,
+                    "works_id": works_id,
+                    "error": None,
+                }
+            }
+
+        item_specs = [
+            {
+                "item_id": "q1",
+                "text": "first",
+                "default_voice": core.FEMALE_VOICE,
+            },
+            {
+                "item_id": "q2",
+                "text": "second",
+                "default_voice": core.FEMALE_VOICE,
+            },
+        ]
+
+        with mock.patch.object(
+            core,
+            "_XUNFEI_AVAILABLE",
+            True,
+        ), mock.patch.object(
+            core._xunfei,
+            "synth_xunfei_composite",
+            new=fake_composite,
+        ):
+            result = await core._synth_items_batch_composite(
+                item_specs,
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(
+            [event["status"] for event in events],
+            ["submitted", "downloaded", "cut"],
+        )
+        self.assertTrue(events[0]["work_id"].startswith("composite:"))
+        self.assertEqual(
+            {event["work_id"] for event in events},
+            {events[0]["work_id"]},
+        )
+        self.assertEqual(set(result), {"q1", "q2"})
+        self.assertTrue(all(result[item_id]["audio"] is not None for item_id in result))
+        self.assertTrue(all(len(result[item_id]["audio"]) >= 600 for item_id in result))
+
+    def test_composite_cut_uses_internal_pauses_and_keeps_short_edge_protection(self):
+        tone = Sine(440).to_audio_segment(duration=900).apply_gain(-3)
+        audio = (
+            AudioSegment.silent(duration=1200)
+            + tone
+            + AudioSegment.silent(duration=2000)
+            + tone
+            + AudioSegment.silent(duration=2000)
+            + tone
+            + AudioSegment.silent(duration=1200)
+        )
+
+        pieces = core.cut_composite_audio(audio, 3, item_lengths=[1, 1, 1])
+
+        self.assertEqual(len(pieces), 3)
+        self.assertTrue(all(950 <= len(piece) <= 1150 for piece in pieces))
+        self.assertTrue(all(core._edge_silence_length(piece, leading=True) <= 130 for piece in pieces))
+        self.assertTrue(all(core._edge_silence_length(piece, leading=False) <= 130 for piece in pieces))
+
+    def test_composite_cut_keeps_short_outer_quiet_edges_for_weak_speech(self):
+        speech = Sine(440).to_audio_segment(duration=800).apply_gain(-3)
+        audio = (
+            AudioSegment.silent(duration=100)
+            + speech
+            + AudioSegment.silent(duration=2000)
+            + speech.fade_out(300)
+            + AudioSegment.silent(duration=250)
+        )
+
+        pieces = core.cut_composite_audio(audio, 2)
+
+        # 100/250ms 是作品最外层的自然空档，不应按内部人工 break 的规则
+        # 激进裁切；尤其要保留最后一段的弱尾音。
+        self.assertGreaterEqual(core._edge_silence_length(pieces[0], leading=True), 80)
+        self.assertGreaterEqual(core._edge_silence_length(pieces[1], leading=False), 200)
+
+    def test_single_item_composite_trims_only_long_outer_quiet_edges(self):
+        speech = Sine(440).to_audio_segment(duration=800).apply_gain(-3)
+        audio = AudioSegment.silent(duration=1000) + speech + AudioSegment.silent(duration=1000)
+
+        pieces = core.cut_composite_audio(audio, 1)
+
+        self.assertEqual(len(pieces), 1)
+        self.assertTrue(100 <= core._edge_silence_length(pieces[0], leading=True) <= 140)
+        self.assertTrue(100 <= core._edge_silence_length(pieces[0], leading=False) <= 140)
+
+    def test_composite_cut_rejects_short_pause_instead_of_guessing(self):
+        tone = Sine(440).to_audio_segment(duration=900).apply_gain(-3)
+        audio = tone + AudioSegment.silent(duration=120) + tone
+
+        with self.assertRaises(core.CompositeCutError):
+            core.cut_composite_audio(audio, 2)
+
+    def test_composite_cut_does_not_consume_a_late_pause_needed_by_next_boundary(self):
+        audio = AudioSegment.silent(duration=10000)
+        runs = [
+            {"start": 2500, "end": 3500, "center": 3000, "length": 1000},
+            {"start": 7000, "end": 9500, "center": 8250, "length": 2500},
+        ]
+
+        selected = core._select_composite_silence_runs(
+            audio,
+            runs,
+            boundary_count=2,
+            item_lengths=[1, 1, 1],
+        )
+
+        self.assertEqual([run["center"] for run in selected], [3000, 8250])
+
+    def test_composite_plan_keeps_items_whole_when_work_limit_is_reached(self):
+        specs = [
+            {"item_id": "q1", "text": "first", "default_voice": core.FEMALE_VOICE},
+            {"item_id": "q2", "text": "second", "default_voice": core.FEMALE_VOICE},
+        ]
+
+        works = core.build_composite_work_plan(specs, max_chars=5)
+
+        self.assertEqual([work["item_ids"] for work in works], [["q1"], ["q2"]])
+        self.assertEqual(sum(work["item_count"] for work in works), 2)
+
+    def test_composite_plan_rejects_duplicate_item_ids(self):
+        specs = [
+            {"item_id": "same", "text": "first", "default_voice": core.FEMALE_VOICE},
+            {"item_id": "same", "text": "second", "default_voice": core.FEMALE_VOICE},
+        ]
+
+        with self.assertRaises(core.CompositePlanError):
+            core.build_composite_work_plan(specs)
+
+    def test_composite_plan_rejects_malformed_items_instead_of_silently_dropping_them(self):
+        with self.assertRaises(core.CompositePlanError):
+            core.build_composite_work_plan([
+                {"item_id": "q1", "text": "first", "default_voice": core.FEMALE_VOICE},
+                None,
+            ])
+        with self.assertRaises(core.CompositePlanError):
+            core.build_composite_work_plan(
+                [{"item_id": "q1", "text": "first", "default_voice": core.FEMALE_VOICE}],
+                existing_plan=[{"work_id": "broken", "item_ids": []}],
+            )
+
+    def test_composite_plan_rejects_missing_or_duplicate_stored_work_ids(self):
+        specs = [{"item_id": "q1", "text": "first", "default_voice": core.FEMALE_VOICE}]
+
+        with self.assertRaises(core.CompositePlanError):
+            core.build_composite_work_plan(
+                specs,
+                existing_plan=[{"item_ids": ["q1"]}],
+            )
+        with self.assertRaises(core.CompositePlanError):
+            core.build_composite_work_plan(
+                specs,
+                existing_plan=[
+                    {"work_id": "same", "item_ids": ["q1"]},
+                    {"work_id": "same", "item_ids": ["q2"]},
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

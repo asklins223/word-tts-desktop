@@ -298,6 +298,36 @@
                                         <div class="section-heading-row">
                                             <div>
                                                 <span class="section-index">02</span>
+                                                <div><h2>生成方式</h2><p>选择讯飞提交方式；默认一次生成后按停顿切回单段音频。</p></div>
+                                            </div>
+                                        </div>
+                                        <div class="generation-mode-options" role="radiogroup" aria-label="音频生成方式">
+                                            <label class="generation-mode-option is-recommended">
+                                                <input type="radio" name="generation-mode" value="composite_cut" checked>
+                                                <span class="generation-mode-radio" aria-hidden="true"></span>
+                                                <span class="generation-mode-copy">
+                                                    <strong>全部生成后切割</strong>
+                                                    <small>默认推荐：整批文本一次提交，按人工停顿安全切回每段，减少讯飞生成次数。</small>
+                                                </span>
+                                                <span class="generation-mode-badge">推荐</span>
+                                            </label>
+                                            <label class="generation-mode-option">
+                                                <input type="radio" name="generation-mode" value="single_segment">
+                                                <span class="generation-mode-radio" aria-hidden="true"></span>
+                                                <span class="generation-mode-copy">
+                                                    <strong>单条单条生成</strong>
+                                                    <small>保留原有流程：每个逻辑片段独立生成，边界最直接，适合逐条核对。</small>
+                                                </span>
+                                                <span class="generation-mode-badge is-legacy">原有方式</span>
+                                            </label>
+                                        </div>
+                                        <p class="generation-mode-note">合并模式会保留首尾短保护间隔；只有检测到足够长的人工停顿才允许切割，无法确认边界时会保留合并音频并报告异常。</p>
+                                    </section>
+
+                                    <section class="surface-card config-section">
+                                        <div class="section-heading-row">
+                                            <div>
+                                                <span class="section-index">03</span>
                                                 <div><h2>输出文件</h2><p>选择兼容性与文件体积之间的平衡。</p></div>
                                             </div>
                                         </div>
@@ -334,6 +364,7 @@
                                             <div><span class="summary-key">文档内容</span><strong class="summary-value" id="summary-document">等待解析</strong></div>
                                             <div><span class="summary-key">音色</span><strong class="summary-value" id="summary-voice">女 Amanda · 男 George</strong></div>
                                             <div><span class="summary-key">语速 / 语调 / 音量</span><strong class="summary-value" id="summary-params">50 / 50 / 50</strong></div>
+                                            <div><span class="summary-key">生成方式</span><strong class="summary-value" id="summary-mode">全部生成后切割</strong></div>
                                             <div><span class="summary-key">输出</span><strong class="summary-value" id="summary-output">MP3 · 128 kbps</strong></div>
                                             <div><span class="summary-key">生成范围</span><strong class="summary-value" id="summary-scope">完整文档</strong></div>
                                         </div>
@@ -386,17 +417,17 @@
                                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 7v10"/><path d="M20 10v4"/></svg>
                                             </span>
                                             <div>
-                                                <h2>批量生成音频</h2>
-                                                <p>讯飞会按音色与参数分组提交，随后统一下载并整理文件。</p>
+                                                <h2 id="generation-console-title">批量生成音频</h2>
+                                                <p id="generation-console-description">默认一次提交全部文本，随后按人工停顿安全切割并整理文件。</p>
                                             </div>
                                         </div>
-                                        <span class="generation-strategy"><i></i>批量处理</span>
+                                        <span class="generation-strategy" id="generation-strategy"><i></i>全部生成后切割</span>
                                     </header>
 
                                     <div class="log-stage-rail generation-stage-rail" id="log-stage-rail" role="list" aria-label="任务阶段">
                                         <span role="listitem" data-log-stage="prepare" aria-label="准备任务：未开始"><i aria-hidden="true"></i><b>准备</b><small>校验设置</small></span>
                                         <span role="listitem" data-log-stage="parse" aria-label="识别文档：未开始"><i aria-hidden="true"></i><b>识别</b><small>读取内容</small></span>
-                                        <span role="listitem" data-log-stage="synthesize" aria-label="生成音频：未开始"><i aria-hidden="true"></i><b>生成</b><small>按组提交</small></span>
+                                        <span role="listitem" data-log-stage="synthesize" aria-label="生成音频：未开始"><i aria-hidden="true"></i><b>生成</b><small id="generation-synthesis-stage-detail">按停顿切割</small></span>
                                         <span role="listitem" data-log-stage="package" aria-label="整理交付：未开始"><i aria-hidden="true"></i><b>整理</b><small>输出文件</small></span>
                                         <span role="listitem" data-log-stage="archive" aria-label="保存记录：未开始"><i aria-hidden="true"></i><b>归档</b><small>保存任务</small></span>
                                         <span role="listitem" data-log-stage="complete" aria-label="任务完成：未开始"><i aria-hidden="true"></i><b>完成</b><small>可试听下载</small></span>
@@ -413,7 +444,7 @@
                                             </div>
                                             <div class="progress-copy">
                                                 <strong id="progress-stats" aria-live="polite">准备中...</strong>
-                                                <span>完整文档</span>
+                                                <span id="progress-mode-detail">全部生成后切割 · 按停顿恢复单段</span>
                                             </div>
                                             <div class="progress-bar-track" role="progressbar" aria-label="生成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                                                 <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>

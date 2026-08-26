@@ -73,6 +73,59 @@ class DesktopSessionIsolationTests(unittest.TestCase):
         progress["config"]["parser_version"] = server.core.PARSER_VERSION
         self.assertTrue(server.progress_is_reusable(progress, fingerprint))
 
+    def test_malformed_persisted_output_path_is_rejected_safely(self):
+        fingerprint = {"sha256": "same", "size": 1}
+        progress = {
+            "source_fingerprint": fingerprint,
+            "config": {
+                "generation_mode": server.core.GENERATION_MODE_SINGLE,
+                "audio_algorithm_version": server.core.AUDIO_ALGORITHM_VERSION,
+                "parser_version": server.core.PARSER_VERSION,
+            },
+            "items": [{
+                "status": "done",
+                "raw_item": {},
+                "output_path": {"unexpected": "object"},
+            }],
+        }
+
+        self.assertFalse(server.progress_is_reusable(progress, fingerprint))
+
+    def test_malformed_composite_progress_is_rejected_safely(self):
+        fingerprint = {"sha256": "same", "size": 1}
+        progress = {
+            "source_fingerprint": fingerprint,
+            "config": {
+                "generation_mode": server.core.GENERATION_MODE_COMPOSITE,
+                "audio_algorithm_version": server.core.AUDIO_ALGORITHM_VERSION,
+                "parser_version": server.core.PARSER_VERSION,
+            },
+            "items": [{"id": "q1", "status": "pending", "raw_item": {}}],
+            "composite_work_plan": [{
+                "work_id": "composite:q1",
+                "item_ids": ["q1"],
+                "item_count": 1,
+            }],
+            "composite_works": [],
+        }
+
+        self.assertFalse(server.progress_is_reusable(progress, fingerprint))
+
+    def test_legacy_single_progress_without_generation_mode_matches_new_config(self):
+        normalized = server.core.normalize_tts_config({
+            "generation_mode": server.core.GENERATION_MODE_SINGLE,
+        })
+        legacy_config = dict(normalized)
+        legacy_config.pop("generation_mode", None)
+
+        self.assertTrue(server._configs_match(legacy_config, normalized))
+        self.assertTrue(
+            server._configs_match(
+                {**legacy_config, "generation_mode": server.core.GENERATION_MODE_SINGLE},
+                normalized,
+            )
+        )
+
     def test_progress_count_is_always_an_integer(self):
         self.assertEqual(server._integer_progress_count(3.6, 37), 4)
         self.assertEqual(server._integer_progress_count(33.4, 37), 33)
@@ -509,6 +562,98 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         self.assertEqual(done["file_count"], 1)
         self.assertIsNotNone(done["history_id"])
 
+    def test_composite_task_emits_work_phases_and_mode_in_done(self):
+        session = server.SessionState("composite-timeline")
+        session.parse_results = self._parse_results("需要合并生成的内容")
+        config = {
+            **self._config(),
+            "generation_mode": server.core.GENERATION_MODE_COMPOSITE,
+        }
+
+        async def fake_composite(item_specs, progress_callback=None, **kwargs):
+            work_plan = kwargs["work_plan"]
+            self.assertEqual(len(work_plan), 1)
+            work_id = work_plan[0]["work_id"]
+            for status, extra in (
+                ("submitted", {"works_id": "works-test"}),
+                ("downloaded", {"works_id": "works-test"}),
+                ("cut", {"works_id": "works-test", "cut_item_count": 1}),
+            ):
+                await progress_callback({
+                    "work_id": work_id,
+                    "status": status,
+                    **extra,
+                })
+            return {
+                str(spec["item_id"]): {"audio": object(), "error": None}
+                for spec in item_specs
+            }
+
+        def fake_export(_audio, _fmt, _quality, output_path):
+            Path(output_path).write_bytes(b"composite-audio")
+
+        async def exercise():
+            with mock.patch.object(server, "source_fingerprint", return_value={"size": 1}), mock.patch.object(
+                server.core,
+                "_synth_items_batch_composite",
+                new=fake_composite,
+            ), mock.patch.object(
+                server.core,
+                "export_audio",
+                side_effect=fake_export,
+            ), mock.patch.object(
+                server.core._xunfei,
+                "close_session",
+                new=mock.AsyncMock(),
+            ):
+                await server.generate_audio_stream(
+                    session,
+                    "lesson.docx",
+                    "/missing/lesson.docx",
+                    config,
+                )
+
+        asyncio.run(exercise())
+        work_logs = [
+            event["entry"]
+            for event in session.event_journal
+            if event["type"] == "log" and event["entry"].get("kind") == "work"
+        ]
+        self.assertEqual(
+            [entry["work"]["status"] for entry in work_logs],
+            ["submitted", "downloaded", "cut"],
+        )
+        phases = [
+            event.get("phase")
+            for event in session.event_journal
+            if event["type"] == "stats"
+        ]
+        self.assertTrue({"composite-plan", "composite-submit", "composite-download", "composite-cut"}.issubset(phases))
+        done = session.final_done
+        self.assertIsNotNone(done)
+        self.assertEqual(done["generation_mode"], server.core.GENERATION_MODE_COMPOSITE)
+        self.assertEqual(
+            done["composite_works"],
+            {
+                "kind": "composite_batch",
+                "completed": 1,
+                "total": 1,
+                "submitted": 1,
+                "downloaded": 1,
+                "failed": 0,
+                "sliced": 1,
+                "exported": 1,
+            },
+        )
+        self.assertEqual((done["completed"], done["failed"], done["total"]), (1, 0, 1))
+        self.assertTrue(done["zip_available"])
+
+        # 已完成任务重新打开/重放时不再有待处理 item_specs，但作品汇总
+        # 仍应来自落盘进度，而不是被重置为 0 个作品。
+        asyncio.run(exercise())
+        replay_done = session.final_done
+        self.assertEqual(replay_done["composite_works"], done["composite_works"])
+
     def test_cancelling_during_last_item_does_not_emit_done(self):
         session = server.SessionState("cancel-last-item")
         session.parse_results = self._parse_results("需要生成的内容")
@@ -623,7 +768,11 @@ class DesktopHistoryTests(unittest.TestCase):
             "total_items": 1,
             "completed": 1,
             "failed": 0,
-            "config": {"format": "mp3", "preview": False},
+            "config": {
+                "format": "mp3",
+                "preview": False,
+                "generation_mode": server.core.GENERATION_MODE_COMPOSITE,
+            },
             "items": [{
                 "id": session_id,
                 "filename": filename,
@@ -638,6 +787,7 @@ class DesktopHistoryTests(unittest.TestCase):
             str(Path(session.session_dir, "output.zip")),
         )
         self.assertIsNotNone(record)
+        self.assertEqual(record["generation_mode"], server.core.GENERATION_MODE_COMPOSITE)
         return {
             "session": session,
             "progress": progress,
@@ -681,6 +831,17 @@ class DesktopHistoryTests(unittest.TestCase):
         self.assertEqual(second["id"], first_id)
         records = server.list_history_records()
         self.assertEqual([record["id"] for record in records], [first_id])
+
+    def test_legacy_history_manifest_defaults_to_single_generation_mode(self):
+        archived = self._archive("legacy-history-mode")
+        manifest_path = Path(archived["session"].session_dir, server.HISTORY_MANIFEST_FILENAME)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("generation_mode", None)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        record = server.get_history_record(archived["record"]["id"])
+
+        self.assertEqual(record["generation_mode"], server.core.GENERATION_MODE_SINGLE)
 
     def test_history_survives_restart_and_supports_detail_download_and_delete(self):
         archived = self._archive("restart-safe")

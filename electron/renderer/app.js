@@ -47,6 +47,13 @@ const DEFAULT_FEMALE_ROLE_KEY = '__default_female__';
 const DEFAULT_MALE_ROLE_KEY = '__default_male__';
 const ROLE_CONFIG_PREFIX = 'role:';
 const DEFAULT_VOICE_PARAMS = { rate: 50, volume: 50, pitch: 50 };
+const GENERATION_MODE_COMPOSITE = 'composite_cut';
+const GENERATION_MODE_SINGLE = 'single_segment';
+const DEFAULT_GENERATION_MODE = GENERATION_MODE_COMPOSITE;
+const GENERATION_MODE_LABELS = {
+    [GENERATION_MODE_COMPOSITE]: '全部生成后切割',
+    [GENERATION_MODE_SINGLE]: '单条单条生成',
+};
 let voicePreviewAudio = null;
 let isVoiceDetailCollapsed = false;
 let voiceAvatarObserver = null;
@@ -349,6 +356,51 @@ function normalizeVoiceParams(raw, fallback = { rate: 50, volume: 50, pitch: 50 
     };
 }
 
+function normalizeGenerationMode(value) {
+    return value === GENERATION_MODE_SINGLE
+        ? GENERATION_MODE_SINGLE
+        : GENERATION_MODE_COMPOSITE;
+}
+
+function generationModeLabel(value) {
+    return GENERATION_MODE_LABELS[normalizeGenerationMode(value)] || GENERATION_MODE_LABELS[DEFAULT_GENERATION_MODE];
+}
+
+function generationModeDescription(value) {
+    return normalizeGenerationMode(value) === GENERATION_MODE_SINGLE
+        ? '保留原有单条生成流程，逐段生成后直接整理。'
+        : '一次提交全部文本，按人工停顿安全切回单段音频。';
+}
+
+function selectedGenerationMode() {
+    return normalizeGenerationMode(document.querySelector('input[name="generation-mode"]:checked')?.value);
+}
+
+function updateGenerationModeUI(mode) {
+    const normalizedMode = normalizeGenerationMode(mode);
+    const label = generationModeLabel(normalizedMode);
+    const composite = normalizedMode === GENERATION_MODE_COMPOSITE;
+    const summary = $('summary-mode');
+    const strategy = $('generation-strategy');
+    const consoleTitle = $('generation-console-title');
+    const consoleDescription = $('generation-console-description');
+    const progressDetail = $('progress-mode-detail');
+    const stageDetail = $('generation-synthesis-stage-detail');
+    if (summary) summary.textContent = label;
+    if (strategy) strategy.innerHTML = `<i></i>${label}`;
+    if (consoleTitle) consoleTitle.textContent = composite ? '合并生成音频' : '逐条生成音频';
+    if (consoleDescription) consoleDescription.textContent = generationModeDescription(normalizedMode);
+    if (progressDetail) progressDetail.textContent = composite
+        ? '合并生成后切割 · 按停顿恢复单段'
+        : '单条生成 · 逐段整理文件';
+    if (stageDetail) stageDetail.textContent = composite ? '按停顿切割' : '逐条提交';
+    document.querySelectorAll('input[name="generation-mode"]').forEach(input => {
+        const selected = input.value === normalizedMode;
+        input.checked = selected;
+        input.closest('.generation-mode-option')?.classList.toggle('is-selected', selected);
+    });
+}
+
 function normalizeClientConfig(config = {}) {
     const raw = config && typeof config === 'object' ? config : {};
     const formats = ['mp3'];
@@ -412,6 +464,7 @@ function normalizeClientConfig(config = {}) {
     });
 
     return {
+        generation_mode: normalizeGenerationMode(raw.generation_mode ?? DEFAULT_GENERATION_MODE),
         rate: baseParams.rate,
         volume: baseParams.volume,
         pitch: baseParams.pitch,
@@ -446,6 +499,7 @@ function normalizePersistedConfig(config = {}) {
         fallback,
     );
     return {
+        generation_mode: normalized.generation_mode,
         rate: femaleParams.rate,
         volume: femaleParams.volume,
         pitch: femaleParams.pitch,
@@ -1255,6 +1309,7 @@ function applyConfigToForm(config, { includeRoles = true } = {}) {
         : {};
     selectedDefaultFemaleVoice = normalized.default_female_voice;
     selectedDefaultMaleVoice = normalized.default_male_voice;
+    updateGenerationModeUI(normalized.generation_mode);
     const defaultRoleConfigs = {
         [DEFAULT_FEMALE_ROLE_KEY]: normalizeVoiceParams(
             normalized.role_configs?.[DEFAULT_FEMALE_ROLE_KEY],
@@ -1389,6 +1444,7 @@ async function startProcessing(useDefaults, presetConfig) {
 
     const session = currentSession;
     const config = normalizeClientConfig(presetConfig || collectConfig(useDefaults));
+    updateGenerationModeUI(config.generation_mode);
     const sourceTotal = summarizeParseResults(session.parse_results).total;
     const isPreviewScope = Boolean(config.preview && sourceTotal > 3);
     const generationTotal = isPreviewScope ? Math.min(sourceTotal, 3) : sourceTotal;
@@ -1600,6 +1656,7 @@ function setUploadFeedback(state = '', message = '') {
 }
 
 function updateConfigSummary() {
+    updateGenerationModeUI(selectedGenerationMode());
     const paramsTarget = $('summary-params');
     if (paramsTarget) {
         const params = activeVoiceParams();
@@ -2067,6 +2124,13 @@ function bindEvents() {
         updateConfigSummary();
         rememberCurrentConfig();
     });
+    $$('input[name="generation-mode"]').forEach(input => {
+        input.addEventListener('change', () => {
+            updateGenerationModeUI(selectedGenerationMode());
+            updateConfigSummary();
+            rememberCurrentConfig();
+        });
+    });
     $('change-file-btn').addEventListener('click', requestRestart);
     $('back-to-upload-btn').addEventListener('click', requestRestart);
     $('retry-generation-btn').addEventListener('click', () => {
@@ -2311,6 +2375,14 @@ function historyFormatLabel(record) {
     return String(record?.format || 'mp3').toUpperCase();
 }
 
+function historyGenerationModeLabel(record) {
+    // 历史清单升级前没有该字段，按原有逐条流程解释，避免把旧任务误标成
+    // 新的合并切割模式。
+    return record?.generation_mode
+        ? generationModeLabel(record.generation_mode)
+        : GENERATION_MODE_LABELS[GENERATION_MODE_SINGLE];
+}
+
 function createHistoryAction(label, className, handler) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -2362,7 +2434,9 @@ function renderHistoryRecords(records) {
         completedAt.textContent = historyDateLabel(record.completed_at);
         const scope = document.createElement('span');
         scope.textContent = record.preview ? '试听任务' : '完整任务';
-        meta.append(completedAt, scope);
+        const mode = document.createElement('span');
+        mode.textContent = historyGenerationModeLabel(record);
+        meta.append(completedAt, scope, mode);
 
         const stats = document.createElement('div');
         stats.className = 'history-item-stats';
@@ -2464,6 +2538,7 @@ async function viewHistoryRecord(historyId) {
             failed: Number(record.failed) || 0,
             total: Number(record.total) || 0,
             format: record.format || 'mp3',
+            generationMode: record.generation_mode || GENERATION_MODE_SINGLE,
             preview: Boolean(record.preview),
             zipAvailable: Boolean(record.zip_available),
             failedItems: Array.isArray(record.failed_items) ? record.failed_items : [],
@@ -2737,6 +2812,7 @@ async function uploadFile(file) {
 function collectConfig(useDefaults) {
     if (useDefaults) {
         return normalizeClientConfig({
+            generation_mode: DEFAULT_GENERATION_MODE,
             rate: 50,
             volume: 50,
             pitch: 50,
@@ -2754,6 +2830,7 @@ function collectConfig(useDefaults) {
     }
     const activeParams = activeVoiceParams();
     return normalizeClientConfig({
+        generation_mode: selectedGenerationMode(),
         rate: activeParams.rate,
         volume: activeParams.volume,
         pitch: activeParams.pitch,
@@ -3060,6 +3137,8 @@ function normalizeLogEntry(rawEntry = {}) {
         detail: String(rawEntry.detail || (rawEntry.title ? rawEntry.msg || '' : '')),
         time: String(rawEntry.time || new Date().toLocaleTimeString('zh-CN', { hour12: false })),
         item: rawEntry.item && typeof rawEntry.item === 'object' ? rawEntry.item : null,
+        work: rawEntry.work && typeof rawEntry.work === 'object' ? rawEntry.work : null,
+        segments: rawEntry.segments && typeof rawEntry.segments === 'object' ? rawEntry.segments : null,
         progress: rawEntry.progress && typeof rawEntry.progress === 'object' ? rawEntry.progress : null,
     };
 }
@@ -3141,6 +3220,24 @@ function createLogEntryElement(entry) {
         metaItems.push(createLogMeta('进度', `${entry.progress.completed || 0}/${entry.progress.total || 0}`));
         if (Number(entry.progress.failed) > 0) {
             metaItems.push(createLogMeta('失败', entry.progress.failed, 'is-issue'));
+        }
+    }
+    if (entry.work) {
+        const workIndex = Number(entry.work.index);
+        const workTotal = Number(entry.work.total);
+        const workLabel = Number.isFinite(workIndex) && Number.isFinite(workTotal) && workTotal > 0
+            ? `${workIndex}/${workTotal}`
+            : entry.work.status || '';
+        metaItems.push(createLogMeta('合并作品', workLabel));
+        metaItems.push(createLogMeta('包含题目', entry.work.item_count));
+        metaItems.push(createLogMeta('作品状态', entry.work.status));
+    }
+    if (entry.segments) {
+        const sliced = entry.segments.sliced ?? entry.segments.completed ?? 0;
+        const exported = entry.segments.exported ?? 0;
+        metaItems.push(createLogMeta('切割题目', `${sliced}/${entry.segments.total || 0}`));
+        if (entry.segments.exported !== undefined) {
+            metaItems.push(createLogMeta('整理题目', `${exported}/${entry.segments.total || 0}`));
         }
     }
     const duration = formatLogDuration(entry.duration_ms);
@@ -3438,29 +3535,75 @@ function updateProgress(event) {
     const isBatchSubmit = phase === 'batch-submit';
     const isBatchDownload = phase === 'batch-download';
     const isBatchExport = phase === 'batch-export';
+    const isCompositeSubmit = phase === 'composite-submit';
+    const isCompositeDownload = phase === 'composite-download';
+    const isCompositeCut = phase === 'composite-cut';
+    const isCompositeExport = phase === 'composite-export';
+    const isCompositeError = phase === 'composite-error';
     const isBatchPhase = isBatchSubmit || isBatchDownload || isBatchExport;
+    const isCompositePhase = isCompositeSubmit || isCompositeDownload || isCompositeCut || isCompositeExport || isCompositeError;
+    const mode = normalizeGenerationMode(event.generation_mode || lastGenerationConfig?.generation_mode);
+    const work = event.work && typeof event.work === 'object' ? event.work : null;
+    const segments = event.segments && typeof event.segments === 'object' ? event.segments : null;
+    updateGenerationModeUI(mode);
     // 统一下载完成后还要做音频解码、拼接、导出和 ZIP 整理；在最终 done
     // 事件到达前保留一点尾部空间，避免用户看到 100% 后还长时间等待。
-    const visualPct = isBatchPhase ? Math.min(pct, 98) : pct;
+    const visualPct = isBatchPhase || isCompositePhase ? Math.min(pct, 98) : pct;
     const eta = formatLogDuration(event.eta_ms);
     $('progress-bar').style.width = `${visualPct}%`;
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', String(visualPct));
-    $('progress-completed-label').textContent = isBatchSubmit
-        ? '已提交'
-        : (isBatchDownload ? '已下载' : (isBatchExport ? '已整理' : '已完成'));
-    $('progress-stats').textContent = isBatchSubmit
-        ? `已提交 ${processed} / ${total} · 等待下载`
-        : (isBatchDownload
-            ? `已下载 ${processed} / ${total} · 等待整理`
-            : (isBatchExport
-                ? `已整理 ${processed} / ${total} · 正在输出`
-                : `${completed} / ${total}`))
+    const workTotal = integerProgressCount(work?.total ?? 0);
+    const workCompleted = integerProgressCount(work?.completed ?? 0, workTotal || Number.POSITIVE_INFINITY);
+    const workSubmitted = integerProgressCount(work?.submitted ?? 0, workTotal || Number.POSITIVE_INFINITY);
+    const workDownloaded = integerProgressCount(work?.downloaded ?? 0, workTotal || Number.POSITIVE_INFINITY);
+    const segmentTotal = integerProgressCount(segments?.total ?? 0);
+    const segmentSliced = integerProgressCount(
+        segments?.sliced ?? segments?.completed ?? 0,
+        segmentTotal || Number.POSITIVE_INFINITY,
+    );
+    const segmentExported = integerProgressCount(
+        segments?.exported ?? (isCompositeExport ? completed : 0),
+        segmentTotal || Number.POSITIVE_INFINITY,
+    );
+    const compositeWorkCopy = workTotal > 0
+        ? `作品 ${workCompleted}/${workTotal} · 已提交 ${workSubmitted} · 已下载 ${workDownloaded}`
+        : '';
+    const compositeSegmentCopy = segmentTotal > 0
+        ? `题目切割 ${segmentSliced}/${segmentTotal}`
+        : '';
+    const compositeExportCopy = segmentTotal > 0
+        ? `题目整理 ${segmentExported}/${segmentTotal}`
+        : '';
+    let completedLabel = '已完成';
+    if (isCompositeSubmit) completedLabel = '已提交作品';
+    else if (isCompositeDownload) completedLabel = '已下载作品';
+    else if (isCompositeCut) completedLabel = '已切割题目';
+    else if (isCompositeExport) completedLabel = '已整理题目';
+    else if (isBatchSubmit) completedLabel = '已提交';
+    else if (isBatchDownload) completedLabel = '已下载';
+    else if (isBatchExport) completedLabel = '已整理';
+    $('progress-completed-label').textContent = completedLabel;
+    let phaseCopy = `${completed} / ${total}`;
+    if (isCompositeSubmit) phaseCopy = `合并作品提交中 · ${compositeWorkCopy}`;
+    else if (isCompositeDownload) phaseCopy = `合并音频下载中 · ${compositeWorkCopy}`;
+    else if (isCompositeCut) phaseCopy = `按停顿安全切割中 · ${compositeSegmentCopy || compositeWorkCopy}`;
+    else if (isCompositeExport) phaseCopy = `独立音频整理中 · ${compositeExportCopy || compositeWorkCopy}`;
+    else if (isCompositeError) phaseCopy = `合并作品出现异常 · ${compositeWorkCopy}`;
+    else if (isBatchSubmit) phaseCopy = `已提交 ${processed} / ${total} · 等待下载`;
+    else if (isBatchDownload) phaseCopy = `已下载 ${processed} / ${total} · 等待整理`;
+    else if (isBatchExport) phaseCopy = `已整理 ${processed} / ${total} · 正在输出`;
+    $('progress-stats').textContent = phaseCopy
         + (failed > 0 ? `  ·  失败 ${failed}` : '')
         + (eta ? `  ·  预计 ${eta}` : '');
     $('progress-percent').textContent = String(Math.round(visualPct));
-    $('progress-completed').textContent = isBatchPhase
-        ? String(processed)
-        : String(completed);
+    const displayedCompleted = isCompositeCut
+        ? String(segmentTotal > 0 ? segmentSliced : processed)
+        : isCompositeExport
+            ? String(segmentTotal > 0 ? segmentExported : processed)
+            : isBatchPhase
+                ? String(processed)
+                : String(completed);
+    $('progress-completed').textContent = displayedCompleted;
     $('progress-remaining').textContent = String(Math.max(total - processed, 0));
     $('progress-failed').textContent = String(failed);
     updateLogTimelineHeader();

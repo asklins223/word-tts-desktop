@@ -529,6 +529,11 @@ def _read_history_manifest(session_dir: str) -> Optional[dict]:
         "total": total,
         "format": str(raw.get("format") or "mp3")[:16].lower(),
         "preview": bool(raw.get("preview")),
+        "generation_mode": (
+            raw.get("generation_mode")
+            if raw.get("generation_mode") in core.GENERATION_MODES
+            else core.GENERATION_MODE_SINGLE
+        ),
         "zip_available": os.path.isfile(zip_path),
         "available_files": sum(1 for item in files if item["available"]),
         "files": files,
@@ -622,6 +627,13 @@ def archive_history_record(
         if item.get("status") == "error"
     ][:20]
     now = datetime.now().isoformat()
+    progress_config = progress.get("config") if isinstance(progress.get("config"), dict) else {}
+    generation_mode = progress_config.get(
+        "generation_mode",
+        core.GENERATION_MODE_SINGLE,
+    )
+    if generation_mode not in core.GENERATION_MODES:
+        generation_mode = core.GENERATION_MODE_SINGLE
     manifest = {
         "schema_version": HISTORY_SCHEMA_VERSION,
         "history_id": history_id_for_session(session.session_id),
@@ -632,8 +644,9 @@ def archive_history_record(
         "total": max(0, int(progress.get("total_items") or 0)),
         "completed": max(0, int(progress.get("completed") or len(file_list))),
         "failed": max(0, int(progress.get("failed") or 0)),
-        "format": str((progress.get("config") or {}).get("format") or "mp3")[:16].lower(),
-        "preview": bool((progress.get("config") or {}).get("preview")),
+        "format": str(progress_config.get("format") or "mp3")[:16].lower(),
+        "preview": bool(progress_config.get("preview")),
+        "generation_mode": generation_mode,
         "zip_available": bool(zip_path and os.path.isfile(zip_path)),
         "failed_items": failed_items,
         "files": [
@@ -714,7 +727,7 @@ def load_parse_cache(session_dir: str, fingerprint: dict) -> Optional[list]:
 
 def clear_generated_outputs(session_dir: str) -> None:
     """仅清除可再生成的产物，保留目录本身。"""
-    for dirname in ("audio", ".tmp"):
+    for dirname in ("audio", ".tmp", "composite"):
         shutil.rmtree(os.path.join(session_dir, dirname), ignore_errors=True)
     for filename in (
         "progress.json",
@@ -742,23 +755,119 @@ def save_parse_cache(session_dir: str, parse_results: list, fingerprint: dict) -
     _atomic_write_json(meta_path, fingerprint)
 
 
+def _composite_progress_is_valid(progress: dict, items: list) -> bool:
+    """校验断点中的合并作品结构，坏数据只能触发安全重建。"""
+    plan = progress.get("composite_work_plan")
+    states = progress.get("composite_works")
+    if plan is None and states is None:
+        return True
+    if not isinstance(plan, list) or not isinstance(states, dict):
+        return False
+
+    item_ids = {
+        str(item.get("id") or "").strip()
+        for item in items
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    plan_ids = set()
+    plan_item_ids = set()
+    for work in plan:
+        if not isinstance(work, dict):
+            return False
+        raw_work_id = work.get("work_id")
+        if not isinstance(raw_work_id, (str, int)) or isinstance(raw_work_id, bool):
+            return False
+        work_id = str(raw_work_id).strip()
+        if not work_id or work_id in plan_ids:
+            return False
+        raw_item_ids = work.get("item_ids")
+        if not isinstance(raw_item_ids, (list, tuple)) or not raw_item_ids:
+            return False
+        normalized_item_ids = []
+        for raw_item_id in raw_item_ids:
+            if not isinstance(raw_item_id, (str, int)) or isinstance(raw_item_id, bool):
+                return False
+            item_id = str(raw_item_id).strip()
+            if not item_id or item_id in plan_item_ids:
+                return False
+            normalized_item_ids.append(item_id)
+            plan_item_ids.add(item_id)
+        if any(item_id not in item_ids for item_id in normalized_item_ids):
+            return False
+        try:
+            item_count = int(work.get("item_count") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if item_count != len(normalized_item_ids):
+            return False
+        plan_ids.add(work_id)
+
+    if any(str(key) not in plan_ids for key in states):
+        return False
+    allowed_statuses = {"pending", "submitted", "downloaded", "cut", "done", "complete", "error"}
+    for work_id, state in states.items():
+        if str(work_id) not in plan_ids or not isinstance(state, dict):
+            return False
+        plan_work = next(work for work in plan if str(work.get("work_id")) == str(work_id))
+        state_item_ids = state.get("item_ids")
+        if state_item_ids is not None:
+            if not isinstance(state_item_ids, (list, tuple)):
+                return False
+            if list(state_item_ids) != list(plan_work["item_ids"]):
+                return False
+        status = str(state.get("status") or "pending")
+        if status not in allowed_statuses:
+            return False
+        try:
+            cut_count = int(state.get("cut_item_count") or 0)
+            item_count = int(plan_work.get("item_count") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if cut_count < 0 or cut_count > item_count:
+            return False
+    return True
+
+
 def progress_is_reusable(progress: Optional[dict], fingerprint: dict) -> bool:
-    if not progress or not progress.get("items"):
+    if not isinstance(progress, dict):
+        return False
+    items = progress.get("items")
+    if not isinstance(items, list) or not items:
         return False
     if progress.get("source_fingerprint") != fingerprint:
         return False
-    cfg = progress.get("config") or {}
-    if cfg.get("audio_algorithm_version") != core.AUDIO_ALGORITHM_VERSION:
+    cfg = progress.get("config")
+    if not isinstance(cfg, dict):
+        return False
+    generation_mode = cfg.get(
+        "generation_mode",
+        core.GENERATION_MODE_SINGLE,
+    )
+    if generation_mode not in core.GENERATION_MODES:
+        return False
+    expected_algorithms = {core.AUDIO_ALGORITHM_VERSION}
+    if generation_mode == core.GENERATION_MODE_SINGLE:
+        expected_algorithms.add(core.LEGACY_AUDIO_ALGORITHM_VERSION)
+    if cfg.get("audio_algorithm_version") not in expected_algorithms:
         return False
     if cfg.get("parser_version") != core.PARSER_VERSION:
         return False
-    if not all("raw_item" in item for item in progress.get("items", [])):
+    if not all(isinstance(item, dict) and "raw_item" in item for item in items):
         return False
-    return all(
-        item.get("status") != "done"
-        or (item.get("output_path") and os.path.exists(item["output_path"]))
-        for item in progress.get("items", [])
-    )
+    if generation_mode == core.GENERATION_MODE_COMPOSITE and not _composite_progress_is_valid(
+        progress,
+        items,
+    ):
+        return False
+    for item in items:
+        if item.get("status") != "done":
+            continue
+        output_path = item.get("output_path")
+        if not isinstance(output_path, str) or not output_path:
+            return False
+        if not os.path.exists(output_path):
+            return False
+    return True
 
 
 def _persisted_session_dirs(excluded_dirs: set[str]) -> list[str]:
@@ -793,7 +902,16 @@ def find_persisted_parse_cache(
 
 
 def _configs_match(previous: dict, requested: dict) -> bool:
-    return all(previous.get(key) == value for key, value in requested.items())
+    previous = previous if isinstance(previous, dict) else {}
+    requested = requested if isinstance(requested, dict) else {}
+    for key, value in requested.items():
+        previous_value = previous.get(key)
+        # 旧任务没有保存 generation_mode，但它们实际走的是原有逐段流程。
+        if key == "generation_mode" and previous_value is None:
+            previous_value = core.GENERATION_MODE_SINGLE
+        if previous_value != value:
+            return False
+    return True
 
 
 def restore_persisted_progress(
@@ -909,8 +1027,14 @@ async def generate_audio_stream(
     config: dict,
 ):
     """串行化讯飞浏览器任务，避免共享页面发生跨会话竞态。"""
+    # /api/generate 会先显式规范化新配置，默认是 composite_cut。这里保留
+    # 旧版内部调用方（包括历史脚本/测试直接传入的无 mode 配置）按原有
+    # 单段流程运行，避免升级时静默改变未迁移调用者的计费行为。
+    raw_config = dict(config or {})
+    if "generation_mode" not in raw_config:
+        raw_config["generation_mode"] = core.GENERATION_MODE_SINGLE
     async with _get_xunfei_generation_lock():
-        await _generate_audio_stream(session, source_filename, filepath, config)
+        await _generate_audio_stream(session, source_filename, filepath, raw_config)
 
 
 async def _generate_audio_stream(
@@ -1046,6 +1170,8 @@ async def _generate_audio_stream(
         item: Optional[dict] = None,
         progress_snapshot: Optional[dict] = None,
         duration_ms: Optional[int] = None,
+        work: Optional[dict] = None,
+        segments: Optional[dict] = None,
     ):
         session.log_seq += 1
         entry = {
@@ -1064,6 +1190,10 @@ async def _generate_audio_stream(
             }.get(level, "info"),
             "title": str(title or msg)[:240],
             "seq": session.log_seq,
+            "generation_mode": config.get(
+                "generation_mode",
+                core.GENERATION_MODE_SINGLE,
+            ),
         }
         if key:
             entry["key"] = str(key)[:160]
@@ -1071,6 +1201,10 @@ async def _generate_audio_stream(
             entry["detail"] = str(detail)[:1200]
         if duration_ms is not None:
             entry["duration_ms"] = max(0, int(duration_ms))
+        if work:
+            entry["work"] = dict(work)
+        if segments:
+            entry["segments"] = dict(segments)
         if item:
             entry["item"] = {
                 "id": str(item.get("id") or "")[:160],
@@ -1102,6 +1236,8 @@ async def _generate_audio_stream(
         failed_override=None,
         processed_override=None,
         phase=None,
+        work=None,
+        segments=None,
     ):
         nonlocal last_stats_emit_at
         now = time.monotonic()
@@ -1151,9 +1287,17 @@ async def _generate_audio_stream(
             "eta_ms": eta_ms,
             "failed_items": failed_items,
             "by_type": type_counts,
+            "generation_mode": config.get(
+                "generation_mode",
+                core.GENERATION_MODE_SINGLE,
+            ),
         }
         if phase:
             event["phase"] = str(phase)
+        if work:
+            event["work"] = dict(work)
+        if segments:
+            event["segments"] = dict(segments)
         push_event(session, event)
         last_stats_emit_at = time.monotonic()
 
@@ -1359,9 +1503,7 @@ async def _generate_audio_stream(
                 )
         if progress_is_reusable(existing, current_fingerprint):
             old_config = existing.get("config", {})
-            config_changed = any(
-                old_config.get(k) != v for k, v in config.items()
-            )
+            config_changed = not _configs_match(old_config, config)
 
             if config_changed:
                 reason = "配置已变更"
@@ -1564,6 +1706,12 @@ async def _generate_audio_stream(
         voice_configs = config.get("voice_configs") or {}
         role_configs = config.get("role_configs") or {}
         role_voices = config.get("role_voices") or {}
+        generation_mode = config.get(
+            "generation_mode",
+            core.GENERATION_MODE_SINGLE,
+        )
+        composite_mode = generation_mode == core.GENERATION_MODE_COMPOSITE
+        generation_mode_label = "全部生成后切割" if composite_mode else "单条单条生成"
 
         log(
             "info",
@@ -1572,17 +1720,23 @@ async def _generate_audio_stream(
             kind="notice",
             key="task:plan",
             title="生成计划已创建",
-            detail=f"待处理 {max(total - progress['completed'], 0)} 条 · {str(fmt).upper()} · {quality}",
+            detail=(
+                f"待处理 {max(total - progress['completed'], 0)} 条 · "
+                f"{str(fmt).upper()} · {quality} · 方式：{generation_mode_label}"
+            ),
             progress_snapshot=progress,
         )
         log(
             "info",
-            "全部音频使用讯飞配音生成（音色与参数按角色独立配置）",
+            f"全部音频使用讯飞配音生成（{generation_mode_label}，音色与参数按角色独立配置）",
             stage="prepare",
             kind="notice",
             key="engine:plan",
             title="音色引擎已就绪",
-            detail="统一使用讯飞配音引擎；W/M 或文本角色名分别使用所选音色，无标识默认女声",
+            detail=(
+                "统一使用讯飞配音引擎；W/M 或文本角色名分别使用所选音色，"
+                f"无标识默认女声；生成方式：{generation_mode_label}"
+            ),
         )
 
         emit_stats(progress)
@@ -1639,24 +1793,39 @@ async def _generate_audio_stream(
             stage="synthesize",
             kind="stage",
             key="stage:synthesize",
-            title="逐条生成音频",
-            detail=f"已完成 {progress['completed']} 条，剩余 {max(total - progress['completed'], 0)} 条",
+            title="合并生成后切割" if composite_mode else "逐条生成音频",
+            detail=(
+                f"已完成 {progress['completed']} 条，剩余 {max(total - progress['completed'], 0)} 条；"
+                f"生成方式：{generation_mode_label}"
+            ),
             progress_snapshot=progress,
         )
 
-        # ---- 先按音色/参数分组提交全部合成，再统一下载 ----
-        # 题目级别的进度仍保留；真正提交的是每道题展开后的角色音频段。
-        # 这样多角色题可以同时复用同一音色/参数分组，最后再按题内顺序拼接。
+        # ---- 构造题目级任务 ----
+        # single_segment 延续下面原有的逻辑片段批量流程；composite_cut
+        # 会把这些逻辑片段重新装配为讯飞多人配音作品。
         item_specs = []
         item_contexts = {}
         item_started_at = {}
         empty_items = []
+        composite_resume_item_ids = set()
+        if composite_mode:
+            for state in (progress.get("composite_works") or {}).values():
+                if not isinstance(state, dict):
+                    continue
+                if str(state.get("status") or "") in {"done", "complete"}:
+                    continue
+                composite_resume_item_ids.update(
+                    str(item_id)
+                    for item_id in (state.get("item_ids") or [])
+                    if str(item_id or "").strip()
+                )
 
         for item in progress["items"]:
             if session.cancelled:
                 emit_cancelled_terminal("已收到取消请求，未开始的内容不会继续处理")
                 return
-            if item["status"] == "done":
+            if item["status"] == "done" and item["id"] not in composite_resume_item_ids:
                 continue
 
             item_id = item["id"]
@@ -1774,6 +1943,112 @@ async def _generate_audio_stream(
         # 连起来，避免长时间停在 0% 或从较高进度倒退。
         batch_processed_floor = float(progress["completed"] + progress["failed"])
         batch_item_progress = {}
+        composite_plan = []
+        composite_work_states = {}
+        composite_display_completed = progress["completed"]
+        composite_display_failed = progress["failed"]
+        composite_processed_floor = batch_processed_floor
+
+        def composite_work_snapshot():
+            states = list(composite_work_states.values())
+            item_by_id = {
+                str(item.get("id") or ""): item
+                for item in progress.get("items", [])
+            }
+            total_segments = sum(
+                max(0, int(state.get("item_count") or 0))
+                for state in states
+            )
+            sliced_segments = sum(
+                min(
+                    max(0, int(state.get("item_count") or 0)),
+                    max(0, int(state.get("cut_item_count") or 0)),
+                )
+                for state in states
+            )
+            exported_segments = sum(
+                1
+                for state in states
+                for item_id in (state.get("item_ids") or [])
+                if (item_by_id.get(str(item_id)) or {}).get("status") == "done"
+            )
+            return {
+                "kind": "composite_batch",
+                "completed": sum(
+                    1 for state in states if state.get("status") == "done"
+                ),
+                "total": len(composite_plan),
+                "submitted": sum(
+                    1
+                    for state in states
+                    if state.get("status")
+                    in {"submitted", "downloaded", "cut", "done"}
+                ),
+                "downloaded": sum(
+                    1
+                    for state in states
+                    if state.get("status") in {"downloaded", "cut", "done"}
+                ),
+                "failed": sum(
+                    1 for state in states if state.get("status") == "error"
+                ),
+                "sliced": min(sliced_segments, total_segments),
+                "exported": min(exported_segments, total_segments),
+            }
+
+        def composite_segments_snapshot():
+            states = list(composite_work_states.values())
+            total = sum(max(0, int(state.get("item_count") or 0)) for state in states)
+            completed = sum(
+                min(
+                    max(0, int(state.get("item_count") or 0)),
+                    max(0, int(state.get("cut_item_count") or 0)),
+                )
+                for state in states
+            )
+            item_by_id = {
+                str(item.get("id") or ""): item
+                for item in progress.get("items", [])
+            }
+            exported = sum(
+                1
+                for state in states
+                for item_id in (state.get("item_ids") or [])
+                if (item_by_id.get(str(item_id)) or {}).get("status") == "done"
+            )
+            return {
+                "completed": min(completed, total),
+                "sliced": min(completed, total),
+                "exported": min(exported, total),
+                "total": total,
+            }
+
+        def composite_work_progress_floor():
+            """把作品阶段映射为单题进度，且不重复计算已导出的题目。"""
+            item_by_id = {
+                str(item.get("id") or ""): item for item in progress.get("items", [])
+            }
+            stage_ratio = {
+                "pending": 0.0,
+                "submitted": 0.16,
+                "downloaded": 0.56,
+                "cut": 0.90,
+                "done": 1.0,
+                "error": 0.96,
+            }
+            value = float(progress["completed"] + progress["failed"])
+            for state in composite_work_states.values():
+                pending_count = sum(
+                    1
+                    for item_id in (state.get("item_ids") or [])
+                    if (item_by_id.get(str(item_id)) or {}).get("status")
+                    not in {"done", "error"}
+                )
+                value += pending_count * stage_ratio.get(
+                    str(state.get("status") or "pending"),
+                    0.0,
+                )
+            return value
 
         async def on_batch_item_progress(event):
             """把批量提交、下载和保存结果即时反映到 SSE 进度。"""
@@ -1863,25 +2138,293 @@ async def _generate_audio_stream(
                 processed_override=batch_processed_floor,
             )
 
-        if item_specs:
+        async def on_composite_progress(event):
+            """把合并作品的提交、下载和安全切割进度写入 SSE。"""
+            nonlocal composite_processed_floor
+            if not isinstance(event, dict):
+                return
+            work_id = str(event.get("work_id") or event.get("job_id") or "").strip()
+            if not work_id:
+                return
+            state = composite_work_states.get(work_id)
+            if not isinstance(state, dict):
+                return
+
+            incoming = str(event.get("status") or "").strip()
+            if incoming not in {"submitted", "downloaded", "cut", "error"}:
+                return
+            previous = str(state.get("status") or "pending")
+            order = {
+                "pending": 0,
+                "submitted": 1,
+                "downloaded": 2,
+                "cut": 3,
+                "done": 4,
+                "error": 5,
+            }
+            if incoming != "error" and order.get(incoming, 0) <= order.get(previous, 0):
+                return
+
+            state["status"] = incoming
+            if event.get("works_id"):
+                state["works_id"] = str(event["works_id"])
+            if incoming == "cut":
+                state["cut_item_count"] = min(
+                    max(0, int(state.get("item_count") or 0)),
+                    max(0, int(event.get("cut_item_count") or 0)),
+                )
+                state["error"] = None
+            elif incoming == "error":
+                state["error"] = str(event.get("error") or "合并作品处理失败")[:1200]
+            state["updated_at"] = core.now_str()
+
+            work_snapshot = composite_work_snapshot()
+            segment_snapshot = composite_segments_snapshot()
+            composite_processed_floor = max(
+                composite_processed_floor,
+                composite_work_progress_floor(),
+            )
+            phase_by_status = {
+                "submitted": "composite-submit",
+                "downloaded": "composite-download",
+                "cut": "composite-cut",
+                "error": "composite-error",
+            }
+            phase = phase_by_status[incoming]
+            work_index = int(state.get("work_index") or 0)
+            total_works = len(composite_plan)
+            item_count = int(state.get("item_count") or 0)
+            works_id = str(state.get("works_id") or "")
+            work_detail = {
+                "id": work_id,
+                "index": work_index,
+                "total": total_works,
+                "status": incoming,
+                "item_count": item_count,
+                "item_ids": list(state.get("item_ids") or []),
+                "works_id": works_id,
+            }
+            if state.get("error"):
+                work_detail["error"] = state["error"]
+            emit_stats(
+                progress,
+                force=True,
+                completed_override=composite_display_completed,
+                failed_override=composite_display_failed,
+                processed_override=composite_processed_floor,
+                phase=phase,
+                work=work_snapshot,
+                segments=segment_snapshot,
+            )
+            if incoming == "submitted":
+                current_item = (
+                    f"合并作品 {work_index}/{total_works} 已提交 · "
+                    f"包含 {item_count} 条"
+                )
+                level = "progress"
+                title = "多人配音合并作品已提交"
+                detail = (
+                    f"作品 {work_index}/{total_works} · {item_count} 条题目"
+                    + (f" · worksId {works_id}" if works_id else "")
+                )
+            elif incoming == "downloaded":
+                current_item = (
+                    f"合并作品 {work_index}/{total_works} 已下载 · "
+                    f"等待安全切割"
+                )
+                level = "progress"
+                title = "合并音频已下载"
+                detail = (
+                    f"作品 {work_index}/{total_works} · 已取得完整合并音频，"
+                    "不会按时长比例猜测题目边界"
+                )
+            elif incoming == "cut":
+                cut_count = int(state.get("cut_item_count") or 0)
+                current_item = (
+                    f"合并作品 {work_index}/{total_works} 已安全切割 · "
+                    f"{cut_count}/{item_count} 条"
+                )
+                level = "success"
+                title = "合并音频已安全切割"
+                detail = (
+                    f"作品 {work_index}/{total_works} · 已从人工停顿恢复 "
+                    f"{cut_count} 条独立音频，保留首尾保护间隔"
+                )
+            else:
+                current_item = f"合并作品 {work_index}/{total_works} 处理失败"
+                level = "error"
+                title = "多人配音合并作品失败"
+                detail = str(state.get("error") or "合并作品处理失败")
             log(
-                "progress",
-                f"按音色与参数分组提交 {len(item_specs)} 道题",
+                level,
+                detail,
                 stage="synthesize",
-                kind="stage",
-                key="stage:synthesize:batch",
-                title="分组生成音频",
-                detail="相同音色、语速、语调、音量只切换一次；全部提交后统一按 worksId 下载",
+                kind="work",
+                key=f"work:{work_id}:{incoming}",
+                title=title,
+                detail=detail,
+                work=work_detail,
+                segments=segment_snapshot,
                 progress_snapshot=progress,
             )
-            emit_status(f"按音色分组生成中 — 待处理 {len(item_specs)} 道题")
-            try:
-                batch_results = await core._synth_items_batch(
-                    item_specs,
-                    progress_callback=on_batch_item_progress,
+            emit_generation_status(
+                progress,
+                current_item=current_item,
+                force=True,
+                completed_override=composite_display_completed,
+                failed_override=composite_display_failed,
+                processed_override=composite_processed_floor,
+            )
+            await persist_progress(progress, force=True)
+
+        if item_specs:
+            if composite_mode:
+                try:
+                    composite_plan = core.build_composite_work_plan(
+                        item_specs,
+                        existing_plan=progress.get("composite_work_plan") or None,
+                    )
+                    previous_states = progress.get("composite_works") or {}
+                    if not isinstance(previous_states, dict):
+                        previous_states = {}
+                    composite_work_states = {}
+                    for work_index, work in enumerate(composite_plan, start=1):
+                        work_id = str(work["work_id"])
+                        previous = previous_states.get(work_id)
+                        previous = previous if isinstance(previous, dict) else {}
+                        previous_status = str(previous.get("status") or "pending")
+                        if previous_status == "complete":
+                            previous_status = "done"
+                        composite_work_states[work_id] = {
+                            "work_id": work_id,
+                            "work_index": work_index,
+                            "item_ids": list(work.get("item_ids") or []),
+                            "item_count": int(work.get("item_count") or 0),
+                            "char_count": int(work.get("char_count") or 0),
+                            "status": previous_status,
+                            "works_id": str(previous.get("works_id") or "") or None,
+                            "cut_item_count": int(previous.get("cut_item_count") or 0),
+                            "error": previous.get("error"),
+                        }
+                    progress["composite_work_plan"] = composite_plan
+                    progress["composite_works"] = composite_work_states
+                    await persist_progress(progress, force=True)
+                    log(
+                        "progress",
+                        f"构造 {len(composite_plan)} 个多人配音合并作品",
+                        stage="synthesize",
+                        kind="stage",
+                        key="stage:synthesize:composite",
+                        title="构造多人配音合并作品",
+                        detail=(
+                            f"{len(item_specs)} 条题目将一次性提交；"
+                            "仅在讯飞字数上限或断点计划要求时拆分作品"
+                        ),
+                        progress_snapshot=progress,
+                    )
+                    emit_status(
+                        f"全部文本合并生成中 — {len(composite_plan)} 个作品，"
+                        f"待处理 {len(item_specs)} 道题"
+                    )
+                    composite_processed_floor = max(
+                        composite_processed_floor,
+                        composite_work_progress_floor(),
+                    )
+                    emit_stats(
+                        progress,
+                        force=True,
+                        processed_override=composite_processed_floor,
+                        phase="composite-plan",
+                        work=composite_work_snapshot(),
+                        segments=composite_segments_snapshot(),
+                    )
+                    batch_results = await core._synth_items_batch_composite(
+                        item_specs,
+                        progress_callback=on_composite_progress,
+                        work_plan=progress.get("composite_work_plan"),
+                        resume=progress.get("composite_works"),
+                        debug_dir=os.path.join(session_dir, "composite"),
+                    )
+                except Exception as error:
+                    batch_error = str(error)
+            else:
+                log(
+                    "progress",
+                    f"按音色与参数分组提交 {len(item_specs)} 道题",
+                    stage="synthesize",
+                    kind="stage",
+                    key="stage:synthesize:batch",
+                    title="分组生成音频",
+                    detail="相同音色、语速、语调、音量只切换一次；全部提交后统一按 worksId 下载",
+                    progress_snapshot=progress,
                 )
-            except Exception as error:
-                batch_error = str(error)
+                emit_status(f"按音色分组生成中 — 待处理 {len(item_specs)} 道题")
+                try:
+                    batch_results = await core._synth_items_batch(
+                        item_specs,
+                        progress_callback=on_batch_item_progress,
+                    )
+                except Exception as error:
+                    batch_error = str(error)
+
+        # 已完成任务再次打开/重放时不会重新构造 item_specs，但最终 done
+        # 事件仍应保留上次的合并作品汇总，不能因为本轮没有待处理题目而
+        # 把作品数量显示成 0。
+        if composite_mode and not item_specs and not composite_work_states:
+            stored_plan = progress.get("composite_work_plan")
+            stored_states = progress.get("composite_works")
+            if isinstance(stored_plan, list):
+                composite_plan = [
+                    dict(work)
+                    for work in stored_plan
+                    if isinstance(work, dict) and work.get("work_id")
+                ]
+            if isinstance(stored_states, dict):
+                for index, work in enumerate(composite_plan, start=1):
+                    work_id = str(work["work_id"])
+                    state = stored_states.get(work_id)
+                    state = dict(state) if isinstance(state, dict) else {}
+                    if state.get("status") == "complete":
+                        state["status"] = "done"
+                    state.setdefault("work_id", work_id)
+                    state.setdefault("work_index", index)
+                    state.setdefault("item_ids", list(work.get("item_ids") or []))
+                    state.setdefault("item_count", int(work.get("item_count") or 0))
+                    state.setdefault("char_count", int(work.get("char_count") or 0))
+                    composite_work_states[work_id] = state
+
+        def update_composite_work_after_item(item):
+            if not composite_mode:
+                return None
+            item_id = str(item.get("id") or "")
+            matched = None
+            item_by_id = {
+                str(candidate.get("id") or ""): candidate
+                for candidate in progress.get("items", [])
+            }
+            for state in composite_work_states.values():
+                if item_id not in {str(value) for value in (state.get("item_ids") or [])}:
+                    continue
+                matched = state
+                members = [item_by_id.get(str(value)) for value in state.get("item_ids") or []]
+                members = [member for member in members if member is not None]
+                if members and any(member.get("status") == "error" for member in members):
+                    state["status"] = "error"
+                    state["error"] = next(
+                        (
+                            str(member.get("error") or "")[:1200]
+                            for member in members
+                            if member.get("status") == "error" and member.get("error")
+                        ),
+                        state.get("error") or "合并作品中有题目生成失败",
+                    )
+                elif members and all(member.get("status") == "done" for member in members):
+                    state["status"] = "done"
+                    state["cut_item_count"] = int(state.get("item_count") or len(members))
+                    state["error"] = None
+                state["updated_at"] = core.now_str()
+                break
+            return matched
 
         for item in progress["items"]:
             item_id = item["id"]
@@ -1931,30 +2474,85 @@ async def _generate_audio_stream(
                     progress_snapshot=progress,
                     duration_ms=round((time.perf_counter() - item_started) * 1000),
                 )
+            update_composite_work_after_item(item)
             update_stats_cache(progress, item)
             await persist_progress(progress)
-            if batch_processed_floor > progress["completed"] + progress["failed"]:
+            if composite_mode:
+                composite_display_completed = progress["completed"]
+                composite_display_failed = progress["failed"]
+                composite_processed_floor = max(
+                    composite_processed_floor,
+                    composite_work_progress_floor(),
+                )
+                display_processed = composite_processed_floor
+                display_phase = "composite-export"
+                display_work = composite_work_snapshot()
+                display_segments = composite_segments_snapshot()
+            else:
+                display_processed = batch_processed_floor
+                display_phase = "batch-export"
+                display_work = None
+                display_segments = None
+            if display_processed > progress["completed"] + progress["failed"]:
                 emit_stats(
                     progress,
-                    processed_override=batch_processed_floor,
-                    phase="batch-export",
+                    processed_override=display_processed,
+                    phase=display_phase,
+                    work=display_work,
+                    segments=display_segments,
                 )
                 emit_generation_status(
                     progress,
                     current_item=f"{item_id} 正在整理音频",
                     force=True,
-                    processed_override=batch_processed_floor,
+                    processed_override=display_processed,
                 )
             else:
-                emit_stats(progress)
+                emit_stats(
+                    progress,
+                    work=display_work,
+                    segments=display_segments,
+                    phase=display_phase if composite_mode else None,
+                )
                 emit_generation_status(progress)
+
+        if composite_mode and composite_work_states:
+            for completed_item in progress.get("items", []):
+                update_composite_work_after_item(completed_item)
+            composite_display_completed = progress["completed"]
+            composite_display_failed = progress["failed"]
+            composite_processed_floor = max(
+                composite_processed_floor,
+                composite_work_progress_floor(),
+            )
+            await persist_progress(progress, force=True)
+            emit_stats(
+                progress,
+                force=True,
+                processed_override=composite_processed_floor,
+                phase="composite-export",
+                work=composite_work_snapshot(),
+                segments=composite_segments_snapshot(),
+            )
 
         if session.cancelled:
             await persist_progress(progress, force=True)
-            emit_cancelled_terminal("批量音频生成与统一下载完成后已停止后续任务")
+            emit_cancelled_terminal(
+                f"{generation_mode_label}阶段结束后已停止后续任务"
+            )
             return
 
-        emit_stats(progress, force=True)
+        if composite_mode and composite_work_states:
+            emit_stats(
+                progress,
+                force=True,
+                processed_override=composite_processed_floor,
+                phase="composite-export",
+                work=composite_work_snapshot(),
+                segments=composite_segments_snapshot(),
+            )
+        else:
+            emit_stats(progress, force=True)
         emit_generation_status(progress, force=True)
 
         synthesis_duration_ms = round((time.perf_counter() - synthesis_started_at) * 1000)
@@ -1972,6 +2570,8 @@ async def _generate_audio_stream(
             ),
             detail=f"成功 {progress['completed']} / {total}" + (f" · 失败 {progress['failed']}" if progress["failed"] else ""),
             progress_snapshot=progress,
+            work=composite_work_snapshot() if composite_mode else None,
+            segments=composite_segments_snapshot() if composite_mode else None,
             duration_ms=synthesis_duration_ms,
         )
 
@@ -2121,7 +2721,7 @@ async def _generate_audio_stream(
             progress_snapshot=progress,
             duration_ms=task_duration_ms,
         )
-        push_event(session, {
+        done_event = {
             "type": "done",
             "zip_path": session.final_zip_path,
             "zip_available": bool(session.final_zip_path),
@@ -2131,7 +2731,11 @@ async def _generate_audio_stream(
             "total": total,
             "file_count": len(file_list),
             "duration_ms": task_duration_ms,
-        })
+            "generation_mode": generation_mode,
+        }
+        if composite_mode:
+            done_event["composite_works"] = composite_work_snapshot()
+        push_event(session, done_event)
 
     except asyncio.CancelledError:
         emit_cancelled_terminal("生成进程已安全停止")
@@ -2226,6 +2830,19 @@ async def get_config():
         "tts_param_max": core.TTS_PARAM_MAX,
         "tts_param_default": core.TTS_PARAM_DEFAULT,
         "xunfei_available": core._XUNFEI_AVAILABLE,
+        "generation_modes": [
+            {
+                "value": core.GENERATION_MODE_COMPOSITE,
+                "label": "全部生成后切割",
+                "default": True,
+            },
+            {
+                "value": core.GENERATION_MODE_SINGLE,
+                "label": "单条单条生成",
+                "default": False,
+            },
+        ],
+        "default_generation_mode": core.DEFAULT_GENERATION_MODE,
         "default_female_voice": default_female,
         "default_male_voice": default_male,
         "female_voice": "Amanda",

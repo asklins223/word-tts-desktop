@@ -40,6 +40,11 @@ DEFAULT_FEMALE_KEY = "amanda"
 DEFAULT_MALE_KEY = "george"
 
 
+def _provider_success_code(value: Any) -> bool:
+    """兼容目录接口返回数字或字符串形式的成功码。"""
+    return value is not None and str(value).strip() in {"0", "000000", "200"}
+
+
 def _request_json(
     url: str,
     *,
@@ -89,7 +94,7 @@ def fetch_flat_list_speakers(timeout: float = 10) -> list[dict[str, Any]]:
             params={"current": page, "size": size, "scope": "common"},
             timeout=timeout,
         )
-        if not data or data.get("code") != 0:
+        if not data or not _provider_success_code(data.get("code")):
             break
         payload = data.get("data") or {}
         page_records = payload.get("records") or []
@@ -126,7 +131,7 @@ def fetch_common_speakers(timeout: float = 10) -> list[dict[str, Any]]:
         body=body,
         timeout=timeout,
     )
-    if not data or data.get("code") != 0:
+    if not data or not _provider_success_code(data.get("code")):
         return []
     records = (data.get("data") or {}).get("commonSpeakers") or []
     return [item for item in records if isinstance(item, dict)]
@@ -292,6 +297,13 @@ def normalize_voice(raw: dict[str, Any]) -> dict[str, Any] | None:
         categories.insert(0, gender_label)
 
     key = _stable_key(raw, name)
+    speaker_language = (
+        raw.get("speakerLanguage")
+        or raw.get("languageName")
+        or raw.get("language")
+        or common_speaker.get("speakerLanguage")
+        or ""
+    )
     return {
         "key": key,
         "speaker_no": raw.get("speakerNo") or raw.get("speaker_no"),
@@ -300,6 +312,9 @@ def normalize_voice(raw: dict[str, Any]) -> dict[str, Any] | None:
         "gender": gender or "unknown",
         "gender_label": gender_label or "音色",
         "language": language,
+        "speaker_language": speaker_language,
+        "vcn_type": raw.get("vcnType") or raw.get("vcn_type") or common_speaker.get("vcnType") or 1,
+        "is_vip": raw.get("isVip") if "isVip" in raw else raw.get("is_vip"),
         "tags": tags,
         "categories": categories,
         "img_url": str(raw.get("imgUrl") or raw.get("img_url") or "").strip(),
@@ -310,14 +325,23 @@ def normalize_voice(raw: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _fallback_voice(key: str, name: str, gender: str) -> dict[str, Any]:
+    # 这两个默认音色还要用于多人配音 payload；即使在线目录与本地缓存都
+    # 暂时不可用，也不能因为 speakerNo 缺失而让默认模式无法提交。
+    fallback_speaker_no = {
+        DEFAULT_FEMALE_KEY: 544508087,
+        DEFAULT_MALE_KEY: 593031758,
+    }.get(key)
     return {
         "key": key,
-        "speaker_no": None,
+        "speaker_no": fallback_speaker_no,
         "common_id": None,
         "name": name,
         "gender": gender,
         "gender_label": "女声" if gender == "female" else "男声",
         "language": ["英语"],
+        "speaker_language": "英语",
+        "vcn_type": 1,
+        "is_vip": False,
         "tags": ["英语"],
         "categories": ["女声" if gender == "female" else "男声", "英语"],
         "img_url": "",

@@ -55,6 +55,7 @@ HOME_URL = "https://peiyin.xunfei.cn/make"
 DOWNLOAD_PAGE_URL = "https://peiyin.xunfei.cn/user"
 API_WORKS_LIST_URL = "https://peiyin.xunfei.cn/video-api/synth/qry_works_synth_list"
 API_SIGN_URL = "https://peiyin.xunfei.cn/video-api/synth/get_work_sign_url"
+API_ORDER_GEN_URL = "https://peiyin.xunfei.cn/video-api/pay/order_gen"
 
 # 持久化浏览器配置目录（保存 cookies / 登录状态）。
 # 首次升级时优先复用旧目录，避免用户被迫重新扫码登录；新安装统一放在
@@ -90,6 +91,29 @@ def clamp_param(value, default=PARAM_DEFAULT):
     except (TypeError, ValueError, OverflowError):
         v = default
     return max(PARAM_MIN, min(PARAM_MAX, v))
+
+
+def _provider_success_code(value):
+    """讯飞不同接口可能返回数字 0、字符串 0 或字符串 000000。"""
+    if value is None:
+        return False
+    return str(value).strip() in {"000000", "0", "200"}
+
+
+def _provider_bool(value, default=False):
+    """把目录接口中的 bool/0-1/中英文字符串稳定转换为 bool。"""
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().casefold()
+    if text in {"", "0", "false", "no", "n", "否", "不是", "非"}:
+        return False
+    if text in {"1", "true", "yes", "y", "是", "vip"}:
+        return True
+    return bool(default)
 
 
 def _canonical_sign_value(value):
@@ -204,12 +228,20 @@ VOICES = {
         "name": "Amanda",
         "display": "Amanda (英语女声)",
         "gender": "female",
+        # 目录刷新失败时仍要能构造多人配音 payload。这个值与仓库内置
+        # 音色种子一致；在线目录返回更完整信息后会覆盖它。
+        "speaker_no": 544508087,
+        "vcn_type": 1,
+        "language": "英语",
     },
     # 男声
     "george": {
         "name": "George",
         "display": "George (英语男声)",
         "gender": "male",
+        "speaker_no": 593031758,
+        "vcn_type": 1,
+        "language": "英语",
     },
 }
 
@@ -228,12 +260,51 @@ def register_voice_catalog(voices):
         name = str(voice.get("name") or voice.get("speakerName") or "").strip()
         if not key or not name:
             continue
+        previous = VOICES.get(key) if isinstance(VOICES.get(key), dict) else {}
         gender = str(voice.get("gender") or "unknown").strip().lower()
         gender_label = "女声" if gender == "female" else ("男声" if gender == "male" else "音色")
+
+        speaker_no = voice.get("speaker_no")
+        if speaker_no in (None, ""):
+            speaker_no = voice.get("speakerNo")
+        if speaker_no in (None, ""):
+            speaker_no = previous.get("speaker_no") or previous.get("speakerNo")
+        common_id = voice.get("common_id")
+        if common_id in (None, ""):
+            common_id = voice.get("commonId")
+        if common_id in (None, ""):
+            common_id = previous.get("common_id") or previous.get("commonId")
+        language = voice.get("language")
+        if language in (None, ""):
+            language = voice.get("speakerLanguage")
+        if language in (None, ""):
+            language = previous.get("language") or previous.get("speaker_language") or ""
+        vcn_type = voice.get("vcn_type")
+        if vcn_type in (None, ""):
+            vcn_type = voice.get("vcnType")
+        if vcn_type in (None, ""):
+            vcn_type = previous.get("vcn_type") or previous.get("vcnType") or 1
+        speaker_language = voice.get("speaker_language")
+        if speaker_language in (None, ""):
+            speaker_language = voice.get("speakerLanguage")
+        if speaker_language in (None, ""):
+            speaker_language = previous.get("speaker_language") or language or ""
+        is_vip = voice.get("is_vip") if "is_vip" in voice else voice.get("isVip")
+        if is_vip is None:
+            is_vip = previous.get("is_vip") if "is_vip" in previous else previous.get("isVip")
         VOICES[key] = {
             "name": name,
             "display": f"{name} ({gender_label})",
             "gender": gender,
+            "speaker_no": speaker_no,
+            "common_id": common_id,
+            "img_url": voice.get("img_url") or voice.get("imgUrl") or "",
+            "language": language,
+            "vcn_type": vcn_type,
+            "speaker_language": speaker_language,
+            "is_vip": is_vip,
+            "emot_type": voice.get("emot_type") or voice.get("emotType"),
+            "emot_val": voice.get("emot_val") or voice.get("emotVal"),
         }
 
 
@@ -1246,7 +1317,10 @@ class JS:
                 sessid = window.getSessid() || '';
             }
         } catch (_) {}
-        return {userId: readCookie('uid'), sessid};
+        const fromSpread = readCookie('XF_FTYPE')
+            || readCookie('fromSpread')
+            || String(window._fromSpread || '');
+        return {userId: readCookie('uid'), sessid, fromSpread};
     }
     """
 
@@ -1258,6 +1332,37 @@ class JS:
                 credentials: 'include',
                 headers: Object.assign({'Content-Type': 'application/json'}, headers || {}),
                 body: JSON.stringify({param, base})
+            });
+            let data = null;
+            try { data = await response.json(); } catch (_) {}
+            return {httpStatus: response.status, data};
+        } catch (error) {
+            return {httpStatus: 0, error: String(error)};
+        }
+    }
+    """
+
+    POST_WEB_JSON = """
+    async ([url, payload]) => {
+        try {
+            // 讯飞当前网页的 Axios 拦截器会把 getSessid() 放到
+            // authorization。仅依赖 credentials/include 在新版页面上会
+            // 得到 HTTP 200 + retCode=999999（用户未登录）。
+            const headers = {
+                'Content-Type': 'application/json',
+                'x-accept-language': String(
+                    window?.i18n?.language || document.documentElement.lang || 'zh_CN'
+                ).replaceAll('-', '_'),
+            };
+            if (typeof window.getSessid === 'function') {
+                const sessid = window.getSessid();
+                if (sessid) headers.authorization = String(sessid);
+            }
+            const response = await fetch(url, {
+                method: 'POST',
+                credentials: 'include',
+                headers,
+                body: JSON.stringify(payload || {})
             });
             let data = null;
             try { data = await response.json(); } catch (_) {}
@@ -1458,15 +1563,24 @@ class XunFeiSession:
             wid = None
             if "makeMultipleSpeakerWork" in url:
                 data = response.json()
-                if data.get("retCode") == "000000" and data.get("tempWorksId"):
-                    wid = data["tempWorksId"]
+                response_code = data.get("retCode")
+                if response_code is None:
+                    response_code = data.get("code")
+                if _provider_success_code(response_code):
+                    wid = data.get("tempWorksId") or data.get("worksId")
             elif "order_gen" in url:
                 data = response.json()
-                if data.get("code") == 0:
-                    wid = data.get("data", {}).get("payOrder", {}).get("worksId")
+                response_code = data.get("code")
+                if response_code is None:
+                    response_code = data.get("retCode")
+                if _provider_success_code(response_code):
+                    wid = (data.get("data") or {}).get("payOrder", {}).get("worksId")
             elif "get_work_sign_url" in url:
                 data = response.json()
-                if data.get("code") == 0 and data.get("data", {}).get("url"):
+                response_code = data.get("code")
+                if response_code is None:
+                    response_code = data.get("retCode")
+                if _provider_success_code(response_code) and (data.get("data") or {}).get("url"):
                     sign_works_id = None
                     try:
                         request_payload = response.request.post_data_json
@@ -1492,11 +1606,20 @@ class XunFeiSession:
             self._sign_urls.clear()
             self._works_cutoff = time.time()
 
-    def _consume_works_id(self, timeout=12):
+    def _consume_works_id(self, timeout=12, exclude_ids=None):
+        excluded = {
+            str(value)
+            for value in (exclude_ids or [])
+            if value not in (None, "")
+        }
         deadline = time.time() + timeout
         while time.time() < deadline:
             with self._works_lock:
-                fresh = [e for e in self._works_entries if e[1] >= self._works_cutoff - 0.5]
+                fresh = [
+                    e for e in self._works_entries
+                    if e[1] >= self._works_cutoff - 0.5
+                    and str(e[0]) not in excluded
+                ]
                 if fresh:
                     wid = fresh[-1][0]
                     self._works_entries.clear()
@@ -2456,10 +2579,13 @@ class XunFeiSession:
                 f"{url.rsplit('/', 1)[-1]} HTTP {result.get('httpStatus')}"
             )
             return None
-        if data.get("code") != 0:
+        response_code = data.get("code")
+        if response_code is None:
+            response_code = data.get("retCode")
+        if not _provider_success_code(response_code):
             _log(
                 f"[xunfei]   video-api 失败: "
-                f"{url.rsplit('/', 1)[-1]} code={data.get('code')} "
+                f"{url.rsplit('/', 1)[-1]} code={response_code} "
                 f"desc={data.get('desc') or data.get('message') or '未知错误'}"
             )
             return None
@@ -2756,6 +2882,316 @@ class XunFeiSession:
     # ------------------------------------------------------------------
     # 单条合成
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _volume_to_api(value):
+        """把网页端 0-100 音量转换为讯飞作品接口的 -20..20。"""
+        try:
+            normalized = clamp_param(value)
+        except Exception:
+            normalized = PARAM_DEFAULT
+        return round(0.4 * normalized - 20)
+
+    @staticmethod
+    def _speaker_number(voice_key, info):
+        value = info.get("speaker_no") or info.get("speakerNo")
+        if value in (None, ""):
+            match = re.match(r"^speaker:(\d+)$", str(voice_key or "").strip())
+            value = match.group(1) if match else None
+        try:
+            number = int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            number = 0
+        if number <= 0:
+            raise XunfeiError(
+                f"音色 {voice_key!r} 缺少讯飞 speakerNo，无法提交多人配音作品；"
+                "请刷新音色目录后重试"
+            )
+        return number
+
+    def _composite_voice_meta(self, voice_key):
+        key = str(voice_key or "").strip() or DEFAULT_FEMALE
+        info = dict(get_voice_info(key))
+        speaker_no = self._speaker_number(key, info)
+        language = info.get("language") or info.get("speaker_language") or ""
+        if isinstance(language, dict):
+            language = next(
+                (
+                    str(value).strip()
+                    for value in language.values()
+                    if str(value).strip()
+                ),
+                "",
+            )
+        elif isinstance(language, (list, tuple, set)):
+            language = next((str(value).strip() for value in language if str(value).strip()), "")
+        common_id = info.get("common_id")
+        if common_id in (None, ""):
+            common_id = info.get("commonId")
+        try:
+            common_id = int(float(common_id)) if common_id not in (None, "") else None
+        except (TypeError, ValueError, OverflowError):
+            common_id = None
+        try:
+            vcn_type = int(float(info.get("vcn_type") or info.get("vcnType") or 1))
+        except (TypeError, ValueError, OverflowError):
+            vcn_type = 1
+        is_vip = info.get("is_vip")
+        if is_vip is None:
+            is_vip = info.get("isVip")
+        return {
+            "key": key,
+            "speaker_no": speaker_no,
+            "speaker_name": str(info.get("name") or key),
+            "speaker_img_url": str(info.get("img_url") or info.get("imgUrl") or ""),
+            "language": str(language or ""),
+            "common_id": common_id,
+            "vcn_type": vcn_type,
+            "is_vip": _provider_bool(is_vip),
+            "emot_type": info.get("emot_type") or info.get("emotType"),
+            "emot_val": info.get("emot_val") or info.get("emotVal"),
+        }
+
+    def _build_composite_payload(self, work):
+        """构造与讯飞多人配音网页一致的 makeMultipleSpeakerWork 参数。"""
+        meta_by_voice = {}
+        synth_infos = []
+        editor_content = []
+        item_list = list(work.get("items") or [])
+        first_info = None
+
+        for item_index, item in enumerate(item_list):
+            for segment in item.get("segments") or []:
+                voice_key = str(segment.get("voice_key") or DEFAULT_FEMALE)
+                text = str(segment.get("text") or "")
+                if not text:
+                    continue
+                meta = meta_by_voice.setdefault(
+                    voice_key,
+                    self._composite_voice_meta(voice_key),
+                )
+                if first_info is None:
+                    first_info = (segment, meta)
+                rate = clamp_param(segment.get("speed", PARAM_DEFAULT))
+                pitch = clamp_param(segment.get("pitch", PARAM_DEFAULT))
+                volume = clamp_param(segment.get("volume", PARAM_DEFAULT))
+                # 当前网页只有多语种/方言类 vcnType 才会把 language 写入
+                # synthInfos；普通音色即使目录标签显示“英语”，也会发空串。
+                speaker_language = (
+                    meta["language"]
+                    if meta["vcn_type"] in (2, 3, 4)
+                    and meta["language"]
+                    else ""
+                )
+                lan_type = int(bool(speaker_language))
+                label = f"{meta['speaker_name']}-默认"
+                synth_infos.append({
+                    "speakerNo": meta["speaker_no"],
+                    "speakerName": meta["speaker_name"],
+                    "speakerImgUrl": meta["speaker_img_url"],
+                    "speakingRate": rate,
+                    "speakingPitch": pitch,
+                    "speakingText": text,
+                    "speakingVolumn": volume,
+                    "language": speaker_language,
+                    "lanType": lan_type,
+                    "commonId": meta["common_id"],
+                    "textType": 0,
+                    "soundEffectVolume": None,
+                    "bgMusicUrl": "",
+                    "bgmusicName": "",
+                    "bgmusicNo": "",
+                    "bgmusicVolumn": 0,
+                })
+                editor_content.append({
+                    "type": "text",
+                    "text": text,
+                    "marks": [{
+                        "type": "speaker",
+                        "attrs": {
+                            "speakerId": str(meta["speaker_no"]),
+                            "rate": rate,
+                            "pitch": pitch,
+                            "volume": volume,
+                            "language": speaker_language or None,
+                            "emotionVal": None,
+                            "emotionWeight": None,
+                            "label": label,
+                        },
+                    }],
+                })
+            if item_index < len(item_list) - 1:
+                # 讯飞编辑器的真实 Break 节点会进入 editText；网页端的
+                # getPlaybackSegments 会把它从 synthInfos 中排除，但后端
+                # 仍按该节点在合并作品中插入停顿。
+                boundary_ms = int(work.get("boundary_ms") or 2000)
+                editor_content.append({
+                    "type": "break",
+                    "attrs": {
+                        "type": "break",
+                        "value": boundary_ms,
+                        "label": f"{boundary_ms / 1000:g}s",
+                    },
+                })
+
+        if not synth_infos or first_info is None:
+            raise XunfeiError("多人配音作品没有可合成的文本")
+        first_segment, first_meta = first_info
+        first_rate = clamp_param(first_segment.get("speed", PARAM_DEFAULT))
+        first_pitch = clamp_param(first_segment.get("pitch", PARAM_DEFAULT))
+        first_volume = clamp_param(first_segment.get("volume", PARAM_DEFAULT))
+        works_name = self._normalize_works_name(
+            work.get("works_name") or f"wordtts_composite_{uuid.uuid4().hex[:8]}"
+        )
+        editor_doc = {
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": editor_content,
+            }],
+        }
+        return {
+            "synthInfos": synth_infos,
+            "isTempWorks": 1,
+            "sampleWorksId": "",
+            "worksType": 1,
+            "speakerNo": first_meta["speaker_no"],
+            "speakerName": first_meta["speaker_name"],
+            "speakerImgUrl": first_meta["speaker_img_url"],
+            "speakingVolumn": self._volume_to_api(first_volume),
+            "speakingRate": first_rate,
+            "speakingPitch": first_pitch,
+            "speakerVip": 2 if first_meta["is_vip"] else 1,
+            "bgmusicNo": 0,
+            "bgmusicUrl": "",
+            "bgmusicName": "",
+            "bgmusicVol": 0,
+            "editText": json.dumps(editor_doc, ensure_ascii=False, separators=(",", ":")),
+            "auditId": "",
+            "needSubtitle": 0,
+            "commonId": first_meta["common_id"],
+            "format": "mp3",
+            "worksName": works_name,
+            "addAiMark": 0,
+        }
+
+    def _post_multiple_speaker_work(self, page, payload):
+        result = _safe_eval(
+            page,
+            JS.POST_WEB_JSON,
+            ["/proxy_oriweb_api/make/makeMultipleSpeakerWork", payload],
+        )
+        data = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(data, dict):
+            raise XunfeiError(
+                f"多人配音接口无响应（HTTP {result.get('httpStatus') if isinstance(result, dict) else 0}）"
+            )
+        ret_code = data.get("retCode")
+        if ret_code is None:
+            ret_code = data.get("code")
+        if not _provider_success_code(ret_code):
+            message = str(
+                data.get("retMsg")
+                or data.get("desc")
+                or data.get("message")
+                or data.get("msg")
+                or "未知错误"
+            )
+            lowered = message.lower()
+            if "额度" in message or "次数" in message or "quota" in lowered:
+                raise XunfeiQuotaExceeded(f"讯飞多人配音额度不足：{message}")
+            if "登录" in message or "login" in lowered or "未授权" in message:
+                self._logged_in = False
+                raise XunfeiLoginRequired(f"讯飞多人配音登录失效：{message}")
+            raise XunfeiError(
+                f"讯飞多人配音提交失败（{ret_code or 'unknown'}）：{message}"
+            )
+        works_id = data.get("tempWorksId") or data.get("worksId")
+        if not works_id:
+            raise XunfeiError("多人配音接口未返回 tempWorksId")
+        return str(works_id)
+
+    def _generate_pending_composite(
+        self,
+        work,
+        *,
+        output_name=None,
+        max_retries=4,
+    ):
+        """提交一个多人配音作品，返回待下载作品信息，不立即下载。"""
+        if not self._logged_in:
+            raise XunfeiError("尚未登录，请先调用 login()")
+        if not output_name:
+            output_name = f".xunfei_composite_{uuid.uuid4().hex}.mp3"
+        output_path = os.path.join(OUTPUT_DIR, output_name)
+        payload = self._build_composite_payload(work)
+        works_name = payload["worksName"]
+        page = self._page
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            _log(
+                f"[xunfei]   多人配音作品提交 {attempt}/{max_retries}: "
+                f"{works_name}（{len(work.get('item_ids') or [])} 道题）"
+            )
+            try:
+                if page.locator(".ssml-editor").count() == 0:
+                    if not self._recover_and_retry(page):
+                        raise XunfeiError("页面恢复失败")
+                self._mark_works_cutoff()
+                temp_works_id = self._post_multiple_speaker_work(page, payload)
+                # makeMultipleSpeakerWork 返回的 tempWorksId 也会被响应监听器
+                # 记录。订单接口失败时不能把这个临时 ID 当成最终 worksId；
+                # 这里重新设置捕获水位，只允许后续 order_gen 的结果被兜底消费。
+                self._mark_works_cutoff()
+                credentials = _safe_eval(page, JS.GET_API_CREDENTIALS) or {}
+                order_data = self._signed_api_post(
+                    page,
+                    API_ORDER_GEN_URL,
+                    {
+                        "orderName": works_name,
+                        "worksId": temp_works_id,
+                        "worksType": 1,
+                        "genType": 1,
+                        "source_type": 3,
+                        "speakerVersion": 1,
+                        "fromSpread": str(credentials.get("fromSpread") or ""),
+                    },
+                )
+                works_id = None
+                if isinstance(order_data, dict):
+                    pay_order = (order_data.get("data") or {}).get("payOrder") or {}
+                    works_id = pay_order.get("worksId") or order_data.get("worksId")
+                works_id = works_id or self._consume_works_id(
+                    timeout=30,
+                    exclude_ids={temp_works_id},
+                )
+                if not works_id:
+                    raise XunfeiError("多人配音已提交但未捕获 worksId")
+                pending = {
+                    "works_id": str(works_id),
+                    "output_path": output_path,
+                    "works_name": works_name,
+                    "work_id": str(work.get("work_id") or work.get("job_id") or ""),
+                    "item_count": int(work.get("item_count") or 0),
+                }
+                _log(
+                    f"[xunfei] ✅ 多人配音作品已提交 worksId={pending['works_id']} "
+                    f"work={pending['work_id']}"
+                )
+                return pending
+            except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+                raise
+            except XunfeiRateLimited as error:
+                last_error = error
+                cooldown = 18 + (time.time() % 10) * 2
+                _log(f"[xunfei]   多人配音频控冷却 {cooldown:.0f}s 后重试提交")
+                page.wait_for_timeout(int(cooldown * 1000))
+            except Exception as error:
+                last_error = error
+                _log(f"[xunfei]   多人配音提交异常: {error}")
+                if attempt < max_retries and not self._recover_and_retry(page):
+                    break
+        raise XunfeiError(f"讯飞多人配音生成失败：{last_error or '已重试仍未成功'}")
 
     def _generate_pending_one(
         self,
@@ -3417,6 +3853,131 @@ class XunFeiSession:
                 })
         return results
 
+    def synth_composite(
+        self,
+        works,
+        max_retries=4,
+        progress_callback=None,
+        resume=None,
+    ):
+        """提交多人配音作品并统一下载，返回 work_id -> 文件结果。
+
+        ``resume`` 只复用已经落盘的 worksId，不会因为切割失败而重新计费；
+        下载失败时由上层决定是否重试或切换到原有单段模式。
+        """
+        if not self._logged_in:
+            raise XunfeiError("尚未登录，请先调用 login()")
+        normalized_works = [dict(work) for work in works if isinstance(work, dict)]
+        if not normalized_works:
+            return {}
+        resume_map = resume if isinstance(resume, dict) else {}
+        pending = []
+        results = {}
+        reported_progress = set()
+
+        def report_progress(payload):
+            if not callable(progress_callback):
+                return
+            item = dict(payload or {})
+            work_id = str(item.get("work_id") or item.get("job_id") or "")
+            stage = str(item.get("stage") or "saved")
+            key = (work_id, stage)
+            if work_id and key in reported_progress:
+                return
+            if work_id:
+                reported_progress.add(key)
+            _notify_batch_progress(progress_callback, item)
+
+        for work in normalized_works:
+            work_id = str(work.get("work_id") or work.get("job_id") or uuid.uuid4().hex)
+            work["work_id"] = work_id
+            work["job_id"] = work_id
+            work.setdefault(
+                "output_name",
+                f".xunfei_composite_{uuid.uuid4().hex}.mp3",
+            )
+            work.setdefault(
+                "works_name",
+                f"wordtts_composite_{int(work.get('work_index') or 1):04d}_{uuid.uuid4().hex[:8]}",
+            )
+            previous = resume_map.get(work_id)
+            previous_id = previous.get("works_id") if isinstance(previous, dict) else None
+            try:
+                if previous_id:
+                    pending_item = {
+                        "works_id": str(previous_id),
+                        "output_path": os.path.join(OUTPUT_DIR, work["output_name"]),
+                        "works_name": str(previous.get("works_name") or work["works_name"]),
+                        "work_id": work_id,
+                        "job_id": work_id,
+                        "item_count": int(work.get("item_count") or 0),
+                    }
+                    _log(
+                        f"[xunfei] ♻️ 复用多人配音作品 worksId={pending_item['works_id']} "
+                        f"work={work_id}"
+                    )
+                else:
+                    pending_item = self._generate_pending_composite(
+                        work,
+                        output_name=work.get("output_name"),
+                        max_retries=max_retries,
+                    )
+                    pending_item["job_id"] = work_id
+                    pending_item["work_id"] = work_id
+                pending.append(pending_item)
+                report_progress({
+                    "work_id": work_id,
+                    "job_id": work_id,
+                    "works_id": pending_item.get("works_id"),
+                    "stage": "submitted",
+                    "downloaded": False,
+                })
+            except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+                raise
+            except Exception as error:
+                results[work_id] = {
+                    "work_id": work_id,
+                    "downloaded": False,
+                    "audio": None,
+                    "error": str(error),
+                }
+                report_progress({
+                    "work_id": work_id,
+                    "job_id": work_id,
+                    "stage": "saved",
+                    "downloaded": False,
+                    "error": str(error),
+                })
+
+        downloaded = self._download_pending_batch(
+            pending,
+            progress_callback=report_progress if callable(progress_callback) else None,
+        )
+        for pending_item in pending:
+            work_id = str(pending_item.get("work_id") or pending_item.get("job_id") or "")
+            works_id = str(pending_item.get("works_id") or "")
+            result = downloaded.get(works_id)
+            if result:
+                results[work_id] = {**result, "work_id": work_id, "job_id": work_id}
+            else:
+                results[work_id] = {
+                    **pending_item,
+                    "work_id": work_id,
+                    "job_id": work_id,
+                    "downloaded": False,
+                    "error": "多人配音作品已提交但统一下载失败",
+                }
+            if callable(progress_callback) and (work_id, "saved") not in reported_progress:
+                report_progress({
+                    "work_id": work_id,
+                    "job_id": work_id,
+                    "works_id": works_id,
+                    "stage": "saved",
+                    "downloaded": bool(results[work_id].get("downloaded")),
+                    "error": results[work_id].get("error"),
+                })
+        return results
+
     def synth_one(
         self,
         text,
@@ -3759,6 +4320,99 @@ async def synth_xunfei_batch(jobs, progress_callback=None):
             decoded[job_id] = {"segment": seg, "error": None}
         except Exception as error:
             decoded[job_id] = {"segment": None, "error": str(error)}
+        finally:
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return decoded
+
+
+async def synth_xunfei_composite(works, progress_callback=None, resume=None):
+    """用讯飞多人配音接口生成合并作品并解码完整 MP3。"""
+    if not works:
+        return {}
+    if not is_available():
+        raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
+
+    import asyncio
+    first_voice = DEFAULT_FEMALE
+    try:
+        first_voice = str(
+            (works[0].get("items") or [])[0].get("segments", [])[0].get("voice_key")
+            or DEFAULT_FEMALE
+        )
+    except (AttributeError, IndexError, TypeError):
+        pass
+    session = await ensure_session(voice_key=first_voice)
+    normalized_works = []
+    for index, work in enumerate(works, start=1):
+        item = dict(work)
+        item.setdefault("work_id", f"composite:{index}")
+        item.setdefault("job_id", item["work_id"])
+        item.setdefault("output_name", f".xunfei_composite_{uuid.uuid4().hex}.mp3")
+        item.setdefault(
+            "works_name",
+            f"wordtts_composite_{index:04d}_{uuid.uuid4().hex[:8]}",
+        )
+        normalized_works.append(item)
+
+    raw_results = await _run_playwright_sync(
+        session.synth_composite,
+        normalized_works,
+        4,
+        progress_callback,
+        resume,
+    )
+    decoded = {}
+    from pydub import AudioSegment
+
+    for work in normalized_works:
+        work_id = str(work["work_id"])
+        result = raw_results.get(work_id) if isinstance(raw_results, dict) else None
+        if not isinstance(result, dict) or not result.get("downloaded"):
+            decoded[work_id] = {
+                "audio": None,
+                "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
+                "error": (result or {}).get("error", "讯飞多人配音下载失败")
+                if isinstance(result, dict) else "讯飞多人配音生成无结果",
+            }
+            continue
+
+        path = result.get("output_path")
+        try:
+            if not path or not os.path.exists(path):
+                raise XunfeiError(f"讯飞多人配音音频文件不存在: {path}")
+            size = os.path.getsize(path)
+            if size < 100:
+                raise XunfeiError(f"讯飞多人配音音频文件过小: {size} bytes")
+
+            def decode_file(source_path=path):
+                return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
+
+            audio = await asyncio.to_thread(decode_file)
+            if len(audio) < 50:
+                raise XunfeiError(f"多人配音解码后音频过短 ({len(audio)}ms)")
+            if audio.channels == 0 or audio.frame_rate == 0:
+                raise XunfeiError(
+                    f"多人配音解码后音频参数异常 (channels={audio.channels}, frame_rate={audio.frame_rate})"
+                )
+            decoded[work_id] = {
+                "audio": audio,
+                "works_id": result.get("works_id"),
+                "error": None,
+            }
+            _log(
+                f"[xunfei] 多人配音完整作品解码完成 work={work_id}: "
+                f"duration={len(audio)}ms size={size:,} bytes"
+            )
+        except Exception as error:
+            decoded[work_id] = {
+                "audio": None,
+                "works_id": result.get("works_id"),
+                "error": str(error),
+            }
         finally:
             if path:
                 try:

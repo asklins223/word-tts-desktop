@@ -36,6 +36,24 @@ class XunfeiConfigTests(unittest.TestCase):
         )
         self.assertEqual(config["format"], "mp3")
         self.assertEqual(config["quality"], "128 kbps（标准）")
+        self.assertEqual(
+            config["generation_mode"],
+            core.GENERATION_MODE_COMPOSITE,
+        )
+
+    def test_generation_mode_accepts_legacy_single_segment_and_defaults_safely(self):
+        self.assertEqual(
+            core.normalize_tts_config({"generation_mode": core.GENERATION_MODE_SINGLE})[
+                "generation_mode"
+            ],
+            core.GENERATION_MODE_SINGLE,
+        )
+        self.assertEqual(
+            core.normalize_tts_config({"generation_mode": "unknown"})[
+                "generation_mode"
+            ],
+            core.GENERATION_MODE_COMPOSITE,
+        )
 
     def test_output_format_is_always_mp3_and_quality_does_not_switch_it(self):
         config = core.normalize_tts_config({
@@ -76,6 +94,8 @@ class XunfeiConfigTests(unittest.TestCase):
         self.assertIn("format.replaceChildren(option)", source)
         self.assertIn("format: 'mp3'", source)
         self.assertNotIn("format: $('format').value", source)
+        self.assertIn("composite_cut", source)
+        self.assertIn("single_segment", source)
 
     def test_words_and_sentences_always_use_default_female_voice(self):
         self.assertEqual(
