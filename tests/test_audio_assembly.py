@@ -189,7 +189,9 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
                 })
             full_audio = tone
             for _ in work["items"][1:]:
-                full_audio += AudioSegment.silent(duration=800) + tone
+                # 合并模式依赖网页插入的 2 秒停顿作为可验证的题目边界；
+                # 普通自然停顿不足以作为安全切割标记。
+                full_audio += AudioSegment.silent(duration=2000) + tone
             return {
                 work["work_id"]: {
                     "audio": full_audio,
@@ -326,6 +328,63 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([run["center"] for run in selected], [4000, 9000])
 
+    def test_composite_cut_rejects_ambiguous_missing_markers(self):
+        audio = AudioSegment.silent(duration=12000)
+        runs = [
+            {"start": 1000, "end": 1800, "center": 1400, "core_length": 800, "length": 800},
+            {"start": 3000, "end": 5000, "center": 4000, "core_length": 2000, "length": 2000},
+            {"start": 6000, "end": 6800, "center": 6400, "core_length": 800, "length": 800},
+            {"start": 8000, "end": 10000, "center": 9000, "core_length": 2000, "length": 2000},
+        ]
+        diagnostics = {}
+
+        with self.assertRaises(core.CompositeCutError):
+            core._select_composite_silence_runs(
+                audio,
+                runs,
+                boundary_count=3,
+                item_lengths=[1, 1, 1, 1],
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual(diagnostics["strategy"], "ambiguous_or_missing_markers")
+        self.assertEqual(diagnostics["candidate_count"], 4)
+        self.assertEqual(diagnostics["long_marker_count"], 2)
+        self.assertEqual(diagnostics["strong_marker_count"], 2)
+
+    def test_composite_cut_rejects_extra_strong_markers(self):
+        audio = AudioSegment.silent(duration=14000)
+        runs = [
+            {"start": 1000, "end": 3000, "center": 2000, "core_length": 2000, "length": 2000},
+            {"start": 5000, "end": 7000, "center": 6000, "core_length": 2000, "length": 2000},
+            {"start": 9000, "end": 11000, "center": 10000, "core_length": 2000, "length": 2000},
+        ]
+        diagnostics = {}
+
+        with self.assertRaises(core.CompositeCutError):
+            core._select_composite_silence_runs(
+                audio,
+                runs,
+                boundary_count=2,
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual(diagnostics["strategy"], "ambiguous_or_extra_markers")
+
+    def test_composite_cut_returns_diagnostics_for_selected_markers(self):
+        tone = Sine(440).to_audio_segment(duration=600).apply_gain(-3)
+        audio = tone + AudioSegment.silent(duration=2000) + tone
+        diagnostics = {}
+
+        pieces = core.cut_composite_audio(audio, 2, diagnostics=diagnostics)
+
+        self.assertEqual(len(pieces), 2)
+        self.assertEqual(diagnostics["strategy"], "strong_markers")
+        self.assertEqual(diagnostics["detected_run_count"], 1)
+        self.assertEqual(diagnostics["selected_count"], 1)
+        self.assertEqual(diagnostics["strong_marker_count"], 1)
+        self.assertIn("强标记=1", core.format_composite_cut_diagnostics(diagnostics))
+
     def test_composite_cut_uses_core_center_when_safe_edges_are_asymmetric(self):
         tone = Sine(440).to_audio_segment(duration=900).apply_gain(-3)
         audio = (
@@ -360,6 +419,26 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([work["item_ids"] for work in works], [["q1"], ["q2"]])
         self.assertEqual(sum(work["item_count"] for work in works), 2)
+
+    def test_composite_plan_caps_item_count_without_splitting_an_item(self):
+        specs = [
+            {
+                "item_id": f"q{index}",
+                "text": f"text {index}",
+                "default_voice": core.FEMALE_VOICE,
+            }
+            for index in range(5)
+        ]
+
+        works = core.build_composite_work_plan(specs, max_items=2)
+
+        self.assertEqual(
+            [work["item_ids"] for work in works],
+            [["q0", "q1"], ["q2", "q3"], ["q4"]],
+        )
+        self.assertTrue(
+            all(work["item_count"] <= core.COMPOSITE_MAX_ITEMS_PER_WORK for work in works)
+        )
 
     def test_composite_plan_rejects_duplicate_item_ids(self):
         specs = [

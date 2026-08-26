@@ -798,7 +798,11 @@ def _composite_progress_is_valid(progress: dict, items: list) -> bool:
             item_count = int(work.get("item_count") or 0)
         except (TypeError, ValueError, OverflowError):
             return False
-        if item_count != len(normalized_item_ids):
+        if (
+            item_count != len(normalized_item_ids)
+            or item_count <= 0
+            or item_count > core.COMPOSITE_MAX_ITEMS_PER_WORK
+        ):
             return False
         plan_ids.add(work_id)
 
@@ -815,6 +819,9 @@ def _composite_progress_is_valid(progress: dict, items: list) -> bool:
                 return False
             if list(state_item_ids) != list(plan_work["item_ids"]):
                 return False
+        cut_diagnostics = state.get("cut_diagnostics")
+        if cut_diagnostics is not None and not isinstance(cut_diagnostics, dict):
+            return False
         status = str(state.get("status") or "pending")
         if status not in allowed_statuses:
             return False
@@ -2168,6 +2175,8 @@ async def _generate_audio_stream(
             state["status"] = incoming
             if event.get("works_id"):
                 state["works_id"] = str(event["works_id"])
+            if isinstance(event.get("cut_diagnostics"), dict):
+                state["cut_diagnostics"] = dict(event["cut_diagnostics"])
             if incoming == "cut":
                 state["cut_item_count"] = min(
                     max(0, int(state.get("item_count") or 0)),
@@ -2204,6 +2213,8 @@ async def _generate_audio_stream(
                 "item_ids": list(state.get("item_ids") or []),
                 "works_id": works_id,
             }
+            if isinstance(state.get("cut_diagnostics"), dict):
+                work_detail["cut_diagnostics"] = dict(state["cut_diagnostics"])
             if state.get("error"):
                 work_detail["error"] = state["error"]
             emit_stats(
@@ -2250,11 +2261,21 @@ async def _generate_audio_stream(
                     f"作品 {work_index}/{total_works} · 已从人工停顿恢复 "
                     f"{cut_count} 条独立音频，保留首尾保护间隔"
                 )
+                diagnostic_text = core.format_composite_cut_diagnostics(
+                    state.get("cut_diagnostics")
+                )
+                if diagnostic_text:
+                    detail = f"{detail} · {diagnostic_text}"
             else:
                 current_item = f"合并作品 {work_index}/{total_works} 处理失败"
                 level = "error"
                 title = "多人配音合并作品失败"
                 detail = str(state.get("error") or "合并作品处理失败")
+                diagnostic_text = core.format_composite_cut_diagnostics(
+                    state.get("cut_diagnostics")
+                )
+                if diagnostic_text and diagnostic_text not in detail:
+                    detail = f"{detail} · {diagnostic_text}"
             log(
                 level,
                 detail,
@@ -2304,6 +2325,11 @@ async def _generate_audio_stream(
                             "status": previous_status,
                             "works_id": str(previous.get("works_id") or "") or None,
                             "cut_item_count": int(previous.get("cut_item_count") or 0),
+                            "cut_diagnostics": (
+                                dict(previous["cut_diagnostics"])
+                                if isinstance(previous.get("cut_diagnostics"), dict)
+                                else None
+                            ),
                             "error": previous.get("error"),
                         }
                     progress["composite_work_plan"] = composite_plan
@@ -2318,7 +2344,8 @@ async def _generate_audio_stream(
                         title="构造多人配音合并作品",
                         detail=(
                             f"{len(item_specs)} 条题目将一次性提交；"
-                            "仅在讯飞字数上限或断点计划要求时拆分作品"
+                            f"单个作品最多 {core.COMPOSITE_MAX_ITEMS_PER_WORK} 条；"
+                            "仅在讯飞字数、条目安全上限或断点计划要求时拆分作品"
                         ),
                         progress_snapshot=progress,
                     )

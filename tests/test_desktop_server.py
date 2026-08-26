@@ -115,6 +115,37 @@ class DesktopSessionIsolationTests(unittest.TestCase):
 
         self.assertFalse(server.progress_is_reusable(progress, fingerprint))
 
+    def test_composite_progress_rejects_work_over_item_safety_limit(self):
+        fingerprint = {"sha256": "same", "size": 1}
+        item_count = server.core.COMPOSITE_MAX_ITEMS_PER_WORK + 1
+        item_ids = [f"q{index}" for index in range(item_count)]
+        progress = {
+            "source_fingerprint": fingerprint,
+            "config": {
+                "generation_mode": server.core.GENERATION_MODE_COMPOSITE,
+                "audio_algorithm_version": server.core.AUDIO_ALGORITHM_VERSION,
+                "parser_version": server.core.PARSER_VERSION,
+            },
+            "items": [
+                {"id": item_id, "status": "pending", "raw_item": {}}
+                for item_id in item_ids
+            ],
+            "composite_work_plan": [{
+                "work_id": "composite:over-limit",
+                "item_ids": item_ids,
+                "item_count": item_count,
+            }],
+            "composite_works": {
+                "composite:over-limit": {
+                    "status": "pending",
+                    "item_ids": item_ids,
+                    "item_count": item_count,
+                },
+            },
+        }
+
+        self.assertFalse(server.progress_is_reusable(progress, fingerprint))
+
     def test_legacy_single_progress_without_generation_mode_matches_new_config(self):
         normalized = server.core.normalize_tts_config({
             "generation_mode": server.core.GENERATION_MODE_SINGLE,
@@ -609,7 +640,18 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
             for status, extra in (
                 ("submitted", {"works_id": "works-test"}),
                 ("downloaded", {"works_id": "works-test"}),
-                ("cut", {"works_id": "works-test", "cut_item_count": 1}),
+                (
+                    "cut",
+                    {
+                        "works_id": "works-test",
+                        "cut_item_count": 1,
+                        "cut_diagnostics": {
+                            "item_count": 1,
+                            "strategy": "outer_edge_trim",
+                            "selected_count": 0,
+                        },
+                    },
+                ),
             ):
                 await progress_callback({
                     "work_id": work_id,
@@ -655,6 +697,11 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
             [entry["work"]["status"] for entry in work_logs],
             ["submitted", "downloaded", "cut"],
         )
+        self.assertEqual(
+            work_logs[-1]["work"]["cut_diagnostics"]["strategy"],
+            "outer_edge_trim",
+        )
+        self.assertIn("切割诊断", work_logs[-1]["detail"])
         phases = [
             event.get("phase")
             for event in session.event_journal

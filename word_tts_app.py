@@ -185,11 +185,11 @@ QUALITY_BITRATE = {
 # 音频生成算法版本。改变讯飞音频拼接、合并切割策略或参数寻址方式时递增，
 # 避免复用旧算法产物。4 是原有“单段合成后拼接”算法，保留为历史兼容版本。
 LEGACY_AUDIO_ALGORITHM_VERSION = 4
-AUDIO_ALGORITHM_VERSION = 7
+AUDIO_ALGORITHM_VERSION = 8
 
 # Electron 主进程用它确认内置后端和渲染器来自同一次构建。旧版客户端如果
 # 把旧后端混进新前端，不能继续以“看似启动成功”的方式走逐条生成流程。
-BACKEND_CONTRACT_VERSION = 3
+BACKEND_CONTRACT_VERSION = 4
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
@@ -217,6 +217,10 @@ DEFAULT_GENERATION_MODE = GENERATION_MODE_COMPOSITE
 # 讯飞编辑器当前显示单次最多约 10000 字。为多人配音标记、编辑器 JSON
 # 以及接口字段预留空间，不把上限顶满；拆分只发生在完整题目之间。
 COMPOSITE_MAX_TEXT_LENGTH = 9000
+# 合并作品同时受讯飞编辑器的行数、页面选区稳定性和切割候选数量影响。
+# 超过这个条目数时拆成多个作品；只有超长任务才会因此增加提交次数，
+# 普通任务仍然保持“全部文本一次生成后切割”。
+COMPOSITE_MAX_ITEMS_PER_WORK = 120
 COMPOSITE_BOUNDARY_MS = 2000
 COMPOSITE_SILENCE_FRAME_MS = 20
 COMPOSITE_SILENCE_CORE_DBFS = -50.0
@@ -226,6 +230,11 @@ COMPOSITE_MIN_SAFE_SILENCE_MS = 450
 # 讯飞页面插入的 2 秒停顿是切割定位标记；普通语句间隙通常明显短于
 # 这个值。候选足够时优先使用长标记，避免第三个边界被自然停顿抢走。
 COMPOSITE_MARKER_MIN_CORE_MS = 900
+# 强标记应接近页面插入的 2 秒停顿。强标记数量必须与边界数一致；数量不足
+# 时，只允许在候选数恰好等于边界数的情况下使用较宽松的长停顿集合；数量
+# 多于边界或候选仍有歧义时宁可失败，不把自然停顿静默当成题目边界。
+COMPOSITE_MARKER_STRONG_MIN_CORE_MS = 1400
+COMPOSITE_MARKER_TARGET_TOLERANCE_MS = 650
 COMPOSITE_EDGE_KEEP_MS = 90
 COMPOSITE_EDGE_TRIM_MIN_MS = 180
 # 合并作品最外层的静音不属于题目之间的人工边界。只在它确实很长时
@@ -867,7 +876,13 @@ def _find_composite_silence_runs(
     return runs
 
 
-def _select_composite_silence_runs(audio, runs, boundary_count, item_lengths=None):
+def _select_composite_silence_runs(
+    audio,
+    runs,
+    boundary_count,
+    item_lengths=None,
+    diagnostics=None,
+):
     """全局选择每个条目之间的安全停顿，不按比例猜测切点。
 
     旧实现按边界逐个贪心选择：前面某个自然停顿一旦被选中，后面的
@@ -875,9 +890,27 @@ def _select_composite_silence_runs(audio, runs, boundary_count, item_lengths=Non
     对不上。现在使用全局动态规划同时选择整条有序候选链，并在候选足够
     时优先保留页面插入的长停顿标记。
     """
+    if isinstance(diagnostics, dict):
+        context = {
+            key: diagnostics[key]
+            for key in ("item_count", "detected_run_count")
+            if key in diagnostics
+        }
+        diagnostics.clear()
+        diagnostics.update(context)
+        diagnostics.update({
+            "boundary_count": max(0, int(boundary_count or 0)),
+            "total_duration_ms": max(0, len(audio) if audio is not None else 0),
+        })
+
     if boundary_count <= 0:
         return []
     if len(runs) < boundary_count:
+        if isinstance(diagnostics, dict):
+            diagnostics.update({
+                "candidate_count": len(runs),
+                "strategy": "insufficient_candidates",
+            })
         raise CompositeCutError(
             f"合并音频只找到 {len(runs)} 个安全停顿，需要 {boundary_count} 个"
         )
@@ -905,29 +938,79 @@ def _select_composite_silence_runs(audio, runs, boundary_count, item_lengths=Non
         key=lambda run: run["center"],
     )
     if len(ordered_runs) < boundary_count:
+        if isinstance(diagnostics, dict):
+            diagnostics.update({
+                "candidate_count": len(ordered_runs),
+                "strategy": "insufficient_candidates",
+            })
         raise CompositeCutError(
             f"合并音频只找到 {len(ordered_runs)} 个内部安全停顿，需要 {boundary_count} 个"
         )
 
-    # 如果检测到了足够多的长静音，短自然停顿不具备人工边界的资格；
-    # 候选不足时才回退到全部安全停顿，仍然拒绝按时长硬切。
-    marker_runs = [
+    long_marker_runs = [
         run for run in ordered_runs
         if float(run.get("core_length", run.get("length", 0)) or 0)
         >= COMPOSITE_MARKER_MIN_CORE_MS
     ]
-    if len(marker_runs) >= boundary_count:
-        ordered_runs = marker_runs
+    strong_marker_runs = [
+        run for run in long_marker_runs
+        if (
+            float(run.get("core_length", run.get("length", 0)) or 0)
+            >= COMPOSITE_MARKER_STRONG_MIN_CORE_MS
+            and abs(
+                float(run.get("core_length", run.get("length", 0)) or 0)
+                - COMPOSITE_BOUNDARY_MS
+            )
+            <= COMPOSITE_MARKER_TARGET_TOLERANCE_MS
+        )
+    ]
+    if isinstance(diagnostics, dict):
+        diagnostics.update({
+            "candidate_count": len(ordered_runs),
+            "long_marker_count": len(long_marker_runs),
+            "strong_marker_count": len(strong_marker_runs),
+        })
+
+    if len(strong_marker_runs) == boundary_count:
+        ordered_runs = strong_marker_runs
+        selection_strategy = "strong_markers"
+    elif len(strong_marker_runs) > boundary_count:
+        if isinstance(diagnostics, dict):
+            diagnostics["strategy"] = "ambiguous_or_extra_markers"
+        raise CompositeCutError(
+            "人工停顿标记数量存在歧义："
+            f"需要 {boundary_count} 个，检测到 {len(strong_marker_runs)} 个"
+            "接近 2 秒的强标记；拒绝猜测边界"
+        )
+    elif len(long_marker_runs) == boundary_count:
+        # 兼容音频编码后 2 秒停顿的 core 被压短的情况；候选数必须刚好
+        # 等于边界数，避免把额外的自然长停顿当成定位标记。
+        ordered_runs = long_marker_runs
+        selection_strategy = "exact_long_markers"
+    else:
+        if isinstance(diagnostics, dict):
+            diagnostics["strategy"] = "ambiguous_or_missing_markers"
+        raise CompositeCutError(
+            "人工停顿标记不足或存在歧义："
+            f"需要 {boundary_count} 个，"
+            f"强标记 {len(strong_marker_runs)} 个，"
+            f"长停顿候选 {len(long_marker_runs)} 个，"
+            f"全部安全候选 {len(ordered_runs)} 个；拒绝按自然停顿猜测"
+        )
 
     def score(run, expected):
         core_length = float(run.get("core_length", run.get("length", 0)) or 0)
         safe_length = float(run.get("length", core_length) or core_length)
-        # 长停顿是页面插入的定位标记，得分远高于位置误差；位置只用于
-        # 在多个同长度候选中选择更符合整体音频节奏的一条。
-        length_score = min(core_length, COMPOSITE_BOUNDARY_MS * 1.5) * 4.0
+        # 页面标记不只要“长”，还应接近实际插入的 2 秒；这样正文中
+        # 偶然出现的 1.5 秒长停顿不会轻易压过真正的定位标记。
+        length_score = min(core_length, COMPOSITE_BOUNDARY_MS * 1.5) * 2.0
         edge_score = min(safe_length, COMPOSITE_BOUNDARY_MS * 1.5) * 0.5
+        target_penalty = min(
+            abs(core_length - COMPOSITE_BOUNDARY_MS),
+            COMPOSITE_BOUNDARY_MS * 2,
+        ) * 1.5
         distance_penalty = abs(run["center"] - expected) / total_duration * 300.0
-        return length_score + edge_score - distance_penalty
+        return length_score + edge_score - target_penalty - distance_penalty
 
     # states[run_index] = (累计分数, 已选择的候选索引路径)，表示当前边界
     # 选择该候选时的最优前缀。候选数量通常很小，完整保留状态能避免贪心
@@ -961,6 +1044,17 @@ def _select_composite_silence_runs(audio, runs, boundary_count, item_lengths=Non
         raise CompositeCutError("安全停顿顺序不连续，拒绝按比例强行切割")
     selected_path = max(candidates, key=lambda state: state[0])[1]
     selected = [ordered_runs[index] for index in selected_path]
+
+    if isinstance(diagnostics, dict):
+        diagnostics.update({
+            "strategy": selection_strategy,
+            "selected_count": len(selected),
+            "selected_centers": [int(run["center"]) for run in selected],
+            "selected_core_lengths": [
+                int(run.get("core_length", run.get("length", 0)) or 0)
+                for run in selected
+            ],
+        })
 
     if any(
         right["center"] - left["center"] < COMPOSITE_MIN_OUTPUT_MS
@@ -1053,7 +1147,7 @@ def _trim_composite_edge_silence(
     return trimmed
 
 
-def cut_composite_audio(audio, item_count, item_lengths=None):
+def cut_composite_audio(audio, item_count, item_lengths=None, diagnostics=None):
     """按多人配音作品中的人工停顿恢复每道题的音频。
 
     切点只允许落在通过双阈值静音检测的停顿中；找不到足够安全的停顿时
@@ -1063,22 +1157,38 @@ def cut_composite_audio(audio, item_count, item_lengths=None):
     count = int(item_count or 0)
     if audio is None or count <= 0:
         raise CompositeCutError("没有可切割的合并音频或题目数量")
+    if isinstance(diagnostics, dict):
+        diagnostics.clear()
+        diagnostics.update({
+            "item_count": count,
+            "total_duration_ms": len(audio),
+        })
     if count == 1:
         # 单题作品没有内部 break 可供定位，但讯飞仍可能在作品最外层
         # 留下较长首尾空档；沿用外层保护规则，避免默认合并模式下单题
         # 音频与单条生成相比出现明显的首尾停顿。
-        return [_trim_composite_edge_silence(
+        pieces = [_trim_composite_edge_silence(
             audio,
             leading_is_outer=True,
             trailing_is_outer=True,
         )]
+        if isinstance(diagnostics, dict):
+            diagnostics.update({
+                "strategy": "outer_edge_trim",
+                "selected_count": 0,
+                "piece_lengths": [len(pieces[0])],
+            })
+        return pieces
 
     runs = _find_composite_silence_runs(audio)
+    if isinstance(diagnostics, dict):
+        diagnostics["detected_run_count"] = len(runs)
     selected = _select_composite_silence_runs(
         audio,
         runs,
         count - 1,
         item_lengths=item_lengths,
+        diagnostics=diagnostics,
     )
     cut_positions = [
         int(run.get("cut_position", run["center"]))
@@ -1102,7 +1212,48 @@ def cut_composite_audio(audio, item_count, item_lengths=None):
         raise CompositeCutError(
             f"安全切割段数异常：期望 {count}，实际 {len(pieces)}"
         )
+    if isinstance(diagnostics, dict):
+        diagnostics["piece_lengths"] = [len(piece) for piece in pieces]
     return pieces
+
+
+def format_composite_cut_diagnostics(diagnostics):
+    """把合并切割诊断压缩成可读日志，不改变结构化诊断原数据。"""
+    if (
+        not isinstance(diagnostics, dict)
+        or not diagnostics
+        or not any(key in diagnostics for key in ("item_count", "strategy"))
+    ):
+        return ""
+
+    def as_int(key):
+        try:
+            return int(diagnostics.get(key) or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    strategy = str(diagnostics.get("strategy") or "unknown")
+    boundary_count = as_int("boundary_count")
+    candidate_count = as_int("candidate_count")
+    long_count = as_int("long_marker_count")
+    strong_count = as_int("strong_marker_count")
+    selected_count = as_int("selected_count")
+    centers = diagnostics.get("selected_centers")
+    if isinstance(centers, (list, tuple)):
+        preview = [str(value) for value in centers[:4]]
+        if len(centers) > 8:
+            preview.append("…")
+            preview.extend(str(value) for value in centers[-4:])
+        elif len(centers) > 4:
+            preview.extend(str(value) for value in centers[4:])
+        center_text = ",".join(preview) or "无"
+    else:
+        center_text = "无"
+    return (
+        f"切割诊断：策略={strategy}，需要边界={boundary_count}，"
+        f"候选={candidate_count}，长停顿={long_count}，强标记={strong_count}，"
+        f"已选={selected_count}，中心位置(ms)=[{center_text}]"
+    )
 
 
 def _composite_item_from_spec(spec):
@@ -1146,8 +1297,13 @@ def _stable_composite_work_id(item_ids):
     return f"composite:{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
 
 
-def build_composite_work_plan(item_specs, max_chars=COMPOSITE_MAX_TEXT_LENGTH,
-                              existing_plan=None):
+def build_composite_work_plan(
+    item_specs,
+    max_chars=COMPOSITE_MAX_TEXT_LENGTH,
+    existing_plan=None,
+    *,
+    max_items=COMPOSITE_MAX_ITEMS_PER_WORK,
+):
     """按完整题目构造多人配音作品批次。
 
     ``existing_plan`` 用于断点续传：已有合并作品的题目组合必须保持不变，
@@ -1157,6 +1313,10 @@ def build_composite_work_plan(item_specs, max_chars=COMPOSITE_MAX_TEXT_LENGTH,
         max_chars = max(1, int(max_chars))
     except (TypeError, ValueError):
         max_chars = COMPOSITE_MAX_TEXT_LENGTH
+    try:
+        max_items = max(1, int(max_items))
+    except (TypeError, ValueError):
+        max_items = COMPOSITE_MAX_ITEMS_PER_WORK
     raw_specs = list(item_specs or [])
     if any(not isinstance(spec, dict) for spec in raw_specs):
         raise CompositePlanError("多人配音批次包含格式异常的题目")
@@ -1173,6 +1333,10 @@ def build_composite_work_plan(item_specs, max_chars=COMPOSITE_MAX_TEXT_LENGTH,
     def append_work(item_units, work_id=None):
         if not item_units:
             return
+        if len(item_units) > max_items:
+            raise CompositePlanError(
+                f"多人配音作品条目数超过安全上限 {max_items}"
+            )
         item_ids = [unit["item_id"] for unit in item_units]
         resolved_work_id = str(work_id or _stable_composite_work_id(item_ids))
         if any(work["work_id"] == resolved_work_id for work in works):
@@ -1220,6 +1384,10 @@ def build_composite_work_plan(item_specs, max_chars=COMPOSITE_MAX_TEXT_LENGTH,
         if any(item_id in used_ids for item_id in present_ids):
             raise CompositePlanError("断点中的多人配音作品存在重复题目")
         item_units = [by_id[item_id] for item_id in present_ids]
+        if len(item_units) > max_items:
+            raise CompositePlanError(
+                f"断点中的多人配音作品超过安全条目上限 {max_items}"
+            )
         if sum(unit["char_count"] for unit in item_units) > max_chars:
             raise CompositePlanError(
                 "断点中的多人配音作品超过当前字数上限，拒绝改变作品边界"
@@ -1233,7 +1401,10 @@ def build_composite_work_plan(item_specs, max_chars=COMPOSITE_MAX_TEXT_LENGTH,
         if unit["item_id"] in used_ids:
             continue
         unit_chars = unit["char_count"]
-        if current and current_chars + unit_chars > max_chars:
+        if current and (
+            current_chars + unit_chars > max_chars
+            or len(current) >= max_items
+        ):
             append_work(current)
             current = []
             current_chars = 0
@@ -1502,6 +1673,8 @@ async def _synth_items_batch_composite(
             "downloaded_works": len(downloaded_work_ids),
             "error": payload.get("error"),
         }
+        if isinstance(payload.get("cut_diagnostics"), dict):
+            callback_payload["cut_diagnostics"] = dict(payload["cut_diagnostics"])
         callback_result = progress_callback(callback_payload)
         if inspect.isawaitable(callback_result):
             await callback_result
@@ -1578,6 +1751,7 @@ async def _synth_items_batch_composite(
             })
             continue
 
+        cut_diagnostics = {}
         try:
             pieces = cut_composite_audio(
                 audio,
@@ -1585,6 +1759,7 @@ async def _synth_items_batch_composite(
                 item_lengths=[
                     unit.get("char_count") for unit in work.get("items") or []
                 ],
+                diagnostics=cut_diagnostics,
             )
             if len(pieces) != len(work["item_ids"]):
                 raise CompositeCutError("多人配音安全切割数量与题目数量不一致")
@@ -1592,14 +1767,28 @@ async def _synth_items_batch_composite(
                 if not isinstance(piece, AudioSegment) or len(piece) < COMPOSITE_MIN_OUTPUT_MS:
                     raise CompositeCutError(f"{item_id} 切割后的音频过短")
                 item_results[str(item_id)] = {"audio": piece, "error": None}
+            diagnostic_text = format_composite_cut_diagnostics(cut_diagnostics)
+            if diagnostic_text:
+                print(
+                    f"[tts] 合并作品 {work_id} {diagnostic_text}",
+                    file=sys.stdout,
+                )
             await forward_progress({
                 "work_id": work_id,
                 "stage": "cut",
                 "works_id": raw.get("works_id") if isinstance(raw, dict) else None,
                 "cut_item_count": len(pieces),
+                "cut_diagnostics": cut_diagnostics,
             })
         except Exception as cut_error:
             message = str(cut_error)
+            diagnostic_text = format_composite_cut_diagnostics(cut_diagnostics)
+            if diagnostic_text:
+                print(
+                    f"[tts] 合并作品 {work_id} {diagnostic_text}",
+                    file=sys.stdout,
+                )
+                message = f"{message}；{diagnostic_text}"
             if debug_dir:
                 try:
                     os.makedirs(debug_dir, exist_ok=True)
@@ -1618,6 +1807,7 @@ async def _synth_items_batch_composite(
                 "stage": "cut_error",
                 "works_id": raw.get("works_id") if isinstance(raw, dict) else None,
                 "error": message,
+                "cut_diagnostics": cut_diagnostics,
             })
     return item_results
 
