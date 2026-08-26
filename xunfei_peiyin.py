@@ -424,7 +424,20 @@ class JS:
     """
 
     GET_SELECTION_TEXT = """
-    () => window.getSelection?.().toString() || ''
+    () => {
+        const selection = window.getSelection?.();
+        if (!selection || selection.rangeCount === 0) return '';
+        const range = selection.getRangeAt(0);
+        // 讯飞把 speaker 标签和正文放在同一个标注节点里。浏览器的
+        // Selection.toString() 会把不可编辑的 “Amanda-教育” 标签也读出来，
+        // 导致已经标注过的区间在下一次修正时被误判为选区漂移。只从选区
+        // 克隆片段中移除标签元节点，保留真正的 speaker-content 正文。
+        const fragment = range.cloneContents();
+        fragment.querySelectorAll(
+            '.ssml-tag, .ssml-editor-placeholder, [data-type="range_anchor"]'
+        ).forEach((node) => node.remove());
+        return fragment.textContent || '';
+    }
     """
 
     SELECT_EDITOR_RANGE = """

@@ -201,6 +201,64 @@ class XunfeiFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_selection_readback_ignores_existing_speaker_labels(self):
+        """修正已标注区间时，选区校验只比较正文，不把音色标签算进去。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <div class="ssml-editor" contenteditable="true">
+                <p><span class="ssml-text-mark-speaker" data-label="Amanda-教育">
+                    <b contenteditable="false" class="ssml-tag">
+                        <span class="ssml-tag-label">Amanda-教育</span>
+                    </b>
+                    <span class="range-annotation-content speaker-content">I’m fine, thanks.</span>
+                </span></p>
+                <p><span class="ssml-text-mark-speaker" data-label="Amanda-教育">
+                    <b contenteditable="false" class="ssml-tag">
+                        <span class="ssml-tag-label">Amanda-教育</span>
+                    </b>
+                    <span class="range-annotation-content speaker-content">Hello! I’m Jack.</span>
+                </span></p>
+            </div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                selected = page.evaluate(
+                    xunfei.JS.SELECT_EDITOR_RANGE,
+                    [0, 1],
+                )
+                self.assertIsNotNone(selected)
+                actual = page.evaluate(xunfei.JS.GET_SELECTION_TEXT)
+                self.assertEqual(
+                    XunFeiSession._normalize_selection_text(actual),
+                    XunFeiSession._normalize_selection_text(
+                        "I’m fine, thanks.Hello! I’m Jack."
+                    ),
+                )
+                selected_by_ui = XunFeiSession._select_editor_rows(
+                    page,
+                    [
+                        {"text": "I’m fine, thanks."},
+                        {"text": "Hello! I’m Jack."},
+                    ],
+                    0,
+                    1,
+                )
+                self.assertEqual(
+                    XunFeiSession._normalize_selection_text(selected_by_ui),
+                    XunFeiSession._normalize_selection_text(
+                        "I’m fine, thanks.Hello! I’m Jack."
+                    ),
+                )
+            finally:
+                browser.close()
+
     def test_composite_generation_uses_visible_page_flow_without_direct_submit_api(self):
         session = XunFeiSession()
         session._logged_in = True
