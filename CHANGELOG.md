@@ -1,5 +1,12 @@
 # 更新日志
 
+## v2.7.13
+
+### 修复 Windows 冒烟模式渲染器崩溃
+
+- 根据 Windows runner 诊断日志定位到隐藏 `BrowserWindow` 创建后 Chromium renderer 以 `0xC0000005` 访问冲突退出的问题。
+- Windows 冒烟模式改为使用可见窗口，避免隐藏窗口触发渲染器崩溃；正常用户运行逻辑不变。
+
 ## v2.7.12
 
 ### 修复 Windows 工作流脚本格式

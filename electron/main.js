@@ -441,7 +441,9 @@ function createWindow() {
         height: 860,
         minWidth: 900,
         minHeight: 600,
-        show: !isSmokeTest,
+        // Windows runner 中隐藏 BrowserWindow 偶发触发 Chromium renderer
+        // 访问冲突（0xC0000005）；冒烟测试使用可见窗口，正常运行保持可见。
+        show: !isSmokeTest || process.platform === 'win32',
         title: PRODUCT_NAME,
         transparent: false,
         backgroundColor: '#f8fafd',
