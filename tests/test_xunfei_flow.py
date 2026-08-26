@@ -234,6 +234,12 @@ class XunfeiFlowTests(unittest.TestCase):
                     [0, 1],
                 )
                 self.assertIsNotNone(selected)
+                self.assertEqual(
+                    XunFeiSession._normalize_selection_text(selected),
+                    XunFeiSession._normalize_selection_text(
+                        "I’m fine, thanks.Hello! I’m Jack."
+                    ),
+                )
                 actual = page.evaluate(xunfei.JS.GET_SELECTION_TEXT)
                 self.assertEqual(
                     XunFeiSession._normalize_selection_text(actual),
@@ -255,6 +261,77 @@ class XunfeiFlowTests(unittest.TestCase):
                     XunFeiSession._normalize_selection_text(
                         "I’m fine, thanks.Hello! I’m Jack."
                     ),
+                )
+            finally:
+                browser.close()
+
+    def test_composite_voice_card_prefers_search_result_over_recent_chip(self):
+        """同名音色同时出现在搜索结果和最近使用区时不能误点快捷卡片。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <div class="fixed" style="display:block; width:800px; height:500px">
+                <input placeholder="输入主播名称进行搜索" />
+                <div class="w-full rounded-lg cursor-pointer">
+                    <img alt="英语-Amanda" />
+                    <span>Amanda</span>
+                </div>
+                <button class="cursor-pointer">
+                    <img alt="Amanda" />
+                    <span>Amanda</span>
+                    <span>语速 50 语调 50 音量 50</span>
+                </button>
+            </div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                card = XunFeiSession._find_composite_voice_card(page, "Amanda")
+                self.assertIsNotNone(card)
+                self.assertEqual(card.evaluate("el => el.tagName"), "DIV")
+                self.assertEqual(card.locator("img").first.get_attribute("alt"), "英语-Amanda")
+            finally:
+                browser.close()
+
+    def test_composite_voice_mark_validation_rejects_mixed_or_wrong_rows(self):
+        """存在错音色、重复标记或参数漂移时必须拒绝继续提交。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <div class="ssml-editor" contenteditable="true">
+                <p><span class="ssml-text-mark-speaker" data-speaker-id="544508087"
+                    data-rate="50" data-pitch="50" data-volume="50">
+                    <b class="ssml-tag" data-type="range_anchor">Amanda-教育</b>
+                    <span class="range-annotation-content speaker-content">Hello.</span>
+                </span></p>
+            </div>
+        """
+        rows = [{"text": "Hello.", "speed": 50, "pitch": 50, "volume": 50}]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                self.assertTrue(
+                    XunFeiSession._verify_composite_voice_marks(
+                        page, rows, 0, 0, "Amanda", 544508087, rows[0]
+                    )
+                )
+                page.locator(".ssml-text-mark-speaker").evaluate(
+                    "el => el.setAttribute('data-speaker-id', '593031758')"
+                )
+                self.assertFalse(
+                    XunFeiSession._verify_composite_voice_marks(
+                        page, rows, 0, 0, "Amanda", 544508087, rows[0]
+                    )
                 )
             finally:
                 browser.close()

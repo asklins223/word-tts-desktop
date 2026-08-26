@@ -449,12 +449,23 @@ class JS:
         const last = paragraphs[Number(lastIndex)];
         if (!first || !last) return null;
 
+        const isEditorMetadataText = (node) => {
+            const parent = node?.parentElement;
+            return Boolean(parent?.closest(
+                '.ssml-tag, .ssml-editor-placeholder, [data-type="range_anchor"]'
+            ));
+        };
         const firstTextNode = (root) => {
             const walker = document.createTreeWalker(
                 root,
                 NodeFilter.SHOW_TEXT,
             );
-            return walker.nextNode();
+            let current = walker.nextNode();
+            while (current) {
+                if (!isEditorMetadataText(current) && current.textContent?.trim()) return current;
+                current = walker.nextNode();
+            }
+            return null;
         };
         const lastTextNode = (root) => {
             const walker = document.createTreeWalker(
@@ -464,7 +475,7 @@ class JS:
             let current = null;
             let next = walker.nextNode();
             while (next) {
-                current = next;
+                if (!isEditorMetadataText(next) && next.textContent?.trim()) current = next;
                 next = walker.nextNode();
             }
             return current;
@@ -481,7 +492,11 @@ class JS:
         if (!selection) return null;
         selection.removeAllRanges();
         selection.addRange(range);
-        return selection.toString();
+        const fragment = range.cloneContents();
+        fragment.querySelectorAll(
+            '.ssml-tag, .ssml-editor-placeholder, [data-type="range_anchor"]'
+        ).forEach((node) => node.remove());
+        return fragment.textContent || '';
     }
     """
 
@@ -1829,16 +1844,34 @@ class XunFeiSession:
 
         errors = []
 
+        def paragraph_text_target(paragraph):
+            # 讯飞完成一次音色标记后，段落开头会多出一个不可编辑的
+            # speaker 标签。直接对整个 <p> 执行 select_text() 会把这个
+            # 标签当成选区起点，页面有时会因此把后续音色套用到错误范围。
+            # 优先只选真正可编辑的正文 span；未标注段落仍使用 <p> 本身。
+            content = paragraph.locator(
+                'span.range-annotation-content.speaker-content'
+                ':not(.ssml-tag):not([data-type="range_anchor"]):visible'
+            )
+            try:
+                if content.count() == 1:
+                    return content.first
+            except Exception:
+                pass
+            return paragraph
+
         # 方式一：先真实选中首行，再滚动到末行并 Shift-click。这个动作
         # 不要求首尾同时出现在视口中，最适合打包客户端的窄窗口和长文档。
         try:
-            first.scroll_into_view_if_needed(timeout=5000)
-            first.select_text(timeout=5000)
-            last.scroll_into_view_if_needed(timeout=5000)
-            last_box = last.bounding_box()
+            first_target = paragraph_text_target(first)
+            last_target = paragraph_text_target(last)
+            first_target.scroll_into_view_if_needed(timeout=5000)
+            first_target.select_text(timeout=5000)
+            last_target.scroll_into_view_if_needed(timeout=5000)
+            last_box = last_target.bounding_box()
             if not last_box:
                 raise XunfeiError("末行不可见，无法执行 Shift-click")
-            last.click(
+            last_target.click(
                 position={
                     "x": max(2, last_box["width"] - 2),
                     "y": max(2, last_box["height"] - 2),
@@ -1859,10 +1892,12 @@ class XunFeiSession:
         # 方式二：短范围仍优先使用真实鼠标拖选，兼容讯飞页面没有稳定
         # 锚点行为的版本。只有首尾都在当前视口时才执行，避免跨滚动拖选。
         try:
-            first.scroll_into_view_if_needed(timeout=5000)
-            last.scroll_into_view_if_needed(timeout=5000)
-            first_box = first.bounding_box()
-            last_box = last.bounding_box()
+            first_target = paragraph_text_target(first)
+            last_target = paragraph_text_target(last)
+            first_target.scroll_into_view_if_needed(timeout=5000)
+            last_target.scroll_into_view_if_needed(timeout=5000)
+            first_box = first_target.bounding_box()
+            last_box = last_target.bounding_box()
             if not first_box or not last_box:
                 raise XunfeiError("首尾行不可同时看见，无法执行鼠标拖选")
             start = {
@@ -3198,12 +3233,20 @@ class XunFeiSession:
 
     @classmethod
     def _find_composite_voice_card(cls, page, voice_name):
-        """寻找当前搜索结果中可见的目标音色卡片，不点击隐藏结果。"""
+        """寻找当前搜索结果中唯一的目标音色卡片。
+
+        多人配音弹层同时包含搜索结果、最近使用音色和参数快捷卡片。
+        以前只按整张控件的包含文本匹配，搜索 ``Amanda`` 时可能先命中
+        最近使用卡片，或者在同名前缀音色中选择到错误项。这里只接受带
+        音色头像的候选，并优先选择搜索结果的非 button 卡片；候选仍然
+        不唯一时直接报错，交给上层重试，绝不盲点第一项。
+        """
         scope = cls._composite_ui_scope(page)
         controls = scope.locator(
             'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
             '.cursor-pointer:visible'
         )
+        candidates = []
         for index in range(min(controls.count(), 300)):
             control = controls.nth(index)
             try:
@@ -3220,7 +3263,35 @@ class XunFeiSession:
                     continue
             except Exception:
                 pass
-            return control
+            try:
+                tag_name = str(control.evaluate("el => el.tagName") or "").upper()
+                images = control.locator("img[alt]:visible")
+                if images.count() == 0:
+                    continue
+                alt = str(images.first.get_attribute("alt") or "")
+                if not cls._composite_ui_text_matches(
+                    f"{alt} {text}", voice_name
+                ):
+                    continue
+                class_name = str(control.get_attribute("class") or "")
+            except Exception:
+                continue
+            candidates.append((tag_name, class_name, control))
+
+        # 讯飞当前页面的搜索结果是 div.w-full 卡片，最近使用列表是
+        # button。保留同名情况下的搜索结果优先级，同时兼容未来把结果
+        # 渲染成 button 的版本。
+        preferred = [
+            item for item in candidates
+            if item[0] != "BUTTON" or "w-full" in item[1]
+        ]
+        selected = preferred or candidates
+        if len(selected) == 1:
+            return selected[0][2]
+        if len(selected) > 1:
+            raise XunfeiError(
+                f"多人配音音色候选不唯一: {voice_name}（{len(selected)} 项）"
+            )
         return None
 
     @classmethod
@@ -3432,30 +3503,46 @@ class XunFeiSession:
 
     @classmethod
     def _verify_composite_voice_marks(
-        cls, page, rows, first_index, last_index, voice_name, speaker_number
+        cls, page, rows, first_index, last_index, voice_name, speaker_number,
+        config_row=None,
     ):
-        """确认目标行都被页面实际标记为目标音色。"""
+        """确认目标行只有一个完整、正确的音色标记。"""
         paragraphs = page.locator(".ssml-editor p")
         expected_id = str(speaker_number)
         for index in range(first_index, last_index + 1):
             marks = paragraphs.nth(index).locator(
                 ".ssml-text-mark-speaker"
             )
-            matched = False
-            for mark_index in range(marks.count()):
-                mark = marks.nth(mark_index)
-                mark_id = (mark.get_attribute("data-speaker-id") or "").strip()
-                mark_label = mark.get_attribute("data-label") or ""
-                if (
-                    (mark_id and mark_id == expected_id)
-                    or (
-                        not mark_id
-                        and cls._composite_ui_text_matches(mark_label, voice_name)
-                    )
-                ):
-                    matched = True
-                    break
-            if not matched:
+            # 一个逻辑行只能有一个完整 speaker mark。只要保留旧标记、
+            # 产生混合标记或标记被截成两段，都必须失败，不能“有一个对的
+            # 标记就算通过”，否则最终作品会出现错音色片段。
+            if marks.count() != 1:
+                return False
+            mark = marks.first
+            mark_id = (mark.get_attribute("data-speaker-id") or "").strip()
+            if mark_id != expected_id:
+                return False
+
+            if config_row is not None:
+                expected_params = {
+                    "data-rate": clamp_param(config_row.get("speed", PARAM_DEFAULT)),
+                    "data-pitch": clamp_param(config_row.get("pitch", PARAM_DEFAULT)),
+                    "data-volume": clamp_param(config_row.get("volume", PARAM_DEFAULT)),
+                }
+                for attribute, expected_value in expected_params.items():
+                    actual_value = (mark.get_attribute(attribute) or "").strip()
+                    if actual_value != str(expected_value):
+                        return False
+
+            content = mark.locator(
+                'span.range-annotation-content.speaker-content'
+                ':not(.ssml-tag):not([data-type="range_anchor"])'
+            )
+            if content.count() != 1:
+                return False
+            expected_text = str(rows[index].get("text") or "")
+            actual_text = content.first.text_content(timeout=1000) or ""
+            if cls._normalize_selection_text(actual_text) != cls._normalize_selection_text(expected_text):
                 return False
         return True
 
@@ -3505,6 +3592,7 @@ class XunFeiSession:
                 last_index,
                 voice_name,
                 speaker_number,
+                first_row,
             ),
             timeout=8,
             interval=0.2,
