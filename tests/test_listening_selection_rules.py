@@ -75,17 +75,23 @@ class ListeningSelectionRuleTests(unittest.TestCase):
             result = ListeningSelectionParser(path).parse()
 
         self.assertEqual(result["doc_type"], "听后选择")
-        self.assertEqual(result["item_count"], 2)
+        self.assertEqual(result["item_count"], 4)
         self.assertEqual(
             [item["category"] for item in result["items"]],
-            ["听后选择录音稿", "听后选择录音稿"],
+            ["听后选择录音稿"] * 4,
         )
         self.assertEqual(
             [item["text"] for item in result["items"]],
             [
-                "W: Good morning, Peter! How are you?\nM: I’m fine, thanks.",
-                "M: Hello! I’m Jack.\nW: My name is Emma.",
+                "W: Good morning, Peter! How are you?",
+                "M: I’m fine, thanks.",
+                "M: Hello! I’m Jack.",
+                "W: My name is Emma.",
             ],
+        )
+        self.assertEqual(
+            [item["question_index"] for item in result["items"]],
+            [1, 1, 2, 2],
         )
         self.assertNotIn("How is Peter", result["items"][0]["text"])
         self.assertNotIn("计算机语音提示", result["items"][0]["text"])
@@ -98,7 +104,7 @@ class ListeningSelectionRuleTests(unittest.TestCase):
 
         self.assertIn("检测到 1 种题型", summary)
         self.assertEqual([result["doc_type"] for result in results], ["听后选择"])
-        self.assertEqual(results[0]["item_count"], 2)
+        self.assertEqual(results[0]["item_count"], 4)
 
         first_segments = core.build_synthesis_segments(
             results[0]["items"][0]["text"],
@@ -110,8 +116,18 @@ class ListeningSelectionRuleTests(unittest.TestCase):
             [(segment["voice_key"], segment["text"]) for segment in first_segments],
             [
                 (core.FEMALE_VOICE, "Good morning, Peter! How are you?"),
-                (core.MALE_VOICE, "I’m fine, thanks."),
             ],
+        )
+
+        second_segments = core.build_synthesis_segments(
+            results[0]["items"][1]["text"],
+            50,
+            50,
+            50,
+        )
+        self.assertEqual(
+            [(segment["voice_key"], segment["text"]) for segment in second_segments],
+            [(core.MALE_VOICE, "I’m fine, thanks.")],
         )
 
         lowercase_segments = core.build_synthesis_segments(

@@ -307,6 +307,49 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([run["center"] for run in selected], [3000, 8250])
 
+    def test_composite_cut_prefers_long_inserted_pauses_over_natural_gaps(self):
+        audio = AudioSegment.silent(duration=14000)
+        runs = [
+            # 自然停顿靠近第一个比例位置，但明显短于页面插入的停顿。
+            {"start": 1800, "end": 2600, "center": 2200, "core_length": 800, "length": 800},
+            {"start": 3000, "end": 5000, "center": 4000, "core_length": 2000, "length": 2000},
+            {"start": 6500, "end": 7300, "center": 6900, "core_length": 800, "length": 800},
+            {"start": 8000, "end": 10000, "center": 9000, "core_length": 2000, "length": 2000},
+        ]
+
+        selected = core._select_composite_silence_runs(
+            audio,
+            runs,
+            boundary_count=2,
+            item_lengths=[1, 1, 1],
+        )
+
+        self.assertEqual([run["center"] for run in selected], [4000, 9000])
+
+    def test_composite_cut_uses_core_center_when_safe_edges_are_asymmetric(self):
+        tone = Sine(440).to_audio_segment(duration=900).apply_gain(-3)
+        audio = (
+            tone
+            + AudioSegment.silent(duration=1800)
+            + tone
+        )
+        runs = [{
+            "start": 850,
+            "end": 2850,
+            "center": 1850,
+            "cut_position": 1750,
+            "core_length": 1800,
+            "length": 2000,
+        }]
+
+        selected = core._select_composite_silence_runs(
+            audio,
+            runs,
+            boundary_count=1,
+            item_lengths=[1, 1],
+        )
+        self.assertEqual(selected[0].get("cut_position"), 1750)
+
     def test_composite_plan_keeps_items_whole_when_work_limit_is_reached(self):
         specs = [
             {"item_id": "q1", "text": "first", "default_voice": core.FEMALE_VOICE},

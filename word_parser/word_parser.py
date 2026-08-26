@@ -495,6 +495,66 @@ class ListeningSelectionParser(BaseParser):
     RE_NUMBERED_QUESTION = re.compile(r'^\d+\s*[.．、）)]\s*[^A-Za-z]?')
     RE_OPTION = re.compile(r'^[A-CＡ-Ｃ]\s*[.．、）)]\s*')
     RE_ANSWER = re.compile(r'^(?:参考答案|答案|解析)\s*[：:]?')
+    RE_SPEAKER_LINE = re.compile(r'^\s*([WwMm])\s*[:：]\s*(.*)$')
+
+    @classmethod
+    def _split_speaker_segments(cls, text):
+        """把一段录音原文拆成按说话人轮次的独立音频文本。
+
+        同一说话人连续出现时合并为一个段落；说话人切换时结束当前段落。
+        保留 ``W:``/``M:`` 标记，供后续音色识别使用，但每个返回值都已经
+        是一个最终音频条目，不能再把整道题重新拼回一个文件。
+        """
+        clean = sanitize(text)
+        lines = clean.splitlines()
+        labelled = [
+            cls.RE_SPEAKER_LINE.match(line)
+            for line in lines
+            if str(line or '').strip()
+        ]
+        if not labelled or not any(labelled):
+            return [(None, clean)] if clean else []
+
+        segments = []
+        current_role = None
+        current_label = None
+        current_lines = []
+
+        def flush():
+            nonlocal current_role, current_label, current_lines
+            if not current_lines:
+                return
+            content = '\n'.join(line for line in current_lines if line).strip()
+            if content:
+                prefix = f"{current_label}: " if current_role else ""
+                segments.append((current_role, f"{prefix}{content}"))
+            current_role = None
+            current_label = None
+            current_lines = []
+
+        for line in lines:
+            value = str(line or '').strip()
+            if not value:
+                continue
+            match = cls.RE_SPEAKER_LINE.match(value)
+            if match:
+                role = match.group(1).upper()
+                if current_role is not None and role != current_role:
+                    flush()
+                if current_role is None:
+                    current_role = role
+                    current_label = match.group(1)
+                content = match.group(2).strip()
+                if content:
+                    current_lines.append(content)
+                continue
+
+            # 标记后的换行是同一人的续行；标记前若有异常说明文字则单独
+            # 保留，避免为了拆分而静默丢失原文。
+            current_lines.append(value)
+
+        flush()
+        return segments
 
     def parse(self):
         items = []
@@ -502,17 +562,28 @@ class ListeningSelectionParser(BaseParser):
         collecting = False
         current_lines = []
         script_index = 0
+        audio_index = 0
 
         def flush():
-            nonlocal collecting, current_lines, script_index
+            nonlocal collecting, current_lines, script_index, audio_index
             text = sanitize('\n'.join(current_lines))
             if collecting and text:
                 script_index += 1
-                items.append({
-                    "category": "听后选择录音稿",
-                    "index": script_index,
-                    "text": text,
-                })
+                for speaker, segment_text in self._split_speaker_segments(text):
+                    audio_index += 1
+                    item = {
+                        "category": "听后选择录音稿",
+                        "index": audio_index,
+                        "question_index": script_index,
+                        "text": segment_text,
+                    }
+                    if speaker == "W":
+                        item["speaker"] = "W"
+                        item["voice"] = "female"
+                    elif speaker == "M":
+                        item["speaker"] = "M"
+                        item["voice"] = "male"
+                    items.append(item)
             collecting = False
             current_lines = []
 

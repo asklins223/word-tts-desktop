@@ -185,15 +185,15 @@ QUALITY_BITRATE = {
 # 音频生成算法版本。改变讯飞音频拼接、合并切割策略或参数寻址方式时递增，
 # 避免复用旧算法产物。4 是原有“单段合成后拼接”算法，保留为历史兼容版本。
 LEGACY_AUDIO_ALGORITHM_VERSION = 4
-AUDIO_ALGORITHM_VERSION = 6
+AUDIO_ALGORITHM_VERSION = 7
 
 # Electron 主进程用它确认内置后端和渲染器来自同一次构建。旧版客户端如果
 # 把旧后端混进新前端，不能继续以“看似启动成功”的方式走逐条生成流程。
-BACKEND_CONTRACT_VERSION = 2
+BACKEND_CONTRACT_VERSION = 3
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 11
+PARSER_VERSION = 12
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
 TTS_PARAM_MIN = 0
@@ -223,6 +223,9 @@ COMPOSITE_SILENCE_CORE_DBFS = -50.0
 COMPOSITE_SILENCE_EDGE_DBFS = -36.0
 COMPOSITE_MIN_CORE_SILENCE_MS = 300
 COMPOSITE_MIN_SAFE_SILENCE_MS = 450
+# 讯飞页面插入的 2 秒停顿是切割定位标记；普通语句间隙通常明显短于
+# 这个值。候选足够时优先使用长标记，避免第三个边界被自然停顿抢走。
+COMPOSITE_MARKER_MIN_CORE_MS = 900
 COMPOSITE_EDGE_KEEP_MS = 90
 COMPOSITE_EDGE_TRIM_MIN_MS = 180
 # 合并作品最外层的静音不属于题目之间的人工边界。只在它确实很长时
@@ -851,7 +854,10 @@ def _find_composite_silence_runs(
             runs.append({
                 "start": start_ms,
                 "end": end_ms,
-                "center": (start_ms + end_ms) // 2,
+                # 扩展后的 safe 区可能因为首尾弱音而左右不对称；真正的
+                # 切点固定落在 core 静音中心，避免把尾音/首音带进切点。
+                "center": (core_start_ms + core_end_ms) // 2,
+                "cut_position": (core_start_ms + core_end_ms) // 2,
                 "core_start": core_start_ms,
                 "core_end": core_end_ms,
                 "core_length": core_length,
@@ -862,7 +868,13 @@ def _find_composite_silence_runs(
 
 
 def _select_composite_silence_runs(audio, runs, boundary_count, item_lengths=None):
-    """按顺序选择每个题目之间的安全静音区，不按字符比例直接切音频。"""
+    """全局选择每个条目之间的安全停顿，不按比例猜测切点。
+
+    旧实现按边界逐个贪心选择：前面某个自然停顿一旦被选中，后面的
+    expected position 就会整体错位，表现为前两段正常、第三段开始音频
+    对不上。现在使用全局动态规划同时选择整条有序候选链，并在候选足够
+    时优先保留页面插入的长停顿标记。
+    """
     if boundary_count <= 0:
         return []
     if len(runs) < boundary_count:
@@ -897,35 +909,58 @@ def _select_composite_silence_runs(audio, runs, boundary_count, item_lengths=Non
             f"合并音频只找到 {len(ordered_runs)} 个内部安全停顿，需要 {boundary_count} 个"
         )
 
-    selected = []
-    start_index = 0
+    # 如果检测到了足够多的长静音，短自然停顿不具备人工边界的资格；
+    # 候选不足时才回退到全部安全停顿，仍然拒绝按时长硬切。
+    marker_runs = [
+        run for run in ordered_runs
+        if float(run.get("core_length", run.get("length", 0)) or 0)
+        >= COMPOSITE_MARKER_MIN_CORE_MS
+    ]
+    if len(marker_runs) >= boundary_count:
+        ordered_runs = marker_runs
+
+    def score(run, expected):
+        core_length = float(run.get("core_length", run.get("length", 0)) or 0)
+        safe_length = float(run.get("length", core_length) or core_length)
+        # 长停顿是页面插入的定位标记，得分远高于位置误差；位置只用于
+        # 在多个同长度候选中选择更符合整体音频节奏的一条。
+        length_score = min(core_length, COMPOSITE_BOUNDARY_MS * 1.5) * 4.0
+        edge_score = min(safe_length, COMPOSITE_BOUNDARY_MS * 1.5) * 0.5
+        distance_penalty = abs(run["center"] - expected) / total_duration * 300.0
+        return length_score + edge_score - distance_penalty
+
+    # states[run_index] = (累计分数, 已选择的候选索引路径)，表示当前边界
+    # 选择该候选时的最优前缀。候选数量通常很小，完整保留状态能避免贪心
+    # 选早了一个自然停顿后把后续边界全部推偏。
+    states = []
     for boundary_index, expected in enumerate(expected_positions):
-        remaining_boundaries = boundary_count - boundary_index - 1
-        available = []
-        for run_index in range(start_index, len(ordered_runs)):
-            run = ordered_runs[run_index]
-            if selected and run["center"] <= selected[-1]["center"] + COMPOSITE_MIN_OUTPUT_MS:
-                continue
-            future_runs = ordered_runs[run_index + 1:]
-            if sum(
-                future["center"] > run["center"] + COMPOSITE_MIN_OUTPUT_MS
-                for future in future_runs
-            ) < remaining_boundaries:
-                continue
-            available.append((run_index, run))
-        if not available:
-            raise CompositeCutError("安全停顿顺序不连续，拒绝按比例强行切割")
+        next_states = [None] * len(ordered_runs)
+        for run_index, run in enumerate(ordered_runs):
+            best = None
+            current_score = score(run, expected)
+            if boundary_index == 0:
+                best = (current_score, [run_index])
+            else:
+                for previous_index, previous_state in enumerate(states):
+                    if previous_state is None or previous_index >= run_index:
+                        continue
+                    previous_run = ordered_runs[previous_index]
+                    if run["center"] - previous_run["center"] < COMPOSITE_MIN_OUTPUT_MS:
+                        continue
+                    candidate = (
+                        previous_state[0] + current_score,
+                        [*previous_state[1], run_index],
+                    )
+                    if best is None or candidate[0] > best[0]:
+                        best = candidate
+            next_states[run_index] = best
+        states = next_states
 
-        def score(run):
-            # 人工停顿应明显长于普通语句停顿；距离只做次级排序，避免
-            # 因语速或中英文比例不同而把候选区锁死在字符比例位置。
-            length_score = min(run["length"], COMPOSITE_BOUNDARY_MS * 1.5) * 2.0
-            distance_penalty = abs(run["center"] - expected) / total_duration * 500.0
-            return length_score - distance_penalty
-
-        chosen_index, chosen = max(available, key=lambda item: score(item[1]))
-        selected.append(chosen)
-        start_index = chosen_index + 1
+    candidates = [state for state in states if state is not None]
+    if not candidates:
+        raise CompositeCutError("安全停顿顺序不连续，拒绝按比例强行切割")
+    selected_path = max(candidates, key=lambda state: state[0])[1]
+    selected = [ordered_runs[index] for index in selected_path]
 
     if any(
         right["center"] - left["center"] < COMPOSITE_MIN_OUTPUT_MS
@@ -1045,7 +1080,10 @@ def cut_composite_audio(audio, item_count, item_lengths=None):
         count - 1,
         item_lengths=item_lengths,
     )
-    cut_positions = [run["center"] for run in selected]
+    cut_positions = [
+        int(run.get("cut_position", run["center"]))
+        for run in selected
+    ]
     pieces = []
     start = 0
     for piece_index, cut_position in enumerate([*cut_positions, len(audio)]):
@@ -1670,7 +1708,7 @@ def _unique_filename_stem(stem, used_stems):
 def build_progress(source_filename, source_path, parse_results, config):
     """
     构建初始进度数据结构。
-    每条解析结果（每道题）独立生成一个音频文件。
+    每条解析结果（每个音频条目）独立生成一个音频文件。
 
     文件命名规则：
       - 信息获取题目（听选信息题目/回答问题题目）：问题x.mp3（x 为题号）
