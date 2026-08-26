@@ -39,6 +39,20 @@ class _PostConfirmPage:
         self.rate_limited = rate_limited
 
     def evaluate(self, script, arg=None):
+        if script == xunfei.JS.PROBE_SYNTH_STATE:
+            if self.ai_modal:
+                return {
+                    "state": "ai_modal",
+                    "ai_modal": True,
+                    "ai_switch": "not_found",
+                }
+            if self.rate_limited:
+                return {
+                    "state": "rate_limited",
+                    "ai_modal": False,
+                    "ai_switch": "not_found",
+                }
+            return {"state": None, "ai_modal": False, "ai_switch": "not_found"}
         if script == xunfei.JS.CHECK_MODAL_HAS_TEXT:
             return self.ai_modal
         if script == xunfei.JS.CHECK_RATE_LIMITED:
@@ -113,6 +127,81 @@ class XunfeiFlowTests(unittest.TestCase):
 
         self.assertEqual(session._observe_after_first_confirm(page), "ai_modal")
 
+    def test_delayed_ai_modal_is_captured_after_page_renders(self):
+        """页面延迟挂载 AI 弹窗时，轮询仍能捕获，不依赖一次性查询。"""
+        from playwright.sync_api import sync_playwright
+
+        html = (
+            '<div class="ant-modal" role="dialog" '
+            'style="display:block;width:320px;height:120px">'
+            'AI 标识说明 不再提示</div>'
+        )
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            # 真实 DOM 探针单独验证；下面的 DelayedProbePage 再验证首次
+            # 未命中、后续页面才出现时轮询仍会继续捕获。
+            self.assertEqual(
+                page.evaluate(
+                    xunfei.JS.PROBE_SYNTH_STATE,
+                    xunfei.AI_FLAG_KEYWORD_VARIANTS,
+                )["state"],
+                "ai_modal",
+            )
+            self.assertEqual(
+                XunFeiSession()._observe_after_first_confirm(page),
+                "ai_modal",
+            )
+            browser.close()
+
+        class DelayedProbePage:
+            def __init__(self):
+                self.calls = 0
+
+            def evaluate(self, script, arg=None):
+                if script != xunfei.JS.PROBE_SYNTH_STATE:
+                    return None
+                self.calls += 1
+                if self.calls == 1:
+                    return {"state": None, "ai_modal": False, "ai_switch": "not_found"}
+                return {"state": "ai_modal", "ai_modal": True, "ai_switch": "not_found"}
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        delayed_page = DelayedProbePage()
+        self.assertEqual(
+            XunFeiSession()._observe_after_first_confirm(delayed_page),
+            "ai_modal",
+        )
+        self.assertGreaterEqual(delayed_page.calls, 2)
+
+    def test_order_modal_does_not_wait_for_missing_ai_switch_again(self):
+        """订单支付弹窗出现后，不应再次等待不存在的作品设置开关。"""
+        session = XunFeiSession()
+        ai_checks = []
+
+        class FakePage:
+            def evaluate(self, script, arg=None):
+                if script == xunfei.JS.CHECK_MODAL_HAS_TEXT:
+                    return arg == ["确认合成"]
+                return False
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        session._visible_confirm_synth_buttons = lambda _page: [(object(), False)]
+        session._ensure_mp3_format = lambda _page: True
+        session._ensure_ai_switch_off = (
+            lambda _page, timeout=8: ai_checks.append(timeout) or "off"
+        )
+        session._click_confirm_synth_button = lambda _page: True
+        session._observe_after_first_confirm = lambda _page: "order"
+
+        self.assertEqual(session._confirm_synth(FakePage()), "ok")
+        self.assertEqual(ai_checks, [12])
+
     def test_ai_switch_logic_requires_an_off_state(self):
         self.assertIn("return 'already_off'", xunfei.JS.CLICK_AI_SWITCH)
         self.assertIn("return 'clicked'", xunfei.JS.CLICK_AI_SWITCH)
@@ -122,6 +211,12 @@ class XunfeiFlowTests(unittest.TestCase):
 
         class FakePage:
             def evaluate(self, script, arg=None):
+                if script == xunfei.JS.PROBE_SYNTH_STATE:
+                    return {
+                        "state": "confirm",
+                        "ai_modal": False,
+                        "ai_switch": "off",
+                    }
                 if script == xunfei.JS.CHECK_NO_REMIND:
                     return "clicked_input"
                 if script == xunfei.JS.CLICK_AI_SWITCH:
@@ -177,10 +272,86 @@ class XunfeiFlowTests(unittest.TestCase):
                     });
                 }"""
             )
+            probe = page.evaluate(
+                xunfei.JS.PROBE_SYNTH_STATE,
+                xunfei.AI_FLAG_KEYWORD_VARIANTS,
+            )
+            self.assertEqual(probe["state"], "confirm")
+            self.assertEqual(probe["ai_switch"], "on")
             self.assertEqual(page.evaluate(xunfei.JS.GET_AI_SWITCH_STATE), "on")
             self.assertEqual(page.evaluate(xunfei.JS.CLICK_AI_SWITCH), "clicked")
             page.wait_for_timeout(30)
+            self.assertEqual(
+                page.evaluate(
+                    xunfei.JS.PROBE_SYNTH_STATE,
+                    xunfei.AI_FLAG_KEYWORD_VARIANTS,
+                )["ai_switch"],
+                "off",
+            )
             self.assertEqual(page.evaluate(xunfei.JS.GET_AI_SWITCH_STATE), "off")
+            browser.close()
+
+    def test_export_format_selects_mp3_by_real_radio_label(self):
+        """验证真实“作品设置”DOM 从 WAV 默认值切换到 MP3。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div role="dialog" aria-modal="true" class="ant-modal" style="width: 420px">
+          <div class="ant-modal-content">
+            <div class="ant-modal-header"><div class="ant-modal-title">作品设置</div></div>
+            <div class="flex flex-col gap-1">
+              <span>格式</span>
+              <div class="flex gap-3">
+                <label><input type="radio" name="exportFormat" value="wav" checked><span>WAV</span></label>
+                <label><input type="radio" name="exportFormat"><span>MP3</span></label>
+              </div>
+            </div>
+            <button>确认合成</button>
+          </div>
+        </div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+
+            self.assertEqual(page.evaluate(xunfei.JS.GET_MP3_FORMAT)["status"], "other")
+            result = page.evaluate(xunfei.JS.SET_MP3_FORMAT)
+            self.assertEqual(result["status"], "clicked_mp3")
+            self.assertTrue(page.evaluate(xunfei.JS.GET_MP3_FORMAT)["checked"])
+            self.assertTrue(page.locator('input[value="wav"]').is_checked() is False)
+
+            # 再把页面恢复成 Windows 端可能出现的 WAV 默认值，验证 Python
+            # 流程会在最终确认前强制切换并回读 MP3。
+            page.locator('input[value="wav"]').check()
+            self.assertTrue(XunFeiSession()._ensure_mp3_format(page, timeout=2))
+            self.assertTrue(page.evaluate(xunfei.JS.GET_MP3_FORMAT)["checked"])
+            browser.close()
+
+    def test_missing_mp3_never_falls_back_to_wav(self):
+        """MP3 元素缺失时必须中止，不能把 WAV 当成默认项点击。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div role="dialog" class="ant-modal" style="width: 420px">
+          <div class="ant-modal-content">
+            <div class="ant-modal-title">作品设置</div>
+            <label><input type="radio" name="exportFormat" value="wav" checked><span>WAV</span></label>
+            <button>确认合成</button>
+          </div>
+        </div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            self.assertEqual(
+                page.evaluate(xunfei.JS.SET_MP3_FORMAT)["status"],
+                "mp3_not_found",
+            )
+            self.assertTrue(page.locator('input[value="wav"]').is_checked())
+            self.assertFalse(XunFeiSession()._ensure_mp3_format(page, timeout=1))
+            self.assertTrue(page.locator('input[value="wav"]').is_checked())
             browser.close()
 
     def test_ai_info_modal_checks_no_remind_and_confirms(self):

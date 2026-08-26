@@ -237,20 +237,26 @@
                                                     <div class="voice-browser-grid" id="voice-browser-grid" role="listbox" aria-label="音色列表"></div>
                                                     <div class="voice-browser-empty" id="voice-browser-empty" hidden>没有匹配的音色，请换个关键词或分类。</div>
 
-                                                    <aside class="voice-detail-panel" id="voice-detail-panel" aria-live="polite">
-                                                        <div class="voice-detail-heading">
-                                                            <div class="voice-avatar voice-avatar-large" id="voice-detail-avatar" aria-hidden="true">A</div>
-                                                            <div class="voice-detail-title">
-                                                                <span class="voice-detail-role" id="voice-detail-role">默认女声</span>
-                                                                <h3 id="voice-detail-name">Amanda</h3>
-                                                                <p id="voice-detail-meta">英语 · 女声</p>
+                                                    <aside class="voice-detail-panel" id="voice-detail-panel" aria-label="音色详细配置" aria-live="polite">
+                                                        <button type="button" class="voice-detail-toggle" id="voice-detail-toggle" aria-controls="voice-detail-content" aria-expanded="true" aria-label="收起详细配置" title="收起详细配置">
+                                                            <svg class="voice-detail-toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                                                            <span class="voice-detail-toggle-label sr-only">收起详细配置</span>
+                                                        </button>
+                                                        <div class="voice-detail-content" id="voice-detail-content">
+                                                            <div class="voice-detail-heading">
+                                                                <div class="voice-avatar voice-avatar-large" id="voice-detail-avatar" aria-hidden="true">A</div>
+                                                                <div class="voice-detail-title">
+                                                                    <span class="voice-detail-role" id="voice-detail-role">默认女声</span>
+                                                                    <h3 id="voice-detail-name">Amanda</h3>
+                                                                    <p id="voice-detail-meta">英语 · 女声</p>
+                                                                </div>
+                                                                <button type="button" class="voice-preview-btn" id="voice-preview-btn" title="试听当前音色" aria-label="试听当前音色">
+                                                                    <svg class="icon-play" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                                                                    <svg class="icon-pause" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                                                </button>
                                                             </div>
-                                                            <button type="button" class="voice-preview-btn" id="voice-preview-btn" title="试听当前音色" aria-label="试听当前音色">
-                                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-                                                            </button>
-                                                        </div>
-                                                        <div class="voice-adjust-heading"><strong>音色调节</strong><span>0-100 · 默认 50</span></div>
-                                                        <div class="voice-param-list">
+                                                            <div class="voice-adjust-heading"><strong>音色调节</strong><span>0-100 · 默认 50</span></div>
+                                                            <div class="voice-param-list">
                                                             <div class="voice-param-row">
                                                                 <div class="voice-param-label"><span>语速</span><small>慢 · 快</small></div>
                                                                 <div class="voice-param-control">
@@ -275,11 +281,12 @@
                                                                     <button type="button" class="voice-param-reset" data-voice-param-reset="volume" title="恢复音量默认值" aria-label="恢复音量默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
                                                                 </div>
                                                             </div>
-                                                        </div>
-                                                        <div class="voice-recent-block">
-                                                            <div class="voice-recent-heading"><strong>最近使用</strong><span id="voice-recent-count">0</span></div>
-                                                            <div class="voice-recent-list" id="voice-recent-list"></div>
-                                                            <p class="voice-recent-empty" id="voice-recent-empty">暂无最近使用音色</p>
+                                                            </div>
+                                                            <div class="voice-recent-block">
+                                                                <div class="voice-recent-heading"><strong>最近使用</strong><span id="voice-recent-count">0</span></div>
+                                                                <div class="voice-recent-list" id="voice-recent-list"></div>
+                                                                <p class="voice-recent-empty" id="voice-recent-empty">暂无最近使用音色</p>
+                                                            </div>
                                                         </div>
                                                     </aside>
                                                 </div>

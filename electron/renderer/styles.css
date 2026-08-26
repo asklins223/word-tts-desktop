@@ -1240,16 +1240,16 @@ body.platform-win32 #toolbar {
 }
 
 .voice-workspace {
-    display: grid;
-    grid-template-columns: minmax(158px, 0.28fr) minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
     gap: 18px;
     min-width: 0;
 }
 
 .voice-role-column {
     min-width: 0;
-    padding-right: 16px;
-    border-right: 1px solid var(--border-light);
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-light);
 }
 
 .voice-role-heading,
@@ -1279,19 +1279,23 @@ body.platform-win32 #toolbar {
 
 .voice-role-list {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: nowrap;
     gap: 6px;
-    max-height: 460px;
+    max-height: none;
     margin-top: 11px;
-    overflow-y: auto;
-    padding-right: 3px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0 1px 4px;
+    scrollbar-width: thin;
 }
 
 .voice-role-item {
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 100%;
+    width: auto;
+    flex: 0 0 clamp(148px, 18vw, 190px);
     min-width: 0;
     padding: 9px 8px;
     color: var(--text-sub);
@@ -1451,7 +1455,7 @@ body.platform-win32 #toolbar {
 
 .voice-browser-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.32fr) minmax(250px, 0.88fr);
+    grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.9fr);
     align-items: start;
     gap: 13px;
     margin-top: 12px;
@@ -1459,7 +1463,7 @@ body.platform-win32 #toolbar {
 
 .voice-browser-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     align-content: start;
     gap: 7px;
     max-height: 414px;
@@ -1595,11 +1599,76 @@ body.platform-win32 #toolbar {
 }
 
 .voice-detail-panel {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
     min-width: 0;
+    min-height: 100%;
     padding: 14px;
     background: var(--panel-subtle);
     border: 1px solid var(--border-light);
     border-radius: 10px;
+}
+
+.voice-detail-content {
+    width: 100%;
+    min-width: 0;
+}
+
+.voice-detail-toggle {
+    position: absolute;
+    z-index: 2;
+    top: 8px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 25px;
+    height: 25px;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color var(--transition), background var(--transition), border-color var(--transition);
+}
+
+.voice-detail-toggle:hover {
+    color: var(--accent);
+    background: var(--accent-bg);
+    border-color: var(--accent-light);
+}
+
+.voice-detail-toggle:focus-visible {
+    outline: 3px solid rgba(var(--accent-rgb), 0.2);
+    outline-offset: 1px;
+}
+
+.voice-detail-toggle-icon {
+    transition: transform var(--transition);
+}
+
+.voice-detail-panel.is-collapsed {
+    align-items: flex-start;
+    justify-content: center;
+    min-height: 100%;
+    padding: 8px 5px;
+}
+
+.voice-detail-panel.is-collapsed .voice-detail-content {
+    display: none;
+}
+
+.voice-detail-panel.is-collapsed .voice-detail-toggle {
+    position: static;
+}
+
+.voice-detail-panel.is-collapsed .voice-detail-toggle-icon {
+    transform: rotate(180deg);
+}
+
+.voice-browser-layout.is-detail-collapsed {
+    grid-template-columns: minmax(0, 1fr) 40px;
 }
 
 .voice-detail-heading {
@@ -1607,6 +1676,7 @@ body.platform-win32 #toolbar {
     align-items: center;
     gap: 9px;
     min-width: 0;
+    padding-right: 27px;
 }
 
 .voice-detail-title {
@@ -1663,6 +1733,15 @@ body.platform-win32 #toolbar {
     color: #fff;
     background: var(--accent);
     transform: translateY(-1px);
+}
+
+.voice-preview-btn.is-playing {
+    color: #fff;
+    background: var(--accent);
+}
+
+.voice-preview-btn.is-playing:hover {
+    background: var(--accent-hover);
 }
 
 .voice-preview-btn:disabled {
@@ -4014,10 +4093,14 @@ input[type="text"]::placeholder {
     gap: 8px;
     padding: 12px;
     background: #f7f9fc;
+    contain: layout style;
 }
 
 .audio-item {
     gap: 0;
+    contain: layout paint style;
+    content-visibility: auto;
+    contain-intrinsic-size: 190px;
     overflow: hidden;
     padding: 0;
     background: var(--panel);
@@ -4399,6 +4482,23 @@ input[type="text"]::placeholder {
     .waveform-play-btn::after {
         animation: none !important;
     }
+}
+
+/* 低性能设备在讯飞 Chrome 自动化期间同时承担两个 Chromium 渲染进程，
+   生成页保留状态反馈，但停用装饰性旋转/模糊/粒子动画。 */
+html.low-performance .audio-orbit,
+html.low-performance .audio-particle,
+html.low-performance .generate-animation::before,
+html.low-performance .generation-core::before,
+html.low-performance .progress-bar-fill::after,
+html.low-performance .generation-live-label i,
+html.low-performance .audio-item,
+html.low-performance .waveform-play-btn::after {
+    animation: none !important;
+}
+
+html.low-performance .generate-animation::before {
+    display: none;
 }
 
 /* Desktop legibility pass: use 12px as the floor for visible supporting text. */
@@ -7044,21 +7144,18 @@ select.app-select-source {
 
 @media (max-width: 980px) {
     .voice-workspace {
-        grid-template-columns: 1fr;
         gap: 14px;
     }
 
     .voice-role-column {
-        padding-right: 0;
         padding-bottom: 13px;
-        border-right: 0;
         border-bottom: 1px solid var(--border-light);
     }
 
     .voice-role-list {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        max-height: 160px;
+        display: flex;
+        flex-wrap: nowrap;
+        max-height: none;
     }
 
     .voice-role-note {
@@ -7066,7 +7163,7 @@ select.app-select-source {
     }
 
     .voice-browser-layout {
-        grid-template-columns: minmax(0, 1fr) minmax(240px, 0.72fr);
+        grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
     }
 }
 

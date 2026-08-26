@@ -202,9 +202,15 @@ function startPythonServer() {
     // 收集 stderr 输出，用于崩溃时显示错误详情
     let stderrBuffer = '';
     const MAX_ERR_LINES = 30;
+    const forwardBackendStdout = process.argv.includes('--dev')
+        || process.env.WORDTTS_DEBUG_LOGS === '1';
 
     pythonProcess.stdout.on('data', (data) => {
-        console.log(`[python] ${data.toString().trim()}`);
+        // 始终消费 stdout 防止后端管道背压；普通运行不把每条讯飞日志
+        // 再复制到 Electron 主进程控制台，降低长任务期间的日志开销。
+        if (forwardBackendStdout) {
+            console.log(`[python] ${data.toString().trim()}`);
+        }
     });
 
     pythonProcess.stderr.on('data', (data) => {

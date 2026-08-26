@@ -30,6 +30,7 @@ let activeResultContext = null;  // 当前交付页对应当前任务或历史�
 let latestCurrentResultEvent = null; // 从历史详情返回时恢复当前任务的交付页
 let currentSession = null;       // { session_id, source_filename, file_path, parse_results }
 let currentConfig = null;        // API 返回的配置
+let clientConfigInitialized = false; // 防止连接重试时用服务端默认值覆盖用户当前设置
 let voiceCatalog = [
     { key: 'amanda', name: 'Amanda', gender: 'female', gender_label: '女声', language: ['英语'], tags: ['英语'], categories: ['女声', '英语'] },
     { key: 'george', name: 'George', gender: 'male', gender_label: '男声', language: ['英语'], tags: ['英语'], categories: ['男声', '英语'] },
@@ -47,7 +48,9 @@ const DEFAULT_MALE_ROLE_KEY = '__default_male__';
 const ROLE_CONFIG_PREFIX = 'role:';
 const DEFAULT_VOICE_PARAMS = { rate: 50, volume: 50, pitch: 50 };
 let voicePreviewAudio = null;
+let isVoiceDetailCollapsed = false;
 let voiceAvatarObserver = null;
+let voiceCardsRenderFrame = null;
 const VOICE_RECENT_STORAGE_KEY = 'wordtts_recent_xunfei_voices_v1';
 let eventSource = null;          // SSE 连接
 let sseReconnectTimer = null;    // SSE 延迟重连计时器
@@ -85,7 +88,9 @@ let waveformItems = [];          // 等待渲染波形的结果条目
 let waveformQueue = [];          // 限流队列，避免同时解码大量音频
 let waveformLoadsActive = 0;
 const WAVEFORM_MAX_CONCURRENT = 1;
+const WAVEFORM_PLACEHOLDER_BARS = 32;
 let waveformRenderToken = 0;     // 使离开结果页后排队中的回调失效
+let audioFilterFrame = null;
 let isRestarting = false;        // 防止 cleanup 等待期间重复重置或重新上传
 let pendingCleanupSessionId = null; // 未确认清理完成前禁止创建同名新任务
 
@@ -104,7 +109,7 @@ const CURRENT_CONFIG_STORAGE_KEY = 'wordtts_current_config_xunfei_v3';
 function saveCurrentConfig(config) {
     if (!config) return false;
     try {
-        localStorage.setItem(CURRENT_CONFIG_STORAGE_KEY, JSON.stringify(config));
+        localStorage.setItem(CURRENT_CONFIG_STORAGE_KEY, JSON.stringify(normalizePersistedConfig(config)));
         return true;
     } catch (e) {
         console.error('保存当前配置失败:', e);
@@ -118,7 +123,7 @@ function loadCurrentConfig() {
         if (!raw) return null;
         const config = JSON.parse(raw);
         return config && typeof config === 'object' && !Array.isArray(config)
-            ? normalizeClientConfig(config)
+            ? normalizePersistedConfig(config)
             : null;
     } catch (e) {
         console.error('读取当前配置失败:', e);
@@ -127,7 +132,7 @@ function loadCurrentConfig() {
 }
 
 function rememberCurrentConfig() {
-    saveCurrentConfig(collectConfig(false));
+    saveCurrentConfig(collectPersistedConfig());
 }
 
 /**
@@ -138,10 +143,20 @@ function loadPresets() {
         const raw = localStorage.getItem(PRESET_STORAGE_KEY);
         if (!raw) return [];
         const arr = JSON.parse(raw);
-        return Array.isArray(arr)
-            ? arr.filter(p => p && typeof p === 'object' && p.id && p.name)
-                .map(p => ({ ...p, config: normalizeClientConfig(p.config) }))
-            : [];
+        if (!Array.isArray(arr)) return [];
+        const sanitized = arr
+            .filter(p => p && typeof p === 'object' && p.id && p.name)
+            .map(p => ({ ...p, config: normalizePersistedConfig(p.config) }));
+        // 迁移旧版本：旧预设可能带有角色映射/角色参数，读取时立即清理，
+        // 保证后续任何一次保存都不会继续把文档角色写进长期配置。
+        if (JSON.stringify(arr) !== JSON.stringify(sanitized)) {
+            try {
+                localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(sanitized));
+            } catch (_) {
+                // 迁移失败不影响本次使用，savePresets 仍会在下次操作时重试。
+            }
+        }
+        return sanitized;
     } catch (e) {
         console.error('读取预设失败:', e);
         return [];
@@ -153,7 +168,10 @@ function loadPresets() {
  */
 function savePresets(presets) {
     try {
-        localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
+        const sanitized = Array.isArray(presets)
+            ? presets.map(p => ({ ...p, config: normalizePersistedConfig(p?.config) }))
+            : [];
+        localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(sanitized));
         return true;
     } catch (e) {
         console.error('保存预设失败:', e);
@@ -199,11 +217,13 @@ function bindNativeAppNotices() {
  */
 function presetSummary(config) {
     if (!config) return '配置数据缺失';
+    const normalized = normalizePersistedConfig(config);
+    const female = normalized.role_configs?.[DEFAULT_FEMALE_ROLE_KEY] || DEFAULT_VOICE_PARAMS;
+    const male = normalized.role_configs?.[DEFAULT_MALE_ROLE_KEY] || DEFAULT_VOICE_PARAMS;
     const parts = [];
-    parts.push(`语速 ${clampParamValue(config.rate)}`);
-    parts.push(`音量 ${clampParamValue(config.volume)}`);
-    parts.push(`音调 ${clampParamValue(config.pitch)}`);
-    parts.push((config.format || 'mp3').toUpperCase());
+    parts.push(`女 ${female.rate}/${female.pitch}/${female.volume}`);
+    parts.push(`男 ${male.rate}/${male.pitch}/${male.volume}`);
+    parts.push((normalized.format || 'mp3').toUpperCase());
     return parts.join(' · ');
 }
 
@@ -404,6 +424,41 @@ function normalizeClientConfig(config = {}) {
     };
 }
 
+/**
+ * 长期配置只保存默认男女声和它们各自的三项参数。
+ * 文档角色属于当前任务，不能因为预设或页面恢复而跨文档复用。
+ */
+function normalizePersistedConfig(config = {}) {
+    const normalized = normalizeClientConfig(config);
+    const fallback = normalizeVoiceParams(normalized, DEFAULT_VOICE_PARAMS);
+    const femaleParams = normalizeVoiceParams(
+        normalized.role_configs?.[DEFAULT_FEMALE_ROLE_KEY]
+            || normalized.voice_configs?.[normalized.default_female_voice]
+            || normalized,
+        fallback,
+    );
+    const maleParams = normalizeVoiceParams(
+        normalized.role_configs?.[DEFAULT_MALE_ROLE_KEY]
+            || normalized.voice_configs?.[normalized.default_male_voice]
+            || normalized,
+        fallback,
+    );
+    return {
+        rate: femaleParams.rate,
+        volume: femaleParams.volume,
+        pitch: femaleParams.pitch,
+        format: 'mp3',
+        quality: normalized.quality,
+        preview: normalized.preview,
+        default_female_voice: normalized.default_female_voice,
+        default_male_voice: normalized.default_male_voice,
+        role_configs: {
+            [DEFAULT_FEMALE_ROLE_KEY]: femaleParams,
+            [DEFAULT_MALE_ROLE_KEY]: maleParams,
+        },
+    };
+}
+
 function normalizeVoiceEntry(raw) {
     const item = raw && typeof raw === 'object' ? raw : {};
     const key = normalizeVoiceKey(item.key || item.voice_key || item.id);
@@ -427,6 +482,8 @@ function normalizeVoiceEntry(raw) {
         categories,
         img_url: String(item.img_url || item.imgUrl || '').trim(),
         audio_url: String(item.audio_url || item.audioUrl || '').trim(),
+        search_text: [name, genderLabel, ...language, ...tags, ...categories]
+            .join(' ').toLocaleLowerCase('zh-CN'),
     };
 }
 
@@ -664,6 +721,24 @@ function discoverVoiceRoles(parseResults = currentSession?.parse_results) {
     return roles;
 }
 
+function resetTaskVoiceConfiguration() {
+    stopVoicePreview();
+    roleVoiceMap = {};
+    voiceParamConfigs = {
+        [DEFAULT_FEMALE_ROLE_KEY]: normalizeVoiceParams(
+            voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY],
+            DEFAULT_VOICE_PARAMS,
+        ),
+        [DEFAULT_MALE_ROLE_KEY]: normalizeVoiceParams(
+            voiceParamConfigs[DEFAULT_MALE_ROLE_KEY],
+            DEFAULT_VOICE_PARAMS,
+        ),
+    };
+    activeVoiceRole = DEFAULT_FEMALE_ROLE_KEY;
+    voiceRoles = [];
+    setVoiceDetailCollapsed(false);
+}
+
 function activeVoiceKeyForRole(role = voiceRoles.find(item => item.key === activeVoiceRole)) {
     if (role?.kind === 'default-male') return selectedDefaultMaleVoice;
     if (role?.kind === 'default-female') return selectedDefaultFemaleVoice;
@@ -705,7 +780,7 @@ function renderRoleList() {
 }
 
 function voiceSearchText(voice) {
-    return [voice.name, voice.gender_label, ...(voice.language || []), ...(voice.tags || []), ...(voice.categories || [])]
+    return voice.search_text || [voice.name, voice.gender_label, ...(voice.language || []), ...(voice.tags || []), ...(voice.categories || [])]
         .join(' ').toLocaleLowerCase('zh-CN');
 }
 
@@ -749,7 +824,7 @@ function renderVoiceCards() {
         voiceAvatarObserver.disconnect();
         voiceAvatarObserver = null;
     }
-    grid.replaceChildren();
+    const fragment = document.createDocumentFragment();
     matches.forEach((voice, index) => {
         const button = document.createElement('button');
         button.type = 'button';
@@ -776,10 +851,23 @@ function renderVoiceCards() {
         });
         copy.append(name, tags);
         button.append(avatar, copy);
-        grid.appendChild(button);
+        fragment.appendChild(button);
     });
+    // 一次性挂载，避免每个音色卡片都触发布局计算。
+    grid.replaceChildren(fragment);
     observeVoiceAvatars();
     empty.hidden = matches.length > 0;
+}
+
+function scheduleVoiceCardsRender() {
+    if (voiceCardsRenderFrame !== null) return;
+    const schedule = window.requestAnimationFrame
+        ? callback => window.requestAnimationFrame(callback)
+        : callback => window.setTimeout(callback, 0);
+    voiceCardsRenderFrame = schedule(() => {
+        voiceCardsRenderFrame = null;
+        renderVoiceCards();
+    });
 }
 
 function renderRecentVoiceList() {
@@ -823,7 +911,10 @@ function renderVoiceDetails() {
     renderVoiceAvatar($('voice-detail-avatar'), voice, true);
     setVoiceParamInputs(activeVoiceParams());
     const previewButton = $('voice-preview-btn');
-    if (previewButton) previewButton.disabled = !voice.audio_url;
+    if (previewButton) {
+        previewButton.disabled = !voice.audio_url;
+        setVoicePreviewButtonState(Boolean(voicePreviewAudio));
+    }
 }
 
 function renderVoiceWorkspace() {
@@ -833,11 +924,13 @@ function renderVoiceWorkspace() {
     renderVoiceCards();
     renderVoiceDetails();
     renderRecentVoiceList();
+    setVoiceDetailCollapsed(isVoiceDetailCollapsed);
 }
 
 function selectVoiceForActiveRole(key) {
     const normalizedKey = normalizeVoiceKey(key);
     if (!normalizedKey) return;
+    stopVoicePreview();
     const role = voiceRoles.find(item => item.key === activeVoiceRole);
     if (role?.kind === 'default-male') selectedDefaultMaleVoice = normalizedKey;
     else if (role?.kind === 'default-female') selectedDefaultFemaleVoice = normalizedKey;
@@ -864,8 +957,34 @@ function stopVoicePreview() {
         voicePreviewAudio.currentTime = 0;
         voicePreviewAudio = null;
     }
+    setVoicePreviewButtonState(false);
+}
+
+function setVoicePreviewButtonState(isPlaying) {
     const button = $('voice-preview-btn');
-    if (button) button.classList.remove('is-playing');
+    if (!button) return;
+    button.classList.toggle('is-playing', Boolean(isPlaying));
+    updatePlayIcon(button, Boolean(isPlaying));
+}
+
+function setVoiceDetailCollapsed(collapsed) {
+    isVoiceDetailCollapsed = Boolean(collapsed);
+    const layout = document.querySelector('.voice-browser-layout');
+    const panel = $('voice-detail-panel');
+    const button = $('voice-detail-toggle');
+    layout?.classList.toggle('is-detail-collapsed', isVoiceDetailCollapsed);
+    panel?.classList.toggle('is-collapsed', isVoiceDetailCollapsed);
+    if (button) {
+        button.setAttribute('aria-expanded', isVoiceDetailCollapsed ? 'false' : 'true');
+        button.setAttribute('aria-label', isVoiceDetailCollapsed ? '展开详细配置' : '收起详细配置');
+        button.title = isVoiceDetailCollapsed ? '展开详细配置' : '收起详细配置';
+        const label = button.querySelector('.voice-detail-toggle-label');
+        if (label) {
+            label.textContent = isVoiceDetailCollapsed
+                ? '展开详细配置'
+                : '收起详细配置';
+        }
+    }
 }
 
 function toggleVoicePreview() {
@@ -877,8 +996,7 @@ function toggleVoicePreview() {
     }
     const audio = new Audio(voice.audio_url);
     voicePreviewAudio = audio;
-    const button = $('voice-preview-btn');
-    if (button) button.classList.add('is-playing');
+    setVoicePreviewButtonState(true);
     audio.addEventListener('ended', stopVoicePreview, { once: true });
     audio.addEventListener('error', () => {
         stopVoicePreview();
@@ -891,7 +1009,7 @@ function toggleVoicePreview() {
 }
 
 function bindVoiceWorkspaceEvents() {
-    $('voice-search-input')?.addEventListener('input', renderVoiceCards);
+    $('voice-search-input')?.addEventListener('input', scheduleVoiceCardsRender);
     $('voice-filter-row')?.addEventListener('click', event => {
         const button = event.target.closest('[data-voice-filter]');
         if (!button) return;
@@ -902,6 +1020,7 @@ function bindVoiceWorkspaceEvents() {
     $('voice-role-list')?.addEventListener('click', event => {
         const button = event.target.closest('[data-role-key]');
         if (!button) return;
+        stopVoicePreview();
         activeVoiceRole = button.dataset.roleKey || '__default_female__';
         renderVoiceWorkspace();
     });
@@ -914,6 +1033,9 @@ function bindVoiceWorkspaceEvents() {
         if (button) selectVoiceForActiveRole(button.dataset.recentVoiceKey);
     });
     $('voice-preview-btn')?.addEventListener('click', toggleVoicePreview);
+    $('voice-detail-toggle')?.addEventListener('click', () => {
+        setVoiceDetailCollapsed(!isVoiceDetailCollapsed);
+    });
     ['rate', 'pitch', 'volume'].forEach(param => {
         const range = $(`voice-${param}`);
         const number = $(`voice-${param}-number`);
@@ -953,17 +1075,43 @@ function setSelectValue(selectEl, value, defaultValue) {
 /**
  * 将配置应用到 Step 2 表单。
  */
-function applyConfigToForm(config) {
+function applyConfigToForm(config, { includeRoles = true } = {}) {
     if (!config) return;
+    stopVoicePreview();
+    clientConfigInitialized = true;
     const normalized = normalizeClientConfig(config);
+    const existingTaskRoleVoiceMap = currentSession ? { ...roleVoiceMap } : {};
+    const existingTaskRoleConfigs = currentSession
+        ? Object.fromEntries(
+            Object.entries(voiceParamConfigs).filter(([key]) => (
+                key !== DEFAULT_FEMALE_ROLE_KEY && key !== DEFAULT_MALE_ROLE_KEY
+            )),
+        )
+        : {};
     selectedDefaultFemaleVoice = normalized.default_female_voice;
     selectedDefaultMaleVoice = normalized.default_male_voice;
-    voiceParamConfigs = Object.fromEntries(
-        Object.entries(normalized.role_configs || {}).map(([key, value]) => [key, { ...value }]),
-    );
-    roleVoiceMap = { ...(normalized.role_voices || {}) };
-    if (!voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] = createDefaultVoiceParams();
-    if (!voiceParamConfigs[DEFAULT_MALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] = createDefaultVoiceParams();
+    const defaultRoleConfigs = {
+        [DEFAULT_FEMALE_ROLE_KEY]: normalizeVoiceParams(
+            normalized.role_configs?.[DEFAULT_FEMALE_ROLE_KEY],
+            DEFAULT_VOICE_PARAMS,
+        ),
+        [DEFAULT_MALE_ROLE_KEY]: normalizeVoiceParams(
+            normalized.role_configs?.[DEFAULT_MALE_ROLE_KEY],
+            DEFAULT_VOICE_PARAMS,
+        ),
+    };
+    if (includeRoles) {
+        voiceParamConfigs = Object.fromEntries(
+            Object.entries(normalized.role_configs || {}).map(([key, value]) => [key, { ...value }]),
+        );
+        roleVoiceMap = { ...(normalized.role_voices || {}) };
+    } else {
+        // 预设/页面恢复只覆盖默认男女声；当前文档角色始终由用户自己维护。
+        voiceParamConfigs = { ...existingTaskRoleConfigs, ...defaultRoleConfigs };
+        roleVoiceMap = existingTaskRoleVoiceMap;
+    }
+    voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] ||= createDefaultVoiceParams();
+    voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] ||= createDefaultVoiceParams();
     renderVoiceWorkspace();
     setSelectValue($('format'), normalized.format, 'mp3');
     setSelectValue($('quality'), normalized.quality, '128 kbps（标准）');
@@ -984,7 +1132,7 @@ function refreshPresetUI() {
  * 保存当前表单配置为预设。
  */
 async function handleSavePreset() {
-    const config = collectConfig(false);
+    const config = collectPersistedConfig();
     const name = await showPromptDialog('保存配置', '请输入配置名称：', `配置 ${new Date().toLocaleDateString('zh-CN')}`);
     if (!name || !name.trim()) return;
 
@@ -1025,7 +1173,7 @@ function handleApplyPreset() {
         showToast('配置不存在');
         return;
     }
-    applyConfigToForm(preset.config);
+    applyConfigToForm(preset.config, { includeRoles: false });
     showToast(`已应用配置「${preset.name}」`);
 }
 
@@ -1311,9 +1459,20 @@ function enforceOutputCompatibility() {
     const format = $('format');
     if (!format) return;
     // 输出格式固定为 MP3；质量只代表 MP3 码率，不再驱动格式切换。
-    format.value = 'mp3';
-    format.disabled = true;
-    window.WordTTSUI?.syncSelect(format);
+    // 不依赖旧页面是否存在 MP3 option，直接重建唯一选项，杜绝 WAV 视觉回退。
+    if (format.tagName === 'SELECT') {
+        const option = document.createElement('option');
+        option.value = 'mp3';
+        option.textContent = 'MP3 · 通用格式';
+        option.selected = true;
+        format.replaceChildren(option);
+        format.value = 'mp3';
+        format.disabled = true;
+        window.WordTTSUI?.syncSelect(format);
+    } else {
+        format.textContent = 'MP3 · 通用格式';
+        format.dataset.format = 'mp3';
+    }
     updateConfigSummary();
 }
 
@@ -1592,7 +1751,15 @@ async function connectService(showToastOnStart = false) {
 // 初始化
 // ============================================================================
 
+function applyPerformanceMode() {
+    const cores = Number(navigator.hardwareConcurrency || 0);
+    const memory = Number(navigator.deviceMemory || 0);
+    const lowPerformance = (cores > 0 && cores <= 4) || (memory > 0 && memory <= 4);
+    document.documentElement.classList.toggle('low-performance', lowPerformance);
+}
+
 async function init() {
+    applyPerformanceMode();
     if (platform === 'darwin') {
         document.body.classList.add('platform-darwin');
     } else if (platform === 'win32') {
@@ -1605,9 +1772,12 @@ async function init() {
     // 初始化预设 UI
     refreshPresetUI();
     window.WordTTSUI?.enhanceSelects(document);
+    // 输出格式是产品固定约束：先清理任何旧版/异常页面残留的格式选项，
+    // 再恢复当前配置，避免 MP3 选项缺失时自定义下拉框把第一项显示成 WAV。
+    enforceOutputCompatibility();
     const savedConfig = loadCurrentConfig();
     if (savedConfig) {
-        applyConfigToForm(savedConfig);
+        applyConfigToForm(savedConfig, { includeRoles: false });
     } else {
         rememberCurrentConfig();
     }
@@ -1735,7 +1905,7 @@ function bindEvents() {
         }
     });
     $('skip-config-btn').addEventListener('click', () => {
-        applyConfigToForm(collectConfig(true));
+        applyConfigToForm(collectConfig(true), { includeRoles: true });
         showToast('已恢复推荐设置');
     });
     $('start-generate-btn').addEventListener('click', () => {
@@ -1743,8 +1913,8 @@ function bindEvents() {
         startProcessing(false);
     });
 
-    $('audio-search-input').addEventListener('input', filterAudioItems);
-    $('audio-type-filter').addEventListener('change', filterAudioItems);
+    $('audio-search-input').addEventListener('input', scheduleAudioFilter);
+    $('audio-type-filter').addEventListener('change', scheduleAudioFilter);
 
     // Step 4: 下载
     $('download-zip-btn').addEventListener('click', async () => {
@@ -1762,13 +1932,13 @@ function bindEvents() {
     $('generate-full-btn').addEventListener('click', () => {
         if (!lastGenerationConfig) return;
         destroyWaveSurfers();
-        applyConfigToForm({ ...lastGenerationConfig, preview: false });
+        applyConfigToForm({ ...lastGenerationConfig, preview: false }, { includeRoles: true });
         goToStep(2);
         showToast('已保留试听设置，确认后可生成完整文档');
     });
     $('result-return-config-btn').addEventListener('click', () => {
         destroyWaveSurfers();
-        if (lastGenerationConfig) applyConfigToForm(lastGenerationConfig);
+        if (lastGenerationConfig) applyConfigToForm(lastGenerationConfig, { includeRoles: true });
         goToStep(2);
         showToast('已返回配置；修改参数后会重新生成全部内容');
     });
@@ -1795,14 +1965,17 @@ async function loadConfig() {
             currentConfig = await resp.json();
 
             setVoiceCatalog(currentConfig.voices, currentConfig.voice_filters);
-            const normalized = normalizeClientConfig(currentConfig);
-            selectedDefaultFemaleVoice = normalized.default_female_voice;
-            selectedDefaultMaleVoice = normalized.default_male_voice;
-            voiceParamConfigs = Object.fromEntries(
-                Object.entries(normalized.role_configs || {}).map(([key, value]) => [key, { ...value }]),
-            );
-            if (!voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] = createDefaultVoiceParams();
-            if (!voiceParamConfigs[DEFAULT_MALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] = createDefaultVoiceParams();
+            if (!clientConfigInitialized) {
+                const normalized = normalizeClientConfig(currentConfig);
+                selectedDefaultFemaleVoice = normalized.default_female_voice;
+                selectedDefaultMaleVoice = normalized.default_male_voice;
+                voiceParamConfigs = Object.fromEntries(
+                    Object.entries(normalized.role_configs || {}).map(([key, value]) => [key, { ...value }]),
+                );
+                if (!voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] = createDefaultVoiceParams();
+                if (!voiceParamConfigs[DEFAULT_MALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] = createDefaultVoiceParams();
+                clientConfigInitialized = true;
+            }
             renderVoiceWorkspace();
 
             // 刷新摘要中的音色显示
@@ -2261,6 +2434,7 @@ async function handleFilePath(filePath) {
         if (!Array.isArray(data.parse_results) || data.parse_results.length === 0) {
             throw new Error('未识别到支持的题型内容，请检查文档结构后重试');
         }
+        resetTaskVoiceConfiguration();
         currentSession = {
             session_id: data.session_id,
             source_filename: data.source_filename,
@@ -2335,6 +2509,7 @@ async function uploadFile(file) {
         if (!Array.isArray(data.parse_results) || data.parse_results.length === 0) {
             throw new Error('未识别到支持的题型内容，请检查文档结构后重试');
         }
+        resetTaskVoiceConfiguration();
         currentSession = {
             session_id: data.session_id,
             source_filename: data.source_filename,
@@ -2392,7 +2567,8 @@ function collectConfig(useDefaults) {
         rate: activeParams.rate,
         volume: activeParams.volume,
         pitch: activeParams.pitch,
-        format: $('format').value,
+        // 不从页面控件读取格式；格式始终由当前产品规则固定为 MP3。
+        format: 'mp3',
         quality: $('quality').value,
         preview: $('preview').checked,
         default_female_voice: selectedDefaultFemaleVoice,
@@ -2400,6 +2576,10 @@ function collectConfig(useDefaults) {
         role_configs: voiceParamConfigs,
         role_voices: roleVoiceMap,
     });
+}
+
+function collectPersistedConfig() {
+    return normalizePersistedConfig(collectConfig(false));
 }
 
 // ============================================================================
@@ -3262,6 +3442,17 @@ function filterAudioItems() {
     if (empty) empty.hidden = visibleCount > 0 || items.length === 0;
 }
 
+function scheduleAudioFilter() {
+    if (audioFilterFrame !== null) return;
+    const schedule = window.requestAnimationFrame
+        ? callback => window.requestAnimationFrame(callback)
+        : callback => window.setTimeout(callback, 0);
+    audioFilterFrame = schedule(() => {
+        audioFilterFrame = null;
+        filterAudioItems();
+    });
+}
+
 function buildResultPage(event, suppliedContext = null) {
     destroyWaveSurfers();
     const workflowSourceTotal = summarizeParseResults(currentSession?.parse_results).total;
@@ -3407,6 +3598,7 @@ function buildResultPage(event, suppliedContext = null) {
     if (audioListSection) audioListSection.hidden = false;
     $('audio-count').textContent = `${resultFiles.length} 个文件`;
     const renderToken = waveformRenderToken;
+    const itemFragment = document.createDocumentFragment();
 
     resultFiles.forEach((f, index) => {
         const color = (currentConfig && currentConfig.type_colors && currentConfig.type_colors[f.doc_type]) || '#a8a29e';
@@ -3509,9 +3701,9 @@ function buildResultPage(event, suppliedContext = null) {
         placeholder.className = 'waveform-placeholder';
         placeholder.setAttribute('aria-hidden', 'true');
         const waveSeed = Array.from(f.filename || '').reduce((sum, char) => sum + char.charCodeAt(0), 0);
-        for (let barIndex = 0; barIndex < 64; barIndex++) {
+        for (let barIndex = 0; barIndex < WAVEFORM_PLACEHOLDER_BARS; barIndex++) {
             const bar = document.createElement('span');
-            const height = 18 + ((waveSeed + barIndex * 29 + (barIndex % 7) * 13) % 68);
+            const height = 22 + ((waveSeed + barIndex * 29 + (barIndex % 7) * 13) % 64);
             bar.style.setProperty('--wave-height', `${height}%`);
             placeholder.appendChild(bar);
         }
@@ -3551,7 +3743,7 @@ function buildResultPage(event, suppliedContext = null) {
         textSection.appendChild(textBody);
         item.appendChild(textSection);
 
-        audioList.appendChild(item);
+        itemFragment.appendChild(item);
 
         const updateNativeTime = () => {
             const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
@@ -3733,6 +3925,7 @@ function buildResultPage(event, suppliedContext = null) {
 
         waveformItems.push(item);
     });
+    audioList.appendChild(itemFragment);
 }
 
 // ============================================================================
@@ -4098,6 +4291,7 @@ async function restart() {
     sseRetryCount = 0;
     generationResult = null;
     lastGenerationConfig = null;
+    resetTaskVoiceConfiguration();
 
     // 重置 Step 1
     const uploadZone = $('upload-zone');

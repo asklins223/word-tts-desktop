@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import unittest
 
 import word_tts_app as core
@@ -45,6 +47,35 @@ class XunfeiConfigTests(unittest.TestCase):
         self.assertEqual(config["quality"], "128 kbps（标准）")
         self.assertEqual(list(core.FORMAT_MAP), ["mp3"])
         self.assertNotIn("无损（仅 wav 生效）", core.QUALITY_BITRATE)
+
+    def test_mp3_export_validation_uses_a_lightweight_header_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            valid = Path(temp_dir) / "valid.mp3"
+            invalid = Path(temp_dir) / "invalid.mp3"
+            valid.write_bytes(b"ID3" + b"\x00" * 32)
+            invalid.write_bytes(b"not an audio file")
+
+            self.assertTrue(core._looks_like_mp3_file(valid))
+            self.assertFalse(core._looks_like_mp3_file(invalid))
+
+    def test_multi_role_audio_segments_are_concatenated_without_repeated_pydub_copy(self):
+        from pydub import AudioSegment
+
+        first = AudioSegment.silent(duration=80)
+        second = AudioSegment.silent(duration=120)
+        combined = core._concat_audio_segments([first, second])
+
+        self.assertEqual(len(combined), 200)
+        self.assertEqual(combined.frame_rate, first.frame_rate)
+        self.assertEqual(combined.channels, first.channels)
+
+    def test_renderer_rebuilds_format_control_instead_of_falling_back_to_first_option(self):
+        renderer = Path(__file__).resolve().parents[1] / "electron" / "renderer" / "app.js"
+        source = renderer.read_text(encoding="utf-8")
+
+        self.assertIn("format.replaceChildren(option)", source)
+        self.assertIn("format: 'mp3'", source)
+        self.assertNotIn("format: $('format').value", source)
 
     def test_words_and_sentences_always_use_default_female_voice(self):
         self.assertEqual(

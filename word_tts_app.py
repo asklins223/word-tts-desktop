@@ -353,36 +353,28 @@ def export_audio(seg, fmt, quality, out_path):
     if out_size == 0:
         raise RuntimeError(f"导出文件为空: {out_path}")
 
-    # 回读验证：确认导出的文件可以被 pydub 重新加载
-    # 注意：Windows 上路径含中文字符时，pydub 直接将路径传给 ffmpeg 子进程可能失败，
-    # 因此先复制到 ASCII 临时文件名再验证。
-    import tempfile as _verify_tmp
-    _verify_fd, _verify_tmp_path = _verify_tmp.mkstemp(suffix=f".{_ext.lstrip('.')}")
-    try:
-        import shutil as _verify_shutil
-        _verify_shutil.copy2(out_path, _verify_tmp_path)
-        try:
-            with open(_verify_tmp_path, "rb") as verify_source:
-                # 让 FFmpeg 从文件内容自动识别输入容器。输出侧的 adts/opus
-                # 名称不是所有 FFmpeg 构建都接受的输入 demuxer 名称。
-                verify_seg = AudioSegment.from_file(verify_source)
-            if len(verify_seg) < 10:
-                raise RuntimeError(f"回读验证失败: 时长 {len(verify_seg)}ms 过短")
-            print(f"[export] 回读验证通过: dur={len(verify_seg)}ms size={out_size}B", file=sys.stdout)
-        except Exception as ve:
-            # 回读失败可能是 ffmpeg 子进程问题，不一定是文件本身问题
-            # 文件大小已确认非零，降级为警告而非错误
-            print(f"[export] 警告: 回读验证失败 (非致命): {ve} (文件大小: {out_size}B)", file=sys.stdout)
-    finally:
-        try:
-            os.close(_verify_fd)
-        except OSError:
-            pass
-        try:
-            os.remove(_verify_tmp_path)
-        except OSError:
-            pass
+    # 讯飞批量下载阶段已经用 FFmpeg 解码过原始 MP3。这里不再复制文件并
+    # 启动第二次 FFmpeg 回读，只做轻量容器头检查，避免每条音频额外产生
+    # 一次磁盘 I/O 和解码进程；真正的完整回读验证保留给显式调试模式。
+    if fmt_id == "mp3" and not _looks_like_mp3_file(out_path):
+        raise RuntimeError(f"导出的文件不是有效 MP3: {out_path}")
     return out_path
+
+
+def _looks_like_mp3_file(path):
+    """用 MP3 帧头/ID3 头做快速校验，不启动 ffmpeg。"""
+    try:
+        with open(path, "rb") as source:
+            data = source.read(4096)
+    except OSError:
+        return False
+    if data.startswith(b"ID3"):
+        return True
+    # 无 ID3 标签的 MP3 可能从任意偏移直接开始 MPEG 帧。
+    return any(
+        data[index] == 0xFF and (data[index + 1] & 0xE0) == 0xE0
+        for index in range(max(0, len(data) - 1))
+    )
 
 
 def sanitize_dirname(name):
@@ -705,10 +697,31 @@ async def _synth_item(text, rate, volume, pitch, default_voice=None,
 
     if not audio_parts:
         raise RuntimeError("合成失败，未生成任何音频")
+    return _concat_audio_segments(audio_parts)
 
-    full = audio_parts[0]
-    for seg in audio_parts[1:]:
-        full = full + seg
+
+def _concat_audio_segments(audio_parts):
+    """按原顺序拼接音频；同参数段落直接合并 raw bytes，避免反复复制。"""
+    if not audio_parts:
+        raise ValueError("没有可拼接的音频段")
+    if len(audio_parts) == 1:
+        return audio_parts[0]
+
+    first = audio_parts[0]
+    compatible = all(
+        part.sample_width == first.sample_width
+        and part.frame_rate == first.frame_rate
+        and part.channels == first.channels
+        for part in audio_parts[1:]
+    )
+    if compatible:
+        raw_data = b"".join(part.raw_data for part in audio_parts)
+        return first._spawn(raw_data)
+
+    # 理论上不同编码参数才会走这里；保留 pydub 原生拼接作为安全兜底。
+    full = first
+    for part in audio_parts[1:]:
+        full = full + part
     return full
 
 
@@ -777,10 +790,7 @@ async def _synth_items_batch(item_specs):
         if not parts:
             item_results[item_id] = {"audio": None, "error": "未生成任何音频段"}
             continue
-        full = parts[0]
-        for part in parts[1:]:
-            full = full + part
-        item_results[item_id] = {"audio": full, "error": None}
+        item_results[item_id] = {"audio": _concat_audio_segments(parts), "error": None}
     return item_results
 
 
@@ -826,7 +836,7 @@ def save_progress(session_dir, progress):
     progress["updated_at"] = datetime.now().isoformat()
     try:
         with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(progress, f, ensure_ascii=False, indent=2)
+            json.dump(progress, f, ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp_path, progress_path)
     except (OSError, ValueError, TypeError):
         # 磁盘满、权限错误或序列化失败时，清理临时文件但不中断处理

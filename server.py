@@ -119,6 +119,9 @@ class SessionState:
 _sessions: dict[str, SessionState] = {}
 MAX_SESSIONS = 20  # 最大并发会话数，防止内存泄漏
 MAX_HISTORY_RECORDS = 20
+PROGRESS_SAVE_ITEM_INTERVAL = 5
+PROGRESS_SAVE_INTERVAL_SECONDS = 1.0
+STATS_EMIT_INTERVAL_SECONDS = 0.12
 PARSE_CACHE_VERSION = 6
 SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
@@ -723,6 +726,104 @@ async def _generate_audio_stream(
     task_started_at = time.perf_counter()
     eta_started_at: Optional[float] = None
     eta_baseline_processed = 0
+    session_dir = session.session_dir
+    last_progress_save_processed = -1
+    last_progress_save_at = 0.0
+    last_stats_emit_at = 0.0
+    last_generation_status_at = 0.0
+    stats_cache_progress_id = None
+    stats_cache_item_count = -1
+    stats_by_type = {}
+    stats_item_states = {}
+    stats_failed_items = {}
+
+    async def persist_progress(progress, *, force=False):
+        """节流并异步保存进度，避免每条音频阻塞 FastAPI 事件循环。"""
+        nonlocal last_progress_save_processed, last_progress_save_at
+        completed = max(0, int(progress.get("completed") or 0))
+        failed = max(0, int(progress.get("failed") or 0))
+        processed = completed + failed
+        now = time.monotonic()
+        if not force and last_progress_save_processed >= 0:
+            if (
+                processed - last_progress_save_processed < PROGRESS_SAVE_ITEM_INTERVAL
+                and now - last_progress_save_at < PROGRESS_SAVE_INTERVAL_SECONDS
+            ):
+                return False
+        await asyncio.to_thread(core.save_progress, session_dir, progress)
+        last_progress_save_processed = processed
+        last_progress_save_at = time.monotonic()
+        return True
+
+    def stats_item_key(item):
+        return str(item.get("id") or f"object:{id(item)}")
+
+    def failed_item_snapshot(item):
+        return {
+            "id": item.get("id", ""),
+            "doc_type": item.get("doc_type", ""),
+            "error": str(item.get("error") or "")[:240],
+        }
+
+    def rebuild_stats_cache(progress):
+        nonlocal stats_cache_progress_id, stats_cache_item_count
+        stats_by_type.clear()
+        stats_item_states.clear()
+        stats_failed_items.clear()
+        items = progress.get("items", [])
+        for item in items:
+            key = stats_item_key(item)
+            doc_type = item.get("doc_type", "")
+            status = item.get("status")
+            stats_item_states[key] = (doc_type, status)
+            bucket = stats_by_type.setdefault(doc_type, {"done": 0, "failed": 0, "total": 0})
+            bucket["total"] += 1
+            if status == "done":
+                bucket["done"] += 1
+            elif status == "error":
+                bucket["failed"] += 1
+                stats_failed_items[key] = failed_item_snapshot(item)
+        stats_cache_progress_id = id(progress)
+        stats_cache_item_count = len(items)
+
+    def ensure_stats_cache(progress):
+        if (
+            stats_cache_progress_id != id(progress)
+            or stats_cache_item_count != len(progress.get("items", []))
+        ):
+            rebuild_stats_cache(progress)
+
+    def update_stats_cache(progress, item):
+        """只更新状态发生变化的条目，避免每条完成都扫描整个文档。"""
+        ensure_stats_cache(progress)
+        key = stats_item_key(item)
+        current = (item.get("doc_type", ""), item.get("status"))
+        previous = stats_item_states.get(key)
+        if previous == current:
+            if current[1] == "error":
+                stats_failed_items[key] = failed_item_snapshot(item)
+            return
+        if previous is not None:
+            old_type, old_status = previous
+            old_bucket = stats_by_type.get(old_type)
+            if old_bucket:
+                old_bucket["total"] = max(0, old_bucket["total"] - 1)
+                if old_status == "done":
+                    old_bucket["done"] = max(0, old_bucket["done"] - 1)
+                elif old_status == "error":
+                    old_bucket["failed"] = max(0, old_bucket["failed"] - 1)
+                if old_bucket["total"] == 0:
+                    stats_by_type.pop(old_type, None)
+            stats_failed_items.pop(key, None)
+        new_type, new_status = current
+        new_bucket = stats_by_type.setdefault(new_type, {"done": 0, "failed": 0, "total": 0})
+        new_bucket["total"] += 1
+        if new_status == "done":
+            new_bucket["done"] += 1
+        elif new_status == "error":
+            new_bucket["failed"] += 1
+            stats_failed_items[key] = failed_item_snapshot(item)
+        stats_item_states[key] = current
 
     def log(
         level: str,
@@ -785,26 +886,17 @@ async def _generate_audio_stream(
             "entry": entry,
         })
 
-    def emit_stats(progress):
-        type_counts = {}
-        for item in progress.get("items", []):
-            dt = item["doc_type"]
-            if dt not in type_counts:
-                type_counts[dt] = {"done": 0, "failed": 0, "total": 0}
-            type_counts[dt]["total"] += 1
-            if item["status"] == "done":
-                type_counts[dt]["done"] += 1
-            elif item["status"] == "error":
-                type_counts[dt]["failed"] += 1
-        failed_items = [
-            {
-                "id": item.get("id", ""),
-                "doc_type": item.get("doc_type", ""),
-                "error": str(item.get("error") or "")[:240],
-            }
-            for item in progress.get("items", [])
-            if item.get("status") == "error"
-        ][:20]
+    def emit_stats(progress, *, force=False):
+        nonlocal last_stats_emit_at
+        now = time.monotonic()
+        if not force and now - last_stats_emit_at < STATS_EMIT_INTERVAL_SECONDS:
+            return
+        ensure_stats_cache(progress)
+        type_counts = {
+            doc_type: dict(counts)
+            for doc_type, counts in stats_by_type.items()
+        }
+        failed_items = list(stats_failed_items.values())[:20]
         completed = max(0, int(progress.get("completed") or 0))
         failed = max(0, int(progress.get("failed") or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
@@ -827,11 +919,18 @@ async def _generate_audio_stream(
             "failed_items": failed_items,
             "by_type": type_counts,
         })
+        last_stats_emit_at = time.monotonic()
 
     def emit_status(text: str):
         push_event(session, {"type": "status", "text": text})
 
-    def emit_generation_status(progress, current_item: Optional[str] = None):
+    def emit_generation_status(
+        progress,
+        current_item: Optional[str] = None,
+        *,
+        force=False,
+    ):
+        nonlocal last_generation_status_at
         completed = max(0, int(progress.get("completed") or 0))
         failed = max(0, int(progress.get("failed") or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
@@ -841,7 +940,11 @@ async def _generate_audio_stream(
             text += f" · 失败 {failed}"
         if current_item:
             text += f" · {current_item}"
+        now = time.monotonic()
+        if not force and now - last_generation_status_at < STATS_EMIT_INTERVAL_SECONDS:
+            return
         emit_status(text)
+        last_generation_status_at = time.monotonic()
 
     def emit_download(progress, file_list, zip_path=None):
         event = {
@@ -935,7 +1038,6 @@ async def _generate_audio_stream(
         })
 
     try:
-        session_dir = session.session_dir
         audio_dir = os.path.join(session_dir, "audio")
         os.makedirs(audio_dir, exist_ok=True)
 
@@ -988,7 +1090,7 @@ async def _generate_audio_stream(
             )
             if restored:
                 existing = restored
-                core.save_progress(session_dir, existing)
+                await persist_progress(existing, force=True)
                 log(
                     "info",
                     f"已恢复历史任务进度（{existing['completed']}/{existing['total_items']}）",
@@ -1137,7 +1239,7 @@ async def _generate_audio_stream(
                     detail=f"文档共有 {original_total} 条内容，本次先生成前 3 条用于试听",
                 )
 
-            core.save_progress(session_dir, progress)
+            await persist_progress(progress, force=True)
             session.progress = progress  # 保存到 session 供下载端点使用
 
             count_info = f"共 {progress['total_items']} 个音频"
@@ -1176,6 +1278,7 @@ async def _generate_audio_stream(
             item["error"] = None
         progress["completed"] = sum(1 for item in progress["items"] if item.get("status") == "done")
         progress["failed"] = 0
+        rebuild_stats_cache(progress)
         if retry_items:
             log(
                 "info",
@@ -1190,13 +1293,14 @@ async def _generate_audio_stream(
 
         # ---- 开始生成 ----
         progress["status"] = "generating"
-        core.save_progress(session_dir, progress)
+        await persist_progress(progress, force=True)
 
         total = progress["total_items"]
         rate = config.get("rate", 50)
         volume = config.get("volume", 50)
         pitch = config.get("pitch", 50)
-        fmt = config.get("format", "mp3")
+        # 输出格式不接受前端或旧任务的回退值，生成阶段始终落地为 MP3。
+        fmt = "mp3"
         quality = config.get("quality", "128 kbps（标准）")
         # 音色与参数均来自前端的独立配置；词汇/例句仍强制使用默认女声。
         fv = config.get("default_female_voice") or core.FEMALE_VOICE
@@ -1390,8 +1494,9 @@ async def _generate_audio_stream(
                 progress_snapshot=progress,
             )
         if empty_items:
-            core.save_progress(session_dir, progress)
-            emit_stats(progress)
+            rebuild_stats_cache(progress)
+            await persist_progress(progress, force=True)
+            emit_stats(progress, force=True)
             emit_generation_status(progress)
 
         batch_results = {}
@@ -1461,13 +1566,18 @@ async def _generate_audio_stream(
                     progress_snapshot=progress,
                     duration_ms=round((time.perf_counter() - item_started) * 1000),
                 )
-            core.save_progress(session_dir, progress)
+            update_stats_cache(progress, item)
+            await persist_progress(progress)
             emit_stats(progress)
             emit_generation_status(progress)
 
         if session.cancelled:
+            await persist_progress(progress, force=True)
             emit_cancelled_terminal("批量音频生成与统一下载完成后已停止后续任务")
             return
+
+        emit_stats(progress, force=True)
+        emit_generation_status(progress, force=True)
 
         synthesis_duration_ms = round((time.perf_counter() - synthesis_started_at) * 1000)
         synthesis_all_failed = progress["completed"] == 0 and progress["failed"] > 0
@@ -1492,7 +1602,7 @@ async def _generate_audio_stream(
             emit_cancelled_terminal("音频生成阶段结束后已停止交付整理")
             return
         progress["status"] = "packaging"
-        core.save_progress(session_dir, progress)
+        await persist_progress(progress, force=True)
         package_started_at = time.perf_counter()
         if progress["completed"] > 0:
             log(
@@ -1532,7 +1642,7 @@ async def _generate_audio_stream(
                 duration_ms=round((time.perf_counter() - package_started_at) * 1000),
             )
         progress["status"] = "done"
-        core.save_progress(session_dir, progress)
+        await persist_progress(progress, force=True)
 
         if session.cancelled:
             emit_cancelled_terminal("交付文件整理结束后已停止任务")

@@ -325,6 +325,23 @@ class JS:
     }
     """
 
+    CHECK_NO_VISIBLE_MODAL = """
+    () => {
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        return !Array.from(document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        )).some(visible);
+    }
+    """
+
     GET_EDITOR_TEXT = """
     () => {
         const editor = document.querySelector('.ssml-editor');
@@ -617,6 +634,117 @@ class JS:
     }
     """
 
+    PROBE_SYNTH_STATE = """
+    (aiKeywordVariants) => {
+        // 一轮只做一次页面扫描，供确认合成、AI 弹窗和订单等待共同使用。
+        // React/Ant Design 页面可能延迟挂载，因此这里只负责“当前状态快照”，
+        // Python 侧仍会持续轮询，不能把一次未命中当成页面没有弹窗。
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '');
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const modalSelector =
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
+            '.el-dialog, .el-message-box';
+        const modals = Array.from(document.querySelectorAll(modalSelector))
+            .filter(visible);
+        const variants = Array.isArray(aiKeywordVariants) ? aiKeywordVariants : [];
+        const bodyText = normalize(document.body?.innerText || '');
+        let aiModal = false;
+        let order = bodyText.includes('去下载');
+        let free = false;
+        let login = false;
+        let confirm = false;
+        let aiSwitch = 'not_found';
+        const switchSelector = '[role="switch"], .ant-switch, button[aria-pressed]';
+        const findAiSwitch = (modal) => {
+            const switches = Array.from(modal.querySelectorAll(switchSelector));
+            const labels = modal.querySelectorAll('span, div, label');
+            const aiLabel = Array.from(labels).find((el) => (
+                el.children.length === 0 && normalize(el.textContent) === 'AI标识'
+            ));
+            let parent = aiLabel;
+            for (let level = 0; parent && level < 6; level += 1) {
+                const rowSwitch = parent.querySelector(switchSelector);
+                if (rowSwitch) return rowSwitch;
+                parent = parent.parentElement;
+            }
+            return switches[0] || null;
+        };
+
+        for (const modal of modals) {
+            const text = normalize(modal.innerText || modal.textContent || '');
+            const isAi = variants.some(group => (
+                Array.isArray(group)
+                && group.length > 0
+                && group.every(keyword => text.includes(normalize(keyword)))
+            ));
+            if (isAi) aiModal = true;
+            if (text.includes('本单免费') || text.includes('免费')) free = true;
+            if (
+                text.includes('登录')
+                && (text.includes('扫码') || text.includes('手机号') || text.includes('验证码'))
+            ) login = true;
+
+            if (text.includes('确认合成')) confirm = true;
+            if (!confirm) {
+                const buttons = modal.querySelectorAll('button, [role="button"]');
+                for (const button of buttons) {
+                    if (!visible(button)) continue;
+                    if (normalize(button.innerText || button.textContent) === '确认合成') {
+                        confirm = true;
+                        break;
+                    }
+                }
+            }
+
+            // 优先按“AI 标识”所在行寻找开关；AI 说明弹窗没有 switch，
+            // 且“不再提示”优先判定为说明弹窗。
+            if (aiSwitch === 'not_found' && !text.includes('不再提示')) {
+                const sw = findAiSwitch(modal);
+                if (sw) {
+                    const ariaChecked = sw.getAttribute('aria-checked');
+                    const ariaPressed = sw.getAttribute('aria-pressed');
+                    const isOn = ariaChecked === 'true'
+                        || ariaPressed === 'true'
+                        || sw.classList.contains('ant-switch-checked');
+                    aiSwitch = isOn ? 'on' : 'off';
+                }
+            }
+        }
+
+        let state = null;
+        if (aiModal) state = 'ai_modal';
+        else if (bodyText.includes('余额不足') || bodyText.includes('次数不足') || bodyText.includes('额度不足')) {
+            state = 'insufficient';
+        } else if (bodyText.includes('操作频繁') || bodyText.includes('稍后再试') || bodyText.includes('请求过于频繁')) {
+            state = 'rate_limited';
+        } else if (login) {
+            state = 'login';
+        } else if (order || free) {
+            state = 'order';
+        } else if (confirm) {
+            state = 'confirm';
+        }
+
+        return {
+            state,
+            ai_modal: aiModal,
+            ai_switch: aiSwitch,
+            order,
+            free,
+            login,
+            confirm,
+        };
+    }
+    """
+
     CHECK_LOGIN_MODAL = """
     () => {
         const modals = document.querySelectorAll('.ant-modal');
@@ -739,6 +867,135 @@ class JS:
             return 'clicked';
         }
         return 'not_found';
+    }
+    """
+
+    SET_MP3_FORMAT = """
+    () => {
+        const modals = document.querySelectorAll(
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
+            '.el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const labelText = (input) => {
+            const label = input.closest('label');
+            if (label) return normalize(label.textContent || '').toLowerCase();
+            return normalize(input.parentElement?.textContent || '').toLowerCase();
+        };
+        for (const modal of modals) {
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
+            const radios = Array.from(
+                modal.querySelectorAll('input[type="radio"][name="exportFormat"]')
+            );
+            // AI 说明弹窗的正文也会提到“作品设置”，必须同时要求真实
+            // exportFormat 单选项，避免把说明弹窗误当成作品设置弹窗。
+            if (!text.includes('作品设置') || radios.length === 0) continue;
+
+            const mp3 = radios.find((input) => {
+                const value = normalize(input.value).toLowerCase();
+                const label = labelText(input);
+                return value === 'mp3'
+                    || label === 'mp3'
+                    || label.startsWith('mp3');
+            });
+            if (!mp3) {
+                return {
+                    status: 'mp3_not_found',
+                    checked: false,
+                    radio_count: radios.length,
+                };
+            }
+            if (mp3.disabled) {
+                return {
+                    status: 'mp3_disabled',
+                    checked: Boolean(mp3.checked),
+                    radio_count: radios.length,
+                };
+            }
+            if (mp3.checked) {
+                return {
+                    status: 'already_mp3',
+                    checked: true,
+                    radio_count: radios.length,
+                };
+            }
+
+            // 必须点击真实 radio input/label，让 React/Ant Design 的受控
+            // 状态更新；不能只给 checked 属性赋值。
+            mp3.click();
+            if (!mp3.checked) {
+                const label = mp3.closest('label');
+                if (label) label.click();
+            }
+            return {
+                status: 'clicked_mp3',
+                checked: Boolean(mp3.checked),
+                radio_count: radios.length,
+            };
+        }
+        return {status: 'not_found', checked: false, radio_count: 0};
+    }
+    """
+
+    GET_MP3_FORMAT = """
+    () => {
+        const modals = document.querySelectorAll(
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
+            '.el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const labelText = (input) => {
+            const label = input.closest('label');
+            if (label) return normalize(label.textContent || '').toLowerCase();
+            return normalize(input.parentElement?.textContent || '').toLowerCase();
+        };
+        for (const modal of modals) {
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
+            const radios = Array.from(
+                modal.querySelectorAll('input[type="radio"][name="exportFormat"]')
+            );
+            if (!text.includes('作品设置') || radios.length === 0) continue;
+            const mp3 = radios.find((input) => {
+                const value = normalize(input.value).toLowerCase();
+                const label = labelText(input);
+                return value === 'mp3'
+                    || label === 'mp3'
+                    || label.startsWith('mp3');
+            });
+            if (!mp3) {
+                return {
+                    status: 'mp3_not_found',
+                    checked: false,
+                    radio_count: radios.length,
+                };
+            }
+            return {
+                status: mp3.checked ? 'mp3' : 'other',
+                checked: Boolean(mp3.checked),
+                radio_count: radios.length,
+            };
+        }
+        return {status: 'not_found', checked: false, radio_count: 0};
     }
     """
 
@@ -958,21 +1215,31 @@ AI_FLAG_KEYWORD_VARIANTS = [
 ]
 
 
-def _poll(check_fn, timeout, interval=0.5, page=None):
-    """轮询等待 check_fn 返回 truthy；间隔带 ±25% 抖动。"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def _poll(check_fn, timeout, interval=0.5, page=None, max_interval=None):
+    """轮询等待 check_fn 返回 truthy；自适应退避但保留延迟页面兜底。"""
+    deadline = time.monotonic() + max(0, float(timeout))
+    current_interval = max(0.05, float(interval))
+    upper_interval = max(current_interval, float(max_interval or current_interval * 2.5))
+    while True:
         try:
             result = check_fn()
             if result:
                 return result
         except Exception:
             pass
-        sleep_s = min(interval * (0.75 + (time.time() % 0.5)), max(0.05, deadline - time.time()))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        # 轻微抖动避免固定节奏，同时将高频 DOM 探测逐步降到低频。
+        sleep_s = min(
+            current_interval * (0.9 + (time.monotonic() % 0.2)),
+            remaining,
+        )
         if page is not None:
             page.wait_for_timeout(int(sleep_s * 1000))
         else:
             time.sleep(sleep_s)
+        current_interval = min(upper_interval, current_interval * 1.35)
     return None
 
 
@@ -983,6 +1250,12 @@ def _safe_eval(page, script, arg=None):
         return page.evaluate(script)
     except Exception:
         return None
+
+
+def _probe_synth_state(page):
+    """一次读取讯飞页面状态，避免同一轮重复执行多次 DOM 全量扫描。"""
+    result = _safe_eval(page, JS.PROBE_SYNTH_STATE, AI_FLAG_KEYWORD_VARIANTS)
+    return result if isinstance(result, dict) else None
 
 
 def _looks_like_mp3(path):
@@ -1339,6 +1612,178 @@ class XunFeiSession:
             _log(f"[xunfei]   作品名称设置失败（继续使用默认名称）: {error}")
         return False
 
+    @classmethod
+    def _set_mp3_format_with_locator(cls, page):
+        """用 Playwright locator 兜底选择作品设置中的 MP3 单选项。
+
+        讯飞的实际 DOM 没有稳定的 MP3 value，选项文本在 ``label`` 内；
+        因此这里同时读取 input value 和 label 文本，但永远不会按“第一个
+        单选项”点击，避免 MP3 缺失时误选 WAV。
+        """
+        try:
+            dialogs = page.locator(
+                '.ant-modal:visible, .ant-modal-content:visible, [role="dialog"]:visible, '
+                '.el-dialog:visible, .el-message-box:visible'
+            )
+            for index in range(min(dialogs.count(), 20)):
+                dialog = dialogs.nth(index)
+                text = re.sub(r"\s+", "", dialog.inner_text(timeout=500))
+                radios = dialog.locator(
+                    'input[type="radio"][name="exportFormat"]'
+                )
+                if "作品设置" not in text or radios.count() == 0:
+                    continue
+
+                mp3 = None
+                mp3_label = None
+                for radio_index in range(radios.count()):
+                    radio = radios.nth(radio_index)
+                    value = (radio.get_attribute("value") or "").strip().lower()
+                    label = radio.locator("xpath=ancestor::label[1]")
+                    try:
+                        label_text = re.sub(r"\s+", "", label.inner_text(timeout=500)).lower()
+                    except Exception:
+                        try:
+                            label_text = re.sub(
+                                r"\s+", "", radio.evaluate(
+                                    "element => element.parentElement?.textContent || ''"
+                                )
+                            ).lower()
+                        except Exception:
+                            label_text = ""
+                    if (
+                        value == "mp3"
+                        or label_text == "mp3"
+                        or label_text.startswith("mp3")
+                    ):
+                        mp3 = radio
+                        mp3_label = label
+                        break
+
+                if mp3 is None:
+                    return "mp3_not_found"
+                if mp3.is_checked():
+                    return "already_locator"
+                if mp3.is_disabled():
+                    return "mp3_disabled"
+
+                mp3.click(force=True, timeout=2000)
+                if mp3.is_checked():
+                    return "clicked_locator"
+                if mp3_label is not None and mp3_label.count() > 0:
+                    mp3_label.click(force=True, timeout=2000)
+                return "clicked_locator"
+        except Exception as error:
+            _log(f"[xunfei]   locator 选择 MP3 失败: {error}")
+        return None
+
+    @classmethod
+    def _read_mp3_format_with_locator(cls, page):
+        """读取 locator 看到的作品设置格式，仅返回 MP3 的真实勾选状态。"""
+        try:
+            dialogs = page.locator(
+                '.ant-modal:visible, .ant-modal-content:visible, [role="dialog"]:visible, '
+                '.el-dialog:visible, .el-message-box:visible'
+            )
+            for index in range(min(dialogs.count(), 20)):
+                dialog = dialogs.nth(index)
+                text = re.sub(r"\s+", "", dialog.inner_text(timeout=500))
+                radios = dialog.locator(
+                    'input[type="radio"][name="exportFormat"]'
+                )
+                if "作品设置" not in text or radios.count() == 0:
+                    continue
+                for radio_index in range(radios.count()):
+                    radio = radios.nth(radio_index)
+                    value = (radio.get_attribute("value") or "").strip().lower()
+                    label = radio.locator("xpath=ancestor::label[1]")
+                    try:
+                        label_text = re.sub(r"\s+", "", label.inner_text(timeout=500)).lower()
+                    except Exception:
+                        label_text = ""
+                    if (
+                        value == "mp3"
+                        or label_text == "mp3"
+                        or label_text.startswith("mp3")
+                    ):
+                        return "mp3" if radio.is_checked() else "other"
+                return "mp3_not_found"
+        except Exception:
+            pass
+        return None
+
+    def _ensure_mp3_format(self, page, timeout=10):
+        """在最终确认合成前强制确认讯飞作品格式为 MP3。
+
+        这里不接受“默认应该是 MP3”作为成功条件：必须找到真实的
+        ``exportFormat`` MP3 radio，并在点击后回读 checked 状态；否则不
+        点击“确认合成”，防止在 Windows/不同账号默认值为 WAV 时生成失败。
+        """
+        def set_probe():
+            result = _safe_eval(page, JS.SET_MP3_FORMAT)
+            if isinstance(result, dict) and result.get("status") != "not_found":
+                return result
+            return None
+
+        result = _poll(set_probe, timeout=timeout, interval=0.35, page=page)
+        status = result.get("status") if isinstance(result, dict) else None
+        if status not in {"already_mp3", "clicked_mp3"}:
+            # JS 选择器失败时只按同一套精确规则兜底，绝不退化为 first radio。
+            fallback = self._set_mp3_format_with_locator(page)
+            if fallback in {"already_locator", "clicked_locator"}:
+                status = fallback
+            elif fallback in {"mp3_not_found", "mp3_disabled"}:
+                status = fallback
+
+        if status in {"mp3_not_found", "mp3_disabled"}:
+            _log(
+                "[xunfei]   作品设置中没有可用的 MP3 选项，"
+                f"停止提交 (status={status})"
+            )
+            return False
+
+        def read_probe():
+            state = _safe_eval(page, JS.GET_MP3_FORMAT)
+            if isinstance(state, dict) and state.get("status") != "not_found":
+                return state
+            return None
+
+        state = _poll(read_probe, timeout=4, interval=0.25, page=page)
+        if not isinstance(state, dict) or not state.get("checked"):
+            # React 受控单选项偶尔会让 JS click 后的 DOM 更新稍慢；只有在
+            # 回读仍未确认时才使用 locator，再次点击同一个 MP3 选项。
+            fallback = self._set_mp3_format_with_locator(page)
+            if fallback in {"already_locator", "clicked_locator"}:
+                state = _poll(
+                    read_probe, timeout=3, interval=0.25, page=page
+                )
+
+        if isinstance(state, dict) and state.get("checked"):
+            _log(
+                "[xunfei]   作品设置格式已确认为 MP3 "
+                f"(status={status or state.get('status')})"
+            )
+            return True
+
+        # 最后再读取一次 locator 状态，日志里明确区分“没弹窗”和“MP3
+        # 不存在/未勾选”，便于定位 Windows 端页面结构差异。
+        locator_state = self._read_mp3_format_with_locator(page)
+        if locator_state == "mp3":
+            _log("[xunfei]   作品设置格式已确认为 MP3 (locator)")
+            return True
+        snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+        if snapshot:
+            _log(
+                "[xunfei]   作品设置 MP3 格式确认失败，当前弹窗: "
+                + json.dumps(snapshot, ensure_ascii=False)[:1800]
+            )
+        else:
+            _log(
+                "[xunfei]   作品设置 MP3 格式确认失败: "
+                f"status={status or 'not_found'}, locator={locator_state or 'not_found'}"
+            )
+        return False
+
     @staticmethod
     def _visible_confirm_synth_buttons(page):
         """返回当前页面可见的“确认合成”按钮，兼容讯飞弹窗 DOM 变化。"""
@@ -1389,20 +1834,30 @@ class XunFeiSession:
         """第一次点击确认合成后的状态探测。"""
 
         def probe():
-            # 先识别 AI 说明弹窗。作品设置页或页面残留提示不应抢先
-            # 把真实弹窗判成其它状态。
-            for kws in AI_FLAG_KEYWORD_VARIANTS:
-                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
-                    return "ai_modal"
-            if _safe_eval(page, JS.CHECK_INSUFFICIENT):
-                return "insufficient"
-            if _safe_eval(page, JS.CHECK_RATE_LIMITED):
-                return "rate_limited"
-            if _safe_eval(page, JS.CHECK_GO_DOWNLOAD) or _safe_eval(page, JS.CHECK_FREE_MODAL):
-                return "order"
-            return None
+            info = _probe_synth_state(page)
+            state = (info or {}).get("state")
+            # 第一次确认后，确认按钮本身可能还没卸载；这里只接受真正的
+            # AI/错误/订单状态，避免把旧的确认弹窗当成已完成。
+            return state if state in {
+                "ai_modal", "insufficient", "rate_limited", "login", "order",
+            } else None
 
-        result = _poll(probe, timeout=7, interval=0.4, page=page) or "none"
+        result = _poll(
+            probe,
+            # 讯飞页面的 React 弹层可能在点击后数秒才挂载；保留较长
+            # 的等待窗口，但每轮只做一次合并状态快照，避免拖慢浏览器。
+            timeout=15,
+            interval=0.4,
+            max_interval=1.0,
+            page=page,
+        )
+        if not result:
+            info = _probe_synth_state(page)
+            state = (info or {}).get("state")
+            result = state if state in {
+                "ai_modal", "insufficient", "rate_limited", "login", "order",
+            } else None
+        result = result or "none"
         if result == "none":
             snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
             if snapshot:
@@ -1504,57 +1959,68 @@ class XunFeiSession:
             pass
         return None
 
-    def _ensure_ai_switch_off(self, page, timeout=8):
+    def _ensure_ai_switch_off(self, page, timeout=12):
         """确保作品设置中的 AI 标识开关为关闭状态。
 
         讯飞有时跳过“AI 标识说明”弹窗，直接展示“作品设置”；因此这个
         检查必须独立于说明弹窗流程，并且必须回读 aria-checked/class 状态。
         返回 ``off``、``on`` 或 ``not_found``。
         """
-        deadline = time.time() + timeout
         last_state = "not_found"
         js_click_attempted = False
-        while time.time() < deadline:
-            # 部分账号第一次操作 AI 标识时会先弹出“AI 标识说明”。这个
-            # 弹窗没有 switch，必须先勾选“不再提示”并确认，才能回到
-            # “作品设置”继续关闭真实的 button[role=switch]。
-            if any(
-                _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, keywords)
-                for keywords in AI_FLAG_KEYWORD_VARIANTS
-            ):
+        last_locator_attempt = 0.0
+
+        def probe():
+            nonlocal last_state, js_click_attempted, last_locator_attempt
+            info = _probe_synth_state(page)
+            if info and info.get("ai_modal"):
+                # 说明弹窗可以延迟挂载；处理成功后从头回读作品设置，
+                # 不把“当前还没看到 switch”误判为关闭成功。
                 if self._handle_ai_flag_dialog(page, ensure_switch=False):
                     js_click_attempted = False
-                    continue
-                page.wait_for_timeout(250)
-                continue
+                    last_locator_attempt = 0.0
+                return None
 
-            state = _safe_eval(page, JS.GET_AI_SWITCH_STATE)
-            if state in {"off", "on", "not_found"}:
-                last_state = state
+            state = str((info or {}).get("ai_switch") or "not_found")
+            last_state = state
             if state == "off":
                 return "off"
             if state == "on":
-                clicked = _safe_eval(page, JS.CLICK_AI_SWITCH)
-                if clicked == "already_off":
-                    self._pause(page, 0.15, 0.05)
-                    continue
-                if clicked == "clicked" and not js_click_attempted:
-                    js_click_attempted = True
+                if not js_click_attempted:
+                    clicked = _safe_eval(page, JS.CLICK_AI_SWITCH)
+                    if clicked == "already_off":
+                        return None
+                    if clicked == "clicked":
+                        js_click_attempted = True
+                        self._pause(page, 0.18, 0.05)
+                        return None
+                # JS click 没有让 React 受控状态变化时，降低频率再用
+                # locator 点击真实 button[role=switch]，避免连续点同一开关。
+                now = time.monotonic()
+                if now - last_locator_attempt >= 0.65:
+                    last_locator_attempt = now
+                    if self._click_ai_switch_with_locator(page):
+                        self._pause(page, 0.25, 0.08)
+                return None
+
+            # switch 尚未挂载时也给 locator 一次机会；页面继续异步渲染时，
+            # 自适应轮询会再次回到这里，不会漏掉延迟出现的开关。
+            now = time.monotonic()
+            if now - last_locator_attempt >= 0.65:
+                last_locator_attempt = now
+                if self._click_ai_switch_with_locator(page):
                     self._pause(page, 0.25, 0.08)
-                    # 下一轮先回读真实 DOM，不能把调用 click 当成关闭成功。
-                    continue
-                # JS click 没有让 Ant Design 的受控状态变化时，必须改用
-                # Playwright 点击真实 button[role=switch]，再回读状态。
-                clicked = self._click_ai_switch_with_locator(page)
-                if clicked:
-                    self._pause(page, 0.3, 0.1)
-                    continue
-            elif state == "not_found":
-                clicked = self._click_ai_switch_with_locator(page)
-                if clicked:
-                    self._pause(page, 0.3, 0.1)
-                    continue
-            page.wait_for_timeout(250)
+            return None
+
+        result = _poll(
+            probe,
+            timeout=timeout,
+            interval=0.2,
+            max_interval=0.85,
+            page=page,
+        )
+        if result == "off":
+            return "off"
         return last_state
 
     @classmethod
@@ -1582,7 +2048,13 @@ class XunFeiSession:
             result = _safe_eval(page, JS.CHECK_NO_REMIND)
             return result if result in {"clicked", "clicked_input", "clicked_label", "already"} else None
 
-        checked = _poll(check_no_remind, timeout=5, interval=0.25, page=page)
+        checked = _poll(
+            check_no_remind,
+            timeout=10,
+            interval=0.25,
+            max_interval=1.0,
+            page=page,
+        )
         if not checked:
             checked = self._click_no_remind_with_locator(page)
         _log(f"[xunfei]   AI 标识弹窗‘不再提示’: {'✓' if checked else '✗'}{f' ({checked})' if checked else ''}")
@@ -1594,7 +2066,7 @@ class XunFeiSession:
         self._pause(page, 0.35, 0.15)
 
         if ensure_switch:
-            switch_state = self._ensure_ai_switch_off(page, timeout=8)
+            switch_state = self._ensure_ai_switch_off(page, timeout=12)
             _log(
                 f"[xunfei]   AI 标识开关关闭: "
                 f"{'✓' if switch_state == 'off' else '未出现' if switch_state == 'not_found' else '✗'}"
@@ -1609,7 +2081,10 @@ class XunFeiSession:
 
         confirmed = bool(_poll(
             lambda: _safe_eval(page, JS.CLICK_AI_CONFIRM),
-            timeout=8, interval=0.35, page=page,
+            timeout=12,
+            interval=0.35,
+            max_interval=1.0,
+            page=page,
         ))
         if not confirmed:
             confirmed = self._click_ai_confirm_with_locator(page)
@@ -1621,13 +2096,15 @@ class XunFeiSession:
         if not confirmed:
             return False
 
+        def ai_modal_closed():
+            info = _probe_synth_state(page)
+            return bool(info and info.get("ai_modal") is False)
+
         closed = _poll(
-            lambda: not any(
-                _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, keywords)
-                for keywords in AI_FLAG_KEYWORD_VARIANTS
-            ),
-            timeout=5,
+            ai_modal_closed,
+            timeout=8,
             interval=0.25,
+            max_interval=1.0,
             page=page,
         )
         if not closed:
@@ -1640,17 +2117,27 @@ class XunFeiSession:
 
     def _wait_order_or_error(self, page, timeout):
         def probe():
-            if _safe_eval(page, JS.CHECK_INSUFFICIENT):
-                return "insufficient"
-            if _safe_eval(page, JS.CHECK_RATE_LIMITED):
-                return "rate_limited"
-            if _safe_eval(page, JS.CHECK_LOGIN_MODAL):
-                return "login"
-            if _safe_eval(page, JS.CHECK_GO_DOWNLOAD) or _safe_eval(page, JS.CHECK_FREE_MODAL):
+            info = _probe_synth_state(page)
+            state = (info or {}).get("state")
+            if state == "order":
                 return "ok"
-            return None
+            return state if state in {"insufficient", "rate_limited", "login"} else None
 
-        return _poll(probe, timeout=timeout, interval=0.8, page=page)
+        result = _poll(
+            probe,
+            timeout=timeout,
+            interval=0.8,
+            max_interval=1.5,
+            page=page,
+        )
+        if result:
+            return result
+        # 超时边界再做一次同步快照，覆盖最后一刻才挂载的错误/订单提示。
+        info = _probe_synth_state(page)
+        state = (info or {}).get("state")
+        if state == "order":
+            return "ok"
+        return state if state in {"insufficient", "rate_limited", "login"} else None
 
     def _confirm_synth(self, page, works_name=None):
         """
@@ -1661,20 +2148,32 @@ class XunFeiSession:
         initial_ai_state = None
 
         def ensure_ai_setting(allow_missing=False):
-            state = self._ensure_ai_switch_off(page, timeout=8)
-            if state == "not_found" and allow_missing and initial_ai_state == "off":
+            # “订单支付”/“去下载”弹窗已经说明作品提交完成；此时原来的
+            # 作品设置弹窗已经被卸载，不可能再读到 AI switch。第一次提交
+            # 前已确认过关闭状态，不能在这里再次轮询 8 秒等待不存在的开关。
+            if allow_missing and initial_ai_state == "off":
                 _log("[xunfei]   作品设置弹窗已关闭，沿用第一次确认前已验证的 AI 标识关闭状态")
                 return True
+            state = self._ensure_ai_switch_off(page, timeout=12)
             _log(f"[xunfei]   合成前 AI 标识开关状态: {state}")
             return state == "off"
 
+        def confirm_state():
+            info = _probe_synth_state(page)
+            state = (info or {}).get("state")
+            return state if state in {"confirm", "ai_modal", "order", "insufficient", "rate_limited", "login"} else None
+
         appeared = _poll(
-            lambda: (
-                _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, ["确认合成"])
-                or bool(self._visible_confirm_synth_buttons(page))
-            ),
-            timeout=10, interval=0.6, page=page,
+            confirm_state,
+            # 不假设“作品设置”会同步出现；讯飞客户端可能延迟挂载
+            # 5–10 秒，继续轮询但每轮只读取一次状态快照。
+            timeout=15,
+            interval=0.6,
+            max_interval=1.25,
+            page=page,
         )
+        if not appeared and self._visible_confirm_synth_buttons(page):
+            appeared = "confirm"
         if not appeared:
             # 无弹窗也可能直接开始合成；若出现订单/错误则按其处理
             snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
@@ -1689,13 +2188,19 @@ class XunFeiSession:
 
         self._pause(page, 0.6, 0.3)
 
+        # 讯飞“作品设置”弹窗中的格式是独立的 WAV/MP3 单选项。不能依赖
+        # 默认勾选，也不能取第一个 option；提交前必须回读并确认 MP3。
+        if not self._ensure_mp3_format(page):
+            _log("[xunfei]   未能确认作品格式为 MP3，停止提交，避免误生成 WAV")
+            return "failed"
+
         if works_name:
             self._set_works_name(page, works_name)
 
         # “作品设置”就是这次提交使用的最终设置，真实 DOM 中开关位于这里：
         # role="switch"、aria-checked="true"。必须在第一次确认合成前关闭，
         # 不能等弹窗切换或订单完成后再处理，否则水印配置已经被提交。
-        initial_ai_state = self._ensure_ai_switch_off(page, timeout=8)
+        initial_ai_state = self._ensure_ai_switch_off(page, timeout=12)
         _log(f"[xunfei]   第一次确认前 AI 标识开关状态: {initial_ai_state}")
         if initial_ai_state != "off":
             snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
@@ -1734,21 +2239,21 @@ class XunFeiSession:
         # AI 弹窗关闭、页面切换和确认合成按钮重新出现之间存在异步延迟。
         # 这里必须继续轮询状态，不能用一次立即查询把任务误判为已完成。
         def probe_followup():
-            # 与第一次确认后的探测保持相同优先级：先处理 AI 弹窗。
-            for kws in AI_FLAG_KEYWORD_VARIANTS:
-                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
-                    return "ai_modal"
-            if _safe_eval(page, JS.CHECK_INSUFFICIENT):
-                return "insufficient"
-            if _safe_eval(page, JS.CHECK_RATE_LIMITED):
-                return "rate_limited"
-            if _safe_eval(page, JS.CHECK_GO_DOWNLOAD) or _safe_eval(page, JS.CHECK_FREE_MODAL):
-                return "order"
-            if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, ["确认合成"]):
-                return "confirm"
-            return None
+            # 与第一次确认后的探测保持相同优先级；不要在一轮中重复执行
+            # 多个 page.evaluate，延迟挂载时仍由外层轮询继续等待。
+            info = _probe_synth_state(page)
+            state = (info or {}).get("state")
+            return state if state in {
+                "ai_modal", "insufficient", "rate_limited", "login", "order", "confirm",
+            } else None
 
-        followup = _poll(probe_followup, timeout=15, interval=0.35, page=page)
+        followup = _poll(
+            probe_followup,
+            timeout=15,
+            interval=0.35,
+            max_interval=1.0,
+            page=page,
+        )
         if followup == "ai_modal":
             ai_modal_seen = True
             # 少数页面会在第一次 AI 弹窗确认后重新挂载一次弹窗，允许再处理一轮。
@@ -1756,7 +2261,13 @@ class XunFeiSession:
             if not self._handle_ai_flag_dialog(page, ensure_switch=False):
                 _log("[xunfei]   AI 标识弹窗二次处理失败，停止本次合成")
                 return "failed"
-            followup = _poll(probe_followup, timeout=10, interval=0.35, page=page)
+            followup = _poll(
+                probe_followup,
+                timeout=12,
+                interval=0.35,
+                max_interval=1.0,
+                page=page,
+            )
         _log(f"[xunfei]   二次确认前页面状态: {followup or '未发现明确状态'}")
         if followup in ("order", "insufficient", "rate_limited"):
             if followup == "order" and not ensure_ai_setting(allow_missing=True):
@@ -1770,7 +2281,10 @@ class XunFeiSession:
         clicked2 = bool(_poll(
             lambda: self._click_confirm_synth_button(page)
             or _safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"),
-            timeout=8, interval=0.35, page=page,
+            timeout=12,
+            interval=0.35,
+            max_interval=1.0,
+            page=page,
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
         if clicked2:
@@ -1788,9 +2302,9 @@ class XunFeiSession:
                 return "failed"
             return settled
         if ai_modal_seen:
-            for kws in AI_FLAG_KEYWORD_VARIANTS:
-                if _safe_eval(page, JS.CHECK_MODAL_HAS_TEXT, kws):
-                    return "failed"
+            info = _probe_synth_state(page)
+            if info and info.get("ai_modal"):
+                return "failed"
         if not ensure_ai_setting(allow_missing=True):
             return "failed"
         return "ok"
@@ -1849,10 +2363,15 @@ class XunFeiSession:
 
     def _fetch_works_list_in_page(self, page, needed_count=1):
         """获取已完成作品列表，返回讯飞原始作品对象。"""
+        # 作品页按最新创建时间返回第 1 页；等待 1~3 个新 worksId 时没必要
+        # 每轮都让页面解析 200 条历史记录。保留足够余量并限制上限，既能
+        # 覆盖批量提交，也能降低 Chrome 在轮询期间的 JSON/DOM 开销。
+        needed = max(1, int(needed_count or 1))
+        page_size = max(50, min(200, needed + 20))
         param = {
             "needCount": 1,
             "pageIndex": 1,
-            "pageSize": max(200, int(needed_count or 1) + 50),
+            "pageSize": page_size,
             "worksName": "",
         }
         data = self._signed_api_post(page, API_WORKS_LIST_URL, param)
@@ -1953,11 +2472,22 @@ class XunFeiSession:
     def _cleanup_after_item(self, page):
         """单条提交后关闭残留弹窗并清空编辑器，不刷新页面。"""
         _safe_eval(page, JS.CLOSE_ALL_MODALS, [])
-        self._pause(page, 0.3, 0.15)
         # 讯飞页面的音色和三项参数状态要跨条复用；这里只清空输入内容，
         # 不能用 goto/reload，否则同一音色分组会被迫重复选择和设置参数。
         self._clear_editor(page)
-        self._pause(page, 0.2, 0.1)
+        # 不再固定等待 1~2 秒。弹窗关闭动画和编辑器清空完成后立即继续，
+        # 如果页面较慢则最多等待 2 秒，避免下一条输入撞上旧弹窗。
+        ready = _poll(
+            lambda: (
+                not (_safe_eval(page, JS.GET_EDITOR_TEXT) or "").strip()
+                and bool(_safe_eval(page, JS.CHECK_NO_VISIBLE_MODAL))
+            ),
+            timeout=2,
+            interval=0.1,
+            page=page,
+        )
+        if not ready:
+            self._pause(page, 0.25, 0.08)
 
     def _recover_and_retry(self, page):
         """合成失败后恢复页面状态（重新加载编辑页，重置音色/参数记忆）。"""
@@ -1985,13 +2515,27 @@ class XunFeiSession:
         chrome_path = _find_chrome()
         launch_args = [
             "--disable-blink-features=AutomationControlled",
-            "--disable-dev-shm-usage",
             "--no-first-run",
             "--no-default-browser-check",
             "--window-size=1440,1000",
             "--lang=zh-CN",
             "--mute-audio",
+            # 自动化只需要当前讯飞页面，不需要 Chrome 的后台同步、组件
+            # 更新、扩展和通知。这些服务在低配电脑上会持续占用网络、内存
+            # 和后台线程，但不会影响登录、合成或下载。
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-default-apps",
+            "--disable-extensions",
+            "--disable-notifications",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--no-pings",
         ]
+        # 仅 Linux 容器/沙箱需要这个兼容参数。macOS/Windows 没有 /dev/shm，
+        # 强制走磁盘反而可能降低 Chromium 的渲染和页面交互速度。
+        if sys.platform.startswith("linux"):
+            launch_args.append("--disable-dev-shm-usage")
 
         launch_kwargs = {
             "user_data_dir": PROFILE_DIR,
@@ -2060,28 +2604,25 @@ class XunFeiSession:
         except Exception as goto_error:
             _log(f"[xunfei] 首次加载提示: {goto_error}")
 
-        # 等待页面 JS 执行完毕
-        for _ in range(30):
-            self._page.wait_for_timeout(1000)
-            try:
-                if self._page.evaluate("() => document.readyState") == "complete":
-                    break
-            except Exception:
-                continue
-
-        # 确认编辑器存在
+        # 不再按秒轮询 document.readyState。讯飞页面可能持续有网络请求，
+        # readyState=complete 并不等于编辑器可用；直接等待真正需要的编辑器
+        # 节点，页面一旦就绪就立即继续，避免启动阶段白占 CPU 和最多 30 秒。
         try:
-            self._page.wait_for_selector(".ssml-editor", timeout=30000)
+            self._page.wait_for_selector(
+                ".ssml-editor", state="attached", timeout=30000
+            )
         except Exception:
             _log("[xunfei] 页面编辑器未找到，重试加载...")
-            self._page.wait_for_timeout(3000)
             try:
-                self._page.goto(HOME_URL, wait_until="load", timeout=60000)
+                self._page.goto(
+                    HOME_URL, wait_until="domcontentloaded", timeout=60000
+                )
             except Exception:
                 pass
-            self._page.wait_for_timeout(5000)
             try:
-                self._page.wait_for_selector(".ssml-editor", timeout=30000)
+                self._page.wait_for_selector(
+                    ".ssml-editor", state="attached", timeout=30000
+                )
             except Exception:
                 raise XunfeiError("无法加载讯飞配音编辑器")
 
@@ -2183,7 +2724,6 @@ class XunFeiSession:
                     f"voice={voice_name}"
                 )
                 self._cleanup_after_item(page)
-                self._pause(page, 1.2, 0.6)
                 return pending
 
             except (XunfeiQuotaExceeded, XunfeiLoginRequired):

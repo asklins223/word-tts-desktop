@@ -140,6 +140,47 @@ function pruneChromiumLocales(root) {
     return removed;
 }
 
+function pruneChromiumOptionalPayload(root) {
+    // 讯飞自动化只需要普通网页渲染，不播放 DRM 内容。Chromium 自带的
+    // Widevine 目录在 macOS/Windows 上约占 20MB，删除它不会影响登录、
+    // 页面操作或音频生成。
+    let removed = 0;
+
+    function visit(directory) {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const entryPath = path.join(directory, entry.name);
+            if (entry.name.toLowerCase() === 'widevinecdm') {
+                fs.rmSync(entryPath, { recursive: true, force: true });
+                removed += 1;
+                continue;
+            }
+            if (entry.isDirectory()) visit(entryPath);
+        }
+    }
+
+    visit(root);
+    return removed;
+}
+
+function prunePlaywrightUnusedPayload(driverPackageRoot) {
+    // Python 端只通过 sync_api 启动 Playwright driver 和 Chromium，不使用
+    // trace viewer、录制器、HTML 报告、TypeScript 类型或开发期协议资料。
+    // 保留 cli.js、coreBundle.js、utilsBundle.js、browsers.json 等运行时文件。
+    const removable = [
+        path.join(driverPackageRoot, 'lib', 'vite'),
+        path.join(driverPackageRoot, 'types'),
+        path.join(driverPackageRoot, 'api.json'),
+        path.join(driverPackageRoot, 'protocol.yml'),
+    ];
+    let removed = 0;
+    for (const target of removable) {
+        if (!fs.existsSync(target)) continue;
+        fs.rmSync(target, { recursive: true, force: true });
+        removed += 1;
+    }
+    return removed;
+}
+
 const browserRoot = path.join(internalDir, 'playwright_browsers');
 const browserDestination = path.join(browserRoot, expectedChromiumDir);
 if (path.resolve(browserSource) === path.resolve(browserDestination)) {
@@ -164,7 +205,13 @@ fs.cpSync(browserSource, browserDestination, {
 });
 
 const removedLocales = pruneChromiumLocales(browserDestination);
+const removedChromiumPayload = pruneChromiumOptionalPayload(browserDestination);
+const removedPlaywrightPayload = prunePlaywrightUnusedPayload(
+    path.join(internalDir, 'playwright', 'driver', 'package')
+);
 
 console.log(`[browser] 已复制 Chromium revision ${chromiumRevision}: ${browserSource}`);
 console.log(`[browser] 目标: ${browserDestination}`);
 console.log(`[browser] 已移除 ${removedLocales} 个非中文简体/英文语言资源`);
+console.log(`[browser] 已移除 ${removedChromiumPayload} 个 Chromium 可选目录`);
+console.log(`[browser] 已移除 ${removedPlaywrightPayload} 个 Playwright 非运行时目录/文件`);
