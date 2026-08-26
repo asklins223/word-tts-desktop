@@ -1,5 +1,11 @@
 # 更新日志
 
+## v2.7.12
+
+### 修复 Windows 工作流脚本格式
+
+- 修正 Windows 冒烟测试 PowerShell 多行脚本的 YAML 缩进，恢复 GitHub Actions 正常解析和执行。
+
 ## v2.7.11
 
 ### 修复 Windows Electron 冒烟探测无响应
