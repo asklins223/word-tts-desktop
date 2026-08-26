@@ -28,7 +28,12 @@
     },
     "afterSign": "notarize.js",
     "electronLanguages": [
-      "zh-CN"
+      "en",
+      "en-US",
+      "en-GB",
+      "en_GB",
+      "zh-CN",
+      "zh_CN"
     ],
     "files": [
       "main.js",
