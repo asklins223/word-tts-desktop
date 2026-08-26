@@ -1529,18 +1529,58 @@ async def _generate_audio_stream(
                 session.progress = progress  # 保存到 session 供下载端点使用
                 done = progress["completed"]
                 total = progress["total_items"]
-                log(
-                    "info",
-                    f"检测到已有进度（{done}/{total} 已完成），继续处理",
-                    stage="prepare",
-                    kind="recovery",
-                    key="task:recovery",
-                    title="继续上次未完成的任务",
-                    detail=f"已完成 {done} 条，剩余 {max(total - done, 0)} 条",
-                    progress_snapshot=progress,
+                retry_count = sum(
+                    1
+                    for item in progress.get("items", [])
+                    if item.get("status") == "error"
                 )
+                if retry_count:
+                    # 旧失败项属于上一轮尝试，不能在本轮刚开始时继续计入
+                    # failed；否则客户端刚连上 SSE 就会先显示“失败 N 条”
+                    # 或 99% 的假进度，随后才回到真实重试进度。保留合并
+                    # 作品的 error 状态供下面的断点逻辑决定重做边界，题目
+                    # 状态和统计先恢复为本轮待处理。
+                    for item in progress.get("items", []):
+                        if item.get("status") == "error":
+                            item["status"] = "pending"
+                            item["error"] = None
+                    progress["completed"] = sum(
+                        1
+                        for item in progress.get("items", [])
+                        if item.get("status") == "done"
+                    )
+                    progress["failed"] = 0
+                    rebuild_stats_cache(progress)
+                    log(
+                        "info",
+                        f"检测到已有进度，本轮准备重试 {retry_count} 条失败内容",
+                        stage="prepare",
+                        kind="recovery",
+                        key="task:recovery",
+                        title="准备重试上次失败内容",
+                        detail=(
+                            f"已完成 {progress['completed']} 条，"
+                            f"本轮待重试 {retry_count} 条"
+                        ),
+                        progress_snapshot=progress,
+                    )
+                else:
+                    log(
+                        "info",
+                        f"检测到已有进度（{done}/{total} 已完成），继续处理",
+                        stage="prepare",
+                        kind="recovery",
+                        key="task:recovery",
+                        title="继续上次未完成的任务",
+                        detail=f"已完成 {done} 条，剩余 {max(total - done, 0)} 条",
+                        progress_snapshot=progress,
+                    )
                 emit_stats(progress)
-                emit_status(f"断点续传中 — {done}/{total} 已完成")
+                emit_status(
+                    f"准备重试 {retry_count} 条失败内容"
+                    if retry_count
+                    else f"断点续传中 — {done}/{total} 已完成"
+                )
         else:
             if existing:
                 log(

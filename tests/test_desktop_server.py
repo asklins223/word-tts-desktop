@@ -765,6 +765,79 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         replay_done = session.final_done
         self.assertEqual(replay_done["composite_works"], done["composite_works"])
 
+    def test_retry_does_not_emit_previous_failures_in_initial_stats(self):
+        """重试任务的首个统计不能把上一轮失败数带进本轮。"""
+        session = server.SessionState("composite-retry-initial-stats")
+        session.parse_results = self._parse_results("需要重试的内容")
+        config = {
+            **self._config(),
+            "generation_mode": server.core.GENERATION_MODE_COMPOSITE,
+        }
+        fingerprint = {"size": 1}
+        persisted = server.core.build_progress(
+            "lesson.docx",
+            "/missing/lesson.docx",
+            session.parse_results,
+            config,
+        )
+        persisted["source_fingerprint"] = fingerprint
+        persisted["items"][0]["status"] = "error"
+        persisted["items"][0]["error"] = "上一次标注失败"
+        persisted["failed"] = 1
+
+        async def fake_composite(item_specs, **_kwargs):
+            return {
+                str(spec["item_id"]): {"audio": object(), "error": None}
+                for spec in item_specs
+            }
+
+        def fake_export(_audio, _fmt, _quality, output_path):
+            Path(output_path).write_bytes(b"retry-audio")
+
+        async def exercise():
+            with mock.patch.object(
+                server,
+                "source_fingerprint",
+                return_value=fingerprint,
+            ), mock.patch.object(
+                server.core,
+                "load_progress",
+                return_value=persisted,
+            ), mock.patch.object(
+                server.core,
+                "_synth_items_batch_composite",
+                new=fake_composite,
+            ), mock.patch.object(
+                server.core,
+                "export_audio",
+                side_effect=fake_export,
+            ), mock.patch.object(
+                server.core._xunfei,
+                "close_session",
+                new=mock.AsyncMock(),
+            ):
+                await server.generate_audio_stream(
+                    session,
+                    "lesson.docx",
+                    "/missing/lesson.docx",
+                    config,
+                )
+
+        asyncio.run(exercise())
+        stats = [
+            event
+            for event in session.event_journal
+            if event["type"] == "stats"
+        ]
+        self.assertTrue(stats)
+        self.assertEqual(stats[0]["failed"], 0)
+        self.assertEqual(stats[0]["processed"], 0)
+        self.assertEqual(stats[0]["failed_items"], [])
+        self.assertEqual(
+            (session.final_done["completed"], session.final_done["failed"]),
+            (1, 0),
+        )
+
     def test_cancelling_during_last_item_does_not_emit_done(self):
         session = server.SessionState("cancel-last-item")
         session.parse_results = self._parse_results("需要生成的内容")
