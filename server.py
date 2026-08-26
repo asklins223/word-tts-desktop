@@ -1901,17 +1901,21 @@ async def _generate_audio_stream(
                 "role_configs": role_configs,
                 "default_role": item_default_role,
             })
-            log(
-                "progress",
-                f"已加入批量生成: {item_id}",
-                stage="synthesize",
-                kind="item",
-                key=f"item:{item_id}",
-                title=f"已排队 {item_id}",
-                detail=" · ".join(filter(None, [item.get("doc_type"), item.get("category"), voice_label])),
-                item=item_context,
-                progress_snapshot=progress,
-            )
+            # 合并生成已经有作品级阶段日志；如果再为每一题写一条“已排队”，
+            # 22 行对话会把日志时间线刷满，而且这些条目随后也不会单独提交。
+            # 失败项仍在下面保留逐项记录，便于定位问题。
+            if not composite_mode:
+                log(
+                    "progress",
+                    f"已加入批量生成: {item_id}",
+                    stage="synthesize",
+                    kind="item",
+                    key=f"item:{item_id}",
+                    title=f"已排队 {item_id}",
+                    detail=" · ".join(filter(None, [item.get("doc_type"), item.get("category"), voice_label])),
+                    item=item_context,
+                    progress_snapshot=progress,
+                )
 
         for item in empty_items:
             log(
@@ -2473,18 +2477,19 @@ async def _generate_audio_stream(
                 item["output_path"] = out_path
                 item["error"] = None
                 progress["completed"] += 1
-                log(
-                    "success",
-                    f"{item_id} 完成 ({progress['completed']}/{total})",
-                    stage="synthesize",
-                    kind="item",
-                    key=f"item:{item_id}",
-                    title=f"{item_id} 已生成",
-                    detail=f"{item.get('filename')} · {item_context['voice']} · 第 {progress['completed']} / {total} 条",
-                    item=item_context,
-                    progress_snapshot=progress,
-                    duration_ms=round((time.perf_counter() - item_started) * 1000),
-                )
+                if not composite_mode:
+                    log(
+                        "success",
+                        f"{item_id} 完成 ({progress['completed']}/{total})",
+                        stage="synthesize",
+                        kind="item",
+                        key=f"item:{item_id}",
+                        title=f"{item_id} 已生成",
+                        detail=f"{item.get('filename')} · {item_context['voice']} · 第 {progress['completed']} / {total} 条",
+                        item=item_context,
+                        progress_snapshot=progress,
+                        duration_ms=round((time.perf_counter() - item_started) * 1000),
+                    )
             except Exception as error:
                 item["status"] = "error"
                 item["error"] = str(error)
@@ -2579,8 +2584,10 @@ async def _generate_audio_stream(
                 segments=composite_segments_snapshot(),
             )
         else:
-            emit_stats(progress, force=True)
-        emit_generation_status(progress, force=True)
+            emit_stats(progress, force=True, phase="batch-export")
+        # 即使题目已经全部导出，ZIP 打包和历史归档仍未完成；明确保留
+        # “生成阶段结束”的阶段标识，前端不会把这一条中间状态当作终态。
+        emit_status("生成阶段完成，正在整理交付文件...")
 
         synthesis_duration_ms = round((time.perf_counter() - synthesis_started_at) * 1000)
         synthesis_all_failed = progress["completed"] == 0 and progress["failed"] > 0
@@ -2609,6 +2616,14 @@ async def _generate_audio_stream(
         progress["status"] = "packaging"
         await persist_progress(progress, force=True)
         package_started_at = time.perf_counter()
+        emit_stats(
+            progress,
+            force=True,
+            phase="package",
+            work=composite_work_snapshot() if composite_mode else None,
+            segments=composite_segments_snapshot() if composite_mode else None,
+        )
+        emit_status("正在打包交付文件...")
         if progress["completed"] > 0:
             log(
                 "progress",
@@ -2663,7 +2678,6 @@ async def _generate_audio_stream(
             status_text = f"完成 — 成功 {done}/{total}"
         if failed > 0 and done > 0:
             status_text += f"，失败 {failed}"
-        emit_status(status_text)
         emit_download(progress, file_list, zip_path=zip_path)
         # 保存最终 zip_path 供 SSE 重连重放
         session.final_zip_path = zip_path if file_list else None
@@ -2673,6 +2687,14 @@ async def _generate_audio_stream(
             return
         if file_list:
             archive_started_at = time.perf_counter()
+            emit_stats(
+                progress,
+                force=True,
+                phase="archive",
+                work=composite_work_snapshot() if composite_mode else None,
+                segments=composite_segments_snapshot() if composite_mode else None,
+            )
+            emit_status("交付文件已整理，正在保存历史记录...")
             log(
                 "progress",
                 "正在保存历史记录",
@@ -2715,6 +2737,14 @@ async def _generate_audio_stream(
                     duration_ms=round((time.perf_counter() - archive_started_at) * 1000),
                 )
         else:
+            emit_stats(
+                progress,
+                force=True,
+                phase="archive",
+                work=composite_work_snapshot() if composite_mode else None,
+                segments=composite_segments_snapshot() if composite_mode else None,
+            )
+            emit_status("没有可保存的音频结果，正在结束任务...")
             log(
                 "warn",
                 "没有可保存的音频结果",
@@ -2728,6 +2758,7 @@ async def _generate_audio_stream(
         if session.cancelled:
             emit_cancelled_terminal("历史记录处理结束后已停止任务")
             return
+        emit_status(status_text)
         task_duration_ms = round((time.perf_counter() - task_started_at) * 1000)
         all_failed = done == 0 and failed > 0
         log(

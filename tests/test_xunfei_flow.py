@@ -133,6 +133,37 @@ class XunfeiFlowTests(unittest.TestCase):
             (0, 1), (2, 2), (3, 3),
         ])
 
+    def test_composite_marking_plan_reduces_alternating_voice_operations(self):
+        session = XunFeiSession()
+        rows = [
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "george", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "george", "speed": 50, "pitch": 50, "volume": 50},
+        ]
+
+        plan = session._composite_marking_plan(rows)
+
+        # 原方案需要 4 次连续选区设置；新方案先全文设置 Amanda，
+        # 再只修正两个 George 区间，最终每一行仍有明确的目标配置。
+        self.assertEqual(plan["base_index"], 0)
+        self.assertEqual(plan["correction_groups"], [(1, 1), (3, 3)])
+        self.assertEqual(plan["contiguous_group_count"], 4)
+
+    def test_composite_marking_plan_uses_most_frequent_full_signature(self):
+        session = XunFeiSession()
+        rows = [
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "george", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 65, "pitch": 50, "volume": 50},
+        ]
+
+        plan = session._composite_marking_plan(rows)
+
+        self.assertEqual(plan["base_index"], 0)
+        self.assertEqual(plan["correction_groups"], [(1, 1), (3, 3)])
+
     def test_long_editor_selection_keeps_one_batch_across_scroll(self):
         """长编辑器不可同时看见首尾时，选区仍不能退化成逐行处理。"""
         try:

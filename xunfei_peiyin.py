@@ -8,7 +8,7 @@
 设计:
   - 使用持久化浏览器配置目录，首次需手动登录，后续自动复用登录状态
   - 单条合成：输入文本 → 选发音人 → 设置语速/语调/音量 → 生成音频 → 确认合成 → 拦截 worksId → 签名 URL 下载
-  - 多人合成：在可见编辑器中输入所有行，按连续相同音色/参数批量选中并设置，插入短停顿后点击页面生成，再按 worksId 下载
+  - 多人合成：在可见编辑器中输入所有行，先用出现频率最高的配置覆盖全文，再只修正例外区间，插入短停顿后点击页面生成，再按 worksId 下载
   - 页面复用：生成阶段保持编辑页，提交完成后进入作品下载页；按 worksId
     获取精确签名地址下载，浏览器下载仅作为按作品名匹配的兜底通道
   - 反批量检测采用行为拟真：击键抖动、随机间隙、真实鼠标事件、系统 Chrome 真实指纹
@@ -3315,6 +3315,58 @@ class XunFeiSession:
         return groups
 
     @classmethod
+    def _composite_marking_plan(cls, rows):
+        """生成多人配音的低交互次数标注计划。
+
+        Chrome 的原生 Selection 只有一个连续 Range，不能安全地把交错的
+        多个非连续段落同时交给讯飞页面。因此这里采用“基准覆盖 + 例外
+        修正”：先把全文一次性设置为出现次数最多的完整配置，再按连续
+        区间修正其它配置。这样既保留真实页面选区，也避免 W/M 交替时为
+        每一行重复打开音色面板。
+        """
+        if not rows:
+            return {
+                "base_index": None,
+                "base_signature": None,
+                "correction_groups": [],
+                "contiguous_group_count": 0,
+            }
+
+        counts = {}
+        first_indices = {}
+        for index, row in enumerate(rows):
+            signature = cls._composite_row_signature(row)
+            counts[signature] = counts.get(signature, 0) + 1
+            first_indices.setdefault(signature, index)
+        base_signature = max(
+            counts,
+            key=lambda signature: (
+                counts[signature],
+                -first_indices[signature],
+            ),
+        )
+        base_index = first_indices[base_signature]
+
+        correction_groups = []
+        start = None
+        for index, row in enumerate(rows):
+            if cls._composite_row_signature(row) == base_signature:
+                if start is not None:
+                    correction_groups.append((start, index - 1))
+                    start = None
+            elif start is None:
+                start = index
+        if start is not None:
+            correction_groups.append((start, len(rows) - 1))
+
+        return {
+            "base_index": base_index,
+            "base_signature": base_signature,
+            "correction_groups": correction_groups,
+            "contiguous_group_count": len(cls._composite_row_groups(rows)),
+        }
+
+    @classmethod
     def _composite_ui_rows(cls, work):
         """展开作品为编辑器行，并记录每道题之后需要插入的停顿位置。"""
         rows = []
@@ -3396,17 +3448,18 @@ class XunFeiSession:
 
     @classmethod
     def _apply_composite_voice_to_selection(
-        cls, page, rows, first_index, last_index
+        cls, page, rows, first_index, last_index, *, config_row=None
     ):
         """给当前精确选区设置音色、参数，并回读页面的 speaker 标记。"""
-        first_row = rows[first_index]
+        first_row = config_row or rows[first_index]
         voice_key = str(first_row.get("voice_key") or DEFAULT_FEMALE)
         info = dict(get_voice_info(voice_key))
         voice_name = str(info.get("name") or voice_key)
         speaker_number = cls._speaker_number(voice_key, info)
-        for index in range(first_index, last_index + 1):
-            if cls._composite_row_signature(rows[index]) != cls._composite_row_signature(first_row):
-                raise XunfeiError("多人配音批量选区包含不同音色或参数，拒绝套用")
+        if config_row is None:
+            for index in range(first_index, last_index + 1):
+                if cls._composite_row_signature(rows[index]) != cls._composite_row_signature(first_row):
+                    raise XunfeiError("多人配音批量选区包含不同音色或参数，拒绝套用")
 
         search = cls._open_composite_voice_panel(page)
         search.click(timeout=3000)
@@ -3491,28 +3544,54 @@ class XunFeiSession:
     @classmethod
     def _prepare_composite_editor(cls, page, work):
         """用讯飞页面 UI 构造多人作品，返回行和停顿边界。"""
+        started_at = time.perf_counter()
         rows, boundaries = cls._composite_ui_rows(work)
         cls._input_composite_text(page, rows)
         groups = cls._composite_row_groups(rows)
+        marking_plan = cls._composite_marking_plan(rows)
+        base_index = marking_plan["base_index"]
+        correction_groups = marking_plan["correction_groups"]
         _log(
             f"[xunfei]   多人配音 UI 已输入 {len(rows)} 行，"
-            f"按连续音色/参数合并为 {len(groups)} 组选区"
+            f"原连续配置 {len(groups)} 组；采用基准覆盖后需修正 "
+            f"{len(correction_groups)} 个区间"
         )
-        for first_index, last_index in groups:
-            _log(
-                f"[xunfei]   准备一次性设置多人配音行 "
-                f"{first_index + 1}-{last_index + 1}"
-            )
-            try:
-                cls._select_editor_rows(page, rows, first_index, last_index)
-            except XunfeiError as error:
-                _log(
-                    f"[xunfei]   多人配音批量选区失败，停止本组，不再逐行降级: {error}"
-                )
-                raise
+
+        # 交错角色不能用 Chrome 原生 Selection 安全地组成多个非连续
+        # Range。先覆盖全文，再修正例外区间，最终页面上的每一行仍会经过
+        # speaker 标记回读校验。若“全文选区”在某个讯飞页面版本失败，
+        # 重新输入文本后退回连续区间方案，保证正确性优先。
+        try:
+            cls._select_editor_rows(page, rows, 0, len(rows) - 1)
             cls._apply_composite_voice_to_selection(
-                page, rows, first_index, last_index
+                page,
+                rows,
+                0,
+                len(rows) - 1,
+                config_row=rows[base_index],
             )
+        except XunfeiError as error:
+            _log(
+                f"[xunfei]   多人配音全文基准标注失败，重新输入后按连续区间处理: {error}"
+            )
+            cls._input_composite_text(page, rows)
+            for first_index, last_index in groups:
+                cls._select_editor_rows(page, rows, first_index, last_index)
+                cls._apply_composite_voice_to_selection(
+                    page, rows, first_index, last_index
+                )
+        else:
+            for first_index, last_index in correction_groups:
+                cls._select_editor_rows(page, rows, first_index, last_index)
+                cls._apply_composite_voice_to_selection(
+                    page, rows, first_index, last_index
+                )
+
+        marking_duration_ms = round((time.perf_counter() - started_at) * 1000)
+        _log(
+            f"[xunfei]   多人配音音色标注完成：全文基准 1 次，"
+            f"例外修正 {len(correction_groups)} 组，耗时 {marking_duration_ms}ms"
+        )
 
         for row_index, boundary_ms in boundaries:
             cls._insert_composite_pause(page, row_index, boundary_ms)

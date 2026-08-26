@@ -27,7 +27,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { normalizePersistedConfig, saveCurrentConfig, integerProgressCount, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, voiceAssetCacheReady };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { normalizePersistedConfig, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, voiceAssetCacheReady };`, context);
     return { api: context.__rendererTests, storage };
 }
 
@@ -98,6 +98,8 @@ test('进度计数始终按整数四舍五入并限制在总数内', () => {
     assert.equal(api.integerProgressCount(33.4, 37), 33);
     assert.equal(api.integerProgressCount(999.9, 37), 37);
     assert.equal(api.integerProgressCount('not-a-number', 37), 0);
+    assert.equal(api.visualProgressPercent(100), 99);
+    assert.equal(api.visualProgressPercent(-4), 0);
 });
 
 test('结果页按文件音色元数据去重，并兼容可精确匹配的旧 voice 字段', () => {

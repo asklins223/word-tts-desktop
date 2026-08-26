@@ -707,7 +707,39 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
             for event in session.event_journal
             if event["type"] == "stats"
         ]
-        self.assertTrue({"composite-plan", "composite-submit", "composite-download", "composite-cut"}.issubset(phases))
+        self.assertTrue(
+            {
+                "composite-plan",
+                "composite-submit",
+                "composite-download",
+                "composite-cut",
+                "composite-export",
+                "package",
+                "archive",
+            }.issubset(phases)
+        )
+        self.assertLess(phases.index("package"), phases.index("archive"))
+        stats_indices = [
+            index
+            for index, event in enumerate(session.event_journal)
+            if event["type"] == "stats"
+        ]
+        done_index = next(
+            index
+            for index, event in enumerate(session.event_journal)
+            if event["type"] == "done"
+        )
+        self.assertLess(max(stats_indices), done_index)
+        self.assertEqual(
+            [
+                event["entry"]
+                for event in session.event_journal
+                if event["type"] == "log"
+                and event["entry"].get("kind") == "item"
+                and event["entry"].get("status") == "success"
+            ],
+            [],
+        )
         done = session.final_done
         self.assertIsNotNone(done)
         self.assertEqual(done["generation_mode"], server.core.GENERATION_MODE_COMPOSITE)

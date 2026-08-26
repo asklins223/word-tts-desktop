@@ -3522,6 +3522,12 @@ function integerProgressCount(value, total = Number.POSITIVE_INFINITY) {
     return Number.isFinite(total) ? Math.min(count, Math.max(0, Math.floor(Number(total) || 0))) : count;
 }
 
+function visualProgressPercent(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    return Math.min(Math.max(number, 0), 99);
+}
+
 function updateProgress(event) {
     const total = integerProgressCount(event.total);
     const completed = integerProgressCount(event.completed, total);
@@ -3540,15 +3546,18 @@ function updateProgress(event) {
     const isCompositeCut = phase === 'composite-cut';
     const isCompositeExport = phase === 'composite-export';
     const isCompositeError = phase === 'composite-error';
+    const isPackage = phase === 'package';
+    const isArchive = phase === 'archive';
     const isBatchPhase = isBatchSubmit || isBatchDownload || isBatchExport;
-    const isCompositePhase = isCompositeSubmit || isCompositeDownload || isCompositeCut || isCompositeExport || isCompositeError;
+    const isPostProcessPhase = isPackage || isArchive;
     const mode = normalizeGenerationMode(event.generation_mode || lastGenerationConfig?.generation_mode);
     const work = event.work && typeof event.work === 'object' ? event.work : null;
     const segments = event.segments && typeof event.segments === 'object' ? event.segments : null;
     updateGenerationModeUI(mode);
-    // 统一下载完成后还要做音频解码、拼接、导出和 ZIP 整理；在最终 done
-    // 事件到达前保留一点尾部空间，避免用户看到 100% 后还长时间等待。
-    const visualPct = isBatchPhase || isCompositePhase ? Math.min(pct, 98) : pct;
+    // stats 只是阶段快照，不代表任务终态；即使 completed 已经等于 total，
+    // 后面仍可能在打包 ZIP、保存历史记录。只有 done 事件才允许进度条到 100%，
+    // 其余状态统一保留尾部空间，避免用户看到 100% 后继续等待。
+    const visualPct = visualProgressPercent(pct);
     const eta = formatLogDuration(event.eta_ms);
     $('progress-bar').style.width = `${visualPct}%`;
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', String(visualPct));
@@ -3582,6 +3591,8 @@ function updateProgress(event) {
     else if (isBatchSubmit) completedLabel = '已提交';
     else if (isBatchDownload) completedLabel = '已下载';
     else if (isBatchExport) completedLabel = '已整理';
+    else if (isPackage) completedLabel = '正在整理';
+    else if (isArchive) completedLabel = '正在归档';
     $('progress-completed-label').textContent = completedLabel;
     let phaseCopy = `${completed} / ${total}`;
     if (isCompositeSubmit) phaseCopy = `合并作品提交中 · ${compositeWorkCopy}`;
@@ -3592,6 +3603,8 @@ function updateProgress(event) {
     else if (isBatchSubmit) phaseCopy = `已提交 ${processed} / ${total} · 等待下载`;
     else if (isBatchDownload) phaseCopy = `已下载 ${processed} / ${total} · 等待整理`;
     else if (isBatchExport) phaseCopy = `已整理 ${processed} / ${total} · 正在输出`;
+    else if (isPackage) phaseCopy = `正在打包交付文件 · 已生成 ${completed} / ${total}`;
+    else if (isArchive) phaseCopy = `正在保存历史记录 · 已生成 ${completed} / ${total}`;
     $('progress-stats').textContent = phaseCopy
         + (failed > 0 ? `  ·  失败 ${failed}` : '')
         + (eta ? `  ·  预计 ${eta}` : '');
@@ -3600,7 +3613,7 @@ function updateProgress(event) {
         ? String(segmentTotal > 0 ? segmentSliced : processed)
         : isCompositeExport
             ? String(segmentTotal > 0 ? segmentExported : processed)
-            : isBatchPhase
+            : isBatchPhase || isPostProcessPhase
                 ? String(processed)
                 : String(completed);
     $('progress-completed').textContent = displayedCompleted;
