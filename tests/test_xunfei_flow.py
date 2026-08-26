@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 import threading
 import time
@@ -94,51 +93,60 @@ class XunfeiFlowTests(unittest.TestCase):
             }])
             self.assertEqual(xunfei.VOICES["amanda"]["speaker_no"], 544508087)
 
-    def test_composite_payload_ignores_empty_leading_segment_for_top_level_voice(self):
+    def test_composite_ui_rows_preserve_item_boundaries_and_expand_editor_lines(self):
         session = XunFeiSession()
-        voice_catalog = {
-            "speaker:one": {"name": "One", "speaker_no": 1001},
-            "speaker:two": {"name": "Two", "speaker_no": 1002},
-        }
         work = {
-            "item_ids": ["q1"],
-            "item_count": 1,
-            "items": [{
-                "segments": [
-                    {"voice_key": "speaker:one", "text": ""},
-                    {"voice_key": "speaker:two", "text": "actual"},
-                ],
-            }],
+            "boundary_ms": 2000,
+            "items": [
+                {
+                    "item_id": "q1",
+                    "segments": [
+                        {"voice_key": "amanda", "text": ""},
+                        {"voice_key": "amanda", "text": "First line\nSecond line"},
+                    ],
+                },
+                {
+                    "item_id": "q2",
+                    "segments": [{"voice_key": "george", "text": "Third line"}],
+                },
+            ],
         }
 
-        with mock.patch.dict(xunfei.VOICES, voice_catalog, clear=False):
-            payload = session._build_composite_payload(work)
+        rows, boundaries = session._composite_ui_rows(work)
 
-        self.assertEqual(payload["speakerNo"], 1002)
-        self.assertEqual([item["speakerNo"] for item in payload["synthInfos"]], [1002])
-        self.assertEqual(payload["commonId"], 0)
-        self.assertEqual(payload["synthInfos"][0]["commonId"], 0)
+        self.assertEqual([row["text"] for row in rows], [
+            "First line", "Second line", "Third line",
+        ])
+        self.assertEqual([row["item_index"] for row in rows], [0, 0, 1])
+        self.assertEqual(boundaries, [(1, 2000)])
 
-    def test_composite_generation_resolves_missing_common_id_before_submit(self):
+    def test_composite_rows_batch_only_contiguous_equal_signatures(self):
+        session = XunFeiSession()
+        rows = [
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "george", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+        ]
+
+        self.assertEqual(session._composite_row_groups(rows), [
+            (0, 1), (2, 2), (3, 3),
+        ])
+
+    def test_composite_generation_uses_visible_page_flow_without_direct_submit_api(self):
         session = XunFeiSession()
         session._logged_in = True
         page = mock.Mock()
         page.locator.return_value.count.return_value = 1
         session._page = page
-        voice_catalog = {
-            "speaker:lookup": {
-                "name": "Lookup Voice",
-                "speaker_no": 1001,
-            },
-        }
         work = {
-            "work_id": "composite:lookup",
-            "works_name": "lookup-test",
+            "work_id": "composite:ui",
+            "works_name": "ui-test",
             "item_ids": ["q1"],
             "item_count": 1,
             "items": [{
                 "segments": [{
-                    "voice_key": "speaker:lookup",
+                    "voice_key": "amanda",
                     "text": "hello",
                     "speed": 50,
                     "pitch": 50,
@@ -146,57 +154,25 @@ class XunfeiFlowTests(unittest.TestCase):
                 }],
             }],
         }
-        submitted = []
 
-        def capture_submit(_page, payload):
-            submitted.append(payload)
-            return "temporary-id"
-
-        with mock.patch.dict(xunfei.VOICES, voice_catalog, clear=False), \
-                mock.patch.object(
-                    session,
-                    "_query_common_id_by_speaker_no",
-                    return_value=2001,
-                ) as query_common_id, \
-                mock.patch.object(
-                    session,
-                    "_post_multiple_speaker_work",
-                    side_effect=capture_submit,
-                ), \
+        with mock.patch.object(session, "_prepare_composite_editor") as prepare, \
+                mock.patch.object(session, "_mark_works_cutoff") as mark_cutoff, \
+                mock.patch.object(session, "_click_generate") as click_generate, \
+                mock.patch.object(session, "_confirm_synth", return_value="ok"), \
+                mock.patch.object(session, "_consume_works_id", return_value="final-id"), \
+                mock.patch.object(session, "_cleanup_after_item") as cleanup, \
                 mock.patch.object(
                     session,
                     "_signed_api_post",
-                    return_value={"data": {"payOrder": {"worksId": "final-id"}}},
-                ), \
-                mock.patch.object(
-                    xunfei,
-                    "_safe_eval",
-                    return_value={"fromSpread": "affiliate"},
+                    side_effect=AssertionError("多人配音不能直接调用 video-api 提交"),
                 ):
             pending = session._generate_pending_composite(work)
 
-        query_common_id.assert_called_once_with(page, 1001)
+        prepare.assert_called_once_with(page, work)
+        mark_cutoff.assert_called_once_with()
+        click_generate.assert_called_once_with(page)
+        cleanup.assert_called_once_with(page)
         self.assertEqual(pending["works_id"], "final-id")
-        self.assertEqual(submitted[0]["commonId"], 2001)
-        self.assertEqual(submitted[0]["synthInfos"][0]["commonId"], 2001)
-
-    def test_composite_submit_accepts_numeric_success_code_and_marks_login_expired(self):
-        session = XunFeiSession()
-        with mock.patch.object(
-            xunfei,
-            "_safe_eval",
-            return_value={"httpStatus": 200, "data": {"retCode": 0, "tempWorksId": 123}},
-        ):
-            self.assertEqual(session._post_multiple_speaker_work(object(), {}), "123")
-
-        session._logged_in = True
-        with mock.patch.object(
-            xunfei,
-            "_safe_eval",
-            return_value={"httpStatus": 200, "data": {"retCode": "999999", "retMsg": "用户未登录"}},
-        ), self.assertRaises(xunfei.XunfeiLoginRequired):
-            session._post_multiple_speaker_work(object(), {})
-        self.assertFalse(session._logged_in)
 
     def test_works_id_fallback_can_exclude_temporary_multi_speaker_id(self):
         session = XunFeiSession()
@@ -211,112 +187,6 @@ class XunfeiFlowTests(unittest.TestCase):
                 exclude_ids={"temporary-id"},
             )
         )
-
-    def test_composite_order_uses_page_source_and_clears_temporary_capture(self):
-        session = XunFeiSession()
-        session._logged_in = True
-        page = mock.Mock()
-        page.locator.return_value.count.return_value = 1
-        session._page = page
-        work = {
-            "work_id": "composite:order",
-            "works_name": "order-test",
-            "item_ids": ["q1"],
-            "item_count": 1,
-            "items": [{
-                "segments": [{
-                    "voice_key": "amanda",
-                    "text": "hello",
-                    "speed": 50,
-                    "pitch": 50,
-                    "volume": 50,
-                }],
-            }],
-        }
-
-        with mock.patch.object(
-            session,
-            "_mark_works_cutoff",
-        ) as mark_cutoff, mock.patch.object(
-            session,
-            "_post_multiple_speaker_work",
-            return_value="temporary-id",
-        ), mock.patch.object(
-            session,
-            "_signed_api_post",
-            return_value={"data": {"payOrder": {"worksId": "final-id"}}},
-        ) as signed_post, mock.patch.object(
-            xunfei,
-            "_safe_eval",
-            return_value={"fromSpread": "affiliate"},
-        ):
-            pending = session._generate_pending_composite(work)
-
-        self.assertEqual(pending["works_id"], "final-id")
-        self.assertEqual(mark_cutoff.call_count, 2)
-        self.assertEqual(
-            signed_post.call_args.args[2]["fromSpread"],
-            "affiliate",
-        )
-
-    def test_composite_payload_contains_multi_speaker_segments_and_editor_break(self):
-        session = XunFeiSession()
-        voice_catalog = {
-            "speaker:one": {
-                "name": "One",
-                "speaker_no": 1001,
-                "common_id": 2001,
-                "language": ["普通话"],
-                "img_url": "https://example.test/one.png",
-            },
-            "speaker:two": {
-                "name": "Two",
-                "speaker_no": 1002,
-                "common_id": 2002,
-                "language": ["普通话"],
-                "img_url": "https://example.test/two.png",
-            },
-        }
-        work = {
-            "work_id": "composite:test",
-            "boundary_ms": 2000,
-            "works_name": "payload-test",
-            "item_ids": ["q1", "q2"],
-            "item_count": 2,
-            "items": [
-                {
-                    "item_id": "q1",
-                    "segments": [{
-                        "voice_key": "speaker:one",
-                        "speed": 48,
-                        "pitch": 52,
-                        "volume": 55,
-                        "text": "第一段",
-                    }],
-                },
-                {
-                    "item_id": "q2",
-                    "segments": [{
-                        "voice_key": "speaker:two",
-                        "speed": 50,
-                        "pitch": 50,
-                        "volume": 50,
-                        "text": "第二段",
-                    }],
-                },
-            ],
-        }
-
-        with mock.patch.dict(xunfei.VOICES, voice_catalog, clear=False):
-            payload = session._build_composite_payload(work)
-
-        self.assertEqual([item["speakerNo"] for item in payload["synthInfos"]], [1001, 1002])
-        self.assertEqual([item["speakingText"] for item in payload["synthInfos"]], ["第一段", "第二段"])
-        editor_doc = json.loads(payload["editText"])
-        self.assertEqual(editor_doc["content"][0]["content"][1]["type"], "break")
-        self.assertEqual(editor_doc["content"][0]["content"][1]["attrs"]["value"], 2000)
-        self.assertEqual(payload["speakingRate"], 48)
-        self.assertEqual(payload["speakingVolumn"], 2)
 
     def test_text_input_is_a_single_paste_like_insert(self):
         page = _FakePage()

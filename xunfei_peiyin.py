@@ -8,6 +8,7 @@
 设计:
   - 使用持久化浏览器配置目录，首次需手动登录，后续自动复用登录状态
   - 单条合成：输入文本 → 选发音人 → 设置语速/语调/音量 → 生成音频 → 确认合成 → 拦截 worksId → 签名 URL 下载
+  - 多人合成：在可见编辑器中输入所有行，按连续相同音色/参数批量选中并设置，插入短停顿后点击页面生成，再按 worksId 下载
   - 页面复用：生成阶段保持编辑页，提交完成后进入作品下载页；按 worksId
     获取精确签名地址下载，浏览器下载仅作为按作品名匹配的兜底通道
   - 反批量检测采用行为拟真：击键抖动、随机间隙、真实鼠标事件、系统 Chrome 真实指纹
@@ -55,10 +56,6 @@ HOME_URL = "https://peiyin.xunfei.cn/make"
 DOWNLOAD_PAGE_URL = "https://peiyin.xunfei.cn/user"
 API_WORKS_LIST_URL = "https://peiyin.xunfei.cn/video-api/synth/qry_works_synth_list"
 API_SIGN_URL = "https://peiyin.xunfei.cn/video-api/synth/get_work_sign_url"
-API_ORDER_GEN_URL = "https://peiyin.xunfei.cn/video-api/pay/order_gen"
-API_COMMON_SPEAKER_URL = (
-    "https://peiyin.xunfei.cn/video-api/asset/qry_common_speaker_by_speaker_no"
-)
 
 # 持久化浏览器配置目录（保存 cookies / 登录状态）。
 # 首次升级时优先复用旧目录，避免用户被迫重新扫码登录；新安装统一放在
@@ -424,6 +421,10 @@ class JS:
         const editor = document.querySelector('.ssml-editor');
         return editor?.textContent?.trim() || '';
     }
+    """
+
+    GET_SELECTION_TEXT = """
+    () => window.getSelection?.().toString() || ''
     """
 
     CLEAR_EDITOR = """
@@ -1345,38 +1346,6 @@ class JS:
     }
     """
 
-    POST_WEB_JSON = """
-    async ([url, payload]) => {
-        try {
-            // 讯飞当前网页的 Axios 拦截器会把 getSessid() 放到
-            // authorization。仅依赖 credentials/include 在新版页面上会
-            // 得到 HTTP 200 + retCode=999999（用户未登录）。
-            const headers = {
-                'Content-Type': 'application/json',
-                'x-accept-language': String(
-                    window?.i18n?.language || document.documentElement.lang || 'zh_CN'
-                ).replaceAll('-', '_'),
-            };
-            if (typeof window.getSessid === 'function') {
-                const sessid = window.getSessid();
-                if (sessid) headers.authorization = String(sessid);
-            }
-            const response = await fetch(url, {
-                method: 'POST',
-                credentials: 'include',
-                headers,
-                body: JSON.stringify(payload || {})
-            });
-            let data = null;
-            try { data = await response.json(); } catch (_) {}
-            return {httpStatus: response.status, data};
-        } catch (error) {
-            return {httpStatus: 0, error: String(error)};
-        }
-    }
-    """
-
-
 # AI 标识弹窗关键词变体（文案可能变化，逐个尝试）
 AI_FLAG_KEYWORD_VARIANTS = [
     ["AI", "标识", "不再提示"],
@@ -1499,10 +1468,6 @@ class XunFeiSession:
         }
         self._api_authorization = None
         self._response_handler = None
-        # flat/list 音色目录返回的是具体 variant 的 speakerNo，通常不带
-        # commonId。网页提交多人配音前会按 speakerNo 反查 commonId；缓存
-        # 在当前浏览器会话内复用，避免每个合并作品重复查询。
-        self._common_id_cache = {}
 
     # ------------------------------------------------------------------
     # 拟人行为辅助
@@ -1688,6 +1653,136 @@ class XunFeiSession:
             self._type_text(page, text)
             page.wait_for_timeout(150)
         return False
+
+    @staticmethod
+    def _clear_editor_with_keyboard(page):
+        """只用真实键盘操作清空编辑器，供多人配音 UI 流程使用。"""
+        editor = page.locator(".ssml-editor").first
+        editor.click(timeout=5000)
+        page.keyboard.press(_SELECT_ALL)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(200)
+        paragraphs = page.locator(".ssml-editor p")
+        remaining = []
+        for index in range(paragraphs.count()):
+            paragraph = paragraphs.nth(index)
+            text = paragraph.inner_text(timeout=1000)
+            # ProseMirror 空编辑器会显示 contenteditable=false 的占位符，
+            # 它属于 UI 提示而不是用户文本，不能把它误判成清空失败。
+            placeholders = paragraph.locator(".ssml-editor-placeholder")
+            for placeholder_index in range(placeholders.count()):
+                placeholder_text = placeholders.nth(placeholder_index).inner_text(
+                    timeout=500
+                )
+                text = text.replace(placeholder_text, "")
+            text = text.strip()
+            if text:
+                remaining.append(text)
+        if remaining:
+            raise XunfeiError(
+                "讯飞编辑器未能通过键盘清空，停止多人配音 UI 操作"
+            )
+
+    @classmethod
+    def _read_editor_paragraphs(cls, page):
+        """读取编辑器的可见段落文本，不修改页面。"""
+        paragraphs = page.locator(".ssml-editor p")
+        values = []
+        for index in range(paragraphs.count()):
+            paragraph = paragraphs.nth(index)
+            text = paragraph.inner_text(timeout=1000)
+            placeholders = paragraph.locator(".ssml-editor-placeholder")
+            for placeholder_index in range(placeholders.count()):
+                placeholder_text = placeholders.nth(placeholder_index).inner_text(
+                    timeout=500
+                )
+                text = text.replace(placeholder_text, "")
+            values.append(text)
+        return values
+
+    @classmethod
+    def _input_composite_text(cls, page, rows):
+        """把多人配音的逻辑行按真实编辑器段落输入并回读。"""
+        values = [str(row.get("text") or "") for row in rows]
+        if not values or any(not value.strip() for value in values):
+            raise XunfeiError("多人配音 UI 文本包含空行，无法安全定位选区")
+        cls._clear_editor_with_keyboard(page)
+        editor = page.locator(".ssml-editor").first
+        editor.click(timeout=5000)
+        cls._type_text(page, "\n".join(values))
+        page.wait_for_timeout(250)
+        actual = cls._read_editor_paragraphs(page)
+        if len(actual) != len(values):
+            raise XunfeiError(
+                "多人配音 UI 文本段落数量校验失败："
+                f"期望 {len(values)}，实际 {len(actual)}"
+            )
+        for index, (expected, received) in enumerate(zip(values, actual)):
+            if received.strip() != expected.strip():
+                raise XunfeiError(
+                    f"多人配音 UI 文本第 {index + 1} 行校验失败："
+                    f"期望 {expected!r}，实际 {received!r}"
+                )
+        return True
+
+    @staticmethod
+    def _normalize_selection_text(value):
+        return re.sub(r"\s+", "", str(value or ""))
+
+    @classmethod
+    def _verify_editor_selection(cls, page, expected_values):
+        """校验当前浏览器选区恰好覆盖目标行，禁止误选全文。"""
+        selected = _safe_eval(page, JS.GET_SELECTION_TEXT) or ""
+        expected = "".join(str(value or "") for value in expected_values)
+        if cls._normalize_selection_text(selected) != cls._normalize_selection_text(expected):
+            raise XunfeiError(
+                "多人配音 UI 选区校验失败："
+                f"期望 {expected!r}，实际 {selected!r}；已停止以免误套用音色"
+            )
+        return selected
+
+    @classmethod
+    def _select_editor_rows(cls, page, rows, first_index, last_index):
+        """通过真实文本选择操作选中一行或一段连续逻辑行。"""
+        if first_index < 0 or last_index < first_index or last_index >= len(rows):
+            raise XunfeiError("多人配音 UI 选区索引越界")
+        paragraphs = page.locator(".ssml-editor p")
+        if paragraphs.count() != len(rows):
+            raise XunfeiError(
+                "多人配音 UI 选区前段落数量已变化，拒绝继续操作"
+            )
+
+        first = paragraphs.nth(first_index)
+        last = paragraphs.nth(last_index)
+        expected_values = [row["text"] for row in rows[first_index:last_index + 1]]
+        if first_index == last_index:
+            # Playwright 的 select_text 只选当前段落，绝不退化为编辑器全选。
+            first.select_text(timeout=5000)
+        else:
+            # 多行选择使用鼠标从第一段开头拖到最后一段末尾，模拟用户真实
+            # 拖选。失败或选区不精确时直接抛错，由上层拆成更小的连续组。
+            first.scroll_into_view_if_needed(timeout=5000)
+            last.scroll_into_view_if_needed(timeout=5000)
+            first_box = first.bounding_box()
+            last_box = last.bounding_box()
+            if not first_box or not last_box:
+                raise XunfeiError("多人配音 UI 选区不可见，无法执行拖选")
+            start = {
+                "x": first_box["x"] + 2,
+                # 从首段第一行附近开始，长句换行时不能从段落中间起拖。
+                "y": first_box["y"] + 2,
+            }
+            end = {
+                "x": max(last_box["x"] + 2, last_box["x"] + last_box["width"] - 2),
+                # 到末段最后一行附近结束，避免漏选长句的尾音文本。
+                "y": max(last_box["y"] + 2, last_box["y"] + last_box["height"] - 2),
+            }
+            page.mouse.move(start["x"], start["y"])
+            page.mouse.down()
+            page.mouse.move(end["x"], end["y"], steps=8)
+            page.mouse.up()
+        page.wait_for_timeout(120)
+        return cls._verify_editor_selection(page, expected_values)
 
     def _select_voice(self, page, voice_name, voice_key=None):
         """搜索并选择指定发音人，并以页面实际选中态校验缓存。"""
@@ -2598,82 +2693,6 @@ class XunFeiSession:
             return None
         return data
 
-    @staticmethod
-    def _positive_common_id(value):
-        """把讯飞 commonId 收敛为正整数；网页默认值为 0。"""
-        try:
-            common_id = int(float(value))
-        except (TypeError, ValueError, OverflowError):
-            return None
-        return common_id if common_id > 0 else None
-
-    def _query_common_id_by_speaker_no(self, page, speaker_no):
-        """按讯飞网页流程反查 variant speakerNo 对应的 commonId。"""
-        data = self._signed_api_post(
-            page,
-            API_COMMON_SPEAKER_URL,
-            {"speakerNo": int(speaker_no)},
-        )
-        if not isinstance(data, dict):
-            return None
-        candidates = [
-            data.get("commonId"),
-            data.get("common_id"),
-        ]
-        nested = data.get("data")
-        if isinstance(nested, dict):
-            candidates.extend([nested.get("commonId"), nested.get("common_id")])
-        for candidate in candidates:
-            common_id = self._positive_common_id(candidate)
-            if common_id is not None:
-                return common_id
-        return None
-
-    def _resolve_composite_common_ids(self, page, work):
-        """提交多人作品前补齐所有音色的 commonId。"""
-        voice_keys = []
-        seen = set()
-        for item in work.get("items") or []:
-            for segment in item.get("segments") or []:
-                if not str(segment.get("text") or ""):
-                    continue
-                voice_key = str(segment.get("voice_key") or DEFAULT_FEMALE)
-                if voice_key not in seen:
-                    seen.add(voice_key)
-                    voice_keys.append(voice_key)
-
-        for voice_key in voice_keys:
-            info = dict(get_voice_info(voice_key))
-            raw_common_id = info.get("common_id")
-            if raw_common_id in (None, ""):
-                raw_common_id = info.get("commonId")
-            if self._positive_common_id(raw_common_id) is not None:
-                continue
-
-            meta = self._composite_voice_meta(voice_key)
-            speaker_no = meta["speaker_no"]
-            if speaker_no in self._common_id_cache:
-                continue
-            try:
-                common_id = self._query_common_id_by_speaker_no(page, speaker_no)
-            except Exception as error:
-                _log(
-                    f"[xunfei]   音色 commonId 反查失败 speakerNo={speaker_no}: "
-                    f"{error}；按网页默认值 0 提交"
-                )
-                continue
-            if common_id is None:
-                _log(
-                    f"[xunfei]   未找到音色 commonId speakerNo={speaker_no}；"
-                    "按网页默认值 0 提交"
-                )
-                continue
-            self._common_id_cache[speaker_no] = common_id
-            _log(
-                f"[xunfei]   音色 commonId 反查成功 speakerNo={speaker_no} "
-                f"commonId={common_id}"
-            )
-
     def _fetch_works_list_in_page(self, page, needed_count=1):
         """获取已完成作品列表，返回讯飞原始作品对象。"""
         # 作品页按最新创建时间返回第 1 页；等待 1~3 个新 worksId 时没必要
@@ -2963,17 +2982,8 @@ class XunFeiSession:
         self._logged_in = True
 
     # ------------------------------------------------------------------
-    # 单条合成
+    # 合成页面操作
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _volume_to_api(value):
-        """把网页端 0-100 音量转换为讯飞作品接口的 -20..20。"""
-        try:
-            normalized = clamp_param(value)
-        except Exception:
-            normalized = PARAM_DEFAULT
-        return round(0.4 * normalized - 20)
 
     @staticmethod
     def _speaker_number(voice_key, info):
@@ -2992,208 +3002,409 @@ class XunFeiSession:
             )
         return number
 
-    def _composite_voice_meta(self, voice_key):
-        key = str(voice_key or "").strip() or DEFAULT_FEMALE
-        info = dict(get_voice_info(key))
-        speaker_no = self._speaker_number(key, info)
-        language = info.get("language") or info.get("speaker_language") or ""
-        if isinstance(language, dict):
-            language = next(
-                (
-                    str(value).strip()
-                    for value in language.values()
-                    if str(value).strip()
-                ),
-                "",
-            )
-        elif isinstance(language, (list, tuple, set)):
-            language = next((str(value).strip() for value in language if str(value).strip()), "")
-        common_id = info.get("common_id")
-        if common_id in (None, ""):
-            common_id = info.get("commonId")
-        common_id = self._positive_common_id(common_id)
-        if common_id is None:
-            common_id = self._common_id_cache.get(speaker_no, 0)
+    @staticmethod
+    def _normalize_composite_ui_text(value):
+        return re.sub(r"\s+", "", str(value or "")).strip().casefold()
+
+    @classmethod
+    def _composite_ui_text_matches(cls, actual, expected):
+        actual_text = cls._normalize_composite_ui_text(actual)
+        expected_text = cls._normalize_composite_ui_text(expected)
+        if not actual_text or not expected_text:
+            return False
+        if expected_text in actual_text:
+            return True
+        # 音色卡片有的版本把名称中的短横线渲染成空格，匹配时兼容
+        # 这种展示差异，但仍要求完整音色名称出现在卡片文字中。
+        compact_actual = actual_text.replace("-", "").replace("－", "")
+        compact_expected = expected_text.replace("-", "").replace("－", "")
+        return compact_expected in compact_actual
+
+    @classmethod
+    def _composite_ui_scope(cls, page):
+        """返回当前多人配音弹层，避免点击被背景遮罩或旧卡片拦截。"""
+        roots = page.locator(
+            'div.fixed:visible, [role="dialog"]:visible, .ant-modal:visible'
+        )
         try:
-            vcn_type = int(float(info.get("vcn_type") or info.get("vcnType") or 1))
-        except (TypeError, ValueError, OverflowError):
-            vcn_type = 1
-        is_vip = info.get("is_vip")
-        if is_vip is None:
-            is_vip = info.get("isVip")
-        return {
-            "key": key,
-            "speaker_no": speaker_no,
-            "speaker_name": str(info.get("name") or key),
-            "speaker_img_url": str(info.get("img_url") or info.get("imgUrl") or ""),
-            "language": str(language or ""),
-            "common_id": common_id,
-            "vcn_type": vcn_type,
-            "is_vip": _provider_bool(is_vip),
-            "emot_type": info.get("emot_type") or info.get("emotType"),
-            "emot_val": info.get("emot_val") or info.get("emotVal"),
-        }
+            for index in range(min(roots.count(), 20)):
+                root = roots.nth(index)
+                if root.locator(
+                    'input[placeholder*="输入主播名称进行搜索"]:visible, '
+                    'input[placeholder*="输入主播名称"]:visible'
+                ).count() > 0:
+                    return root
+        except Exception:
+            pass
+        return page
 
-    def _build_composite_payload(self, work):
-        """构造与讯飞多人配音网页一致的 makeMultipleSpeakerWork 参数。"""
-        meta_by_voice = {}
-        synth_infos = []
-        editor_content = []
-        item_list = list(work.get("items") or [])
-        first_info = None
-
-        for item_index, item in enumerate(item_list):
-            for segment in item.get("segments") or []:
-                voice_key = str(segment.get("voice_key") or DEFAULT_FEMALE)
-                text = str(segment.get("text") or "")
-                if not text:
+    @classmethod
+    def _click_composite_ui_control(cls, page, label):
+        """点击可见的多人配音工具按钮，使用真实 Playwright click。"""
+        expected = cls._normalize_composite_ui_text(label)
+        scope = cls._composite_ui_scope(page)
+        controls = scope.locator(
+            'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
+            '.cursor-pointer:visible'
+        )
+        try:
+            for index in range(min(controls.count(), 200)):
+                control = controls.nth(index)
+                try:
+                    text = control.inner_text(timeout=500)
+                except Exception:
                     continue
-                meta = meta_by_voice.setdefault(
-                    voice_key,
-                    self._composite_voice_meta(voice_key),
-                )
-                if first_info is None:
-                    first_info = (segment, meta)
-                rate = clamp_param(segment.get("speed", PARAM_DEFAULT))
-                pitch = clamp_param(segment.get("pitch", PARAM_DEFAULT))
-                volume = clamp_param(segment.get("volume", PARAM_DEFAULT))
-                # 当前网页只有多语种/方言类 vcnType 才会把 language 写入
-                # synthInfos；普通音色即使目录标签显示“英语”，也会发空串。
-                speaker_language = (
-                    meta["language"]
-                    if meta["vcn_type"] in (2, 3, 4)
-                    and meta["language"]
-                    else ""
-                )
-                lan_type = int(bool(speaker_language))
-                label = f"{meta['speaker_name']}-默认"
-                synth_infos.append({
-                    "speakerNo": meta["speaker_no"],
-                    "speakerName": meta["speaker_name"],
-                    "speakerImgUrl": meta["speaker_img_url"],
-                    "speakingRate": rate,
-                    "speakingPitch": pitch,
-                    "speakingText": text,
-                    "speakingVolumn": volume,
-                    "language": speaker_language,
-                    "lanType": lan_type,
-                    # 讯飞网页的默认 globalTtsConfig.commonId 是 0，不能
-                    # 把缺失目录字段序列化为 null，否则接口会判定参数非法。
-                    "commonId": meta["common_id"],
-                    "textType": 0,
-                    "soundEffectVolume": None,
-                    "bgMusicUrl": "",
-                    "bgmusicName": "",
-                    "bgmusicNo": "",
-                    "bgmusicVolumn": 0,
-                })
-                editor_content.append({
-                    "type": "text",
-                    "text": text,
-                    "marks": [{
-                        "type": "speaker",
-                        "attrs": {
-                            "speakerId": str(meta["speaker_no"]),
-                            "rate": rate,
-                            "pitch": pitch,
-                            "volume": volume,
-                            "language": speaker_language or None,
-                            "emotionVal": None,
-                            "emotionWeight": None,
-                            "label": label,
-                        },
-                    }],
-                })
-            if item_index < len(item_list) - 1:
-                # 讯飞编辑器的真实 Break 节点会进入 editText；网页端的
-                # getPlaybackSegments 会把它从 synthInfos 中排除，但后端
-                # 仍按该节点在合并作品中插入停顿。
-                boundary_ms = int(work.get("boundary_ms") or 2000)
-                editor_content.append({
-                    "type": "break",
-                    "attrs": {
-                        "type": "break",
-                        "value": boundary_ms,
-                        "label": f"{boundary_ms / 1000:g}s",
-                    },
-                })
+                if cls._normalize_composite_ui_text(text) != expected:
+                    continue
+                try:
+                    if control.is_disabled():
+                        continue
+                except Exception:
+                    pass
+                control.click(timeout=5000)
+                return True
+        except Exception:
+            pass
+        return False
 
-        if not synth_infos or first_info is None:
-            raise XunfeiError("多人配音作品没有可合成的文本")
-        first_segment, first_meta = first_info
-        first_rate = clamp_param(first_segment.get("speed", PARAM_DEFAULT))
-        first_pitch = clamp_param(first_segment.get("pitch", PARAM_DEFAULT))
-        first_volume = clamp_param(first_segment.get("volume", PARAM_DEFAULT))
-        works_name = self._normalize_works_name(
-            work.get("works_name") or f"wordtts_composite_{uuid.uuid4().hex[:8]}"
+    @classmethod
+    def _find_composite_voice_card(cls, page, voice_name):
+        """寻找当前搜索结果中可见的目标音色卡片，不点击隐藏结果。"""
+        scope = cls._composite_ui_scope(page)
+        controls = scope.locator(
+            'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
+            '.cursor-pointer:visible'
         )
-        editor_doc = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": editor_content,
-            }],
-        }
-        return {
-            "synthInfos": synth_infos,
-            "isTempWorks": 1,
-            "sampleWorksId": "",
-            "worksType": 1,
-            "speakerNo": first_meta["speaker_no"],
-            "speakerName": first_meta["speaker_name"],
-            "speakerImgUrl": first_meta["speaker_img_url"],
-            "speakingVolumn": self._volume_to_api(first_volume),
-            "speakingRate": first_rate,
-            "speakingPitch": first_pitch,
-            "speakerVip": 2 if first_meta["is_vip"] else 1,
-            "bgmusicNo": 0,
-            "bgmusicUrl": "",
-            "bgmusicName": "",
-            "bgmusicVol": 0,
-            "editText": json.dumps(editor_doc, ensure_ascii=False, separators=(",", ":")),
-            "auditId": "",
-            "needSubtitle": 0,
-            "commonId": first_meta["common_id"],
-            "format": "mp3",
-            "worksName": works_name,
-            "addAiMark": 0,
-        }
+        for index in range(min(controls.count(), 300)):
+            control = controls.nth(index)
+            try:
+                text = control.inner_text(timeout=500)
+            except Exception:
+                continue
+            if not cls._composite_ui_text_matches(text, voice_name):
+                continue
+            normalized = cls._normalize_composite_ui_text(text)
+            if normalized in {"多人配音", "使用"} or "使用" in normalized:
+                continue
+            try:
+                if control.is_disabled():
+                    continue
+            except Exception:
+                pass
+            return control
+        return None
 
-    def _post_multiple_speaker_work(self, page, payload):
-        result = _safe_eval(
+    @classmethod
+    def _open_composite_voice_panel(cls, page):
+        """打开“多人配音”面板，并返回其搜索框。"""
+        search = page.locator(
+            'input[placeholder*="输入主播名称进行搜索"]:visible, '
+            'input[placeholder*="输入主播名称"]:visible'
+        )
+        if search.count() == 0:
+            if not cls._click_composite_ui_control(page, "多人配音"):
+                raise XunfeiError("未找到可用的“多人配音”按钮")
+            search = _poll(
+                lambda: (
+                    page.locator(
+                        'input[placeholder*="输入主播名称进行搜索"]:visible, '
+                        'input[placeholder*="输入主播名称"]:visible'
+                    )
+                    if page.locator(
+                        'input[placeholder*="输入主播名称进行搜索"]:visible, '
+                        'input[placeholder*="输入主播名称"]:visible'
+                    ).count() > 0
+                    else None
+                ),
+                timeout=8,
+                interval=0.25,
+                max_interval=0.8,
+                page=page,
+            )
+        if not search or search.count() == 0:
+            raise XunfeiError("“多人配音”面板未加载音色搜索框")
+        return search.first
+
+    @classmethod
+    def _apply_composite_ui_params(cls, page, speed, pitch, volume):
+        """在多人配音面板中用键盘设置三项参数并逐项回读。"""
+        targets = (
+            clamp_param(speed),
+            clamp_param(pitch),
+            clamp_param(volume),
+        )
+        labels = ("语速", "语调", "音量")
+        scope = cls._composite_ui_scope(page)
+
+        def find_inputs():
+            inputs = scope.locator('input.w-12:visible')
+            if inputs.count() >= 3:
+                return inputs
+            inputs = scope.locator('input[placeholder="数值"]:visible')
+            return inputs if inputs.count() >= 3 else None
+
+        inputs = _poll(
+            find_inputs,
+            timeout=8,
+            interval=0.25,
+            max_interval=0.8,
+            page=page,
+        )
+        if inputs is None or inputs.count() < 3:
+            raise XunfeiError("“多人配音”面板的语速、语调、音量输入框未完整加载")
+
+        for index, (label, value) in enumerate(zip(labels, targets)):
+            field = inputs.nth(index)
+            try:
+                field.click(timeout=3000)
+                page.keyboard.press(_SELECT_ALL)
+                page.keyboard.type(str(value))
+                page.keyboard.press("Tab")
+                page.wait_for_timeout(180)
+                actual = field.input_value(timeout=1000).strip()
+            except Exception as error:
+                raise XunfeiError(
+                    f"多人配音 UI 参数[{label}]设置失败: {error}"
+                ) from error
+            if actual != str(value):
+                raise XunfeiError(
+                    f"多人配音 UI 参数[{label}]回读不一致："
+                    f"期望 {value}，实际 {actual!r}"
+                )
+
+    @classmethod
+    def _composite_row_signature(cls, row):
+        return (
+            str(row.get("voice_key") or DEFAULT_FEMALE),
+            clamp_param(row.get("speed", PARAM_DEFAULT)),
+            clamp_param(row.get("pitch", PARAM_DEFAULT)),
+            clamp_param(row.get("volume", PARAM_DEFAULT)),
+        )
+
+    @classmethod
+    def _composite_row_groups(cls, rows):
+        """把相邻且配置完全相同的编辑器行合并为一次选区操作。"""
+        if not rows:
+            return []
+        groups = []
+        start = 0
+        previous = cls._composite_row_signature(rows[0])
+        for index in range(1, len(rows)):
+            current = cls._composite_row_signature(rows[index])
+            if current != previous:
+                groups.append((start, index - 1))
+                start = index
+                previous = current
+        groups.append((start, len(rows) - 1))
+        return groups
+
+    @classmethod
+    def _composite_ui_rows(cls, work):
+        """展开作品为编辑器行，并记录每道题之后需要插入的停顿位置。"""
+        rows = []
+        item_last_indices = []
+        items = list(work.get("items") or [])
+        if not items:
+            raise XunfeiError("多人配音作品没有可合成的题目")
+
+        for item_index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise XunfeiError(f"多人配音第 {item_index + 1} 道题数据异常")
+            segments = item.get("segments") or []
+            if not segments and item.get("text"):
+                segments = [{"text": item.get("text")}]
+            before = len(rows)
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                text = str(segment.get("text") or "")
+                if not text.strip():
+                    continue
+                voice_key = str(segment.get("voice_key") or DEFAULT_FEMALE).strip()
+                # 目录校验提前进行，避免已经输入文本后才发现音色 key 无效。
+                get_voice_info(voice_key)
+                lines = text.splitlines() or [text]
+                for line in lines:
+                    clean = line.strip()
+                    if not clean:
+                        continue
+                    rows.append({
+                        "item_index": item_index,
+                        "text": clean,
+                        "voice_key": voice_key,
+                        "speed": clamp_param(segment.get("speed", PARAM_DEFAULT)),
+                        "pitch": clamp_param(segment.get("pitch", PARAM_DEFAULT)),
+                        "volume": clamp_param(segment.get("volume", PARAM_DEFAULT)),
+                    })
+            if len(rows) == before:
+                raise XunfeiError(
+                    f"多人配音第 {item_index + 1} 道题没有可合成的文本"
+                )
+            item_last_indices.append(len(rows) - 1)
+
+        boundary_ms = int(work.get("boundary_ms") or 2000)
+        boundaries = [
+            (last_index, boundary_ms)
+            for last_index in item_last_indices[:-1]
+        ]
+        return rows, boundaries
+
+    @classmethod
+    def _verify_composite_voice_marks(
+        cls, page, rows, first_index, last_index, voice_name, speaker_number
+    ):
+        """确认目标行都被页面实际标记为目标音色。"""
+        paragraphs = page.locator(".ssml-editor p")
+        expected_id = str(speaker_number)
+        for index in range(first_index, last_index + 1):
+            marks = paragraphs.nth(index).locator(
+                ".ssml-text-mark-speaker"
+            )
+            matched = False
+            for mark_index in range(marks.count()):
+                mark = marks.nth(mark_index)
+                mark_id = (mark.get_attribute("data-speaker-id") or "").strip()
+                mark_label = mark.get_attribute("data-label") or ""
+                if (
+                    (mark_id and mark_id == expected_id)
+                    or (
+                        not mark_id
+                        and cls._composite_ui_text_matches(mark_label, voice_name)
+                    )
+                ):
+                    matched = True
+                    break
+            if not matched:
+                return False
+        return True
+
+    @classmethod
+    def _apply_composite_voice_to_selection(
+        cls, page, rows, first_index, last_index
+    ):
+        """给当前精确选区设置音色、参数，并回读页面的 speaker 标记。"""
+        first_row = rows[first_index]
+        voice_key = str(first_row.get("voice_key") or DEFAULT_FEMALE)
+        info = dict(get_voice_info(voice_key))
+        voice_name = str(info.get("name") or voice_key)
+        speaker_number = cls._speaker_number(voice_key, info)
+        for index in range(first_index, last_index + 1):
+            if cls._composite_row_signature(rows[index]) != cls._composite_row_signature(first_row):
+                raise XunfeiError("多人配音批量选区包含不同音色或参数，拒绝套用")
+
+        search = cls._open_composite_voice_panel(page)
+        search.click(timeout=3000)
+        page.keyboard.press(_SELECT_ALL)
+        page.keyboard.type(voice_name)
+        card = _poll(
+            lambda: cls._find_composite_voice_card(page, voice_name),
+            timeout=8,
+            interval=0.25,
+            max_interval=0.8,
+            page=page,
+        )
+        if card is None:
+            raise XunfeiError(f"多人配音面板未找到音色卡片: {voice_name}")
+        card.click(timeout=5000)
+        page.wait_for_timeout(250)
+        cls._apply_composite_ui_params(
             page,
-            JS.POST_WEB_JSON,
-            ["/proxy_oriweb_api/make/makeMultipleSpeakerWork", payload],
+            first_row.get("speed", PARAM_DEFAULT),
+            first_row.get("pitch", PARAM_DEFAULT),
+            first_row.get("volume", PARAM_DEFAULT),
         )
-        data = result.get("data") if isinstance(result, dict) else None
-        if not isinstance(data, dict):
+        if not cls._click_composite_ui_control(page, "使用"):
+            raise XunfeiError(f"多人配音面板未找到可用的“使用”按钮: {voice_name}")
+        verified = _poll(
+            lambda: cls._verify_composite_voice_marks(
+                page,
+                rows,
+                first_index,
+                last_index,
+                voice_name,
+                speaker_number,
+            ),
+            timeout=8,
+            interval=0.2,
+            max_interval=0.8,
+            page=page,
+        )
+        if not verified:
             raise XunfeiError(
-                f"多人配音接口无响应（HTTP {result.get('httpStatus') if isinstance(result, dict) else 0}）"
+                f"多人配音音色标记回读失败：行 {first_index + 1}-{last_index + 1} "
+                f"未确认使用 {voice_name}"
             )
-        ret_code = data.get("retCode")
-        if ret_code is None:
-            ret_code = data.get("code")
-        if not _provider_success_code(ret_code):
-            message = str(
-                data.get("retMsg")
-                or data.get("desc")
-                or data.get("message")
-                or data.get("msg")
-                or "未知错误"
-            )
-            lowered = message.lower()
-            if "额度" in message or "次数" in message or "quota" in lowered:
-                raise XunfeiQuotaExceeded(f"讯飞多人配音额度不足：{message}")
-            if "登录" in message or "login" in lowered or "未授权" in message:
-                self._logged_in = False
-                raise XunfeiLoginRequired(f"讯飞多人配音登录失效：{message}")
+        _log(
+            f"[xunfei]   多人配音已设置行 {first_index + 1}-{last_index + 1}: "
+            f"{voice_name}, speed={clamp_param(first_row.get('speed'))}, "
+            f"pitch={clamp_param(first_row.get('pitch'))}, "
+            f"volume={clamp_param(first_row.get('volume'))}"
+        )
+
+    @classmethod
+    def _insert_composite_pause(cls, page, row_index, boundary_ms):
+        """在指定题目末行末尾通过页面停顿按钮插入内部定位标记。"""
+        paragraphs = page.locator(".ssml-editor p")
+        if row_index < 0 or row_index >= paragraphs.count():
+            raise XunfeiError("多人配音停顿位置超出编辑器段落范围")
+        paragraph = paragraphs.nth(row_index)
+        # 先选中整行，再用方向键折叠到文本末尾，避免点击段落中部把
+        # 停顿插到句中或被浏览器保留为跨段选区。
+        paragraph.select_text(timeout=5000)
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(100)
+        label = f"{int(boundary_ms) / 1000:g}s"
+        if not cls._click_composite_ui_control(page, label):
+            raise XunfeiError(f"未找到讯飞停顿按钮: {label}")
+        selector = (
+            f'[data-type="break"][data-value="{int(boundary_ms)}"]'
+        )
+        inserted = _poll(
+            lambda: paragraphs.nth(row_index).locator(selector).count() > 0,
+            timeout=5,
+            interval=0.2,
+            max_interval=0.8,
+            page=page,
+        )
+        if not inserted:
             raise XunfeiError(
-                f"讯飞多人配音提交失败（{ret_code or 'unknown'}）：{message}"
+                f"讯飞停顿插入校验失败：第 {row_index + 1} 行未找到 {boundary_ms}ms 标记"
             )
-        works_id = data.get("tempWorksId") or data.get("worksId")
-        if not works_id:
-            raise XunfeiError("多人配音接口未返回 tempWorksId")
-        return str(works_id)
+        _log(f"[xunfei]   已在第 {row_index + 1} 行后插入 {label} 停顿")
+
+    @classmethod
+    def _prepare_composite_editor(cls, page, work):
+        """用讯飞页面 UI 构造多人作品，返回行和停顿边界。"""
+        rows, boundaries = cls._composite_ui_rows(work)
+        cls._input_composite_text(page, rows)
+        groups = cls._composite_row_groups(rows)
+        _log(
+            f"[xunfei]   多人配音 UI 已输入 {len(rows)} 行，"
+            f"按连续音色/参数合并为 {len(groups)} 组选区"
+        )
+        for first_index, last_index in groups:
+            try:
+                cls._select_editor_rows(page, rows, first_index, last_index)
+            except XunfeiError as error:
+                if first_index == last_index:
+                    raise
+                _log(
+                    f"[xunfei]   多人配音第 {first_index + 1}-{last_index + 1} 行"
+                    f"拖选校验失败，降级逐行设置: {error}"
+                )
+                for row_index in range(first_index, last_index + 1):
+                    cls._select_editor_rows(page, rows, row_index, row_index)
+                    cls._apply_composite_voice_to_selection(
+                        page, rows, row_index, row_index
+                    )
+                continue
+            cls._apply_composite_voice_to_selection(
+                page, rows, first_index, last_index
+            )
+
+        for row_index, boundary_ms in boundaries:
+            cls._insert_composite_pause(page, row_index, boundary_ms)
+        return rows, boundaries
 
     def _generate_pending_composite(
         self,
@@ -3202,19 +3413,23 @@ class XunFeiSession:
         output_name=None,
         max_retries=4,
     ):
-        """提交一个多人配音作品，返回待下载作品信息，不立即下载。"""
+        """通过讯飞多人配音页面提交作品，返回待下载作品信息。
+
+        多人配音的编辑内容、音色标记、参数和停顿全部由可见页面操作完成；
+        这里不调用 makeMultipleSpeakerWork 或 order_gen 提交接口。生成按钮
+        点击后的 worksId 仍由已有响应监听器捕获，下载阶段继续复用精确
+        worksId/签名 URL 流程。
+        """
         if not self._logged_in:
             raise XunfeiError("尚未登录，请先调用 login()")
         if not output_name:
             output_name = f".xunfei_composite_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(OUTPUT_DIR, output_name)
         page = self._page
-        # flat/list 音色目录没有 commonId 时，先执行网页同款反查；即使
-        # 反查暂时失败，_build_composite_payload 也会使用网页默认值 0，
-        # 保证请求体不会出现 JSON null。
-        self._resolve_composite_common_ids(page, work)
-        payload = self._build_composite_payload(work)
-        works_name = payload["worksName"]
+        works_name = self._normalize_works_name(
+            work.get("works_name")
+            or f"wordtts_composite_{uuid.uuid4().hex[:8]}"
+        )
         last_error = None
         for attempt in range(1, max_retries + 1):
             _log(
@@ -3225,34 +3440,23 @@ class XunFeiSession:
                 if page.locator(".ssml-editor").count() == 0:
                     if not self._recover_and_retry(page):
                         raise XunfeiError("页面恢复失败")
+
+                # 文本、连续同配置批量选区、音色/参数和内部停顿均通过
+                # 可见讯飞页面完成，并且每次套用前都有选区/标记回读校验。
+                self._prepare_composite_editor(page, work)
                 self._mark_works_cutoff()
-                temp_works_id = self._post_multiple_speaker_work(page, payload)
-                # makeMultipleSpeakerWork 返回的 tempWorksId 也会被响应监听器
-                # 记录。订单接口失败时不能把这个临时 ID 当成最终 worksId；
-                # 这里重新设置捕获水位，只允许后续 order_gen 的结果被兜底消费。
-                self._mark_works_cutoff()
-                credentials = _safe_eval(page, JS.GET_API_CREDENTIALS) or {}
-                order_data = self._signed_api_post(
-                    page,
-                    API_ORDER_GEN_URL,
-                    {
-                        "orderName": works_name,
-                        "worksId": temp_works_id,
-                        "worksType": 1,
-                        "genType": 1,
-                        "source_type": 3,
-                        "speakerVersion": 1,
-                        "fromSpread": str(credentials.get("fromSpread") or ""),
-                    },
-                )
-                works_id = None
-                if isinstance(order_data, dict):
-                    pay_order = (order_data.get("data") or {}).get("payOrder") or {}
-                    works_id = pay_order.get("worksId") or order_data.get("worksId")
-                works_id = works_id or self._consume_works_id(
-                    timeout=30,
-                    exclude_ids={temp_works_id},
-                )
+                self._click_generate(page)
+                status = self._confirm_synth(page, works_name=works_name)
+                if status == "insufficient":
+                    raise XunfeiQuotaExceeded("讯飞配音额度不足")
+                if status == "login":
+                    raise XunfeiLoginRequired("合成过程中弹出登录框，请重新登录")
+                if status == "rate_limited":
+                    raise XunfeiRateLimited("触发讯飞频控")
+                if status != "ok":
+                    raise XunfeiError("确认合成弹窗流程未完成")
+
+                works_id = self._consume_works_id(timeout=30)
                 if not works_id:
                     raise XunfeiError("多人配音已提交但未捕获 worksId")
                 pending = {
@@ -3266,6 +3470,7 @@ class XunFeiSession:
                     f"[xunfei] ✅ 多人配音作品已提交 worksId={pending['works_id']} "
                     f"work={pending['work_id']}"
                 )
+                self._cleanup_after_item(page)
                 return pending
             except (XunfeiQuotaExceeded, XunfeiLoginRequired):
                 raise
@@ -4156,7 +4361,6 @@ class XunFeiSession:
                     "osid": 0,
                 }
                 self._api_authorization = None
-            self._common_id_cache = {}
             _log("[xunfei] 浏览器已关闭（登录状态已保留）")
 
 
