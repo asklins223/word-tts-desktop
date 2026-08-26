@@ -187,6 +187,10 @@ QUALITY_BITRATE = {
 LEGACY_AUDIO_ALGORITHM_VERSION = 4
 AUDIO_ALGORITHM_VERSION = 6
 
+# Electron 主进程用它确认内置后端和渲染器来自同一次构建。旧版客户端如果
+# 把旧后端混进新前端，不能继续以“看似启动成功”的方式走逐条生成流程。
+BACKEND_CONTRACT_VERSION = 2
+
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
 PARSER_VERSION = 11

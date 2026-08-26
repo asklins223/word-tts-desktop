@@ -14,7 +14,7 @@ REM
 REM 用法:
 REM   build_electron_windows.bat              -> 完整构建 (PyInstaller + electron-builder)
 REM   build_electron_windows.bat --python     -> 仅构建 Python 后端
-REM   build_electron_windows.bat --electron   -> 仅构建 Electron 壳 (需先 --python)
+REM   build_electron_windows.bat --electron   -> 重建当前 Python 后端并打包 Electron 壳
 REM
 REM 前置条件（脚本会同步 Python 依赖）:
 REM   建议先创建并激活独立 Python venv
@@ -255,6 +255,9 @@ if "%MODE%"=="--python" (
     call :build_python_backend
     if !errorlevel! neq 0 exit /b !errorlevel!
 ) else if "%MODE%"=="--electron" (
+    REM 即使只打 Electron 壳，也先重建后端，避免把旧 server_backend 装入新客户端。
+    call :build_python_backend
+    if !errorlevel! neq 0 exit /b !errorlevel!
     call :build_electron_app
     if !errorlevel! neq 0 exit /b !errorlevel!
 ) else if "%MODE%"=="all" (

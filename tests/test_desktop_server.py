@@ -36,6 +36,10 @@ class DesktopServerSecurityTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["app"], "wordtts")
+        self.assertEqual(
+            response.json()["backend_contract_version"],
+            server.core.BACKEND_CONTRACT_VERSION,
+        )
         self.assertNotIn("test-token", response.text)
 
     def test_query_token_supports_eventsource_and_media_urls(self):
@@ -442,6 +446,9 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
             "volume": 50,
             "pitch": 50,
             "preview": False,
+            # 这些时间线测试覆盖原有单段流程；产品默认由前端/API
+            # 选择 composite_cut，旧流程必须显式声明以免测试掩盖回退。
+            "generation_mode": server.core.GENERATION_MODE_SINGLE,
         }
 
     @staticmethod
@@ -489,6 +496,31 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
                 self.assertGreaterEqual(summaries[0]["duration_ms"], 0)
                 event_types = [event["type"] for event in session.event_journal]
                 self.assertLess(event_types.index("error"), event_types.index("end"))
+
+    def test_missing_generation_mode_uses_composite_default(self):
+        session = server.SessionState("missing-generation-mode")
+        captured = {}
+
+        async def fake_generate(_session, _source_filename, _filepath, config):
+            captured.update(config)
+
+        async def exercise():
+            with mock.patch.object(server, "_generate_audio_stream", new=fake_generate):
+                await server.generate_audio_stream(
+                    session,
+                    "lesson.docx",
+                    "/missing/lesson.docx",
+                    {
+                        "format": "mp3",
+                        "quality": "128 kbps（标准）",
+                    },
+                )
+
+        asyncio.run(exercise())
+        self.assertEqual(
+            captured["generation_mode"],
+            server.core.GENERATION_MODE_COMPOSITE,
+        )
 
     def test_all_failed_task_has_consistent_delivery_contract(self):
         session = server.SessionState("all-failed-contract")

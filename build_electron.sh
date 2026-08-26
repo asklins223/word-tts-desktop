@@ -11,7 +11,7 @@
 # 用法:
 #   bash build_electron.sh              → 完整构建（PyInstaller + electron-builder）
 #   bash build_electron.sh --python     → 仅构建 Python 后端
-#   bash build_electron.sh --electron   → 仅构建 Electron 壳（需先 --python）
+#   bash build_electron.sh --electron   → 重建当前 Python 后端并打包 Electron 壳
 #
 # 前置条件（脚本会同步 Python 依赖）:
 #   建议先创建并激活独立 Python venv
@@ -451,6 +451,9 @@ main() {
             build_python_backend
             ;;
         --electron)
+            # 即使调用者只想打 Electron 壳，也必须先重建后端；否则很容易
+            # 把旧的 server_backend_build 装进新前端，运行时悄悄退回逐条流程。
+            build_python_backend
             build_electron_app
             ;;
         all|"")

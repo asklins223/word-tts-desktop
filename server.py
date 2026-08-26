@@ -1027,12 +1027,12 @@ async def generate_audio_stream(
     config: dict,
 ):
     """串行化讯飞浏览器任务，避免共享页面发生跨会话竞态。"""
-    # /api/generate 会先显式规范化新配置，默认是 composite_cut。这里保留
-    # 旧版内部调用方（包括历史脚本/测试直接传入的无 mode 配置）按原有
-    # 单段流程运行，避免升级时静默改变未迁移调用者的计费行为。
+    # /api/generate 会先显式规范化新配置，默认是 composite_cut。对旧前端
+    # 或直接调用本函数但没有传 generation_mode 的请求，也必须遵循产品默认，
+    # 否则打包客户端一旦前后端版本不同就会悄悄退回逐条生成并显著变慢。
     raw_config = dict(config or {})
     if "generation_mode" not in raw_config:
-        raw_config["generation_mode"] = core.GENERATION_MODE_SINGLE
+        raw_config["generation_mode"] = core.GENERATION_MODE_COMPOSITE
     async with _get_xunfei_generation_lock():
         await _generate_audio_stream(session, source_filename, filepath, raw_config)
 
@@ -2810,7 +2810,16 @@ if os.path.isdir(_renderer_dir):
 @app.get("/api/health")
 async def health():
     instance = hashlib.sha256(_API_TOKEN.encode("utf-8")).hexdigest()[:16] if _API_TOKEN else "development"
-    return {"status": "ok", "app": "wordtts", "version": APP_VERSION, "instance": instance}
+    return {
+        "status": "ok",
+        "app": "wordtts",
+        "version": APP_VERSION,
+        "instance": instance,
+        "backend_contract_version": core.BACKEND_CONTRACT_VERSION,
+        "audio_algorithm_version": core.AUDIO_ALGORITHM_VERSION,
+        "parser_version": core.PARSER_VERSION,
+        "default_generation_mode": core.DEFAULT_GENERATION_MODE,
+    }
 
 
 @app.get("/api/config")
@@ -2830,6 +2839,9 @@ async def get_config():
         "tts_param_max": core.TTS_PARAM_MAX,
         "tts_param_default": core.TTS_PARAM_DEFAULT,
         "xunfei_available": core._XUNFEI_AVAILABLE,
+        "backend_contract_version": core.BACKEND_CONTRACT_VERSION,
+        "audio_algorithm_version": core.AUDIO_ALGORITHM_VERSION,
+        "parser_version": core.PARSER_VERSION,
         "generation_modes": [
             {
                 "value": core.GENERATION_MODE_COMPOSITE,

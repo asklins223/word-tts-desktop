@@ -427,6 +427,51 @@ class JS:
     () => window.getSelection?.().toString() || ''
     """
 
+    SELECT_EDITOR_RANGE = """
+    ([firstIndex, lastIndex]) => {
+        const paragraphs = Array.from(
+            document.querySelectorAll('.ssml-editor p')
+        );
+        const first = paragraphs[Number(firstIndex)];
+        const last = paragraphs[Number(lastIndex)];
+        if (!first || !last) return null;
+
+        const firstTextNode = (root) => {
+            const walker = document.createTreeWalker(
+                root,
+                NodeFilter.SHOW_TEXT,
+            );
+            return walker.nextNode();
+        };
+        const lastTextNode = (root) => {
+            const walker = document.createTreeWalker(
+                root,
+                NodeFilter.SHOW_TEXT,
+            );
+            let current = null;
+            let next = walker.nextNode();
+            while (next) {
+                current = next;
+                next = walker.nextNode();
+            }
+            return current;
+        };
+
+        const startNode = firstTextNode(first);
+        const endNode = lastTextNode(last);
+        if (!startNode || !endNode) return null;
+
+        const range = document.createRange();
+        range.setStart(startNode, 0);
+        range.setEnd(endNode, endNode.textContent?.length || 0);
+        const selection = window.getSelection();
+        if (!selection) return null;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return selection.toString();
+    }
+    """
+
     CLEAR_EDITOR = """
     () => {
         const editor = document.querySelector('.ssml-editor');
@@ -1743,7 +1788,15 @@ class XunFeiSession:
 
     @classmethod
     def _select_editor_rows(cls, page, rows, first_index, last_index):
-        """通过真实文本选择操作选中一行或一段连续逻辑行。"""
+        """通过真实页面选区选中一行或一段连续逻辑行。
+
+        讯飞编辑器通常会把多行文本放进可滚动的 contenteditable 中。
+        仅靠一次从首行拖到末行的鼠标动作，在长文档或打包客户端的小窗口
+        中很容易因为滚动导致首尾不同时可见，进而误选或漏选。这里按真实
+        浏览器交互的可靠性依次尝试 Shift-click、鼠标拖选，最后才用页面
+        Range 重新建立同一个浏览器选区；三种方式都必须通过精确文本回读。
+        任何方式都失败时直接停止，不能把一个本应批量设置的组拆成逐行操作。
+        """
         if first_index < 0 or last_index < first_index or last_index >= len(rows):
             raise XunfeiError("多人配音 UI 选区索引越界")
         paragraphs = page.locator(".ssml-editor p")
@@ -1758,15 +1811,47 @@ class XunFeiSession:
         if first_index == last_index:
             # Playwright 的 select_text 只选当前段落，绝不退化为编辑器全选。
             first.select_text(timeout=5000)
-        else:
-            # 多行选择使用鼠标从第一段开头拖到最后一段末尾，模拟用户真实
-            # 拖选。失败或选区不精确时直接抛错，由上层拆成更小的连续组。
+            page.wait_for_timeout(80)
+            return cls._verify_editor_selection(page, expected_values)
+
+        errors = []
+
+        # 方式一：先真实选中首行，再滚动到末行并 Shift-click。这个动作
+        # 不要求首尾同时出现在视口中，最适合打包客户端的窄窗口和长文档。
+        try:
+            first.scroll_into_view_if_needed(timeout=5000)
+            first.select_text(timeout=5000)
+            last.scroll_into_view_if_needed(timeout=5000)
+            last_box = last.bounding_box()
+            if not last_box:
+                raise XunfeiError("末行不可见，无法执行 Shift-click")
+            last.click(
+                position={
+                    "x": max(2, last_box["width"] - 2),
+                    "y": max(2, last_box["height"] - 2),
+                },
+                modifiers=["Shift"],
+                timeout=5000,
+            )
+            page.wait_for_timeout(120)
+            selected = cls._verify_editor_selection(page, expected_values)
+            _log(
+                f"[xunfei]   多人配音批量选区行 {first_index + 1}-"
+                f"{last_index + 1}（Shift-click）"
+            )
+            return selected
+        except Exception as error:
+            errors.append(f"Shift-click: {error}")
+
+        # 方式二：短范围仍优先使用真实鼠标拖选，兼容讯飞页面没有稳定
+        # 锚点行为的版本。只有首尾都在当前视口时才执行，避免跨滚动拖选。
+        try:
             first.scroll_into_view_if_needed(timeout=5000)
             last.scroll_into_view_if_needed(timeout=5000)
             first_box = first.bounding_box()
             last_box = last.bounding_box()
             if not first_box or not last_box:
-                raise XunfeiError("多人配音 UI 选区不可见，无法执行拖选")
+                raise XunfeiError("首尾行不可同时看见，无法执行鼠标拖选")
             start = {
                 "x": first_box["x"] + 2,
                 # 从首段第一行附近开始，长句换行时不能从段落中间起拖。
@@ -1781,8 +1866,39 @@ class XunFeiSession:
             page.mouse.down()
             page.mouse.move(end["x"], end["y"], steps=8)
             page.mouse.up()
-        page.wait_for_timeout(120)
-        return cls._verify_editor_selection(page, expected_values)
+            page.wait_for_timeout(120)
+            selected = cls._verify_editor_selection(page, expected_values)
+            _log(
+                f"[xunfei]   多人配音批量选区行 {first_index + 1}-"
+                f"{last_index + 1}（鼠标拖选）"
+            )
+            return selected
+        except Exception as error:
+            errors.append(f"鼠标拖选: {error}")
+
+        # 方式三：仍然只改变浏览器当前 Selection，不调用讯飞接口，也不
+        # 修改编辑器内容。它是跨滚动场景的页面交互兜底，后续“使用”按钮
+        # 仍由页面 UI 读取这个选区并产生 speaker 标记。
+        try:
+            selected = _safe_eval(
+                page,
+                JS.SELECT_EDITOR_RANGE,
+                [first_index, last_index],
+            )
+            page.wait_for_timeout(120)
+            verified = cls._verify_editor_selection(page, expected_values)
+            _log(
+                f"[xunfei]   多人配音批量选区行 {first_index + 1}-"
+                f"{last_index + 1}（页面选区兜底）"
+            )
+            return verified
+        except Exception as error:
+            errors.append(f"页面选区兜底: {error}")
+
+        detail = "；".join(str(error) for error in errors[-3:])
+        raise XunfeiError(
+            f"多人配音 UI 批量选区失败：行 {first_index + 1}-{last_index + 1}；{detail}"
+        )
 
     def _select_voice(self, page, voice_name, voice_key=None):
         """搜索并选择指定发音人，并以页面实际选中态校验缓存。"""
@@ -3383,21 +3499,17 @@ class XunFeiSession:
             f"按连续音色/参数合并为 {len(groups)} 组选区"
         )
         for first_index, last_index in groups:
+            _log(
+                f"[xunfei]   准备一次性设置多人配音行 "
+                f"{first_index + 1}-{last_index + 1}"
+            )
             try:
                 cls._select_editor_rows(page, rows, first_index, last_index)
             except XunfeiError as error:
-                if first_index == last_index:
-                    raise
                 _log(
-                    f"[xunfei]   多人配音第 {first_index + 1}-{last_index + 1} 行"
-                    f"拖选校验失败，降级逐行设置: {error}"
+                    f"[xunfei]   多人配音批量选区失败，停止本组，不再逐行降级: {error}"
                 )
-                for row_index in range(first_index, last_index + 1):
-                    cls._select_editor_rows(page, rows, row_index, row_index)
-                    cls._apply_composite_voice_to_selection(
-                        page, rows, row_index, row_index
-                    )
-                continue
+                raise
             cls._apply_composite_voice_to_selection(
                 page, rows, first_index, last_index
             )

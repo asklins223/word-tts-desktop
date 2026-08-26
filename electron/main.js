@@ -32,6 +32,9 @@ let quitCleanupStarted = false;
 const pendingAppNotices = new Map();
 const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
+// 必须和 word_tts_app.py 保持一致。启动时拒绝混用旧 PyInstaller 后端，
+// 避免打包客户端表面启动成功、实际退回逐条生成的隐性性能问题。
+const EXPECTED_BACKEND_CONTRACT_VERSION = 2;
 const RENDERER_ENTRY_PATH = path.join(__dirname, 'renderer', 'index.html');
 const RENDERER_ENTRY_URL = pathToFileURL(RENDERER_ENTRY_PATH).href;
 const SMOKE_LOG_PATH = isSmokeTest
@@ -396,6 +399,15 @@ function waitForServer(timeoutMs = 90000) {
                             && health.app === 'wordtts'
                             && health.instance === serverInstance
                         ) {
+                            if (health.backend_contract_version !== EXPECTED_BACKEND_CONTRACT_VERSION) {
+                                settled = true;
+                                reject(new Error(
+                                    `后端版本不匹配：期望协议 ${EXPECTED_BACKEND_CONTRACT_VERSION}，`
+                                    + `实际 ${health.backend_contract_version ?? '未知'}。`
+                                    + '请重新安装同一版本的完整客户端。',
+                                ));
+                                return;
+                            }
                             completeAttempt(true);
                             return;
                         }

@@ -133,6 +133,43 @@ class XunfeiFlowTests(unittest.TestCase):
             (0, 1), (2, 2), (3, 3),
         ])
 
+    def test_long_editor_selection_keeps_one_batch_across_scroll(self):
+        """长编辑器不可同时看见首尾时，选区仍不能退化成逐行处理。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        texts = [f"Line {index}: preserve the complete beginning and ending." for index in range(10)]
+        rows = [{"text": text} for text in texts]
+        html = """
+            <style>
+                .ssml-editor {
+                    width: 520px;
+                    height: 110px;
+                    overflow: auto;
+                    border: 1px solid #999;
+                }
+                .ssml-editor p { margin: 0; padding: 8px; }
+            </style>
+            <div class="ssml-editor" contenteditable="true">
+                %s
+            </div>
+        """ % "".join(f"<p>{text}</p>" for text in texts)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 700, "height": 260})
+                page.set_content(html)
+                selected = XunFeiSession._select_editor_rows(page, rows, 1, 8)
+                self.assertEqual(
+                    XunFeiSession._normalize_selection_text(selected),
+                    XunFeiSession._normalize_selection_text("".join(texts[1:9])),
+                )
+            finally:
+                browser.close()
+
     def test_composite_generation_uses_visible_page_flow_without_direct_submit_api(self):
         session = XunFeiSession()
         session._logged_in = True
