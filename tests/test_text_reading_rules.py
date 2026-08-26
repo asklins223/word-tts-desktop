@@ -100,12 +100,23 @@ class TextReadingRuleTests(unittest.TestCase):
         self.assertEqual([item["text"] for item in sentences], ["First sentence.", "Second sentence."])
         self.assertTrue(all(item["voice"] == "female" for item in sentences))
 
-        self.assertEqual([item["filename_stem"] for item in paragraphs], ["SA段落1"])
+        self.assertEqual(
+            [item["filename_stem"] for item in paragraphs],
+            ["SA段落1", "SA段落2", "SA段落3", "SA段落4"],
+        )
         self.assertEqual(parser._detect_section_ab_profile()["role_audio_mode"], "aggregate")
         self.assertEqual(
-            paragraphs[0]["text"],
-            "Bob: Bob's line.\nAlice: Alice's line.\n"
-            "Teacher: Hello, class.\nClass: Hello, teacher.",
+            [item["role"] for item in paragraphs],
+            ["Bob", "Alice", "Teacher", "Class"],
+        )
+        self.assertEqual(
+            [item["text"] for item in paragraphs],
+            [
+                "Bob: Bob's line.",
+                "Alice: Alice's line.",
+                "Teacher: Hello, class.",
+                "Class: Hello, teacher.",
+            ],
         )
 
         self.assertEqual(
@@ -135,6 +146,25 @@ class TextReadingRuleTests(unittest.TestCase):
             [item["filename_stem"] for item in discourses],
             ["U-语篇1-1", "U-语篇1-2"],
         )
+
+    def test_new_non_dialogue_paragraph_stays_as_one_audio(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读新版普通段落.docx")
+            document = Document()
+            for text in [
+                "课程跟读-普通段落",
+                "Section A",
+                "段落跟读",
+                "This is one ordinary paragraph. It contains two sentences.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        paragraphs = [item for item in result["items"] if item["category"] == "段落跟读"]
+        self.assertEqual(len(paragraphs), 1)
+        self.assertEqual(paragraphs[0]["text"], "This is one ordinary paragraph. It contains two sentences.")
+        self.assertNotIn("role", paragraphs[0])
 
     def test_conversation_structure_splits_each_role_into_an_audio_and_exposes_role(self):
         with tempfile.TemporaryDirectory() as temp_dir:

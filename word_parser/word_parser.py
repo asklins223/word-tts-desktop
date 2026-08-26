@@ -7,10 +7,11 @@ Word 文档解析脚本
 支持文档类型：
   1. 信息获取        — 提取「听选信息」「回答问题」的题目与录音稿
   2. 听后选择        — 仅提取「录音原文」中的 W/M 对话
-  3. 课文跟读        — 提取句子跟读（去序号、按序号排序）、段落跟读、语篇跟读
-  4. 信息转述及询问   — 提取「第一节 信息转述」的录音稿
-  5. 模仿朗读        — 提取每个单元的「外网」(2篇) 和「教材」(1篇)
-  6. 词汇            — 预留接口，未来接入
+  3. 听后应答        — 提取计算机提示后的待朗读句子，按行生成
+  4. 课文跟读        — 提取句子跟读（去序号、按序号排序）、段落跟读、语篇跟读
+  5. 信息转述及询问   — 提取「第一节 信息转述」的录音稿
+  6. 模仿朗读        — 提取每个单元的「外网」(2篇) 和「教材」(1篇)
+  7. 词汇            — 预留接口，未来接入
 
 设计说明：
   - 每种文档类型对应一个 Parser 子类，通过文件名自动识别
@@ -562,7 +563,163 @@ class ListeningSelectionParser(BaseParser):
 
 
 # ============================================================================
-# 3. 课文跟读解析器
+# 3. 听后应答解析器
+# ============================================================================
+
+class ListeningResponseParser(BaseParser):
+    """解析「听后应答」中的计算机语音提示与待朗读句子。
+
+    每个“（计算机语音提示）听下面 N 个句子。”提示开启一个采集块；
+    采集块只包含该提示下方、直到“请朗读应答语”/倒计时/下一条提示
+    之前的英文内容。内容按非空行输出为独立音频，全部使用默认女声。
+    """
+
+    DOC_TYPE = "听后应答"
+
+    RE_SECTION_START = re.compile(r'听后应答')
+    RE_PROMPT = re.compile(
+        r'计算机语音提示.*?听下面\s*'
+        r'(?P<count>[0-9０-９零〇一二两三四五六七八九十百]+)\s*个\s*句子',
+        re.I,
+    )
+    RE_CONTROL = re.compile(
+        r'计算机语音提示.*?(?:请朗读应答语|朗读应答语)|'
+        r'计算机屏幕.*?(?:倒计时|进度条)|'
+        r'(?:参考答案|答案|解析)\s*[：:]?',
+        re.I,
+    )
+    RE_LEADING_MARK = re.compile(r'^[★☆*]\s*')
+    RE_LEADING_NUMBER = re.compile(r'^\d+\s*[.．、）)]\s*')
+    RE_GRADE = re.compile(
+        r'(?<!\d)(?P<grade>[789七八九])\s*(?:年级\s*)?上',
+        re.I,
+    )
+
+    _CHINESE_DIGITS = {
+        '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3,
+        '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+    }
+    _CHINESE_UNITS = {'十': 10, '百': 100}
+    _GRADE_DIGITS = {'七': '7', '八': '8', '九': '9'}
+
+    @classmethod
+    def _parse_count(cls, value):
+        """将阿拉伯数字或常见中文数字转换为句子数量。"""
+        raw = str(value or '').strip().translate(str.maketrans(
+            '０１２３４５６７８９', '0123456789'
+        ))
+        if raw.isdigit():
+            return max(1, int(raw))
+        if not raw:
+            return None
+
+        total = 0
+        current = 0
+        for char in raw:
+            if char in cls._CHINESE_DIGITS:
+                current = cls._CHINESE_DIGITS[char]
+            elif char in cls._CHINESE_UNITS:
+                unit = cls._CHINESE_UNITS[char]
+                total += (current or 1) * unit
+                current = 0
+            else:
+                return None
+        result = total + current
+        return max(1, result) if result > 0 else None
+
+    @classmethod
+    def _grade_prefix(cls, filename, paras):
+        """从文件名或文档标题中提取 7上/8上/9上命名空间。"""
+        haystack = ' '.join([
+            str(filename or ''),
+            *(str(text or '') for _, text, _ in paras[:8]),
+        ])
+        match = cls.RE_GRADE.search(haystack)
+        if not match:
+            return '应答'
+        grade = match.group('grade')
+        return f"{cls._GRADE_DIGITS.get(grade, grade)}上"
+
+    @classmethod
+    def _content_lines(cls, text):
+        """清理提示块中的英文内容，并按换行保留音频边界。"""
+        lines = []
+        for raw_line in str(text or '').splitlines():
+            value = sanitize(raw_line)
+            if not value or cls.RE_CONTROL.search(value) or cls.RE_PROMPT.search(value):
+                continue
+            if is_chinese(value):
+                continue
+            value = cls.RE_LEADING_MARK.sub('', value)
+            value = cls.RE_LEADING_NUMBER.sub('', value).strip()
+            if value:
+                lines.append(value)
+        return lines
+
+    def parse(self):
+        items = []
+        collecting = False
+        expected_count = None
+        current_lines = []
+        response_index = 0
+        grade_prefix = self._grade_prefix(self.filename, self.paras)
+
+        def flush():
+            nonlocal collecting, expected_count, current_lines, response_index
+            for line in current_lines:
+                response_index += 1
+                items.append({
+                    "category": "听后应答录音稿",
+                    "index": response_index,
+                    "number": response_index,
+                    "filename_stem": f"{grade_prefix}-应答-{response_index}",
+                    "voice": "female",
+                    "text": line,
+                })
+            collecting = False
+            expected_count = None
+            current_lines = []
+
+        for position, (_, text, _) in enumerate(self.paras):
+            value = str(text or '').strip()
+            prompt = self.RE_PROMPT.search(value)
+            if prompt:
+                flush()
+                collecting = True
+                expected_count = self._parse_count(prompt.group('count'))
+                continue
+
+            if not collecting:
+                continue
+
+            if self.RE_CONTROL.search(value):
+                flush()
+                continue
+
+            current_lines.extend(self._content_lines(value))
+            # 提示中的句数只作为边界提示，不能直接截断实际内容：题目可能
+            # 把多行内容放在多个 Word 段落中，即使提示写着“1 个句子”，
+            # 也必须遵循“多行多个音频”的规则。只有已经收集到提示数量，
+            # 且下一个有内容的段落明确是控制提示/下一条提示时，才提前结束。
+            if expected_count and len(current_lines) >= expected_count:
+                next_value = ''
+                for _, following_text, _ in self.paras[position + 1:]:
+                    following_value = str(following_text or '').strip()
+                    if following_value:
+                        next_value = following_value
+                        break
+                if next_value and (
+                    self.RE_PROMPT.search(next_value)
+                    or self.RE_CONTROL.search(next_value)
+                ):
+                    flush()
+
+        flush()
+        return self._result(items)
+
+
+# ============================================================================
+# 4. 课文跟读解析器
 # ============================================================================
 
 class TextReadingParser(BaseParser):
@@ -831,8 +988,9 @@ class TextReadingParser(BaseParser):
                 reading_plus_positions.add(candidate)
 
         # 对话模式同样从结构判断：显式 Conversation 块中出现至少两个
-        # 有效角色时，说明文档给出了“按角色分块”的边界；没有这种块而
-        # 只是普通多角色段落时，保留整段，供用户分别配置角色音色。
+        # 有效角色时，说明文档给出了“按角色分块”的边界。没有显式
+        # Conversation 的新格式对话，则在解析阶段按 Word 段落保留边界，
+        # 由 flush_dialogue_buffer 进一步拆成逐行音频；普通非对话段落不受影响。
         conversation_blocks = []
         active_block = None
         current_subsection = None
@@ -1053,9 +1211,9 @@ class TextReadingParser(BaseParser):
 
         新版规则：
           - 句子跟读按编号输出，默认女声；
-          - 没有显式 Conversation 的多角色段落保留为一个音频，角色名
-            通过结构元数据提供给用户配置；显式 Conversation 块中每个
-            角色单独输出，拆分模式由文档结构 profile 决定；
+          - 没有显式 Conversation 的多角色段落按 Word 段落/角色行输出，
+            角色名通过结构元数据提供给用户配置；显式 Conversation 块中
+            每个角色单独输出，拆分模式由文档结构 profile 决定；
           - 语篇跟读的对话遵循同样的角色拆分规则；文章按段落输出，
             大标题单独一个音频，// 小标题与其紧邻的一个段落合并。
         """
@@ -1161,14 +1319,36 @@ class TextReadingParser(BaseParser):
         def flush_dialogue_buffer(category, units, blocks, conversation_mode):
             """输出新版段落/语篇对话。"""
             if conversation_mode:
-                groups = blocks
+                groups = [
+                    (conversation_number, text, None)
+                    for conversation_number, text in blocks
+                ]
             else:
+                # 新版“段落跟读”的对话通常没有 Conversation 标记，而是
+                # 每个 Word 段落一行角色台词。检测到至少两个角色后，必须
+                # 保留这些段落边界，否则整个对话会被错误合成一条音频。
+                # 非对话文本仍沿用原来的“一段 Word 段落一条音频”规则。
                 groups = []
-                if self._contains_multiple_roles(units):
-                    groups.append((None, self._new_clean_text(units)))
-                else:
-                    groups.extend((None, self._new_clean_text([unit])) for unit in units)
-            for conversation_number, text in groups:
+                is_dialogue = self._contains_multiple_roles(units)
+                for unit in units:
+                    role_segments = self._role_segments(unit)
+                    if is_dialogue and len(role_segments) > 1:
+                        groups.extend(
+                            (None, role_text, role)
+                            for role, role_text in role_segments
+                        )
+                        continue
+                    role_hint = (
+                        role_segments[0][0]
+                        if is_dialogue and len(role_segments) == 1
+                        else None
+                    )
+                    groups.append((
+                        None,
+                        self._new_clean_text([unit]),
+                        role_hint,
+                    ))
+            for conversation_number, text, role_hint in groups:
                 if isinstance(text, list):
                     text = self._new_clean_text(text)
                 if (
@@ -1184,7 +1364,12 @@ class TextReadingParser(BaseParser):
                             role=role,
                         )
                 else:
-                    append_new_block_item(category, text, conversation_number)
+                    append_new_block_item(
+                        category,
+                        text,
+                        conversation_number,
+                        role=role_hint,
+                    )
 
         def flush_paragraph():
             nonlocal paragraph_current_lines, paragraph_current_number
@@ -1594,7 +1779,7 @@ class TextReadingParser(BaseParser):
 
 
 # ============================================================================
-# 3. 信息转述及询问解析器
+# 5. 信息转述及询问解析器
 # ============================================================================
 
 class InfoRetellingParser(BaseParser):
@@ -1681,7 +1866,7 @@ class InfoRetellingParser(BaseParser):
 
 
 # ============================================================================
-# 4. 模仿朗读解析器
+# 6. 模仿朗读解析器
 # ============================================================================
 
 class ImitationReadingParser(BaseParser):
@@ -1765,7 +1950,7 @@ class ImitationReadingParser(BaseParser):
 
 
 # ============================================================================
-# 5. 词汇解析器（Excel 单词导入模板）
+# 7. 词汇解析器（Excel 单词导入模板）
 # ============================================================================
 
 class ExcelVocabularyParser(BaseParser):
@@ -1890,6 +2075,7 @@ class ExcelVocabularyParser(BaseParser):
 PARSER_MAP = {
     "信息获取": InfoAcquisitionParser,
     "听后选择": ListeningSelectionParser,
+    "听后应答": ListeningResponseParser,
     "课文跟读": TextReadingParser,
     "信息转述及询问": InfoRetellingParser,
     "模仿朗读": ImitationReadingParser,
@@ -1909,6 +2095,8 @@ def detect_doc_type(filename):
         return "信息获取"
     if '听后选择' in filename:
         return "听后选择"
+    if '听后应答' in filename:
+        return "听后应答"
     if '课文跟读' in filename:
         return "课文跟读"
     if '信息转述' in filename:
@@ -1934,6 +2122,10 @@ CONTENT_MARKERS = {
         # 与「听选信息」区分，避免旧题型被重复解析；沿用解析器的
         # 行首标题证据，避免普通正文触发新题型。
         ListeningSelectionParser.RE_SECTION_START,
+    ],
+    "听后应答": [
+        ListeningResponseParser.RE_SECTION_START,
+        ListeningResponseParser.RE_PROMPT,
     ],
     "课文跟读": [
         re.compile(r'句子跟读'),
