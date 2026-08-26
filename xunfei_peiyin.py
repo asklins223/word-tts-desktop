@@ -383,12 +383,40 @@ class JS:
 
     CHECK_VOICE_SELECTED = """
     (name) => {
-        const btns = document.querySelectorAll('button');
-        for (const b of btns) {
-            if (b.className?.includes('active') || b.className?.includes('selected')) {
-                const t = b.textContent?.trim() || '';
-                if (t.includes(name)) return t;
-            }
+        const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+        const expected = normalize(name);
+        const visible = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const selected = (button) => {
+            const ariaSelected = button.getAttribute('aria-selected');
+            const style = window.getComputedStyle(button);
+            const inlineStyle = String(button.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+            const hasSelectedBorder = style.borderColor === 'rgb(26, 145, 255)'
+                || inlineStyle.includes('border:1pxsolidrgb(26,145,255)')
+                || inlineStyle.includes('border:1pxsolid#1a91ff');
+            return ariaSelected === 'true'
+                || button.classList.contains('active')
+                || button.classList.contains('selected')
+                || button.classList.contains('is-selected')
+                || hasSelectedBorder;
+        };
+        const voiceLabel = (button) => {
+            const label = button.querySelector('p, strong, [class*="name"], [class*="title"]');
+            return normalize(label?.textContent || button.textContent);
+        };
+        for (const b of document.querySelectorAll('button')) {
+            if (!visible(b) || !selected(b)) continue;
+            const label = voiceLabel(b);
+            // 先按音色卡片的主名称精确匹配，避免“Linda-品质”被另一个
+            // 同名/相似名称卡片或隐藏 DOM 误判为已选中。
+            if (label === expected || label.includes(expected)) return b.textContent?.trim() || label;
         }
         return null;
     }
@@ -396,12 +424,33 @@ class JS:
 
     SEARCH_AND_CLICK_VOICE = """
     (name) => {
-        const btns = document.querySelectorAll('button');
-        for (const b of btns) {
-            const t = b.textContent?.trim() || '';
-            if (t.includes(name) && t.length < 100 && b.offsetParent !== null) {
-                b.click(); return true;
-            }
+        const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+        const expected = normalize(name);
+        const visible = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const labelOf = (button) => normalize(
+            button.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent
+                || button.textContent
+        );
+        const buttons = Array.from(document.querySelectorAll('button'))
+            .filter((button) => visible(button) && labelOf(button).length < 100);
+        // 搜索结果的卡片主名称优先精确匹配；只有页面没有提供独立名称节点
+        // 时才退回到整张卡片包含匹配。
+        const exact = buttons.find((button) => {
+            const label = normalize(button.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent);
+            return label === expected;
+        });
+        const target = exact || buttons.find((button) => labelOf(button).includes(expected));
+        if (target) {
+            target.click();
+            return true;
         }
         return false;
     }
@@ -409,10 +458,24 @@ class JS:
 
     CHECK_SEARCH_RESULT = """
     (name) => {
-        const btns = document.querySelectorAll('button');
-        for (const b of btns) {
-            const t = b.textContent?.trim() || '';
-            if (t.includes(name) && t.length < 100 && b.offsetParent !== null) return true;
+        const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+        const expected = normalize(name);
+        const visible = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        for (const b of document.querySelectorAll('button')) {
+            if (!visible(b)) continue;
+            const label = normalize(
+                b.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent
+                    || b.textContent
+            );
+            if (label === expected || (label.includes(expected) && label.length < 100)) return true;
         }
         return false;
     }
@@ -1296,7 +1359,9 @@ class XunFeiSession:
         self._page = None
         self._logged_in = False
         self._real_ua = None
-        # 页面状态跟踪（页面复用的关键）
+        # 页面状态跟踪（页面复用的关键）。音色 key 和页面显示名称都保留：
+        # key 防止同名音色串用，页面回读防止讯飞提交后把音色恢复为默认值。
+        self._current_voice_key = None
         self._current_voice_name = None
         self._applied_params = None  # dict(speed=, pitch=, volume=) 或 None
         # worksId 捕获（时间戳截止线防跨条错配）
@@ -1483,15 +1548,43 @@ class XunFeiSession:
             page.wait_for_timeout(150)
         return False
 
-    def _select_voice(self, page, voice_name):
-        """在发音人列表中搜索并选择指定发音人，选中后回读验证。"""
-        if self._current_voice_name == voice_name:
-            return True
+    def _select_voice(self, page, voice_name, voice_key=None):
+        """搜索并选择指定发音人，并以页面实际选中态校验缓存。"""
+        target_key = str(voice_key or "").strip() or None
+
+        # 提交作品后讯飞页面可能把发音人恢复为平台默认值。不能只相信
+        # 本地缓存，否则下一条同音色任务会跳过搜索，最终悄悄使用默认音色。
+        # 同时按 key 追踪，避免音色目录出现同名发音人时错误复用。
+        cache_matches = (
+            self._current_voice_key == target_key
+            if target_key is not None
+            else self._current_voice_name == voice_name
+        )
+        if cache_matches:
+            selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
+            if selected:
+                return True
+            _log(
+                f"[xunfei]   页面当前音色不是缓存的 '{voice_name}'，"
+                "强制重新搜索"
+            )
+            self._current_voice_key = None
+            self._current_voice_name = None
+
+        _log(
+            f"[xunfei]   搜索并选择发音人: {voice_name}"
+            + (f" (key={target_key})" if target_key else "")
+        )
 
         def mark_selected():
             # 讯飞页面切换音色后会把三项调节恢复为页面默认值；即使新旧
             # 音色的目标数值恰好相同，也必须让 _apply_params() 重新下发。
-            voice_changed = self._current_voice_name != voice_name
+            voice_changed = (
+                self._current_voice_key != target_key
+                if target_key is not None
+                else self._current_voice_name != voice_name
+            )
+            self._current_voice_key = target_key
             self._current_voice_name = voice_name
             if voice_changed:
                 self._applied_params = None
@@ -2494,6 +2587,7 @@ class XunFeiSession:
         try:
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_selector(".ssml-editor", timeout=30000)
+            self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None
             return True
@@ -2687,7 +2781,7 @@ class XunFeiSession:
                         raise XunfeiError("页面恢复失败")
 
                 # 同组任务命中这两个缓存时，不会重复切换音色或设置参数。
-                self._select_voice(page, voice_name)
+                self._select_voice(page, voice_name, voice_key=vk)
                 self._apply_params(page, speed, pitch, volume)
 
                 if not self._input_text(page, text):
@@ -2861,13 +2955,25 @@ class XunFeiSession:
             )
         return selected, missing
 
-    def _download_selected_rows(self, page, selected_targets):
-        """点击下载页“下载”，处理确认弹窗并收集所有浏览器下载事件。"""
+    def _download_selected_rows(self, page, selected_targets, progress_callback=None):
+        """点击下载页“下载”，处理确认弹窗并收集所有浏览器下载事件。
+
+        下载事件逐个到达时立即通知上层，不能等全部下载事件收集完成后
+        才汇报，否则统一下载期间前端进度条会长时间停在 0%。
+        """
         downloads = []
 
         def on_download(download):
             downloads.append(download)
             _log(f"[xunfei]   📥 下载页浏览器下载事件: {download.suggested_filename}")
+            index = len(downloads) - 1
+            if index < len(selected_targets):
+                target_item = selected_targets[index].get("item") or {}
+                _notify_batch_progress(progress_callback, {
+                    "job_id": str(target_item.get("job_id") or ""),
+                    "downloaded": True,
+                    "stage": "downloaded",
+                })
 
         page.on("download", on_download)
         try:
@@ -2899,7 +3005,7 @@ class XunFeiSession:
             except Exception:
                 pass
 
-    def _download_pending_batch(self, pending_items):
+    def _download_pending_batch(self, pending_items, progress_callback=None):
         """进入讯飞作品下载页，按 worksId 勾选本批次作品后统一下载。"""
         page = self._page
         if not pending_items:
@@ -2956,11 +3062,18 @@ class XunFeiSession:
                 "item": item,
             }
             if works_id not in ready:
-                results[works_id] = {
+                result = {
                     **item,
                     "downloaded": False,
                     "error": "作品未在下载页按 worksId 就绪",
                 }
+                results[works_id] = result
+                _notify_batch_progress(progress_callback, {
+                    "job_id": str(item.get("job_id") or ""),
+                    "downloaded": False,
+                    "stage": "saved",
+                    "error": result["error"],
+                })
                 continue
             targets.append(target)
 
@@ -2977,14 +3090,26 @@ class XunFeiSession:
         ]
         for target in missing:
             works_id = str(target.get("works_id") or "")
-            results[works_id] = {
+            item = target.get("item") or {}
+            result = {
                 **target.get("item", {}),
                 "downloaded": False,
                 "error": "下载页未找到对应作品复选框",
             }
+            results[works_id] = result
+            _notify_batch_progress(progress_callback, {
+                "job_id": str(item.get("job_id") or ""),
+                "downloaded": False,
+                "stage": "saved",
+                "error": result["error"],
+            })
 
         if selected_targets:
-            downloads = self._download_selected_rows(page, selected_targets)
+            downloads = self._download_selected_rows(
+                page,
+                selected_targets,
+                progress_callback=progress_callback,
+            )
             for index, target in enumerate(selected_targets):
                 item = target["item"]
                 works_id = str(target.get("works_id") or "")
@@ -2999,22 +3124,30 @@ class XunFeiSession:
                         _log(f"[xunfei]   保存下载文件失败 worksId={works_id}: {error}")
                 if downloaded:
                     size = os.path.getsize(output_path)
-                    results[works_id] = {
+                    result = {
                         **item,
                         "downloaded": True,
                         "size": size,
                     }
+                    results[works_id] = result
                     _log(
                         f"[xunfei] ✅ 下载页统一下载完成 worksId={works_id} "
                         f"({size:,} bytes)"
                     )
                 else:
-                    results[works_id] = {
+                    result = {
                         **item,
                         "downloaded": False,
                         "error": "下载页未收到本条浏览器下载文件",
                     }
+                    results[works_id] = result
                     _log(f"[xunfei] ❌ 下载页统一下载失败 worksId={works_id}")
+                _notify_batch_progress(progress_callback, {
+                    "job_id": str(item.get("job_id") or ""),
+                    "downloaded": bool(result.get("downloaded")),
+                    "stage": "saved",
+                    "error": result.get("error"),
+                })
 
         return results
 
@@ -3033,11 +3166,13 @@ class XunFeiSession:
             groups.setdefault(key, []).append(job)
         return list(groups.values())
 
-    def synth_batch(self, jobs, max_retries=4):
+    def synth_batch(self, jobs, max_retries=4, progress_callback=None):
         """按音色/参数分组，先全部提交合成，最后统一下载。
 
         返回 ``job_id -> result``。单条失败会记录在对应结果中，已成功提交
-        的其它任务仍会进入统一下载阶段。
+        的其它任务仍会进入统一下载阶段。``progress_callback`` 会在线程内
+        收到每条任务的下载事件和最终保存结果；调用方不得在回调中操作
+        Playwright 页面。
         """
         if not self._logged_in:
             raise XunfeiError("尚未登录，请先调用 login()")
@@ -3045,6 +3180,20 @@ class XunFeiSession:
         grouped_jobs = self._group_batch_jobs(normalized_jobs)
         pending = []
         results = {}
+        reported_progress = set()
+
+        def report_progress(payload):
+            if not callable(progress_callback):
+                return
+            item = dict(payload or {})
+            job_id = str(item.get("job_id") or "")
+            stage = str(item.get("stage") or "saved")
+            report_key = (job_id, stage)
+            if job_id and report_key in reported_progress:
+                return
+            if job_id:
+                reported_progress.add(report_key)
+            _notify_batch_progress(progress_callback, item)
 
         for group_index, group in enumerate(grouped_jobs, start=1):
             if not group:
@@ -3075,13 +3224,26 @@ class XunFeiSession:
                 except (XunfeiQuotaExceeded, XunfeiLoginRequired):
                     raise
                 except Exception as error:
-                    results[job_id] = {
+                    result = {
                         "job_id": job_id,
                         "downloaded": False,
                         "error": str(error),
                     }
+                    results[job_id] = result
+                    report_progress({
+                        "job_id": job_id,
+                        "downloaded": False,
+                        "stage": "saved",
+                        "error": result["error"],
+                    })
 
-        downloaded = self._download_pending_batch(pending)
+        if callable(progress_callback):
+            downloaded = self._download_pending_batch(
+                pending,
+                progress_callback=report_progress,
+            )
+        else:
+            downloaded = self._download_pending_batch(pending)
         for item in pending:
             job_id = str(item["job_id"])
             works_id = str(item["works_id"])
@@ -3089,12 +3251,23 @@ class XunFeiSession:
             if result:
                 results[job_id] = {**result, "job_id": job_id}
             else:
-                results[job_id] = {
+                result = {
                     **item,
                     "job_id": job_id,
                     "downloaded": False,
                     "error": "合成已提交但统一下载失败",
                 }
+                results[job_id] = result
+            if callable(progress_callback) and (
+                job_id,
+                "saved",
+            ) not in reported_progress:
+                report_progress({
+                    "job_id": job_id,
+                    "downloaded": bool(result.get("downloaded")),
+                    "stage": "saved",
+                    "error": result.get("error"),
+                })
         return results
 
     def synth_one(
@@ -3174,6 +3347,7 @@ class XunFeiSession:
             self._page = None
             self._playwright = None
             self._logged_in = False
+            self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None
             self._response_handler = None
@@ -3209,6 +3383,16 @@ def _get_playwright_executor():
                 thread_name_prefix="xunfei-playwright",
             )
         return _playwright_executor
+
+
+def _notify_batch_progress(callback, payload):
+    """通知批量下载进度；回调异常不能中断讯飞生成主流程。"""
+    if not callable(callback):
+        return
+    try:
+        callback(dict(payload or {}))
+    except Exception as error:
+        _log(f"[xunfei] 批量进度回调异常（已忽略）: {error}")
 
 
 async def _run_playwright_sync(function, *args, **kwargs):
@@ -3356,13 +3540,14 @@ async def synth_xunfei(
     return seg
 
 
-async def synth_xunfei_batch(jobs):
+async def synth_xunfei_batch(jobs, progress_callback=None):
     """批量讯飞合成：按音色/参数分组提交，最后统一下载并解码。
 
     ``jobs`` 中每项至少包含 ``job_id``、``text``、``voice_key``、``speed``、
     ``pitch``、``volume``。返回 ``job_id -> {segment, error}``，其中 segment
     是已解码的 pydub.AudioSegment。Playwright 的 Sync API 仍全部固定在同一
-    专用线程内，避免 asyncio loop 与 greenlet 跨线程冲突。
+    专用线程内，避免 asyncio loop 与 greenlet 跨线程冲突。下载回调只
+    汇报 job 状态，不得在回调中直接操作 Playwright。
     """
     if not jobs:
         return {}
@@ -3382,7 +3567,12 @@ async def synth_xunfei_batch(jobs):
         item.setdefault("works_name", f"wordtts_{index + 1:04d}_{uuid.uuid4().hex[:8]}")
         normalized_jobs.append(item)
 
-    raw_results = await _run_playwright_sync(session.synth_batch, normalized_jobs, 4)
+    raw_results = await _run_playwright_sync(
+        session.synth_batch,
+        normalized_jobs,
+        4,
+        progress_callback=progress_callback,
+    )
     decoded = {}
     from pydub import AudioSegment
 

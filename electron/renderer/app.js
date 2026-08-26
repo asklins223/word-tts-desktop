@@ -1252,6 +1252,7 @@ async function startProcessing(useDefaults, presetConfig) {
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', '0');
     $('progress-stats').textContent = '准备中...';
     $('progress-percent').textContent = '0';
+    $('progress-completed-label').textContent = '已完成';
     $('progress-completed').textContent = '0';
     $('progress-remaining').textContent = generationTotal || '—';
     $('progress-failed').textContent = '0';
@@ -3224,18 +3225,31 @@ function resetLogTimeline(emptyText = '任务开始后，这里会按阶段展�
 // ============================================================================
 
 function updateProgress(event) {
-    const processed = Math.min((event.completed || 0) + (event.failed || 0), event.total || 0);
-    const pct = event.total > 0 ? (processed / event.total) * 100 : 0;
+    const total = Math.max(0, Number(event.total) || 0);
+    const completed = Math.max(0, Number(event.completed) || 0);
+    const failed = Math.max(0, Number(event.failed) || 0);
+    const processed = Math.min(
+        Math.max(0, Number(event.processed ?? (completed + failed)) || 0),
+        total,
+    );
+    const pct = total > 0 ? (processed / total) * 100 : 0;
+    const isBatchDownload = event.phase === 'batch-download';
+    // 统一下载完成后还要做音频解码、拼接、导出和 ZIP 整理；在最终 done
+    // 事件到达前保留一点尾部空间，避免用户看到 100% 后还长时间等待。
+    const visualPct = isBatchDownload ? Math.min(pct, 98) : pct;
     const eta = formatLogDuration(event.eta_ms);
-    $('progress-bar').style.width = `${pct.toFixed(1)}%`;
-    $('progress-bar').parentElement?.setAttribute('aria-valuenow', pct.toFixed(1));
-    $('progress-stats').textContent = `${event.completed} / ${event.total}`
-        + (event.failed > 0 ? `  ·  失败 ${event.failed}` : '')
+    $('progress-bar').style.width = `${visualPct.toFixed(1)}%`;
+    $('progress-bar').parentElement?.setAttribute('aria-valuenow', visualPct.toFixed(1));
+    $('progress-completed-label').textContent = isBatchDownload ? '已下载' : '已完成';
+    $('progress-stats').textContent = isBatchDownload
+        ? `已下载 ${processed} / ${total} · 等待整理`
+        : `${completed} / ${total}`
+        + (failed > 0 ? `  ·  失败 ${failed}` : '')
         + (eta ? `  ·  预计 ${eta}` : '');
-    $('progress-percent').textContent = String(Math.round(pct));
-    $('progress-completed').textContent = String(event.completed || 0);
-    $('progress-remaining').textContent = String(Math.max((event.total || 0) - processed, 0));
-    $('progress-failed').textContent = String(event.failed || 0);
+    $('progress-percent').textContent = String(Math.round(visualPct));
+    $('progress-completed').textContent = String(completed);
+    $('progress-remaining').textContent = String(Math.max(total - processed, 0));
+    $('progress-failed').textContent = String(failed);
     updateLogTimelineHeader();
 }
 
@@ -3365,6 +3379,7 @@ function handleDone(event) {
     $('progress-bar').style.width = '100%';
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', '100');
     $('progress-percent').textContent = '100';
+    $('progress-completed-label').textContent = '已完成';
     $('progress-completed').textContent = String(doneData.completed || 0);
     $('progress-remaining').textContent = '0';
     $('progress-failed').textContent = String(doneData.failed || 0);
@@ -4310,6 +4325,7 @@ async function restart() {
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', '0');
     $('progress-stats').textContent = '准备中...';
     $('progress-percent').textContent = '0';
+    $('progress-completed-label').textContent = '已完成';
     $('progress-completed').textContent = '0';
     $('progress-remaining').textContent = '—';
     $('progress-failed').textContent = '0';

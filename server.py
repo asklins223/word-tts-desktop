@@ -886,7 +886,14 @@ async def _generate_audio_stream(
             "entry": entry,
         })
 
-    def emit_stats(progress, *, force=False):
+    def emit_stats(
+        progress,
+        *,
+        force=False,
+        completed_override=None,
+        failed_override=None,
+        phase=None,
+    ):
         nonlocal last_stats_emit_at
         now = time.monotonic()
         if not force and now - last_stats_emit_at < STATS_EMIT_INTERVAL_SECONDS:
@@ -897,8 +904,18 @@ async def _generate_audio_stream(
             for doc_type, counts in stats_by_type.items()
         }
         failed_items = list(stats_failed_items.values())[:20]
-        completed = max(0, int(progress.get("completed") or 0))
-        failed = max(0, int(progress.get("failed") or 0))
+        completed_value = (
+            progress.get("completed")
+            if completed_override is None
+            else completed_override
+        )
+        failed_value = (
+            progress.get("failed")
+            if failed_override is None
+            else failed_override
+        )
+        completed = max(0, int(completed_value or 0))
+        failed = max(0, int(failed_value or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
         processed = min(completed + failed, total)
         elapsed_ms = max(0, round((time.perf_counter() - task_started_at) * 1000))
@@ -907,7 +924,7 @@ async def _generate_audio_stream(
         if eta_started_at is not None and run_processed > 0 and total > processed:
             run_elapsed_ms = max(0, round((time.perf_counter() - eta_started_at) * 1000))
             eta_ms = round((run_elapsed_ms / run_processed) * (total - processed))
-        push_event(session, {
+        event = {
             "type": "stats",
             "completed": completed,
             "total": total,
@@ -918,7 +935,10 @@ async def _generate_audio_stream(
             "eta_ms": eta_ms,
             "failed_items": failed_items,
             "by_type": type_counts,
-        })
+        }
+        if phase:
+            event["phase"] = str(phase)
+        push_event(session, event)
         last_stats_emit_at = time.monotonic()
 
     def emit_status(text: str):
@@ -929,10 +949,22 @@ async def _generate_audio_stream(
         current_item: Optional[str] = None,
         *,
         force=False,
+        completed_override=None,
+        failed_override=None,
     ):
         nonlocal last_generation_status_at
-        completed = max(0, int(progress.get("completed") or 0))
-        failed = max(0, int(progress.get("failed") or 0))
+        completed_value = (
+            progress.get("completed")
+            if completed_override is None
+            else completed_override
+        )
+        failed_value = (
+            progress.get("failed")
+            if failed_override is None
+            else failed_override
+        )
+        completed = max(0, int(completed_value or 0))
+        failed = max(0, int(failed_value or 0))
         total = max(completed + failed, int(progress.get("total_items") or 0))
         processed = min(completed + failed, total)
         text = f"生成中 — 已处理 {processed}/{total} · 成功 {completed}"
@@ -1501,6 +1533,56 @@ async def _generate_audio_stream(
 
         batch_results = {}
         batch_error = None
+        batch_display_completed = progress["completed"]
+        batch_display_failed = progress["failed"]
+        batch_display_states = {}
+
+        async def on_batch_item_progress(event):
+            """把统一下载期间的题目级结果即时反映到 SSE 进度。"""
+            nonlocal batch_display_completed, batch_display_failed
+            item_id = str(event.get("item_id") or "")
+            status = str(event.get("status") or "")
+            if not item_id or status not in {"downloaded", "ready", "error"}:
+                return
+
+            previous = batch_display_states.get(item_id, "pending")
+            if status == "downloaded":
+                # 下载事件先于最终 save_as 结果到达，先让用户看到真实的
+                # 下载进度；如果保存失败，下面的 error 状态会回滚这一项。
+                if previous == "pending":
+                    batch_display_completed += 1
+                    batch_display_states[item_id] = "downloaded"
+            elif status == "ready":
+                if previous == "pending":
+                    batch_display_completed += 1
+                batch_display_states[item_id] = "ready"
+            elif status == "error":
+                if previous in {"downloaded", "ready"}:
+                    batch_display_completed = max(0, batch_display_completed - 1)
+                if previous != "error":
+                    batch_display_failed += 1
+                batch_display_states[item_id] = "error"
+
+            emit_stats(
+                progress,
+                force=True,
+                completed_override=batch_display_completed,
+                failed_override=batch_display_failed,
+                phase="batch-download",
+            )
+            item_label = f"{item_id} 已下载，等待整理"
+            if status == "ready":
+                item_label = f"{item_id} 下载完成，等待整理"
+            elif status == "error":
+                item_label = f"{item_id} 下载失败"
+            emit_generation_status(
+                progress,
+                current_item=item_label,
+                force=True,
+                completed_override=batch_display_completed,
+                failed_override=batch_display_failed,
+            )
+
         if item_specs:
             log(
                 "progress",
@@ -1514,7 +1596,10 @@ async def _generate_audio_stream(
             )
             emit_status(f"按音色分组生成中 — 待处理 {len(item_specs)} 道题")
             try:
-                batch_results = await core._synth_items_batch(item_specs)
+                batch_results = await core._synth_items_batch(
+                    item_specs,
+                    progress_callback=on_batch_item_progress,
+                )
             except Exception as error:
                 batch_error = str(error)
 

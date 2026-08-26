@@ -105,6 +105,63 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_batch_download_progress_is_forwarded_per_completed_item(self):
+        segment = self._raw_segment()
+        events = []
+
+        async def fake_batch(jobs, progress_callback=None):
+            for job in jobs:
+                progress_callback({
+                    "job_id": job["job_id"],
+                    "downloaded": True,
+                    "stage": "downloaded",
+                })
+                progress_callback({
+                    "job_id": job["job_id"],
+                    "downloaded": True,
+                    "stage": "saved",
+                })
+            return {
+                job["job_id"]: {"segment": segment, "error": None}
+                for job in jobs
+            }
+
+        item_specs = [
+            {
+                "item_id": "q1",
+                "text": "W: first\nM: second",
+                "rate": 50,
+                "volume": 50,
+                "pitch": 50,
+                "default_voice": core.FEMALE_VOICE,
+            },
+            {
+                "item_id": "q2",
+                "text": "second",
+                "rate": 50,
+                "volume": 50,
+                "pitch": 50,
+                "default_voice": core.FEMALE_VOICE,
+            },
+        ]
+
+        with mock.patch.object(core._xunfei, "synth_xunfei_batch", new=fake_batch):
+            result = await core._synth_items_batch(
+                item_specs,
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(
+            [(event["item_id"], event["status"]) for event in events],
+            [("q1", "downloaded"), ("q1", "ready"), ("q2", "downloaded"), ("q2", "ready")],
+        )
+        self.assertEqual(
+            (events[0]["completed_segments"], events[0]["total_segments"]),
+            (2, 2),
+        )
+        self.assertEqual(set(result), {"q1", "q2"})
+        self.assertTrue(all(result[item_id]["audio"] is not None for item_id in result))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,8 @@ for _stream in (sys.stdout, sys.stderr):
 import re
 import json
 import asyncio
+import inspect
+import threading
 import zipfile
 from datetime import datetime
 
@@ -725,7 +727,7 @@ def _concat_audio_segments(audio_parts):
     return full
 
 
-async def _synth_items_batch(item_specs):
+async def _synth_items_batch(item_specs, progress_callback=None):
     """批量生成多道题，讯飞端先按音色/参数分组后统一下载。
 
     返回 ``item_id -> {audio, error}``。每道题的多角色段落仍按照原文顺序
@@ -738,6 +740,7 @@ async def _synth_items_batch(item_specs):
 
     jobs = []
     item_job_ids = {}
+    job_item_ids = {}
     for item_index, spec in enumerate(item_specs):
         item_id = str(spec["item_id"])
         segment_specs = build_synthesis_segments(
@@ -757,6 +760,7 @@ async def _synth_items_batch(item_specs):
         for segment in segment_specs:
             job_id = f"{item_id}::segment:{segment['segment_index']}"
             ids.append(job_id)
+            job_item_ids[job_id] = item_id
             jobs.append({
                 "job_id": job_id,
                 "item_id": item_id,
@@ -769,7 +773,107 @@ async def _synth_items_batch(item_specs):
             })
         item_job_ids[item_id] = ids
 
-    batch_results = await _xunfei.synth_xunfei_batch(jobs)
+    batch_results = {}
+    progress_consumer = None
+    progress_queue = None
+    progress_futures = []
+    progress_futures_lock = threading.Lock()
+
+    if callable(progress_callback):
+        loop = asyncio.get_running_loop()
+        progress_queue = asyncio.Queue()
+        downloaded_jobs = {item_id: set() for item_id in item_job_ids}
+        saved_jobs = {item_id: {} for item_id in item_job_ids}
+        download_progress_sent = set()
+        final_progress_sent = set()
+
+        async def consume_batch_progress():
+            while True:
+                event = await progress_queue.get()
+                if event is None:
+                    return
+                job_id = str(event.get("job_id") or "")
+                item_id = job_item_ids.get(job_id)
+                if not item_id:
+                    continue
+                stage = str(event.get("stage") or "saved")
+                if stage == "downloaded":
+                    downloaded_jobs[item_id].add(job_id)
+                    if (
+                        len(downloaded_jobs[item_id]) == len(item_job_ids[item_id])
+                        and item_id not in download_progress_sent
+                    ):
+                        download_progress_sent.add(item_id)
+                        try:
+                            callback_result = progress_callback({
+                                "item_id": item_id,
+                                "status": "downloaded",
+                                "completed_segments": len(downloaded_jobs[item_id]),
+                                "total_segments": len(item_job_ids[item_id]),
+                            })
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
+                        except Exception as error:
+                            _log(f"[xunfei] 题目下载进度回调异常（已忽略）: {error}")
+                else:
+                    saved_jobs[item_id][job_id] = bool(event.get("downloaded"))
+                    if (
+                        len(saved_jobs[item_id]) == len(item_job_ids[item_id])
+                        and item_id not in final_progress_sent
+                    ):
+                        final_progress_sent.add(item_id)
+                        failures = [
+                            job_key for job_key, downloaded in saved_jobs[item_id].items()
+                            if not downloaded
+                        ]
+                        try:
+                            callback_result = progress_callback({
+                                "item_id": item_id,
+                                "status": "ready" if not failures else "error",
+                                "completed_segments": len(item_job_ids[item_id]) - len(failures),
+                                "total_segments": len(item_job_ids[item_id]),
+                                "error": event.get("error") if failures else None,
+                            })
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
+                        except Exception as error:
+                            _log(f"[xunfei] 题目保存进度回调异常（已忽略）: {error}")
+
+        progress_consumer = asyncio.create_task(consume_batch_progress())
+
+        def queue_batch_progress(event):
+            if not isinstance(event, dict):
+                return
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    progress_queue.put(dict(event)),
+                    loop,
+                )
+            except RuntimeError:
+                return
+            with progress_futures_lock:
+                progress_futures.append(future)
+
+        try:
+            batch_results = await _xunfei.synth_xunfei_batch(
+                jobs,
+                progress_callback=queue_batch_progress,
+            )
+        finally:
+            # Sync Playwright 在专用线程中调用完所有回调后才会返回；等待
+            # 已排队的跨线程 put 完成，再发送结束标记，防止最后几条进度丢失。
+            with progress_futures_lock:
+                queued_futures = list(progress_futures)
+            if queued_futures:
+                await asyncio.gather(
+                    *(asyncio.wrap_future(future) for future in queued_futures),
+                    return_exceptions=True,
+                )
+            progress_queue.put_nowait(None)
+            await progress_consumer
+    else:
+        batch_results = await _xunfei.synth_xunfei_batch(jobs)
+
     item_results = {}
     for spec in item_specs:
         item_id = str(spec["item_id"])

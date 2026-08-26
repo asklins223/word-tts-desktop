@@ -80,6 +80,60 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(page.keyboard.inserted, [text])
         self.assertEqual(page.keyboard.typed, [])
 
+    def test_voice_cache_is_invalidated_when_xunfei_resets_to_default_voice(self):
+        """提交上一条作品后页面复位时，下一条不能盲信本地音色缓存。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <input class="h-full w-full" placeholder="搜索主播 / 标签">
+        <div id="voices">
+          <button type="button" class="voice-card is-selected" aria-selected="true">
+            <p>Amanda</p><span>女声</span>
+          </button>
+          <button type="button" class="voice-card" aria-selected="false">
+            <p>Linda-品质</p><span>女声</span>
+          </button>
+        </div>
+        <script>
+          for (const button of document.querySelectorAll('.voice-card')) {
+            button.addEventListener('click', () => {
+              for (const other of document.querySelectorAll('.voice-card')) {
+                other.classList.remove('is-selected');
+                other.setAttribute('aria-selected', 'false');
+              }
+              button.classList.add('is-selected');
+              button.setAttribute('aria-selected', 'true');
+            });
+          }
+        </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            session = XunFeiSession()
+            session._current_voice_key = "speaker:linda"
+            session._current_voice_name = "Linda-品质"
+            session._applied_params = {"speed": 50, "pitch": 50, "volume": 50}
+
+            self.assertTrue(
+                session._select_voice(
+                    page,
+                    "Linda-品质",
+                    voice_key="speaker:linda",
+                )
+            )
+            self.assertEqual(
+                page.locator('input[placeholder*="搜索"]').input_value(),
+                "Linda-品质",
+            )
+            self.assertEqual(
+                page.evaluate(xunfei.JS.CHECK_VOICE_SELECTED, "Linda-品质"),
+                "Linda-品质女声",
+            )
+            self.assertIsNone(session._applied_params)
+            browser.close()
+
     def test_existing_sync_session_is_checked_off_the_asyncio_loop(self):
         original_session = xunfei._session
         original_available = xunfei.is_available
@@ -526,6 +580,103 @@ class XunfeiFlowTests(unittest.TestCase):
         )
         self.assertEqual(len(download_batches), 1)
         self.assertEqual(len(download_batches[0]), 3)
+        self.assertTrue(all(result[job["job_id"]]["downloaded"] for job in jobs))
+
+    def test_batch_keeps_multiple_non_default_voice_keys(self):
+        """多角色批量任务不能把自定义音色回退为 Amanda/George。"""
+        xunfei.register_voice_catalog([
+            {"key": "speaker:test-linda", "name": "Linda-品质", "gender": "female"},
+            {"key": "speaker:test-catherine", "name": "Catherine-品质", "gender": "female"},
+            {"key": "speaker:test-steve", "name": "Steve", "gender": "male"},
+        ])
+        session = XunFeiSession()
+        session._logged_in = True
+        generated = []
+
+        def fake_generate(text, **kwargs):
+            generated.append((text, kwargs["voice_key"]))
+            works_id = f"works-{len(generated)}"
+            return {"works_id": works_id, "output_path": f"/tmp/{works_id}.mp3"}
+
+        session._generate_pending_one = fake_generate
+        session._download_pending_batch = lambda pending: {
+            item["works_id"]: {**item, "downloaded": True}
+            for item in pending
+        }
+        jobs = [
+            {"job_id": "linda", "text": "Linda", "voice_key": "speaker:test-linda"},
+            {"job_id": "catherine", "text": "Catherine", "voice_key": "speaker:test-catherine"},
+            {"job_id": "steve", "text": "Steve", "voice_key": "speaker:test-steve"},
+        ]
+
+        result = session.synth_batch(jobs)
+
+        self.assertEqual(
+            [voice_key for _text, voice_key in generated],
+            [job["voice_key"] for job in jobs],
+        )
+        self.assertTrue(all(result[job["job_id"]]["downloaded"] for job in jobs))
+
+    def test_batch_reports_download_and_save_progress(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        events = []
+
+        def fake_generate(text, **kwargs):
+            return {
+                "works_id": f"works-{text}",
+                "output_path": f"/tmp/{text}.mp3",
+            }
+
+        def fake_download(pending, progress_callback=None):
+            for item in pending:
+                progress_callback({
+                    "job_id": item["job_id"],
+                    "downloaded": True,
+                    "stage": "downloaded",
+                })
+                progress_callback({
+                    "job_id": item["job_id"],
+                    "downloaded": True,
+                    "stage": "saved",
+                })
+            return {
+                item["works_id"]: {**item, "downloaded": True}
+                for item in pending
+            }
+
+        session._generate_pending_one = fake_generate
+        session._download_pending_batch = fake_download
+        jobs = [
+            {
+                "job_id": "batch-1",
+                "text": "first",
+                "voice_key": "amanda",
+                "speed": 50,
+                "pitch": 50,
+                "volume": 50,
+            },
+            {
+                "job_id": "batch-2",
+                "text": "second",
+                "voice_key": "amanda",
+                "speed": 50,
+                "pitch": 50,
+                "volume": 50,
+            },
+        ]
+
+        result = session.synth_batch(jobs, progress_callback=events.append)
+
+        self.assertEqual(
+            [(event["job_id"], event["stage"]) for event in events],
+            [
+                ("batch-1", "downloaded"),
+                ("batch-1", "saved"),
+                ("batch-2", "downloaded"),
+                ("batch-2", "saved"),
+            ],
+        )
         self.assertTrue(all(result[job["job_id"]]["downloaded"] for job in jobs))
 
     def test_cleanup_clears_editor_without_navigation(self):
