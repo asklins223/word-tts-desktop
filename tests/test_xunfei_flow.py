@@ -164,6 +164,37 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(plan["base_index"], 0)
         self.assertEqual(plan["correction_groups"], [(1, 1), (3, 3)])
 
+    def test_composite_signature_ranges_batch_sparse_roles_by_configuration(self):
+        session = XunFeiSession()
+        rows = [
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "george", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "george", "speed": 50, "pitch": 50, "volume": 50},
+        ]
+
+        plan = session._composite_signature_ranges(rows)
+
+        self.assertEqual(
+            [entry["ranges"] for entry in plan],
+            [[(0, 0), (2, 2)], [(1, 1), (3, 3)]],
+        )
+
+    def test_composite_signature_ranges_keeps_parameters_separate(self):
+        session = XunFeiSession()
+        rows = [
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 60, "pitch": 50, "volume": 50},
+            {"voice_key": "amanda", "speed": 50, "pitch": 50, "volume": 50},
+        ]
+
+        plan = session._composite_signature_ranges(rows)
+
+        self.assertEqual(
+            [entry["ranges"] for entry in plan],
+            [[(0, 0), (2, 2)], [(1, 1)]],
+        )
+
     def test_long_editor_selection_keeps_one_batch_across_scroll(self):
         """长编辑器不可同时看见首尾时，选区仍不能退化成逐行处理。"""
         try:

@@ -8,7 +8,7 @@
 设计:
   - 使用持久化浏览器配置目录，首次需手动登录，后续自动复用登录状态
   - 单条合成：输入文本 → 选发音人 → 设置语速/语调/音量 → 生成音频 → 确认合成 → 拦截 worksId → 签名 URL 下载
-  - 多人合成：在可见编辑器中输入所有行，先用出现频率最高的配置覆盖全文，再只修正例外区间，插入短停顿后点击页面生成，再按 worksId 下载
+  - 多人合成：在可见编辑器中输入所有行，按音色/参数把不连续段落加入讯飞网页的多段选择队列，一次性标注每个配置组，插入短停顿后点击页面生成，再按 worksId 下载
   - 页面复用：生成阶段保持编辑页，提交完成后进入作品下载页；按 worksId
     获取精确签名地址下载，浏览器下载仅作为按作品名匹配的兜底通道
   - 反批量检测采用行为拟真：击键抖动、随机间隙、真实鼠标事件、系统 Chrome 真实指纹
@@ -82,6 +82,7 @@ PARAM_DEFAULT = 50
 
 IS_MAC = sys.platform == "darwin"
 _SELECT_ALL = "Meta+A" if IS_MAC else "Control+A"
+_MULTI_SELECT_MODIFIER = "Meta" if IS_MAC else "Control"
 
 
 def clamp_param(value, default=PARAM_DEFAULT):
@@ -497,6 +498,50 @@ class JS:
             '.ssml-tag, .ssml-editor-placeholder, [data-type="range_anchor"]'
         ).forEach((node) => node.remove());
         return fragment.textContent || '';
+    }
+    """
+
+    SELECT_EDITOR_ROW = """
+    (rowIndex) => {
+        const paragraph = document.querySelectorAll('.ssml-editor p')[Number(rowIndex)];
+        if (!paragraph) return null;
+        paragraph.scrollIntoView({
+            block: 'center',
+            inline: 'nearest',
+            behavior: 'instant',
+        });
+        const isMetadata = (node) => Boolean(
+            node?.parentElement?.closest(
+                '.ssml-tag, .ssml-editor-placeholder, [data-type="range_anchor"]'
+            )
+        );
+        const textNodes = [];
+        const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node) {
+            if (!isMetadata(node) && node.textContent?.length) textNodes.push(node);
+            node = walker.nextNode();
+        }
+        const first = textNodes[0];
+        const last = textNodes[textNodes.length - 1];
+        if (!first || !last) return null;
+        const range = document.createRange();
+        range.setStart(first, 0);
+        range.setEnd(last, last.textContent?.length || 0);
+        const selection = window.getSelection();
+        if (!selection) return null;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        const rect = paragraph.getBoundingClientRect();
+        return {
+            text: range.cloneContents().textContent || '',
+            box: {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            },
+        };
     }
     """
 
@@ -1669,7 +1714,18 @@ class XunFeiSession:
                     wid = fresh[-1][0]
                     self._works_entries.clear()
                     return wid
-            time.sleep(0.25)
+            # 作品 worksId 是 Playwright response 监听器异步写入的。同步
+            # API 线程如果用 time.sleep，会阻塞事件分发，导致已经成功的
+            # 提交直到超时后才被回调，随后上层误触发整条作品重试。让页面
+            # 自己等待 100ms 可同时泵动真实浏览器事件；无页面时再退回
+            # 普通 sleep（便于单元测试和关闭阶段调用）。
+            if self._page is not None:
+                try:
+                    self._page.wait_for_timeout(100)
+                    continue
+                except Exception:
+                    pass
+            time.sleep(0.1)
         return None
 
     # ------------------------------------------------------------------
@@ -1730,6 +1786,10 @@ class XunFeiSession:
     @staticmethod
     def _clear_editor_with_keyboard(page):
         """只用真实键盘操作清空编辑器，供多人配音 UI 流程使用。"""
+        # 讯飞失败重试时可能还留着 ssml-float-bar；先用键盘收起它，
+        # 避免真实 editor.click 被浮动条遮挡。
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(30)
         editor = page.locator(".ssml-editor").first
         editor.click(timeout=5000)
         page.keyboard.press(_SELECT_ALL)
@@ -1947,6 +2007,219 @@ class XunFeiSession:
         raise XunfeiError(
             f"多人配音 UI 批量选区失败：行 {first_index + 1}-{last_index + 1}；{detail}"
         )
+
+    @classmethod
+    def _read_composite_queue_count(cls, page):
+        """读取讯飞页面多段选择队列数量。
+
+        页面在编辑器滚动后可能暂时不渲染浮动的 ``已选 N 段`` 徽标，
+        但仍会保留每个选区对应的 ``.msq-pending-range`` 装饰节点。
+        徽标和装饰节点都属于网页 UI 状态，后者作为同一页面交互的回读
+        兜底，避免长文档被误判为空队列。
+        """
+        try:
+            # 浮动工具条在滚动期间可能短暂隐藏，但队列状态仍然保留；
+            # 读取隐藏条的文本比把短暂不可见误判成队列已清空更安全。
+            pending = page.locator(".msq-pending-range")
+            pending_count = pending.count()
+            if pending_count > 0:
+                # 连续范围的一次拖选在徽标中计为 1 个队列区间，但页面
+                # 装饰节点会按实际段落各保留一个；这里校验段落覆盖数，
+                # 才能确认没有漏掉连续范围中的第二行。
+                return pending_count
+
+            badge = page.locator(".msq-queue-badge")
+            for index in range(badge.count()):
+                text = badge.nth(index).inner_text(timeout=1000)
+                match = re.search(r"已选\s*(\d+)\s*段", text or "")
+                if match:
+                    return int(match.group(1))
+            return 0
+        except Exception:
+            return 0
+
+    @classmethod
+    def _clear_composite_queue(cls, page):
+        """清空讯飞网页的多段选区队列，不改动编辑器文本。"""
+        try:
+            # 选区浮动条本身会拦截 editor.click。先用真实键盘 Escape
+            # 收起工具条并清掉队列，只有页面仍保留待处理段落时才需要
+            # 再点击编辑器确认焦点。
+            page.keyboard.press("Escape")
+            if cls._read_composite_queue_count(page) == 0:
+                return True
+            page.wait_for_timeout(20)
+            if cls._read_composite_queue_count(page) == 0:
+                return True
+            editor = page.locator(".ssml-editor").first
+            editor.click(timeout=3000)
+            page.keyboard.press("Escape")
+        except Exception:
+            return False
+        return bool(_poll(
+            lambda: cls._read_composite_queue_count(page) == 0,
+            timeout=3,
+            interval=0.1,
+            page=page,
+        ))
+
+    @classmethod
+    def _select_composite_queue_rows(cls, page, rows, ranges, *, native=False):
+        """用讯飞网页真实的 Command/Ctrl 多选队列加入多个不连续区间。
+
+        讯飞的多段队列只在真实 pointerup 带有 Command/Ctrl 修饰键时生效，
+        不能用一次全选替代。因此正常路径先在当前真实页面中用 Range 精确
+        建立一行正文选区，再用带修饰键的真实鼠标 pointerup 加入队列；这
+        比 Playwright 对每行执行 select_text 少一次编辑器节点往返。最终
+        “使用”动作仍只执行一次。Range 路径只负责建立浏览器当前选区，若
+        页面版本没有正确接受它，调用方会清空队列并切回原生 select_text。
+        """
+        normalized_ranges = [
+            (int(first), int(last))
+            for first, last in ranges
+            if int(first) <= int(last)
+        ]
+        if not normalized_ranges:
+            raise XunfeiError("多人配音多段选区没有可加入的目标区间")
+        if cls._read_composite_queue_count(page) != 0:
+            raise XunfeiError("多人配音多段选区开始前仍有上一组待处理选区")
+        if any(
+            first < 0 or last >= len(rows)
+            for first, last in normalized_ranges
+        ):
+            raise XunfeiError("多人配音多段选区索引越界")
+
+        paragraphs = page.locator(".ssml-editor p")
+        if paragraphs.count() != len(rows):
+            raise XunfeiError(
+                "多人配音多段选区前段落数量已变化，拒绝继续操作"
+            )
+
+        def paragraph_text_target(paragraph):
+            # 这里每次都会先由 _input_composite_text 清空编辑器，待标注
+            # 的目标段落不含 speaker 标签；直接操作 <p> 可省掉每行一次
+            # 子节点计数往返。最终套用音色后仍用整组 DOM 回读校验正文。
+            return paragraph
+
+        def select_exact_text(row_index):
+            """用页面 Range 或浏览器原生方式选中一整行正文。"""
+            target = paragraph_text_target(paragraphs.nth(row_index))
+            if not native:
+                selected = _safe_eval(
+                    page,
+                    JS.SELECT_EDITOR_ROW,
+                    row_index,
+                )
+                if not isinstance(selected, dict):
+                    raise XunfeiError(
+                        f"多人配音快速选区失败：第 {row_index + 1} 行不可见"
+                    )
+                expected_text = rows[row_index].get("text") or ""
+                if cls._normalize_selection_text(selected.get("text")) != cls._normalize_selection_text(expected_text):
+                    raise XunfeiError(
+                        f"多人配音快速选区回读失败：第 {row_index + 1} 行正文不一致"
+                    )
+                box = selected.get("box")
+                if not isinstance(box, dict):
+                    raise XunfeiError(
+                        f"多人配音快速选区失败：第 {row_index + 1} 行坐标不可用"
+                    )
+                page.wait_for_timeout(20)
+                return None, box
+
+            # 保留一次轻量居中滚动：讯飞的待处理选区装饰只在目标行进入
+            # 当前编辑器视口后才稳定回读。等待从旧实现的 120ms 降到 30ms，
+            # 仍避免长文档滚动尚未完成就发送 pointerup。
+            try:
+                box = target.evaluate(
+                    """el => {
+                        el.scrollIntoView({
+                        block: 'center',
+                        inline: 'nearest',
+                        behavior: 'instant',
+                        });
+                        const rect = el.getBoundingClientRect();
+                        return {
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                        };
+                    }"""
+                )
+            except Exception:
+                target.scroll_into_view_if_needed(timeout=5000)
+                box = target.bounding_box()
+            page.wait_for_timeout(20)
+            target.select_text(timeout=5000)
+            page.wait_for_timeout(20)
+            return target, box
+
+        def enqueue_current_selection(target, box):
+            """用真实 Command/Ctrl pointerup 把当前 Selection 加入队列。
+
+            讯飞队列监听的是 pointerup，而不是某个内部接口。先由浏览器
+            原生 select_text/Shift-click 完整选区，再只发送一次带修饰键的
+            真实鼠标 pointerup，避免长句换行时依赖鼠标拖动终点。
+            """
+            if not box or box["width"] < 4 or box["height"] < 4:
+                raise XunfeiError("多人配音多段选区目标行不可见")
+            def send_pointerup():
+                page.keyboard.down(_MULTI_SELECT_MODIFIER)
+                try:
+                    # 长段落可能占两三行。讯飞的 pointerup 监听在已有队列
+                    # 遮罩出现后，对段落中间/末行的坐标并不总会触发；首行
+                    # 的正文区域在滚动和浮动工具条出现后仍稳定可用。
+                    y = box["y"] + min(6, max(3, box["height"] * 0.12))
+                    page.mouse.move(
+                        box["x"] + box["width"] / 2,
+                        y,
+                    )
+                    page.mouse.up()
+                finally:
+                    page.keyboard.up(_MULTI_SELECT_MODIFIER)
+
+            send_pointerup()
+            # 不逐行轮询装饰节点：讯飞会把选区装饰异步批量渲染，逐行等
+            # 反而会在打包客户端里累积数百毫秒。固定给事件 35ms 落地，
+            # 最终统一用 expected_count 回读；总数不符时由上层清空队列
+            # 后重试整组，避免以速度换取漏段。
+            page.wait_for_timeout(35)
+
+        # 每行加入同一队列；连续配置仍由上层合并为一个配置组，后续只
+        # 点击一次“使用”，不会退化成逐段打开音色面板。
+        for first, last in normalized_ranges:
+            for row_index in range(first, last + 1):
+                target, box = select_exact_text(row_index)
+                enqueue_current_selection(target, box)
+
+        # 队列装饰按实际段落保留一个节点，徽标则可能按连续区间计数；
+        # 这里校验段落覆盖总数，避免漏掉任一目标行。
+        expected_count = sum(
+            last - first + 1 for first, last in normalized_ranges
+        )
+        def expected_queue_count():
+            current = cls._read_composite_queue_count(page)
+            return current if current == expected_count else None
+
+        actual_count = _poll(
+            expected_queue_count,
+            timeout=5,
+            interval=0.15,
+            max_interval=0.6,
+            page=page,
+        )
+        if actual_count != expected_count:
+            cls._clear_composite_queue(page)
+            raise XunfeiError(
+                "多人配音多段选区数量校验失败："
+                f"期望 {expected_count} 个待选段，实际 {actual_count} 个"
+            )
+        _log(
+            f"[xunfei]   多人配音已加入多段选区："
+            f"{len(normalized_ranges)} 个配置区间、{expected_count} 行"
+        )
+        return actual_count
 
     def _select_voice(self, page, voice_name, voice_key=None):
         """搜索并选择指定发音人，并以页面实际选中态校验缓存。"""
@@ -3187,6 +3460,14 @@ class XunFeiSession:
     @classmethod
     def _composite_ui_scope(cls, page):
         """返回当前多人配音弹层，避免点击被背景遮罩或旧卡片拦截。"""
+        search_selector = (
+            'input[placeholder*="输入主播名称进行搜索"]:visible, '
+            'input[placeholder*="输入主播名称"]:visible'
+        )
+        # 大多数调用发生在编辑器工具栏（尤其是批量停顿）上，此时
+        # 页面没有弹层。先做一次直接查询，避免每次都遍历 fixed 根节点。
+        if page.locator(search_selector).count() == 0:
+            return page
         roots = page.locator(
             'div.fixed:visible, [role="dialog"]:visible, .ant-modal:visible'
         )
@@ -3206,26 +3487,39 @@ class XunFeiSession:
     def _click_composite_ui_control(cls, page, label):
         """点击可见的多人配音工具按钮，使用真实 Playwright click。"""
         expected = cls._normalize_composite_ui_text(label)
+        # 停顿按钮会被连续点击很多次，但每次的可访问名称都稳定为
+        # ``2s``/``1s`` 等。优先直接定位这个可见 UI 按钮，避免每处停顿
+        # 都重新扫描整页几十个控件；点击仍是 Playwright 的真实 click，
+        # 找不到时再走下面的严格元数据扫描兜底。
+        if re.fullmatch(r"\d+(?:\.\d+)?s", expected):
+            try:
+                direct = page.get_by_role("button", name=label, exact=True).last
+                direct.click(timeout=500)
+                return True
+            except Exception:
+                pass
         scope = cls._composite_ui_scope(page)
         controls = scope.locator(
             'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
             '.cursor-pointer:visible'
         )
         try:
-            for index in range(min(controls.count(), 200)):
-                control = controls.nth(index)
-                try:
-                    text = control.inner_text(timeout=500)
-                except Exception:
+            # 逐个 inner_text/is_disabled 会产生大量 Playwright ↔ 浏览器
+            # 往返，打包客户端里尤其明显。这里只把当前可见控件的必要
+            # 元数据一次性读回，最终 click 仍然使用真实页面控件。
+            metadata = controls.evaluate_all(
+                """els => els.map((el, index) => ({
+                    index,
+                    text: (el.innerText || '').trim(),
+                    disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+                }))"""
+            )
+            for item in metadata[:200]:
+                if cls._normalize_composite_ui_text(item.get("text")) != expected:
                     continue
-                if cls._normalize_composite_ui_text(text) != expected:
+                if item.get("disabled"):
                     continue
-                try:
-                    if control.is_disabled():
-                        continue
-                except Exception:
-                    pass
-                control.click(timeout=5000)
+                controls.nth(int(item["index"])).click(timeout=5000)
                 return True
         except Exception:
             pass
@@ -3247,36 +3541,39 @@ class XunFeiSession:
             '.cursor-pointer:visible'
         )
         candidates = []
-        for index in range(min(controls.count(), 300)):
-            control = controls.nth(index)
-            try:
-                text = control.inner_text(timeout=500)
-            except Exception:
-                continue
+        try:
+            metadata = controls.evaluate_all(
+                """els => els.map((el, index) => ({
+                    index,
+                    text: (el.innerText || '').trim(),
+                    tagName: el.tagName || '',
+                    className: typeof el.className === 'string' ? el.className : '',
+                    disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+                    alt: el.querySelector('img[alt]')?.getAttribute('alt') || '',
+                }))"""
+            )
+        except Exception:
+            return None
+        for item in metadata[:300]:
+            index = int(item["index"])
+            text = str(item.get("text") or "")
             if not cls._composite_ui_text_matches(text, voice_name):
                 continue
             normalized = cls._normalize_composite_ui_text(text)
             if normalized in {"多人配音", "使用"} or "使用" in normalized:
                 continue
-            try:
-                if control.is_disabled():
-                    continue
-            except Exception:
-                pass
-            try:
-                tag_name = str(control.evaluate("el => el.tagName") or "").upper()
-                images = control.locator("img[alt]:visible")
-                if images.count() == 0:
-                    continue
-                alt = str(images.first.get_attribute("alt") or "")
-                if not cls._composite_ui_text_matches(
-                    f"{alt} {text}", voice_name
-                ):
-                    continue
-                class_name = str(control.get_attribute("class") or "")
-            except Exception:
+            if item.get("disabled"):
                 continue
-            candidates.append((tag_name, class_name, control))
+            alt = str(item.get("alt") or "")
+            if not cls._composite_ui_text_matches(f"{alt} {text}", voice_name):
+                continue
+            candidates.append(
+                (
+                    str(item.get("tagName") or "").upper(),
+                    str(item.get("className") or ""),
+                    controls.nth(index),
+                )
+            )
 
         # 讯飞当前页面的搜索结果是 div.w-full 卡片，最近使用列表是
         # button。保留同名情况下的搜索结果优先级，同时兼容未来把结果
@@ -3297,33 +3594,113 @@ class XunFeiSession:
     @classmethod
     def _open_composite_voice_panel(cls, page):
         """打开“多人配音”面板，并返回其搜索框。"""
-        search = page.locator(
+        search_selector = (
             'input[placeholder*="输入主播名称进行搜索"]:visible, '
             'input[placeholder*="输入主播名称"]:visible'
         )
+        search = page.locator(search_selector)
         if search.count() == 0:
-            if not cls._click_composite_ui_control(page, "多人配音"):
+            # 队列刚完成时工具栏按钮可能有几十到几百毫秒的 disabled
+            # 状态。立即判失败会触发整组重试，客户端看起来就会慢很多；
+            # 这里只等待按钮真正可用，正常路径第一次轮询即完成。
+            clicked = _poll(
+                lambda: (
+                    True
+                    if cls._click_composite_ui_control(page, "多人配音")
+                    else None
+                ),
+                timeout=4,
+                interval=0.08,
+                max_interval=0.3,
+                page=page,
+            )
+            if not clicked:
                 raise XunfeiError("未找到可用的“多人配音”按钮")
             search = _poll(
                 lambda: (
-                    page.locator(
-                        'input[placeholder*="输入主播名称进行搜索"]:visible, '
-                        'input[placeholder*="输入主播名称"]:visible'
-                    )
-                    if page.locator(
-                        'input[placeholder*="输入主播名称进行搜索"]:visible, '
-                        'input[placeholder*="输入主播名称"]:visible'
-                    ).count() > 0
+                    page.locator(search_selector)
+                    if page.locator(search_selector).count() > 0
                     else None
                 ),
                 timeout=8,
-                interval=0.25,
-                max_interval=0.8,
+                interval=0.08,
+                max_interval=0.4,
                 page=page,
             )
         if not search or search.count() == 0:
             raise XunfeiError("“多人配音”面板未加载音色搜索框")
         return search.first
+
+    @classmethod
+    def _close_composite_voice_panel(cls, page):
+        """关闭多人配音音色面板，避免失败重试时遮挡编辑器。
+
+        音色卡片搜索失败时，讯飞页面仍会保留一个 fixed 遮罩层。这个
+        遮罩层会拦截编辑器的真实 click，导致后续重新输入看起来像是
+        编辑器坏了。优先使用页面支持的 Escape，再在仍可见时点击面板
+        内的明确关闭/取消控件；整个过程只使用浏览器可见 UI 操作。
+        """
+        search_selector = (
+            'input[placeholder*="输入主播名称进行搜索"]:visible, '
+            'input[placeholder*="输入主播名称"]:visible'
+        )
+
+        def panel_closed():
+            return page.locator(search_selector).count() == 0
+
+        if panel_closed():
+            return True
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        if _poll(
+            panel_closed,
+            timeout=1.5,
+            interval=0.1,
+            max_interval=0.4,
+            page=page,
+        ):
+            return True
+
+        # 某些页面版本不响应 Escape，但面板会渲染“关闭/取消”按钮。
+        # 只在包含音色搜索框的 fixed 弹层内匹配，避免误点编辑器其它按钮。
+        try:
+            search = page.locator(search_selector).first
+            scope = search.locator(
+                'xpath=ancestor::*[contains(@class, "fixed")][1]'
+            )
+            controls = scope.locator(
+                'button:visible, [role="button"]:visible'
+            )
+            close_labels = {"关闭", "取消", "×", "✕", "close", "cancel"}
+            for index in range(min(controls.count(), 100)):
+                control = controls.nth(index)
+                label = ""
+                try:
+                    label = (control.inner_text(timeout=500) or "").strip()
+                except Exception:
+                    pass
+                aria = (control.get_attribute("aria-label") or "").strip()
+                title = (control.get_attribute("title") or "").strip()
+                if not any(
+                    value.casefold() in close_labels
+                    for value in (label, aria, title)
+                    if value
+                ):
+                    continue
+                control.click(timeout=3000)
+                if _poll(
+                    panel_closed,
+                    timeout=1.5,
+                    interval=0.1,
+                    max_interval=0.4,
+                    page=page,
+                ):
+                    return True
+        except Exception:
+            pass
+        return panel_closed()
 
     @classmethod
     def _apply_composite_ui_params(cls, page, speed, pitch, volume):
@@ -3355,13 +3732,31 @@ class XunFeiSession:
 
         for index, (label, value) in enumerate(zip(labels, targets)):
             field = inputs.nth(index)
+
+            def read_expected_value():
+                try:
+                    actual_value = field.input_value(timeout=1000).strip()
+                except Exception:
+                    return None
+                return actual_value if actual_value == str(value) else None
+
             try:
                 field.click(timeout=3000)
                 page.keyboard.press(_SELECT_ALL)
                 page.keyboard.type(str(value))
                 page.keyboard.press("Tab")
-                page.wait_for_timeout(180)
-                actual = field.input_value(timeout=1000).strip()
+                # 输入框的 DOM value 会先于讯飞 React 表单状态更新；
+                # 不能只看到 input_value 正确就立即点击“使用”，否则
+                # 会把上一组音色的旧参数带入标记。80ms 足够让 blur/input
+                # 状态落地，仍比原先每项固定 180ms 更快。
+                page.wait_for_timeout(80)
+                actual = _poll(
+                    read_expected_value,
+                    timeout=1.2,
+                    interval=0.025,
+                    max_interval=0.12,
+                    page=page,
+                )
             except Exception as error:
                 raise XunfeiError(
                     f"多人配音 UI 参数[{label}]设置失败: {error}"
@@ -3397,6 +3792,31 @@ class XunFeiSession:
                 previous = current
         groups.append((start, len(rows) - 1))
         return groups
+
+    @classmethod
+    def _composite_signature_ranges(cls, rows):
+        """按最终配置收集不连续的连续区间，供讯飞多段选择队列使用。
+
+        讯飞编辑器支持按住 Command/Ctrl 依次加入多个不连续选区，随后
+        对队列统一套用音色和三项参数。这里保留连续区间边界用于规划、
+        校验和日志统计；实际长文档按行用浏览器原生精确选区加入队列，
+        避免跨滚动或换行造成误选，同时不再用全文覆盖去修正例外。
+        """
+        groups = {}
+        order = []
+        for first_index, last_index in cls._composite_row_groups(rows):
+            signature = cls._composite_row_signature(rows[first_index])
+            if signature not in groups:
+                groups[signature] = []
+                order.append(signature)
+            groups[signature].append((first_index, last_index))
+        return [
+            {
+                "signature": signature,
+                "ranges": groups[signature],
+            }
+            for signature in order
+        ]
 
     @classmethod
     def _composite_marking_plan(cls, rows):
@@ -3507,48 +3927,101 @@ class XunFeiSession:
         config_row=None,
     ):
         """确认目标行只有一个完整、正确的音色标记。"""
-        paragraphs = page.locator(".ssml-editor p")
-        expected_id = str(speaker_number)
-        for index in range(first_index, last_index + 1):
-            marks = paragraphs.nth(index).locator(
-                ".ssml-text-mark-speaker"
+        return cls._verify_composite_voice_marks_ranges(
+            page,
+            rows,
+            [(first_index, last_index)],
+            voice_name,
+            speaker_number,
+            config_row,
+        )
+
+    @classmethod
+    def _verify_composite_voice_marks_ranges(
+        cls, page, rows, ranges, voice_name, speaker_number, config_row=None
+    ):
+        """确认多个不连续选区中的每一行都只保留目标音色标记。"""
+        del voice_name  # 仅用于保留原调用签名，页面回读以 speakerNo 为准。
+        expected_indices = [
+            index
+            for first_index, last_index in ranges
+            for index in range(first_index, last_index + 1)
+        ]
+        if not expected_indices:
+            return False
+        try:
+            snapshot = page.evaluate(
+                """indices => indices.map(index => {
+                    const paragraph = document.querySelectorAll('.ssml-editor p')[index];
+                    if (!paragraph) return {index, paragraph: false};
+                    const marks = Array.from(
+                        paragraph.querySelectorAll('.ssml-text-mark-speaker')
+                    );
+                    return {
+                        index,
+                        paragraph: true,
+                        markCount: marks.length,
+                        marks: marks.map(mark => {
+                            const content = Array.from(
+                                mark.querySelectorAll(
+                                    'span.range-annotation-content.speaker-content'
+                                )
+                            ).filter(el => (
+                                !el.classList.contains('ssml-tag')
+                                && el.getAttribute('data-type') !== 'range_anchor'
+                            ));
+                            return {
+                                speakerId: mark.getAttribute('data-speaker-id') || '',
+                                rate: mark.getAttribute('data-rate') || '',
+                                pitch: mark.getAttribute('data-pitch') || '',
+                                volume: mark.getAttribute('data-volume') || '',
+                                contentCount: content.length,
+                                contentText: content.length === 1
+                                    ? (content[0].textContent || '')
+                                    : '',
+                            };
+                        }),
+                    };
+                })""",
+                expected_indices,
             )
+        except Exception:
+            return False
+        if not isinstance(snapshot, list) or len(snapshot) != len(expected_indices):
+            return False
+
+        expected_id = str(speaker_number)
+        expected_params = None
+        if config_row is not None:
+            expected_params = {
+                "rate": str(clamp_param(config_row.get("speed", PARAM_DEFAULT))),
+                "pitch": str(clamp_param(config_row.get("pitch", PARAM_DEFAULT))),
+                "volume": str(clamp_param(config_row.get("volume", PARAM_DEFAULT))),
+            }
+        for item, index in zip(snapshot, expected_indices):
             # 一个逻辑行只能有一个完整 speaker mark。只要保留旧标记、
             # 产生混合标记或标记被截成两段，都必须失败，不能“有一个对的
             # 标记就算通过”，否则最终作品会出现错音色片段。
-            if marks.count() != 1:
+            if not item.get("paragraph") or item.get("markCount") != 1:
                 return False
-            mark = marks.first
-            mark_id = (mark.get_attribute("data-speaker-id") or "").strip()
-            if mark_id != expected_id:
+            mark = item.get("marks", [None])[0]
+            if not isinstance(mark, dict) or mark.get("speakerId") != expected_id:
                 return False
-
-            if config_row is not None:
-                expected_params = {
-                    "data-rate": clamp_param(config_row.get("speed", PARAM_DEFAULT)),
-                    "data-pitch": clamp_param(config_row.get("pitch", PARAM_DEFAULT)),
-                    "data-volume": clamp_param(config_row.get("volume", PARAM_DEFAULT)),
-                }
+            if expected_params is not None:
                 for attribute, expected_value in expected_params.items():
-                    actual_value = (mark.get_attribute(attribute) or "").strip()
-                    if actual_value != str(expected_value):
+                    if mark.get(attribute) != expected_value:
                         return False
-
-            content = mark.locator(
-                'span.range-annotation-content.speaker-content'
-                ':not(.ssml-tag):not([data-type="range_anchor"])'
-            )
-            if content.count() != 1:
+            if mark.get("contentCount") != 1:
                 return False
             expected_text = str(rows[index].get("text") or "")
-            actual_text = content.first.text_content(timeout=1000) or ""
-            if cls._normalize_selection_text(actual_text) != cls._normalize_selection_text(expected_text):
+            if cls._normalize_selection_text(mark.get("contentText")) != cls._normalize_selection_text(expected_text):
                 return False
         return True
 
     @classmethod
     def _apply_composite_voice_to_selection(
-        cls, page, rows, first_index, last_index, *, config_row=None
+        cls, page, rows, first_index, last_index, *, config_row=None,
+        verify_ranges=None,
     ):
         """给当前精确选区设置音色、参数，并回读页面的 speaker 标记。"""
         first_row = config_row or rows[first_index]
@@ -3561,35 +4034,54 @@ class XunFeiSession:
                 if cls._composite_row_signature(rows[index]) != cls._composite_row_signature(first_row):
                     raise XunfeiError("多人配音批量选区包含不同音色或参数，拒绝套用")
 
+        phase_started_at = time.perf_counter()
         search = cls._open_composite_voice_panel(page)
-        search.click(timeout=3000)
-        page.keyboard.press(_SELECT_ALL)
-        page.keyboard.type(voice_name)
-        card = _poll(
-            lambda: cls._find_composite_voice_card(page, voice_name),
-            timeout=8,
-            interval=0.25,
-            max_interval=0.8,
-            page=page,
-        )
+        panel_open_ms = round((time.perf_counter() - phase_started_at) * 1000)
+        card = None
+        for search_attempt in range(2):
+            search.click(timeout=3000)
+            page.keyboard.press(_SELECT_ALL)
+            page.keyboard.type(voice_name)
+            card = _poll(
+                lambda: cls._find_composite_voice_card(page, voice_name),
+                timeout=5,
+                interval=0.08,
+                max_interval=0.35,
+                page=page,
+            )
+            if card is not None:
+                break
+            if search_attempt == 0:
+                # 搜索结果偶尔会因弹层刚打开而没有挂载。重新打开同一
+                # 个网页面板即可恢复，不改变编辑器选区，也不盲点其它
+                # 音色卡片。
+                cls._close_composite_voice_panel(page)
+                search = cls._open_composite_voice_panel(page)
         if card is None:
             raise XunfeiError(f"多人配音面板未找到音色卡片: {voice_name}")
         card.click(timeout=5000)
-        page.wait_for_timeout(250)
+        # 选中卡片后面板会重新挂载三项参数输入框；输入框数量出现
+        # 之前，旧的输入节点也可能短暂可见。给 React 一次短落地时间，
+        # 避免把参数发给上一张卡片的旧表单。
+        page.wait_for_timeout(180)
+        card_ms = round((time.perf_counter() - phase_started_at) * 1000)
+        params_started_at = time.perf_counter()
         cls._apply_composite_ui_params(
             page,
             first_row.get("speed", PARAM_DEFAULT),
             first_row.get("pitch", PARAM_DEFAULT),
             first_row.get("volume", PARAM_DEFAULT),
         )
+        params_ms = round((time.perf_counter() - params_started_at) * 1000)
+        apply_started_at = time.perf_counter()
         if not cls._click_composite_ui_control(page, "使用"):
             raise XunfeiError(f"多人配音面板未找到可用的“使用”按钮: {voice_name}")
+        ranges_to_verify = verify_ranges or [(first_index, last_index)]
         verified = _poll(
-            lambda: cls._verify_composite_voice_marks(
+            lambda: cls._verify_composite_voice_marks_ranges(
                 page,
                 rows,
-                first_index,
-                last_index,
+                ranges_to_verify,
                 voice_name,
                 speaker_number,
                 first_row,
@@ -3604,43 +4096,129 @@ class XunFeiSession:
                 f"多人配音音色标记回读失败：行 {first_index + 1}-{last_index + 1} "
                 f"未确认使用 {voice_name}"
             )
+        apply_ms = round((time.perf_counter() - apply_started_at) * 1000)
+        # 讯飞页面对包含连续范围的队列有时会保留 pending-range 装饰，
+        # 虽然音色已经成功套用。显式用 Escape 清理网页队列，确保下一
+        # 个音色配置组不会把上一组的待处理段落一起带入。
+        if verify_ranges and not cls._clear_composite_queue(page):
+            raise XunfeiError("多人配音上一组多段选区未能清理")
         _log(
-            f"[xunfei]   多人配音已设置行 {first_index + 1}-{last_index + 1}: "
-            f"{voice_name}, speed={clamp_param(first_row.get('speed'))}, "
-            f"pitch={clamp_param(first_row.get('pitch'))}, "
-            f"volume={clamp_param(first_row.get('volume'))}"
+            f"[xunfei]   多人配音配置细分 {voice_name}："
+            f"面板 {panel_open_ms}ms，音色卡片 {card_ms - panel_open_ms}ms，"
+            f"参数 {params_ms}ms，应用回读 {apply_ms}ms"
+        )
+        if not verify_ranges:
+            _log(
+                f"[xunfei]   多人配音已设置行 {first_index + 1}-{last_index + 1}: "
+                f"{voice_name}, speed={clamp_param(first_row.get('speed'))}, "
+                f"pitch={clamp_param(first_row.get('pitch'))}, "
+                f"volume={clamp_param(first_row.get('volume'))}"
+            )
+
+    @classmethod
+    def _apply_composite_voice_to_queue(cls, page, rows, ranges):
+        """对讯飞网页多段选择队列一次性设置音色和三项参数。"""
+        if not ranges:
+            raise XunfeiError("多人配音多段选区没有可套用的音色配置")
+        first_index = ranges[0][0]
+        first_row = rows[first_index]
+        expected_signature = cls._composite_row_signature(first_row)
+        if any(
+            cls._composite_row_signature(rows[index]) != expected_signature
+            for first, last in ranges
+            for index in range(first, last + 1)
+        ):
+            raise XunfeiError("多人配音多段选区包含不同音色或参数，拒绝套用")
+
+        cls._apply_composite_voice_to_selection(
+            page,
+            rows,
+            first_index,
+            ranges[0][1],
+            config_row=first_row,
+            verify_ranges=ranges,
+        )
+        _log(
+            f"[xunfei]   多人配音已统一设置 {len(ranges)} 个区间、"
+            f"{sum(last - first + 1 for first, last in ranges)} 行: "
+            f"{get_voice_info(first_row.get('voice_key') or DEFAULT_FEMALE)['name']}"
         )
 
     @classmethod
-    def _insert_composite_pause(cls, page, row_index, boundary_ms):
+    def _read_composite_pause_issues(cls, page, boundaries):
+        """一次回读所有停顿标记，避免每个段落都单独查询 DOM。"""
+        expected = [
+            {"row": int(row_index), "value": str(int(boundary_ms))}
+            for row_index, boundary_ms in boundaries
+        ]
+        try:
+            result = page.evaluate(
+                """expected => expected.map(({row, value}) => {
+                    const paragraph = document.querySelectorAll('.ssml-editor p')[row];
+                    const count = paragraph
+                        ? Array.from(paragraph.querySelectorAll('[data-type="break"]'))
+                            .filter(el => el.getAttribute('data-value') === value).length
+                        : 0;
+                    return {row, value, count};
+                }).filter(item => item.count !== 1)""",
+                expected,
+            )
+        except Exception:
+            return expected
+        return result if isinstance(result, list) else expected
+
+    @classmethod
+    def _insert_composite_pause(
+        cls, page, row_index, boundary_ms, *, emit_log=True, verify=True
+    ):
         """在指定题目末行末尾通过页面停顿按钮插入内部定位标记。"""
         paragraphs = page.locator(".ssml-editor p")
-        if row_index < 0 or row_index >= paragraphs.count():
-            raise XunfeiError("多人配音停顿位置超出编辑器段落范围")
         paragraph = paragraphs.nth(row_index)
         # 先选中整行，再用方向键折叠到文本末尾，避免点击段落中部把
-        # 停顿插到句中或被浏览器保留为跨段选区。
-        paragraph.select_text(timeout=5000)
+        # 停顿插到句中或被浏览器保留为跨段选区。正常路径直接在当前页面
+        # 建立正文 Range，避免每处停顿额外等待一次 Playwright select_text；
+        # 页面版本不接受该选区时再回退到原生方式。
+        fast_selection = _safe_eval(page, JS.SELECT_EDITOR_ROW, row_index)
+        fast_box = fast_selection.get("box") if isinstance(fast_selection, dict) else None
+        if not isinstance(fast_box, dict) or not fast_selection.get("text"):
+            if row_index < 0 or row_index >= paragraphs.count():
+                raise XunfeiError("多人配音停顿位置超出编辑器段落范围")
+            paragraph.select_text(timeout=5000)
+        else:
+            page.wait_for_timeout(10)
         page.keyboard.press("ArrowRight")
-        page.wait_for_timeout(100)
+        # select_text + ArrowRight 都是同步的浏览器输入动作；只给页面
+        # 一个很短的事件循环机会，实际插入结果由下面的回读轮询确认。
+        page.wait_for_timeout(10)
         label = f"{int(boundary_ms) / 1000:g}s"
-        if not cls._click_composite_ui_control(page, label):
-            raise XunfeiError(f"未找到讯飞停顿按钮: {label}")
-        selector = (
-            f'[data-type="break"][data-value="{int(boundary_ms)}"]'
-        )
-        inserted = _poll(
-            lambda: paragraphs.nth(row_index).locator(selector).count() > 0,
-            timeout=5,
-            interval=0.2,
-            max_interval=0.8,
+        clicked = _poll(
+            lambda: (
+                True if cls._click_composite_ui_control(page, label) else None
+            ),
+            timeout=1.5,
+            interval=0.04,
+            max_interval=0.2,
             page=page,
         )
-        if not inserted:
-            raise XunfeiError(
-                f"讯飞停顿插入校验失败：第 {row_index + 1} 行未找到 {boundary_ms}ms 标记"
+        if not clicked:
+            raise XunfeiError(f"未找到讯飞停顿按钮: {label}")
+        if verify:
+            selector = (
+                f'[data-type="break"][data-value="{int(boundary_ms)}"]'
             )
-        _log(f"[xunfei]   已在第 {row_index + 1} 行后插入 {label} 停顿")
+            inserted = _poll(
+                lambda: paragraphs.nth(row_index).locator(selector).count() > 0,
+                timeout=3,
+                interval=0.04,
+                max_interval=0.2,
+                page=page,
+            )
+            if not inserted:
+                raise XunfeiError(
+                    f"讯飞停顿插入校验失败：第 {row_index + 1} 行未找到 {boundary_ms}ms 标记"
+                )
+        if emit_log:
+            _log(f"[xunfei]   已在第 {row_index + 1} 行后插入 {label} 停顿")
 
     @classmethod
     def _prepare_composite_editor(cls, page, work):
@@ -3649,53 +4227,180 @@ class XunFeiSession:
         rows, boundaries = cls._composite_ui_rows(work)
         cls._input_composite_text(page, rows)
         groups = cls._composite_row_groups(rows)
-        marking_plan = cls._composite_marking_plan(rows)
-        base_index = marking_plan["base_index"]
-        correction_groups = marking_plan["correction_groups"]
+        queue_plan = cls._composite_signature_ranges(rows)
         _log(
             f"[xunfei]   多人配音 UI 已输入 {len(rows)} 行，"
-            f"原连续配置 {len(groups)} 组；采用基准覆盖后需修正 "
-            f"{len(correction_groups)} 个区间"
+            f"原连续配置 {len(groups)} 组；多段队列将按 "
+            f"{len(queue_plan)} 个音色/参数组统一标注"
         )
 
-        # 交错角色不能用 Chrome 原生 Selection 安全地组成多个非连续
-        # Range。先覆盖全文，再修正例外区间，最终页面上的每一行仍会经过
-        # speaker 标记回读校验。若“全文选区”在某个讯飞页面版本失败，
-        # 重新输入文本后退回连续区间方案，保证正确性优先。
+        # 讯飞新版编辑器提供真实的 Command/Ctrl 多段选择队列：同一配置的
+        # 不连续行先全部加入队列，再一次点击“使用”统一设置音色和参数。
+        # 若页面版本没有该能力或队列回读失败，重新输入文本后退回旧的
+        # 连续区间方案，保证正确性优先。
+        queue_error = None
+        # 正常路径使用页面 Range 建立选区，遇到页面版本不接受 Range
+        # 时，后续整批都切换为原生 select_text，避免在同一批任务中反复
+        # 试探两种选区机制。
+        native_selection = False
+        for queue_attempt in range(2):
+            if queue_attempt:
+                native_selection = True
+                _log(
+                    "[xunfei]   多人配音多段队列应用回读失败，"
+                    "重新输入全部文本后再试一次"
+                )
+                cls._close_composite_voice_panel(page)
+                cls._clear_composite_queue(page)
+                cls._input_composite_text(page, rows)
+            try:
+                for entry_index, entry in enumerate(queue_plan, start=1):
+                    group_started_at = time.perf_counter()
+                    ranges = entry["ranges"]
+                    selection_error = None
+                    for selection_attempt in range(2):
+                        try:
+                            cls._select_composite_queue_rows(
+                                page,
+                                rows,
+                                ranges,
+                                native=(native_selection or selection_attempt > 0),
+                            )
+                            selection_error = None
+                            break
+                        except XunfeiError as error:
+                            selection_error = error
+                            retryable = (
+                                "多人配音 UI 选区校验失败" in str(error)
+                                or "多人配音多段选区数量校验失败" in str(error)
+                                or "多人配音快速选区" in str(error)
+                            )
+                            if selection_attempt == 0 and retryable:
+                                native_selection = True
+                                _log(
+                                    "[xunfei]   多人配音多段选区回读不一致，"
+                                    "清空当前队列后重试一次"
+                                )
+                                if not cls._clear_composite_queue(page):
+                                    break
+                                continue
+                            break
+                    if selection_error:
+                        raise selection_error
+                    cls._apply_composite_voice_to_queue(page, rows, ranges)
+                    voice_name = get_voice_info(
+                        rows[ranges[0][0]].get("voice_key") or DEFAULT_FEMALE
+                    )["name"]
+                    group_duration_ms = round(
+                        (time.perf_counter() - group_started_at) * 1000
+                    )
+                    _log(
+                        f"[xunfei]   多人配音配置组 {entry_index}/{len(queue_plan)} "
+                        f"已完成：{voice_name}，{sum(last - first + 1 for first, last in ranges)} 行，"
+                        f"耗时 {group_duration_ms}ms"
+                    )
+                queue_error = None
+                break
+            except XunfeiError as error:
+                queue_error = error
+                cls._close_composite_voice_panel(page)
+                cls._clear_composite_queue(page)
+
         try:
-            cls._select_editor_rows(page, rows, 0, len(rows) - 1)
-            cls._apply_composite_voice_to_selection(
-                page,
-                rows,
-                0,
-                len(rows) - 1,
-                config_row=rows[base_index],
-            )
+            if queue_error:
+                raise queue_error
         except XunfeiError as error:
             _log(
-                f"[xunfei]   多人配音全文基准标注失败，重新输入后按连续区间处理: {error}"
+                f"[xunfei]   多人配音多段队列不可用，重新输入后按连续区间处理: {error}"
             )
+            cls._close_composite_voice_panel(page)
+            cls._clear_composite_queue(page)
             cls._input_composite_text(page, rows)
-            for first_index, last_index in groups:
-                cls._select_editor_rows(page, rows, first_index, last_index)
+            marking_plan = cls._composite_marking_plan(rows)
+            base_index = marking_plan["base_index"]
+            correction_groups = marking_plan["correction_groups"]
+            try:
+                cls._select_editor_rows(page, rows, 0, len(rows) - 1)
                 cls._apply_composite_voice_to_selection(
-                    page, rows, first_index, last_index
+                    page,
+                    rows,
+                    0,
+                    len(rows) - 1,
+                    config_row=rows[base_index],
                 )
+            except XunfeiError as fallback_error:
+                _log(
+                    f"[xunfei]   多人配音全文基准标注失败，按连续区间处理: {fallback_error}"
+                )
+                cls._close_composite_voice_panel(page)
+                cls._input_composite_text(page, rows)
+                for first_index, last_index in groups:
+                    cls._select_editor_rows(page, rows, first_index, last_index)
+                    cls._apply_composite_voice_to_selection(
+                        page, rows, first_index, last_index
+                    )
+            else:
+                for first_index, last_index in correction_groups:
+                    cls._select_editor_rows(page, rows, first_index, last_index)
+                    cls._apply_composite_voice_to_selection(
+                        page, rows, first_index, last_index
+                    )
+            marking_mode = "连续区间回退"
+            marking_group_count = len(correction_groups) + 1
         else:
-            for first_index, last_index in correction_groups:
-                cls._select_editor_rows(page, rows, first_index, last_index)
-                cls._apply_composite_voice_to_selection(
-                    page, rows, first_index, last_index
-                )
+            marking_mode = "多段队列"
+            marking_group_count = len(queue_plan)
 
         marking_duration_ms = round((time.perf_counter() - started_at) * 1000)
         _log(
-            f"[xunfei]   多人配音音色标注完成：全文基准 1 次，"
-            f"例外修正 {len(correction_groups)} 组，耗时 {marking_duration_ms}ms"
+            f"[xunfei]   多人配音音色标注完成：模式={marking_mode}，"
+            f"统一配置组 {marking_group_count} 组，耗时 {marking_duration_ms}ms"
         )
 
+        pause_started_at = time.perf_counter()
         for row_index, boundary_ms in boundaries:
-            cls._insert_composite_pause(page, row_index, boundary_ms)
+            cls._insert_composite_pause(
+                page,
+                row_index,
+                boundary_ms,
+                emit_log=False,
+                verify=False,
+            )
+        if boundaries:
+            all_pauses_inserted = _poll(
+                lambda: (
+                    True
+                    if not cls._read_composite_pause_issues(page, boundaries)
+                    else None
+                ),
+                timeout=3,
+                interval=0.04,
+                max_interval=0.2,
+                page=page,
+            )
+            if not all_pauses_inserted:
+                issues = cls._read_composite_pause_issues(page, boundaries)
+                duplicate_rows = [item for item in issues if item.get("count", 0) > 1]
+                if duplicate_rows:
+                    raise XunfeiError(
+                        "讯飞停顿插入校验失败：检测到重复停顿标记，"
+                        f"行 {[item['row'] + 1 for item in duplicate_rows]}"
+                    )
+                for item in issues:
+                    cls._insert_composite_pause(
+                        page,
+                        item["row"],
+                        item["value"],
+                        emit_log=False,
+                        verify=True,
+                    )
+                if cls._read_composite_pause_issues(page, boundaries):
+                    raise XunfeiError("讯飞停顿批量插入后回读仍不完整")
+            _log(
+                f"[xunfei]   多人配音停顿已批量完成：{len(boundaries)} 处，"
+                f"耗时 {round((time.perf_counter() - pause_started_at) * 1000)}ms，"
+                "每处均按段落末尾 UI 定位并回读校验"
+            )
         return rows, boundaries
 
     def _generate_pending_composite(
