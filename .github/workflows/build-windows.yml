@@ -212,12 +212,19 @@ jobs:
             $env:PLAYWRIGHT_NODEJS_PATH = $previousNodePath
             $env:ELECTRON_RUN_AS_NODE = $previousElectronNodeMode
           }
-          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
-          if (-not $process.WaitForExit(120000)) {
-            Stop-Process -Id $process.Id -Force
-            Write-Error "Electron 桌面端到端冒烟测试超时"
-            exit 1
-          }
+$process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
+if (-not $process.WaitForExit(120000)) {
+Write-Warning "Electron 桌面端到端冒烟测试超时，输出应用诊断日志"
+$smokeLog = Join-Path $env:TEMP "wordtts-electron-smoke.log"
+if (Test-Path $smokeLog) {
+Get-Content $smokeLog -Tail 120
+} else {
+Write-Warning "未找到 Electron 冒烟诊断日志: $smokeLog"
+}
+& taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+Write-Error "Electron 桌面端到端冒烟测试超时"
+exit 1
+}
           if ($process.ExitCode -ne 0) {
             Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($process.ExitCode)"
             exit 1

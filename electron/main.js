@@ -11,6 +11,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const net = require('net');
 const { pathToFileURL } = require('url');
@@ -33,6 +34,34 @@ const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
 const RENDERER_ENTRY_PATH = path.join(__dirname, 'renderer', 'index.html');
 const RENDERER_ENTRY_URL = pathToFileURL(RENDERER_ENTRY_PATH).href;
+const SMOKE_LOG_PATH = isSmokeTest
+    ? path.join(os.tmpdir(), 'wordtts-electron-smoke.log')
+    : null;
+let smokeWatchdog = null;
+let smokeExitRequested = false;
+
+function smokeLog(message) {
+    if (!SMOKE_LOG_PATH) return;
+    const line = `[${new Date().toISOString()}] ${message}\n`;
+    try {
+        fs.appendFileSync(SMOKE_LOG_PATH, line, 'utf8');
+    } catch (_) { /* 日志失败不能影响应用启动 */ }
+}
+
+if (SMOKE_LOG_PATH) {
+    try { fs.writeFileSync(SMOKE_LOG_PATH, '', 'utf8'); } catch (_) { /* ignore */ }
+    process.on('uncaughtException', (error) => {
+        smokeLog(`uncaughtException: ${error?.stack || error}`);
+    });
+    process.on('unhandledRejection', (reason) => {
+        smokeLog(`unhandledRejection: ${reason?.stack || reason}`);
+    });
+}
+
+// 冒烟测试只验证后端/渲染器启动，不需要 GPU 合成；Windows runner 的虚拟
+// 显示驱动偶尔会让隐藏 BrowserWindow 的渲染探测不返回。禁用 GPU 只作用于
+// --smoke-test，不影响用户正常运行时的硬件加速。
+if (isSmokeTest) app.disableHardwareAcceleration();
 
 // Branding changed in 2.0, but existing history and preferences must continue
 // using the original on-disk directory instead of appearing to disappear.
@@ -160,6 +189,7 @@ function startPythonServer() {
     }
 
     console.log(`[main] 启动后端服务器: ${cmd} ${args.join(' ')} (cwd: ${cwd})`);
+    smokeLog(`start backend: ${cmd} ${args.join(' ')}`);
 
     // 校验可执行文件存在（打包模式）
     if (app.isPackaged && !fs.existsSync(cmd)) {
@@ -235,6 +265,7 @@ function startPythonServer() {
 
     pythonProcess.on('exit', (code) => {
         console.log(`[main] 后端进程退出，代码: ${code}`);
+        smokeLog(`backend exit: ${code}`);
         pythonProcess = null;
         // 非正常退出且不是用户主动关闭时，提示用户
         if (code !== 0 && code !== null && !isQuitting) {
@@ -443,6 +474,7 @@ function createWindow() {
 
     const win = new BrowserWindow(windowOptions);
     mainWindow = win;
+    smokeLog(`window created: show=${windowOptions.show}`);
     rendererReady = false;
     rendererFatalShown = false;
 
@@ -458,15 +490,18 @@ function createWindow() {
     win.loadFile(RENDERER_ENTRY_PATH);
     win.webContents.on('did-finish-load', () => {
         if (mainWindow !== win) return;
+        smokeLog('renderer did-finish-load');
         rendererReady = true;
         flushAppNotices();
     });
     win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
         if (!isMainFrame || code === -3) return;
+        smokeLog(`renderer did-fail-load: ${code} ${description} ${url || ''}`);
         if (mainWindow === win) rendererReady = false;
         showRendererFatalError('界面加载失败', `${description}（错误代码 ${code}）\n${url || '本地界面'}`);
     });
     win.webContents.on('render-process-gone', (_event, details) => {
+        smokeLog(`renderer process gone: ${JSON.stringify(details)}`);
         if (mainWindow === win) rendererReady = false;
         if (details.reason === 'clean-exit') return;
         showRendererFatalError('界面进程异常退出', `退出原因：${details.reason}`);
@@ -491,7 +526,7 @@ async function verifyRendererSmokeTest(win, timeoutMs = 15000) {
     while (Date.now() < deadline) {
         if (!win || win.isDestroyed()) throw new Error('界面窗口在冒烟测试期间提前关闭');
         try {
-            lastState = await win.webContents.executeJavaScript(`(() => ({
+            const statePromise = win.webContents.executeJavaScript(`(() => ({
                 title: document.title,
                 nativeApi: Boolean(window.electronAPI),
                 backendUrl: window.electronAPI?.backend?.url || '',
@@ -499,6 +534,16 @@ async function verifyRendererSmokeTest(win, timeoutMs = 15000) {
                 uiComponents: Boolean(window.WordTTSUI),
                 serviceState: document.getElementById('service-state')?.textContent?.trim() || ''
             }))()`);
+            let probeTimer = null;
+            const timeoutPromise = new Promise((_, reject) => {
+                probeTimer = setTimeout(() => reject(new Error('渲染器状态探测超时')), 2500);
+            });
+            try {
+                lastState = await Promise.race([statePromise, timeoutPromise]);
+            } finally {
+                if (probeTimer) clearTimeout(probeTimer);
+            }
+            smokeLog(`renderer state: ${JSON.stringify(lastState)}`);
             if (
                 lastState.title.includes(PRODUCT_NAME)
                 && lastState.nativeApi
@@ -511,10 +556,25 @@ async function verifyRendererSmokeTest(win, timeoutMs = 15000) {
             }
         } catch (error) {
             lastState = { error: error.message };
+            smokeLog(`renderer probe failed: ${error.message}`);
         }
         await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error(`界面未在限定时间内就绪: ${JSON.stringify(lastState)}`);
+}
+
+function exitSmokeTest(code, win = null) {
+    if (!isSmokeTest || smokeExitRequested) return;
+    smokeExitRequested = true;
+    if (smokeWatchdog) {
+        clearTimeout(smokeWatchdog);
+        smokeWatchdog = null;
+    }
+    smokeLog(`exit requested: ${code}`);
+    stopPythonServerAsync().then(() => {
+        if (win && !win.isDestroyed()) win.destroy();
+        app.exit(code);
+    });
 }
 
 // ============================================================================
@@ -621,6 +681,16 @@ function registerIpcHandlers() {
 
 app.whenReady().then(async () => {
     console.log('[main] Electron app ready');
+    smokeLog('app ready');
+    if (isSmokeTest) {
+        // CI 中若渲染器或 Electron 子进程完全不响应，也必须在有限时间内
+        // 输出诊断并退出，不能让 PowerShell 永久等待。
+        smokeWatchdog = setTimeout(() => {
+            smokeLog('smoke watchdog timeout');
+            console.error('[main] 桌面界面端到端冒烟测试 watchdog 超时');
+            exitSmokeTest(2, mainWindow);
+        }, 45000);
+    }
 
     serverPort = await allocateServerPort();
     serverUrl = `http://127.0.0.1:${serverPort}`;
@@ -634,20 +704,20 @@ app.whenReady().then(async () => {
 
     try {
         console.log('[main] 等待 Python 服务器就绪...');
+        smokeLog('waiting for backend');
         await waitForServer();
         if (isSmokeTest) {
+            smokeLog('backend ready; creating smoke window');
             const smokeWindow = createWindow();
             try {
                 await verifyRendererSmokeTest(smokeWindow);
                 console.log('[main] 桌面界面端到端冒烟测试通过');
-                await stopPythonServerAsync();
-                if (!smokeWindow.isDestroyed()) smokeWindow.destroy();
-                app.exit(0);
+                smokeLog('renderer smoke passed');
+                exitSmokeTest(0, smokeWindow);
             } catch (error) {
                 console.error('[main] 桌面界面端到端冒烟测试失败:', error.message);
-                await stopPythonServerAsync();
-                if (!smokeWindow.isDestroyed()) smokeWindow.destroy();
-                app.exit(1);
+                smokeLog(`renderer smoke failed: ${error.stack || error.message}`);
+                exitSmokeTest(1, smokeWindow);
             }
             return;
         }
@@ -655,8 +725,8 @@ app.whenReady().then(async () => {
     } catch (err) {
         console.error('[main] 服务器启动失败:', err.message);
         if (isSmokeTest) {
-            await stopPythonServerAsync();
-            app.exit(1);
+            smokeLog(`backend startup failed: ${err.stack || err.message}`);
+            exitSmokeTest(1);
             return;
         }
         // 服务器启动失败时仍然创建窗口，让用户能看到错误提示

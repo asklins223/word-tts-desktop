@@ -1,5 +1,15 @@
 # 更新日志
 
+## v2.7.11
+
+### 修复 Windows Electron 冒烟探测无响应
+
+- 为渲染器冒烟探测增加单次 JavaScript 执行超时，避免 Windows 下页面无响应时主进程永久等待。
+- 增加 45 秒冒烟 watchdog，失败时自动清理并退出，不再让 GitHub Actions 无日志等待 120 秒。
+- 冒烟模式禁用 GPU 合成，减少 Windows runner 虚拟显示驱动导致隐藏窗口不返回的问题。
+- 将冒烟阶段、后端启动/退出、渲染器状态和失败堆栈写入系统临时目录 `wordtts-electron-smoke.log`，并在 Windows 工作流超时或失败时输出诊断日志。
+- Windows 工作流超时清理改为递归结束 Electron 进程树，避免残留子进程影响后续步骤。
+
 ## v2.7.10
 
 ### 修复 Windows 打包冒烟测试超时
