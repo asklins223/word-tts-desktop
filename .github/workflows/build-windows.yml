@@ -226,6 +226,13 @@ jobs:
             exit 1
           }
           if ($process.ExitCode -ne 0) {
+            Write-Warning "Electron 桌面端到端冒烟测试失败，输出应用诊断日志"
+            $smokeLog = Join-Path $env:TEMP "wordtts-electron-smoke.log"
+            if (Test-Path $smokeLog) {
+              Get-Content $smokeLog -Tail 160
+            } else {
+              Write-Warning "未找到 Electron 冒烟诊断日志: $smokeLog"
+            }
             Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($process.ExitCode)"
             exit 1
           }
