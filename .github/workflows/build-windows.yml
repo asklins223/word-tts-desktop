@@ -209,8 +209,16 @@ jobs:
               exit 1
             }
           } finally {
-            $env:PLAYWRIGHT_NODEJS_PATH = $previousNodePath
-            $env:ELECTRON_RUN_AS_NODE = $previousElectronNodeMode
+            if ($null -eq $previousNodePath) {
+              Remove-Item Env:PLAYWRIGHT_NODEJS_PATH -ErrorAction SilentlyContinue
+            } else {
+              $env:PLAYWRIGHT_NODEJS_PATH = $previousNodePath
+            }
+            if ($null -eq $previousElectronNodeMode) {
+              Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+            } else {
+              $env:ELECTRON_RUN_AS_NODE = $previousElectronNodeMode
+            }
           }
           $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
           if (-not $process.WaitForExit(120000)) {

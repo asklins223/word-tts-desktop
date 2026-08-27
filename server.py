@@ -165,12 +165,15 @@ HISTORY_MANIFEST_FILENAME = "history.json"
 HISTORY_SCHEMA_VERSION = 1
 _history_lock = threading.RLock()
 
-# 音色目录在应用进程第一次打开配置页时刷新一次；后续请求复用内存目录。
-# 远端接口失败时由 xunfei_voice_catalog 回退到本地 JSON 缓存。
+# 音色目录先从本地种子/缓存快速加载，避免网络波动阻塞应用启动；在线目录
+# 会在配置接口返回后后台刷新。远端接口失败时仍由 xunfei_voice_catalog
+# 回退到本地 JSON 缓存。
 _voice_catalog_lock = threading.RLock()
 _voice_catalog_loaded = False
 _voice_catalog_live = False
 _voice_catalog_data: dict = {}
+_voice_catalog_refresh_state_lock = threading.Lock()
+_voice_catalog_refresh_in_progress = False
 _voice_asset_cache_lock = threading.RLock()
 
 VOICE_ASSET_CACHE_DIR = os.path.join(BASE_DIR, "cache", "voice-assets")
@@ -235,6 +238,36 @@ def _load_voice_catalog_sync(force_refresh: bool = True) -> dict:
                     _voice_catalog_data.get("voices") or []
                 )
     return _voice_catalog_data
+
+
+async def _refresh_voice_catalog_in_background() -> None:
+    """在线刷新音色目录，不阻塞首次配置响应。"""
+    global _voice_catalog_refresh_in_progress
+    try:
+        await asyncio.to_thread(_load_voice_catalog_sync, True)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        # 刷新失败不影响已返回的本地目录；下次配置请求仍可再次尝试。
+        print(f"[wordtts] 后台刷新讯飞音色目录失败: {error}", file=sys.stderr)
+    finally:
+        with _voice_catalog_refresh_state_lock:
+            _voice_catalog_refresh_in_progress = False
+
+
+def _schedule_voice_catalog_refresh() -> None:
+    """只启动一个后台刷新任务，避免多个配置请求重复访问远端接口。"""
+    global _voice_catalog_refresh_in_progress
+    with _voice_catalog_refresh_state_lock:
+        if _voice_catalog_refresh_in_progress:
+            return
+        _voice_catalog_refresh_in_progress = True
+    try:
+        asyncio.create_task(_refresh_voice_catalog_in_background())
+    except RuntimeError:
+        # 仅在没有运行中的事件循环时发生（例如同步测试直接调用辅助函数）。
+        with _voice_catalog_refresh_state_lock:
+            _voice_catalog_refresh_in_progress = False
 
 
 def session_output_dir(session_id: str) -> str:
@@ -3044,8 +3077,13 @@ async def health():
 
 @app.get("/api/config")
 async def get_config():
-    """返回前端所需的配置选项。"""
-    catalog = await asyncio.to_thread(_load_voice_catalog_sync, True)
+    """返回前端所需的配置选项，并在响应后异步刷新音色目录。"""
+    # 配置接口是 Electron 首屏就绪的关键路径，只读取本地种子/缓存；如果
+    # 这里等待讯飞在线目录超时，渲染器会一直显示“正在连接服务”，导致桌面
+    # 端到端冒烟测试及离线启动失败。
+    catalog = await asyncio.to_thread(_load_voice_catalog_sync, False)
+    if (catalog.get("_meta") or {}).get("catalog_source") != "live":
+        _schedule_voice_catalog_refresh()
     default_female = core.FEMALE_VOICE
     default_male = core.MALE_VOICE
     return {

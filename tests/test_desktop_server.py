@@ -46,6 +46,24 @@ class DesktopServerSecurityTests(unittest.TestCase):
         response = self.client.get("/api/health?token=test-token")
         self.assertEqual(response.status_code, 200)
 
+    def test_config_reads_local_catalog_before_online_refresh(self):
+        calls = []
+        local_catalog = {
+            "_meta": {"catalog_source": "live"},
+            "voices": [],
+            "filters": [],
+        }
+
+        def load_catalog(force_refresh):
+            calls.append(force_refresh)
+            return local_catalog
+
+        with mock.patch.object(server, "_load_voice_catalog_sync", side_effect=load_catalog):
+            result = asyncio.run(server.get_config())
+
+        self.assertEqual(calls, [False])
+        self.assertEqual(result["voice_catalog_meta"]["catalog_source"], "live")
+
 
 class DesktopSessionIsolationTests(unittest.TestCase):
     def test_same_filename_sessions_have_distinct_output_directories(self):
