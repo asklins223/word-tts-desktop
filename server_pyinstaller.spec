@@ -52,6 +52,7 @@ hiddenimports = [
     # 只使用同步 Playwright API。playwright 自带的官方 PyInstaller hook
     # 会收集 driver/package；下方在 Analysis 后剔除重复的 Node 可执行文件。
     'playwright.sync_api',
+    'psutil',
     # FastAPI 在注册 UploadFile 路由时动态验证这两个兼容导入路径。
     'python_multipart',
     'multipart',

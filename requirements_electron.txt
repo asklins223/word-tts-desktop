@@ -9,6 +9,8 @@ pydantic>=2.0.0
 
 # ---- TTS 核心（讯飞配音浏览器自动化）----
 playwright==1.56.0
+# 用于绑定 Playwright 启动出的浏览器 PID/进程树，避免按窗口标题误伤用户 Chrome。
+psutil>=6.0.0
 
 # ---- 文档解析 ----
 python-docx>=1.0.0

@@ -1,13 +1,78 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import word_tts_app as core
+import xunfei_peiyin as xunfei
 
 
 class XunfeiConfigTests(unittest.TestCase):
+    def test_frozen_runtime_prefers_playwright_chromium_over_system_chrome(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled = Path(temp_dir) / "chromium" / "chrome"
+            bundled.parent.mkdir(parents=True)
+            bundled.write_bytes(b"bundled")
+            playwright = SimpleNamespace(
+                chromium=SimpleNamespace(executable_path=str(bundled))
+            )
+            with mock.patch.object(xunfei, "_find_chrome", return_value="/system/chrome"), \
+                 mock.patch.object(xunfei.sys, "frozen", True, create=True), \
+                 mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(xunfei.AUTOMATION_BROWSER_ENV, None)
+                self.assertEqual(
+                    xunfei._select_browser_executable(playwright),
+                    (str(bundled), "bundled"),
+                )
+
+    def test_source_runtime_also_defaults_to_bundled_chromium(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled = Path(temp_dir) / "chromium" / "chrome"
+            bundled.parent.mkdir(parents=True)
+            bundled.write_bytes(b"bundled")
+            playwright = SimpleNamespace(
+                chromium=SimpleNamespace(executable_path=str(bundled))
+            )
+            with mock.patch.object(xunfei, "_find_chrome", return_value="/system/chrome"), \
+                 mock.patch.object(xunfei.sys, "frozen", False, create=True), \
+                 mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(xunfei.AUTOMATION_BROWSER_ENV, None)
+                self.assertEqual(
+                    xunfei._select_browser_executable(playwright),
+                    (str(bundled), "bundled"),
+                )
+
+    def test_system_chrome_is_an_explicit_debug_override(self):
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(executable_path="/bundled/chrome")
+        )
+        with mock.patch.object(xunfei, "_find_chrome", return_value="/system/chrome"), \
+             mock.patch.dict(
+                 os.environ,
+                 {xunfei.AUTOMATION_BROWSER_ENV: "system"},
+                 clear=False,
+             ):
+            self.assertEqual(
+                xunfei._select_browser_executable(playwright),
+                ("/system/chrome", "system"),
+            )
+
+    def test_invalid_automation_browser_mode_fails_closed(self):
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(executable_path="/bundled/chrome")
+        )
+        with mock.patch.dict(
+            os.environ,
+            {xunfei.AUTOMATION_BROWSER_ENV: "unknown"},
+            clear=False,
+        ):
+            with self.assertRaises(xunfei.XunfeiError):
+                xunfei._select_browser_executable(playwright)
+
     def test_three_platform_parameters_are_integer_values_between_zero_and_hundred(self):
         config = core.normalize_tts_config({
             "rate": -20,
@@ -96,6 +161,9 @@ class XunfeiConfigTests(unittest.TestCase):
         self.assertNotIn("format: $('format').value", source)
         self.assertIn("composite_cut", source)
         self.assertIn("single_segment", source)
+        self.assertIn("composite_voices", source)
+        self.assertIn("setVoiceCatalogForMode", source)
+        self.assertIn("composite_name", source)
 
     def test_words_and_sentences_always_use_default_female_voice(self):
         self.assertEqual(

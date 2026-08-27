@@ -8,6 +8,108 @@ import xunfei_voice_catalog as catalog
 
 
 class XunfeiCatalogTests(unittest.TestCase):
+    def test_common_list_fetches_all_pages_with_the_multi_speaker_endpoint(self):
+        first_page = {
+            "code": 0,
+            "data": {
+                "records": [{"commonId": index, "speakerName": f"Voice {index}"} for index in range(20)],
+                "total": 21,
+                "current": 1,
+                "pages": 2,
+            },
+        }
+        second_page = {
+            "code": 0,
+            "data": {
+                "records": [{"commonId": 20, "speakerName": "Voice 20"}],
+                "total": 21,
+                "current": 2,
+                "pages": 2,
+            },
+        }
+
+        with patch.object(catalog, "_request_json", side_effect=[first_page, second_page]) as request:
+            records = catalog.fetch_common_list_speakers(timeout=1)
+
+        self.assertEqual(len(records), 21)
+        self.assertEqual(request.call_args_list[0].args[0], catalog.SPEAKER_COMMON_LIST_URL)
+        self.assertEqual(request.call_args_list[0].kwargs["params"], {"current": 1, "size": 20})
+        self.assertEqual(request.call_args_list[1].kwargs["params"], {"current": 2, "size": 20})
+
+    def test_common_list_catalog_uses_base_name_and_keeps_default_variant_identifiers(self):
+        common = [{
+            "commonId": 10001135,
+            "speakerName": "欣畅",
+            "speakerGender": 2,
+            "speakerLanguage": "普通话",
+            "speakerStyle": "激情力度",
+            "tag": "直播|广告",
+        }]
+        flat = [
+            {
+                "speakerNo": 591199169,
+                "speakerName": "欣畅-Pro+",
+                "speakerGender": 2,
+                "speakerLanguage": "普通话",
+                "commonSpeaker": {"commonId": 10001135, "speakerName": "欣畅"},
+                "audioUrl": "https://example.test/pro-plus.wav",
+            },
+            {
+                "speakerNo": 548016606,
+                "speakerName": "欣畅-Pro",
+                "speakerGender": 2,
+                "speakerLanguage": "普通话",
+                "commonSpeaker": {"commonId": 10001135, "speakerName": "欣畅"},
+            },
+        ]
+
+        payload = catalog.normalize_catalog(
+            flat,
+            composite_raw_voices=catalog.build_composite_speakers(common, flat),
+            source="test",
+        )
+        composite = next(item for item in payload["composite_voices"] if item["name"] == "欣畅")
+        variant = next(item for item in payload["voices"] if item["name"] == "欣畅-Pro+")
+
+        self.assertEqual(composite["speaker_no"], 591199169)
+        self.assertEqual(composite["common_id"], 10001135)
+        self.assertEqual(composite["variant_names"], ["欣畅-Pro+", "欣畅-Pro"])
+        self.assertEqual(composite["variant_keys"], ["speaker:591199169", "speaker:548016606"])
+        self.assertEqual(variant["common_id"], 10001135)
+        self.assertEqual(variant["composite_name"], "欣畅")
+        self.assertEqual(variant["composite_key"], composite["key"])
+
+    def test_composite_catalog_keeps_provider_variant_labels(self):
+        common = [{"commonId": 10001135, "speakerName": "欣畅"}]
+        flat = [
+            {
+                "speakerNo": 591199169,
+                "speakerName": "欣畅-Pro+",
+                "emotDesc": "Pro+",
+                "commonSpeaker": {"commonId": 10001135, "speakerName": "欣畅"},
+            },
+            {
+                "speakerNo": 548016606,
+                "speakerName": "欣畅-Pro",
+                "emotDesc": "Pro",
+                "commonSpeaker": {"commonId": 10001135, "speakerName": "欣畅"},
+            },
+        ]
+
+        composite = catalog.build_composite_speakers(common, flat)
+        self.assertEqual(composite[0]["_composite_variant_labels"], ["Pro+", "Pro"])
+        payload = catalog.normalize_catalog(
+            flat,
+            composite_raw_voices=composite,
+            source="test",
+        )
+        group = next(item for item in payload["composite_voices"] if item["name"] == "欣畅")
+        self.assertEqual(group["variant_labels"], ["Pro+", "Pro"])
+        self.assertEqual(
+            next(item for item in payload["voices"] if item["name"] == "欣畅-Pro")["emot_desc"],
+            "Pro",
+        )
+
     def test_normalizes_filters_and_replaces_provider_wording(self):
         payload = catalog.normalize_catalog(
             [

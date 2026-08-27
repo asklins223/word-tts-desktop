@@ -6,7 +6,14 @@
  * 3. 提供原生文件对话框（选择文件、保存文件）
  */
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const {
+    app,
+    BrowserWindow,
+    dialog,
+    globalShortcut,
+    ipcMain,
+    shell,
+} = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
@@ -16,6 +23,10 @@ const crypto = require('crypto');
 const net = require('net');
 const { pathToFileURL } = require('url');
 const { createNativeFileDialogs } = require('./file-dialogs');
+const {
+    createSettingsStore,
+    DEFAULT_RECOVERY_ACCELERATOR,
+} = require('./settings');
 
 let mainWindow = null;
 let pythonProcess = null;
@@ -26,10 +37,14 @@ let serverToken = null;
 let serverInstance = null;
 let desktopServicesReady = false;
 let backendReady = false;
+let backendProcessError = null;
 let rendererReady = false;
 let rendererFatalShown = false;
 let pythonStopPromise = null;
 let quitCleanupStarted = false;
+let settingsStore = null;
+let desktopSettings = null;
+let settingsWriteTimer = null;
 const pendingAppNotices = new Map();
 const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
@@ -43,6 +58,27 @@ const SMOKE_LOG_PATH = isSmokeTest
     : null;
 let smokeWatchdog = null;
 let smokeExitRequested = false;
+
+const WINDOW_MODES = new Set(['full', 'compact', 'hidden']);
+const FULL_WINDOW_MIN_SIZE = Object.freeze({ width: 900, height: 600 });
+const COMPACT_WINDOW_DEFAULT_SIZE = Object.freeze({ width: 520, height: 680 });
+const COMPACT_WINDOW_MIN_SIZE = Object.freeze({ width: 420, height: 520 });
+let appWindowMode = 'full';
+let restoreWindowMode = 'full';
+let fullWindowBounds = null;
+let compactWindowBounds = null;
+// 开发/故障排查可以通过 `--show` 请求已有实例恢复窗口；普通用户仍依赖
+// 全局恢复快捷键和单实例唤醒，不把命令行当作唯一入口。
+let pendingWindowRestore = process.argv.includes('--show');
+let recoveryShortcutRegistered = false;
+let configuredShortcutStatus = {};
+let privacyWindowHidden = false;
+
+// Electron 的全局快捷键只能报告本应用是否注册成功，不能可靠给出占用它的
+// 其他程序名称。恢复快捷键因此是 POC 阶段的固定兜底，不允许被设置逻辑
+// 完全移除；后续自定义设置也必须先注册新值再替换旧值。
+let recoveryAccelerator = process.env.WORDTTS_RECOVERY_ACCELERATOR
+    || DEFAULT_RECOVERY_ACCELERATOR;
 
 function smokeLog(message) {
     if (!SMOKE_LOG_PATH) return;
@@ -75,6 +111,417 @@ try {
     app.setPath('userData', legacyUserDataPath);
 } catch (error) {
     console.warn(`[main] 无法沿用旧用户数据目录，将使用系统默认目录: ${error.message}`);
+}
+
+// 桌面设置由主进程独占读写。启动时只把可恢复的窗口状态读入内存，
+// 隐藏模式不会作为启动模式直接创建，避免再次触发“隐藏创建窗口”问题。
+try {
+    settingsStore = createSettingsStore(path.join(app.getPath('userData'), 'settings.json'));
+    desktopSettings = settingsStore.load();
+    const savedWindow = desktopSettings.window || {};
+    fullWindowBounds = savedWindow.full_bounds || null;
+    compactWindowBounds = savedWindow.compact_bounds || null;
+    const savedMode = savedWindow.last_mode === 'compact' ? 'compact' : 'full';
+    // startup_mode 是用户明确选择的启动偏好；last_mode 只作为旧版本
+    // 设置的兼容回退，不能让一次临时的小窗切换永久改变启动偏好。
+    appWindowMode = savedWindow.startup_mode === 'compact' ? 'compact' : 'full';
+    restoreWindowMode = savedWindow.restore_mode === 'compact' ? 'compact' : (savedWindow.restore_mode === 'full' ? 'full' : (savedMode || appWindowMode));
+    if (!process.env.WORDTTS_RECOVERY_ACCELERATOR) {
+        recoveryAccelerator = desktopSettings.shortcuts?.recover || recoveryAccelerator;
+    }
+} catch (error) {
+    console.warn(`[main] 无法加载桌面设置，将使用默认值: ${error.message}`);
+}
+
+// 隐藏窗口没有托盘图标时，第二次启动必须能唤醒已有实例；否则用户在快捷键
+// 失效时没有可靠的普通用户恢复入口。锁必须在创建窗口和启动后端前取得。
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+    app.quit();
+} else {
+    app.on('second-instance', () => {
+        pendingWindowRestore = true;
+        showMainWindow();
+    });
+}
+
+function getWindowState() {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    return {
+        mode: appWindowMode,
+        restoreMode: restoreWindowMode,
+        visible: Boolean(win && win.isVisible()),
+        minimized: Boolean(win && win.isMinimized()),
+        dockHidden: privacyWindowHidden,
+        recoveryShortcut: {
+            accelerator: recoveryAccelerator,
+            registered: recoveryShortcutRegistered,
+        },
+        shortcuts: configuredShortcutStatus,
+    };
+}
+
+function sendWindowState() {
+    if (!rendererReady || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('window:state', getWindowState());
+}
+
+function updateDesktopSettings(patch) {
+    if (!settingsStore) return null;
+    try {
+        desktopSettings = settingsStore.update(patch);
+        return desktopSettings;
+    } catch (error) {
+        console.error('[main] 保存桌面设置失败:', error.message);
+        showInAppNotice('settings-write', {
+            kicker: '设置保存',
+            title: '设置未能保存',
+            message: '本次设置只在当前运行期间生效，重启后可能恢复默认值。',
+            detail: error.message,
+            tone: 'warning',
+        });
+        return null;
+    }
+}
+
+function persistWindowSettings() {
+    if (!settingsStore) return;
+    if (settingsWriteTimer) {
+        clearTimeout(settingsWriteTimer);
+        settingsWriteTimer = null;
+    }
+    const mode = appWindowMode === 'compact' ? 'compact' : restoreWindowMode;
+    updateDesktopSettings({
+        window: {
+            startup_mode: desktopSettings?.window?.startup_mode === 'compact' ? 'compact' : 'full',
+            last_mode: mode,
+            restore_mode: restoreWindowMode,
+            full_bounds: fullWindowBounds,
+            compact_bounds: compactWindowBounds,
+        },
+    });
+}
+
+function scheduleWindowSettingsPersist() {
+    if (!settingsStore || settingsWriteTimer) return;
+    settingsWriteTimer = setTimeout(() => {
+        settingsWriteTimer = null;
+        persistWindowSettings();
+    }, 350);
+}
+
+function saveCurrentWindowBounds() {
+    if (!mainWindow || mainWindow.isDestroyed() || appWindowMode === 'hidden') return;
+    const bounds = mainWindow.getBounds();
+    if (appWindowMode === 'compact') compactWindowBounds = bounds;
+    else if (appWindowMode === 'full') fullWindowBounds = bounds;
+    scheduleWindowSettingsPersist();
+}
+
+function applyWindowModeBounds(mode) {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mode === 'compact') {
+        mainWindow.setMinimumSize(
+            COMPACT_WINDOW_MIN_SIZE.width,
+            COMPACT_WINDOW_MIN_SIZE.height,
+        );
+        if (compactWindowBounds) {
+            mainWindow.setBounds(compactWindowBounds);
+        } else {
+            mainWindow.setSize(
+                COMPACT_WINDOW_DEFAULT_SIZE.width,
+                COMPACT_WINDOW_DEFAULT_SIZE.height,
+            );
+        }
+        return;
+    }
+    mainWindow.setMinimumSize(FULL_WINDOW_MIN_SIZE.width, FULL_WINDOW_MIN_SIZE.height);
+    if (fullWindowBounds) mainWindow.setBounds(fullWindowBounds);
+}
+
+function showMainWindow() {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        pendingWindowRestore = true;
+        return false;
+    }
+    let dockRestored = true;
+    if (privacyWindowHidden && process.platform === 'darwin') {
+        try {
+            if (typeof app.dock?.show === 'function') app.dock.show();
+            privacyWindowHidden = false;
+        } catch (error) {
+            dockRestored = false;
+            console.error('[main] 恢复 macOS Dock 图标失败:', error.message);
+        }
+    }
+    if (appWindowMode === 'hidden') {
+        appWindowMode = restoreWindowMode;
+        applyWindowModeBounds(appWindowMode);
+        scheduleWindowSettingsPersist();
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    pendingWindowRestore = false;
+    mainWindow.focus();
+    sendWindowState();
+    return dockRestored;
+}
+
+function hideMainWindow(options = {}) {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    const privacy = options?.privacy === true;
+    if (privacy && process.platform === 'darwin') {
+        try {
+            if (typeof app.dock?.hide === 'function') app.dock.hide();
+            else throw new Error('当前 Electron 不支持隐藏 Dock 图标');
+        } catch (error) {
+            privacyWindowHidden = false;
+            console.error('[main] 隐藏 macOS Dock 图标失败:', error.message);
+            showInAppNotice('privacy-dock', {
+                kicker: '防偷窥模式',
+                title: '无法完成应用级隐藏',
+                message: 'macOS 未允许隐藏 Dock 图标，防偷窥模式未开启。',
+                detail: error.message,
+                tone: 'warning',
+            });
+            return false;
+        }
+    }
+    if (appWindowMode !== 'hidden') restoreWindowMode = appWindowMode;
+    appWindowMode = 'hidden';
+    privacyWindowHidden = privacy && process.platform === 'darwin';
+    mainWindow.hide();
+    scheduleWindowSettingsPersist();
+    sendWindowState();
+    return true;
+}
+
+function setWindowMode(mode) {
+    if (!WINDOW_MODES.has(mode)) return { success: false, reason: 'invalid-mode' };
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        pendingWindowRestore = mode !== 'hidden';
+        return { success: false, reason: 'window-unavailable' };
+    }
+
+    if (mode === 'hidden') {
+        const hidden = hideMainWindow();
+        return { success: hidden, state: getWindowState() };
+    }
+
+    if (appWindowMode !== 'hidden') saveCurrentWindowBounds();
+    appWindowMode = mode;
+    restoreWindowMode = mode;
+    applyWindowModeBounds(mode);
+    scheduleWindowSettingsPersist();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+    sendWindowState();
+    return { success: true, state: getWindowState() };
+}
+
+function registerRecoveryShortcut() {
+    if (recoveryShortcutRegistered) return true;
+    if (!singleInstanceLock) return false;
+    try {
+        recoveryShortcutRegistered = globalShortcut.register(
+            recoveryAccelerator,
+            () => { showMainWindow(); },
+        );
+    } catch (error) {
+        recoveryShortcutRegistered = false;
+        console.error('[main] 注册恢复快捷键失败:', error.message);
+    }
+    if (!recoveryShortcutRegistered) {
+        showInAppNotice('recovery-shortcut', {
+            kicker: '窗口恢复',
+            title: '恢复快捷键未注册',
+            message: `无法注册 ${recoveryAccelerator}，请使用再次启动应用的方式恢复窗口。`,
+            detail: '系统通常不会提供占用该快捷键的其他程序名称。',
+            tone: 'warning',
+        });
+    }
+    sendWindowState();
+    return recoveryShortcutRegistered;
+}
+
+const configuredShortcutAccelerators = new Map();
+const CONFIGURED_SHORTCUT_ACTIONS = {
+    privacy: 'privacy-toggle',
+    pause_resume: 'task-pause-resume',
+    terminate: 'task-terminate',
+    compact: 'compact-toggle',
+};
+
+function sendRendererShortcut(action) {
+    if (!rendererReady || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('global-shortcut', { action });
+}
+
+function unregisterConfiguredShortcuts() {
+    configuredShortcutAccelerators.forEach((accelerator) => {
+        try { globalShortcut.unregister(accelerator); } catch (_) { /* ignore */ }
+    });
+    configuredShortcutAccelerators.clear();
+    configuredShortcutStatus = {};
+}
+
+function registerConfiguredShortcuts() {
+    unregisterConfiguredShortcuts();
+    const shortcuts = desktopSettings?.shortcuts || {};
+    Object.entries(CONFIGURED_SHORTCUT_ACTIONS).forEach(([key, action]) => {
+        const accelerator = String(shortcuts[key] || '').trim();
+        if (!accelerator || accelerator === recoveryAccelerator) {
+            configuredShortcutStatus[key] = {
+                accelerator,
+                registered: false,
+                reason: accelerator === recoveryAccelerator ? '与恢复快捷键冲突' : '未设置',
+            };
+            return;
+        }
+        let registered = false;
+        try {
+            registered = globalShortcut.register(accelerator, () => sendRendererShortcut(action));
+        } catch (error) {
+            configuredShortcutStatus[key] = {
+                accelerator,
+                registered: false,
+                reason: error.message,
+            };
+            return;
+        }
+        configuredShortcutStatus[key] = {
+            accelerator,
+            registered,
+            reason: registered ? '' : '系统快捷键已被占用或不可用',
+        };
+        if (registered) configuredShortcutAccelerators.set(key, accelerator);
+    });
+    sendWindowState();
+    return configuredShortcutStatus;
+}
+
+function replaceRecoveryShortcut(accelerator) {
+    const next = String(accelerator || '').trim();
+    if (!next) return { success: false, reason: '恢复快捷键不能为空' };
+    const sameAccelerator = next === recoveryAccelerator;
+    if (sameAccelerator && recoveryShortcutRegistered) {
+        return { success: true, registered: true };
+    }
+    let registered = false;
+    try {
+        // 先注册新值，旧值仍然有效时即使失败也不会丢失恢复入口。
+        registered = globalShortcut.register(next, () => { showMainWindow(); });
+    } catch (error) {
+        return { success: false, reason: error.message };
+    }
+    if (!registered) return { success: false, reason: '系统快捷键已被占用或不可用' };
+    // 同一个 accelerator 可能是“状态丢失后重试注册”的路径；此时不能
+    // 在注册成功后再 unregister 同一按键，否则会把刚恢复的兜底快捷键
+    // 立即注销掉。
+    if (!sameAccelerator) {
+        try { globalShortcut.unregister(recoveryAccelerator); } catch (_) { /* ignore */ }
+    }
+    recoveryAccelerator = next;
+    recoveryShortcutRegistered = true;
+    registerConfiguredShortcuts();
+    sendWindowState();
+    return { success: true, registered: true };
+}
+
+function restoreRecoveryShortcutState(accelerator, shouldBeRegistered) {
+    const target = String(accelerator || '').trim() || DEFAULT_RECOVERY_ACCELERATOR;
+    if (recoveryShortcutRegistered) {
+        try { globalShortcut.unregister(recoveryAccelerator); } catch (_) { /* ignore */ }
+    }
+    recoveryAccelerator = target;
+    recoveryShortcutRegistered = false;
+    if (shouldBeRegistered && singleInstanceLock) {
+        try {
+            recoveryShortcutRegistered = globalShortcut.register(
+                recoveryAccelerator,
+                () => { showMainWindow(); },
+            );
+        } catch (error) {
+            console.error('[main] 回滚恢复快捷键失败:', error.message);
+        }
+    }
+    registerConfiguredShortcuts();
+    sendWindowState();
+}
+
+function getSettingsSnapshot() {
+    return desktopSettings && typeof desktopSettings === 'object'
+        ? JSON.parse(JSON.stringify(desktopSettings))
+        : null;
+}
+
+function applySettingsPatch(patch) {
+    if (!settingsStore || !patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return { success: false, reason: 'invalid-settings' };
+    }
+    const current = getSettingsSnapshot() || {};
+    const proposedShortcuts = settingsStore.normalize({
+        shortcuts: {
+            ...(current.shortcuts || {}),
+            ...(
+                patch.shortcuts && typeof patch.shortcuts === 'object' && !Array.isArray(patch.shortcuts)
+                    ? patch.shortcuts
+                    : {}
+            ),
+        },
+    }).shortcuts;
+    const nextRecovery = proposedShortcuts.recover;
+    const previousRecovery = recoveryAccelerator;
+    const previousRecoveryRegistered = recoveryShortcutRegistered;
+    const needsRecoveryRegistration = (
+        nextRecovery !== recoveryAccelerator || !recoveryShortcutRegistered
+    );
+    if (needsRecoveryRegistration) {
+        const replaced = replaceRecoveryShortcut(nextRecovery);
+        if (!replaced.success) return replaced;
+    }
+    const updated = updateDesktopSettings(patch);
+    if (!updated) {
+        if (needsRecoveryRegistration) {
+            restoreRecoveryShortcutState(previousRecovery, previousRecoveryRegistered);
+        }
+        return { success: false, reason: 'settings-write-failed' };
+    }
+    registerConfiguredShortcuts();
+    return { success: true, settings: getSettingsSnapshot() };
+}
+
+function resetDesktopSettings() {
+    if (!settingsStore) return { success: false, reason: 'settings-unavailable' };
+    const defaults = settingsStore.normalize({});
+    const previousRecovery = recoveryAccelerator;
+    const previousRecoveryRegistered = recoveryShortcutRegistered;
+    const replaced = replaceRecoveryShortcut(defaults.shortcuts.recover);
+    if (!replaced.success) return replaced;
+    // “恢复默认”只重置偏好，不丢掉可用于页面恢复提示的运行时会话索引。
+    // 生成中的任务和输出文件由后端生命周期管理，不能因为设置重置而失去入口。
+    const activeSession = desktopSettings?.runtime?.active_session || null;
+    try {
+        desktopSettings = settingsStore.replace(activeSession
+            ? { ...defaults, runtime: { active_session: activeSession } }
+            : defaults);
+    } catch (error) {
+        if (defaults.shortcuts.recover !== previousRecovery || replaced.registered !== previousRecoveryRegistered) {
+            restoreRecoveryShortcutState(previousRecovery, previousRecoveryRegistered);
+        }
+        return { success: false, reason: error.message };
+    }
+    fullWindowBounds = desktopSettings.window.full_bounds;
+    compactWindowBounds = desktopSettings.window.compact_bounds;
+    restoreWindowMode = desktopSettings.window.restore_mode || 'full';
+    appWindowMode = 'full';
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        applyWindowModeBounds('full');
+        if (!mainWindow.isVisible()) mainWindow.show();
+    }
+    registerConfiguredShortcuts();
+    sendWindowState();
+    return { success: true, settings: getSettingsSnapshot() };
 }
 
 function showRendererFatalError(title, detail) {
@@ -193,6 +640,7 @@ function startPythonServer() {
     }
 
     backendReady = false;
+    backendProcessError = null;
 
     console.log(`[main] 启动后端服务器: ${cmd} ${args.join(' ')} (cwd: ${cwd})`);
     smokeLog(`start backend: ${cmd} ${args.join(' ')}`);
@@ -201,14 +649,7 @@ function startPythonServer() {
     if (app.isPackaged && !fs.existsSync(cmd)) {
         const msg = `后端可执行文件不存在:\n${cmd}\n\n应用可能已损坏，请重新安装。`;
         console.error(`[main] ${msg}`);
-        showInAppNotice('backend-start', {
-            kicker: '生成服务',
-            title: '后端启动失败',
-            message: '应用缺少生成服务组件，暂时无法处理 Word 文档。',
-            detail: `${cmd}\n请重新安装完整版本后再试。`,
-            tone: 'danger',
-        });
-        return;
+        throw new Error(`应用缺少生成服务组件：${cmd}\n请重新安装完整版本后再试。`);
     }
 
     // 根据平台设置 PATH（确保后端能找到所需工具）
@@ -260,6 +701,7 @@ function startPythonServer() {
 
     pythonProcess.on('error', (err) => {
         backendReady = false;
+        if (!backendProcessError) backendProcessError = err;
         console.error(`[main] 无法启动后端进程: ${err.message}`);
         showInAppNotice('backend-start', {
             kicker: '生成服务',
@@ -271,7 +713,11 @@ function startPythonServer() {
     });
 
     pythonProcess.on('exit', (code) => {
+        const wasBackendReady = backendReady;
         backendReady = false;
+        if (!wasBackendReady && !backendProcessError) {
+            backendProcessError = new Error(`后端进程在服务就绪前退出（代码 ${code ?? '未知'}）`);
+        }
         console.log(`[main] 后端进程退出，代码: ${code}`);
         smokeLog(`backend exit: ${code}`);
         pythonProcess = null;
@@ -376,6 +822,11 @@ function waitForServer(timeoutMs = 90000) {
         const deadline = Date.now() + timeoutMs;
         let settled = false;
         const check = () => {
+            if (backendProcessError) {
+                settled = true;
+                reject(backendProcessError);
+                return;
+            }
             if (!serverUrl || !serverToken || !pythonProcess) {
                 retry();
                 return;
@@ -397,6 +848,7 @@ function waitForServer(timeoutMs = 90000) {
                 let body = '';
                 res.setEncoding('utf8');
                 res.on('data', (chunk) => { body += chunk; });
+                res.on('error', () => completeAttempt(false));
                 res.on('end', () => {
                     try {
                         const health = JSON.parse(body);
@@ -439,15 +891,70 @@ function waitForServer(timeoutMs = 90000) {
     });
 }
 
+function requestBackendJson(route, method = 'GET', payload = undefined) {
+    return new Promise((resolve, reject) => {
+        if (!serverUrl || !serverToken || !pythonProcess) {
+            reject(new Error('生成服务尚未就绪'));
+            return;
+        }
+        let target;
+        try {
+            target = new URL(route, serverUrl);
+            target.searchParams.set('token', serverToken);
+        } catch (error) {
+            reject(error);
+            return;
+        }
+        const body = payload === undefined ? null : JSON.stringify(payload);
+        let settled = false;
+        const resolveOnce = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+        const rejectOnce = (error) => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+        };
+        const request = http.request(target, {
+            method,
+            headers: {
+                'X-WordTTS-Token': serverToken,
+                ...(body ? {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                } : {}),
+            },
+        }, (response) => {
+            let raw = '';
+            response.setEncoding('utf8');
+            response.on('data', chunk => { raw += chunk; });
+            response.on('end', () => {
+                let data = null;
+                try { data = raw ? JSON.parse(raw) : null; } catch (_) { /* non-JSON error */ }
+                resolveOnce({
+                    ok: response.statusCode >= 200 && response.statusCode < 300,
+                    status: response.statusCode || 0,
+                    data,
+                });
+            });
+            response.on('error', rejectOnce);
+        });
+        request.setTimeout(5000, () => request.destroy(new Error('生成服务响应超时')));
+        request.on('error', rejectOnce);
+        if (body) request.write(body);
+        request.end();
+    });
+}
+
 // ============================================================================
 // 窗口创建
 // ============================================================================
 
 function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        if (!mainWindow.isVisible()) mainWindow.show();
-        mainWindow.focus();
+        showMainWindow();
         return mainWindow;
     }
 
@@ -494,6 +1001,9 @@ function createWindow() {
 
     const win = new BrowserWindow(windowOptions);
     mainWindow = win;
+    // 应用创建后再套用上次保存的边界，避免把隐藏模式作为 BrowserWindow
+    // 的初始 show:false；小窗只在这里切尺寸，仍然复用同一个 renderer。
+    applyWindowModeBounds(appWindowMode);
     smokeLog(`window created: show=${windowOptions.show}`);
     rendererReady = false;
     rendererFatalShown = false;
@@ -513,6 +1023,8 @@ function createWindow() {
         smokeLog('renderer did-finish-load');
         rendererReady = true;
         flushAppNotices();
+        sendWindowState();
+        if (pendingWindowRestore) showMainWindow();
     });
     win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
         if (!isMainFrame || code === -3) return;
@@ -535,7 +1047,17 @@ function createWindow() {
         if (mainWindow !== win) return;
         rendererReady = false;
         mainWindow = null;
+        sendWindowState();
     });
+
+    win.on('resize', () => {
+        saveCurrentWindowBounds();
+        sendWindowState();
+    });
+    win.on('show', sendWindowState);
+    win.on('hide', sendWindowState);
+    win.on('minimize', sendWindowState);
+    win.on('restore', sendWindowState);
 
     return win;
 }
@@ -664,6 +1186,123 @@ function registerIpcHandlers() {
             : null;
     });
 
+    ipcMain.handle('window:get-state', (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return { success: true, state: getWindowState() };
+    });
+
+    ipcMain.handle('window:set-mode', (event, mode) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return setWindowMode(mode);
+    });
+
+    ipcMain.handle('window:hide', (event, options = {}) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return {
+            success: hideMainWindow({ privacy: options?.privacy === true }),
+            state: getWindowState(),
+        };
+    });
+
+    ipcMain.handle('window:show', (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return { success: showMainWindow(), state: getWindowState() };
+    });
+
+    ipcMain.handle('settings:get', (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return { success: true, settings: getSettingsSnapshot() };
+    });
+
+    ipcMain.handle('settings:update', (event, patch) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return applySettingsPatch(patch);
+    });
+
+    ipcMain.handle('settings:reset', (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return resetDesktopSettings();
+    });
+
+    ipcMain.handle('settings:import-legacy', (event, legacy) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        if (desktopSettings?.migrations?.legacy_local_storage) {
+            return { success: true, migrated: false, settings: getSettingsSnapshot() };
+        }
+        const payload = legacy && typeof legacy === 'object' ? legacy : {};
+        const result = applySettingsPatch({
+            tts: {
+                current_config: payload.current_config && typeof payload.current_config === 'object'
+                    ? payload.current_config : null,
+                presets: Array.isArray(payload.presets) ? payload.presets : [],
+            },
+            migrations: { legacy_local_storage: true },
+        });
+        if (!result.success) return result;
+        return { ...result, migrated: true };
+    });
+
+    const browserSessionRoute = (sessionId, suffix = '') => {
+        const id = String(sessionId || '').trim();
+        if (!/^[A-Za-z0-9._-]{1,220}$/.test(id)) return null;
+        return `/api/session/${encodeURIComponent(id)}/browser${suffix}`;
+    };
+
+    const taskSessionRoute = (sessionId, action) => {
+        const id = String(sessionId || '').trim();
+        if (!/^[A-Za-z0-9._-]{1,220}$/.test(id)) return null;
+        if (!['pause', 'resume', 'terminate'].includes(action)) return null;
+        return `/api/session/${encodeURIComponent(id)}/${action}`;
+    };
+
+    ['pause', 'resume', 'terminate'].forEach((action) => {
+        ipcMain.handle(`task:${action}`, async (event, sessionId) => {
+            if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+            const route = taskSessionRoute(sessionId, action);
+            if (!route) return { success: false, reason: 'invalid-session-id' };
+            try {
+                return await requestBackendJson(route, 'POST');
+            } catch (error) {
+                return { ok: false, status: 0, data: { detail: error.message } };
+            }
+        });
+    });
+
+    ipcMain.handle('browser:get-state', async (event, sessionId) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const route = browserSessionRoute(sessionId);
+        if (!route) return { success: false, reason: 'invalid-session-id' };
+        try {
+            return await requestBackendJson(route);
+        } catch (error) {
+            return { ok: false, status: 0, data: { detail: error.message } };
+        }
+    });
+
+    ipcMain.handle('browser:show', async (event, sessionId, options = {}) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const route = browserSessionRoute(sessionId, '/show');
+        if (!route) return { success: false, reason: 'invalid-session-id' };
+        try {
+            return await requestBackendJson(route, 'POST', {
+                minimize: options?.minimize === true,
+            });
+        } catch (error) {
+            return { ok: false, status: 0, data: { detail: error.message } };
+        }
+    });
+
+    ipcMain.handle('browser:hide', async (event, sessionId) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const route = browserSessionRoute(sessionId, '/hide');
+        if (!route) return { success: false, reason: 'invalid-session-id' };
+        try {
+            return await requestBackendJson(route, 'POST');
+        } catch (error) {
+            return { ok: false, status: 0, data: { detail: error.message } };
+        }
+    });
+
     // 选择文件
     ipcMain.handle('select-file', nativeFileDialogs.selectFile);
 
@@ -707,6 +1346,7 @@ function registerIpcHandlers() {
 // ============================================================================
 
 app.whenReady().then(async () => {
+    if (!singleInstanceLock) return;
     console.log('[main] Electron app ready');
     smokeLog('app ready');
     backendReady = false;
@@ -720,15 +1360,37 @@ app.whenReady().then(async () => {
         }, 45000);
     }
 
-    serverPort = await allocateServerPort();
-    serverUrl = `http://127.0.0.1:${serverPort}`;
-    serverToken = crypto.randomBytes(32).toString('hex');
-    serverInstance = crypto.createHash('sha256').update(serverToken).digest('hex').slice(0, 16);
-    console.log(`[main] 已分配独立后端地址: ${serverUrl}`);
+    try {
+        serverPort = await allocateServerPort();
+        serverUrl = `http://127.0.0.1:${serverPort}`;
+        serverToken = crypto.randomBytes(32).toString('hex');
+        serverInstance = crypto.createHash('sha256').update(serverToken).digest('hex').slice(0, 16);
+        console.log(`[main] 已分配独立后端地址: ${serverUrl}`);
 
-    registerIpcHandlers();
-    desktopServicesReady = true;
-    startPythonServer();
+        registerIpcHandlers();
+        desktopServicesReady = true;
+        startPythonServer();
+    } catch (error) {
+        console.error('[main] 初始化桌面服务失败:', error.stack || error.message);
+        if (isSmokeTest) {
+            smokeLog(`desktop service initialization failed: ${error.stack || error.message}`);
+            exitSmokeTest(1);
+            return;
+        }
+        // 端口、IPC 或后端进程初始化失败时仍创建界面，让用户看到可
+        // 恢复的错误信息，而不是留下一个没有任何窗口的后台进程。
+        showInAppNotice('desktop-start', {
+            kicker: '应用启动',
+            title: '桌面服务初始化失败',
+            message: `${PRODUCT_NAME} 已打开，但生成服务暂时不可用。`,
+            detail: error.message,
+            tone: 'danger',
+        });
+        createWindow();
+        registerRecoveryShortcut();
+        registerConfiguredShortcuts();
+        return;
+    }
 
     try {
         console.log('[main] 等待 Python 服务器就绪...');
@@ -738,6 +1400,8 @@ app.whenReady().then(async () => {
         if (isSmokeTest) {
             smokeLog('backend ready; creating smoke window');
             const smokeWindow = createWindow();
+            registerRecoveryShortcut();
+            registerConfiguredShortcuts();
             try {
                 await verifyRendererSmokeTest(smokeWindow);
                 console.log('[main] 桌面界面端到端冒烟测试通过');
@@ -767,10 +1431,38 @@ app.whenReady().then(async () => {
             tone: 'danger',
         });
         createWindow();
+        registerRecoveryShortcut();
+        registerConfiguredShortcuts();
         return;
     }
 
     createWindow();
+    registerRecoveryShortcut();
+    registerConfiguredShortcuts();
+}).catch((error) => {
+    // 启动阶段的局部 try/catch 覆盖了后端失败；这里兜底处理窗口创建、
+    // 快捷键和 Electron API 版本差异等未预期异常，避免留下无窗口后台进程。
+    console.error('[main] 应用启动流程异常:', error.stack || error.message);
+    smokeLog(`startup promise failed: ${error.stack || error.message}`);
+    if (isSmokeTest) {
+        exitSmokeTest(1);
+        return;
+    }
+    showInAppNotice('desktop-start-unexpected', {
+        kicker: '应用启动',
+        title: '应用启动遇到异常',
+        message: `${PRODUCT_NAME} 已打开，但部分桌面功能不可用。`,
+        detail: error.message,
+        tone: 'danger',
+    });
+    try {
+        createWindow();
+        registerRecoveryShortcut();
+        registerConfiguredShortcuts();
+    } catch (fallbackError) {
+        console.error('[main] 创建错误提示窗口失败:', fallbackError.stack || fallbackError.message);
+        if (!isQuitting) app.quit();
+    }
 });
 
 app.on('window-all-closed', () => {
@@ -780,6 +1472,10 @@ app.on('window-all-closed', () => {
 // 在应用退出前确保 Python 进程被终止，防止僵尸进程
 app.on('will-quit', (event) => {
     isQuitting = true;
+    globalShortcut.unregisterAll();
+    recoveryShortcutRegistered = false;
+    unregisterConfiguredShortcuts();
+    persistWindowSettings();
     if (!pythonProcess || quitCleanupStarted) return;
     quitCleanupStarted = true;
     event.preventDefault();
@@ -793,7 +1489,11 @@ app.on('will-quit', (event) => {
 app.on('activate', () => {
     // macOS 可能在端口分配和 IPC 注册完成前发出 activate；此时由启动流程稍后建窗。
     if (!desktopServicesReady) return;
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        showMainWindow();
+    } else if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
+        registerRecoveryShortcut();
+        registerConfiguredShortcuts();
     }
 });

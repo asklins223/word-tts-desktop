@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -64,6 +66,40 @@ class DesktopServerSecurityTests(unittest.TestCase):
         self.assertEqual(calls, [False])
         self.assertEqual(result["voice_catalog_meta"]["catalog_source"], "live")
 
+    def test_policy_string_false_does_not_enable_browser_or_task_flags(self):
+        browser = server._normalize_browser_policy({
+            "show_on_login": "false",
+            "hide_after_login": "0",
+            "keep_browser_hidden": "no",
+            "allow_system_chrome": "false",
+            "default_hidden": "false",
+            "close_browser_on_finish": "0",
+        })
+        task = server._normalize_task_policy({
+            "keep_logs": "false",
+            "completion_notification": "0",
+            "open_output_dir": "no",
+            "close_browser_on_finish": "false",
+            "keep_history": "0",
+        })
+
+        self.assertEqual(
+            browser,
+            {
+                "show_on_login": False,
+                "hide_after_login": False,
+                "keep_browser_hidden": False,
+                "allow_system_chrome": False,
+                "default_hidden": False,
+                "close_browser_on_finish": False,
+            },
+        )
+        self.assertFalse(task["keep_logs"])
+        self.assertFalse(task["completion_notification"])
+        self.assertFalse(task["open_output_dir"])
+        self.assertFalse(task["close_browser_on_finish"])
+        self.assertFalse(task["keep_history"])
+
 
 class DesktopSessionIsolationTests(unittest.TestCase):
     def test_same_filename_sessions_have_distinct_output_directories(self):
@@ -75,6 +111,59 @@ class DesktopSessionIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as session_dir:
             with self.assertRaises(server.HTTPException):
                 server.confined_file_path(session_dir, "../outside.mp3")
+
+    def test_generate_snapshot_cannot_switch_to_another_source_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            owned_path = Path(temp_dir, "owned.docx")
+            outside_path = Path(temp_dir, "other.docx")
+            owned_path.write_bytes(b"owned")
+            outside_path.write_bytes(b"other")
+            session = server.SessionState("generate-snapshot")
+            session.source_filename = owned_path.name
+            session.file_path = str(owned_path)
+
+            request = server.GenerateRequest(
+                session_id=session.session_id,
+                source_filename=owned_path.name,
+                file_path=str(outside_path),
+                config={},
+            )
+            with self.assertRaises(server.HTTPException) as error:
+                server._validated_generation_snapshot(request, session)
+
+            self.assertEqual(error.exception.status_code, 409)
+
+    def test_generate_snapshot_rejects_path_in_source_filename(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir, "owned.docx")
+            source_path.write_bytes(b"owned")
+            session = server.SessionState("generate-filename")
+            session.source_filename = source_path.name
+            session.file_path = str(source_path)
+            request = server.GenerateRequest(
+                session_id=session.session_id,
+                source_filename="../owned.docx",
+                file_path=str(source_path),
+                config={},
+            )
+
+            with self.assertRaises(server.HTTPException) as error:
+                server._validated_generation_snapshot(request, session)
+
+            self.assertEqual(error.exception.status_code, 400)
+
+    def test_uploaded_source_cleanup_uses_configured_output_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            server.core, "OUTPUT_BASE", temp_dir
+        ):
+            upload_path = Path(temp_dir, "uploads", "temporary.docx")
+            upload_path.parent.mkdir(parents=True, exist_ok=True)
+            upload_path.write_bytes(b"temporary")
+            session = server.SessionState("uploaded-source-cleanup")
+            session.file_path = str(upload_path)
+
+            self.assertTrue(server._remove_owned_uploaded_source(session))
+            self.assertFalse(upload_path.exists())
 
     def test_progress_from_an_old_audio_algorithm_is_not_reused(self):
         fingerprint = {"sha256": "same", "size": 1}
@@ -95,6 +184,7 @@ class DesktopSessionIsolationTests(unittest.TestCase):
         progress["config"]["parser_version"] = server.core.PARSER_VERSION
         self.assertTrue(server.progress_is_reusable(progress, fingerprint))
 
+
     def test_malformed_persisted_output_path_is_rejected_safely(self):
         fingerprint = {"sha256": "same", "size": 1}
         progress = {
@@ -112,6 +202,46 @@ class DesktopSessionIsolationTests(unittest.TestCase):
         }
 
         self.assertFalse(server.progress_is_reusable(progress, fingerprint))
+
+    def test_persisted_output_path_must_stay_inside_session_audio_directory(self):
+        fingerprint = {"sha256": "same", "size": 1}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session_dir = Path(temp_dir, "session")
+            audio_dir = session_dir / "audio"
+            audio_dir.mkdir(parents=True)
+            outside_path = Path(temp_dir, "outside.mp3")
+            outside_path.write_bytes(b"outside")
+            inside_path = audio_dir / "inside.mp3"
+            inside_path.write_bytes(b"inside")
+            progress = {
+                "source_fingerprint": fingerprint,
+                "config": {
+                    "generation_mode": server.core.GENERATION_MODE_SINGLE,
+                    "audio_algorithm_version": server.core.AUDIO_ALGORITHM_VERSION,
+                    "parser_version": server.core.PARSER_VERSION,
+                },
+                "items": [{
+                    "status": "done",
+                    "raw_item": {},
+                    "output_path": str(outside_path),
+                }],
+            }
+
+            self.assertFalse(
+                server.progress_is_reusable(
+                    progress,
+                    fingerprint,
+                    session_dir=str(session_dir),
+                )
+            )
+            progress["items"][0]["output_path"] = str(inside_path)
+            self.assertTrue(
+                server.progress_is_reusable(
+                    progress,
+                    fingerprint,
+                    session_dir=str(session_dir),
+                )
+            )
 
     def test_malformed_composite_progress_is_rejected_safely(self):
         fingerprint = {"sha256": "same", "size": 1}
@@ -463,6 +593,241 @@ class DesktopSessionIsolationTests(unittest.TestCase):
             server._sessions.pop(session.session_id, None)
 
 
+class DesktopTaskControlTests(unittest.TestCase):
+    def setUp(self):
+        self.original_token = server._API_TOKEN
+        server._API_TOKEN = "test-token"
+        self.client = TestClient(server.app)
+        server._sessions.clear()
+
+    def tearDown(self):
+        self.client.close()
+        server._sessions.clear()
+        server._API_TOKEN = self.original_token
+
+    @staticmethod
+    def _running_session(session_id="control-api"):
+        session = server.SessionState(session_id)
+        session.reset_control_for_generation()
+        session.begin_generation()
+        server._sessions[session_id] = session
+        return session
+
+    def test_content_update_clears_stale_terminal_replay_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            server.core, "OUTPUT_BASE", temp_dir
+        ):
+            source_path = Path(temp_dir, "lesson.docx")
+            source_path.write_bytes(b"lesson")
+            session = server.SessionState("content-reset")
+            session.source_filename = source_path.name
+            session.file_path = str(source_path)
+            session.source_fingerprint = {"sha256": "lesson", "size": 6}
+            old_parse_results = [{
+                "doc_type": "朗读",
+                "items": [{"category": "旧内容", "text": "旧文本"}],
+            }]
+            new_parse_results = [{
+                "doc_type": "朗读",
+                "items": [{"category": "新内容", "text": "新文本"}],
+            }]
+            session.parse_results = old_parse_results
+            session.content_version = server.core.content_version_for_parse_results(
+                old_parse_results
+            )
+
+            async def exercise():
+                completed_task = asyncio.create_task(asyncio.sleep(0))
+                await completed_task
+                session.task = completed_task
+                server.push_event(session, {
+                    "type": "log",
+                    "entry": {"key": "old-task", "title": "旧任务"},
+                })
+                server.push_event(session, {"type": "done", "history_id": "old-history"})
+                server.push_event(session, {"type": "end"})
+
+                request = server.ContentUpdateRequest(
+                    parse_results=new_parse_results,
+                    content_version=session.content_version,
+                )
+                return await server._update_session_content_locked(
+                    session.session_id,
+                    request,
+                    session,
+                )
+
+            result = asyncio.run(exercise())
+
+            self.assertTrue(result["changed"])
+            self.assertIsNone(session.task)
+            self.assertFalse(session.done)
+            self.assertFalse(session.ended)
+            self.assertEqual(session.log_entries, [])
+            self.assertIsNone(session.final_done)
+            self.assertEqual(
+                [event["type"] for event in session.event_journal],
+                ["control_state", "content_updated", "status"],
+            )
+
+    def test_browser_show_preserves_requested_minimized_state(self):
+        session = server.SessionState("browser-restore-state")
+        server._sessions[session.session_id] = session
+        browser_result = {
+            "visibility": "minimized",
+            "permission_required": False,
+            "owner_mismatch": False,
+        }
+        headers = {"X-WordTTS-Token": "test-token"}
+
+        with mock.patch.object(
+            server.core,
+            "set_browser_visibility",
+            new=mock.AsyncMock(return_value=browser_result),
+        ) as set_visibility:
+            response = self.client.post(
+                f"/api/session/{session.session_id}/browser/show",
+                headers=headers,
+                json={"minimize": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        set_visibility.assert_awaited_once_with(
+            True,
+            minimize=True,
+            owner_session_id=session.session_id,
+        )
+        self.assertEqual(response.json()["browser_state"]["visibility"], "minimized")
+
+    def test_pause_resume_api_is_idempotent_and_exposes_checkpoint_state(self):
+        session = self._running_session()
+        headers = {"X-WordTTS-Token": "test-token"}
+
+        response = self.client.post(
+            f"/api/session/{session.session_id}/pause",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["control_state"], "pause_requested")
+        self.assertTrue(response.json()["accepted"])
+
+        response = self.client.post(
+            f"/api/session/{session.session_id}/pause",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["idempotent"])
+        self.assertEqual(response.json()["control_state"], "pause_requested")
+
+        response = self.client.post(
+            f"/api/session/{session.session_id}/resume",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["control_state"], "resume_requested")
+        session.control_probe("test-resume")
+        self.assertEqual(session.control_snapshot()["control_state"], "running")
+        self.assertEqual(session.last_checkpoint, "test-resume")
+
+        response = self.client.get(
+            f"/api/session/{session.session_id}",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["control_state"], "running")
+        self.assertEqual(response.json()["last_checkpoint"], "test-resume")
+
+    def test_sync_playwright_probe_blocks_at_checkpoint_until_resume(self):
+        session = self._running_session("control-thread-bridge")
+        session.request_pause()
+        result = {}
+
+        def probe():
+            result["cancelled"] = session.control_probe("works-id-poll")
+
+        worker = threading.Thread(target=probe)
+        worker.start()
+        deadline = time.monotonic() + 1.0
+        while (
+            session.control_snapshot()["control_state"] != "paused"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        self.assertEqual(session.control_snapshot()["control_state"], "paused")
+        self.assertTrue(worker.is_alive())
+        session.request_resume()
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(session.control_snapshot()["control_state"], "running")
+
+    def test_terminate_api_is_idempotent_and_does_not_turn_into_pause(self):
+        session = self._running_session("terminate-api")
+        headers = {"X-WordTTS-Token": "test-token"}
+
+        response = self.client.post(
+            f"/api/session/{session.session_id}/terminate",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["control_state"], "terminating")
+        self.assertTrue(response.json()["termination_requested"])
+
+        response = self.client.post(
+            f"/api/session/{session.session_id}/pause",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 409)
+
+        response = self.client.post(
+            f"/api/session/{session.session_id}/terminate",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["idempotent"])
+
+        self.assertTrue(session.control_probe("terminate-checkpoint"))
+
+    def test_idle_session_cannot_be_terminated(self):
+        session = server.SessionState("terminate-idle")
+        self.assertEqual(
+            session.request_terminate(),
+            {
+                "ok": False,
+                "reason": "task-not-terminable",
+                "state": "idle",
+            },
+        )
+
+    def test_terminated_sse_replay_exposes_preserve_outputs(self):
+        session = self._running_session("terminated-sse")
+        session.request_terminate()
+        session._set_control_state("terminated", "terminal")
+        server.push_event(session, {
+            "type": "terminated",
+            "completed": 2,
+            "failed": 0,
+            "total": 5,
+            "preserve_outputs": True,
+        })
+        server.push_event(session, {"type": "end"})
+
+        response = self.client.get(
+            f"/api/progress/{session.session_id}",
+            headers={"X-WordTTS-Token": "test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        terminal = next(event for event in events if event["type"] == "terminated")
+        self.assertTrue(terminal["preserve_outputs"])
+        self.assertEqual(events[-1]["type"], "end")
+
+
 class DesktopGenerationTimelineTests(unittest.TestCase):
     def setUp(self):
         self.output_dir = tempfile.TemporaryDirectory()
@@ -480,9 +845,34 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
             )
             self.xunfei_patch.start()
 
+        # 生成时间线测试不启动真实 Chromium；显式提供后端已确认的窗口控制
+        # 结果，避免把“防偷窥隐藏失败”路径和音频装配断言混在一起。
+        self.browser_snapshot_patch = mock.patch.object(
+            server.core,
+            "browser_snapshot",
+            new=mock.AsyncMock(return_value={
+                "visibility": "visible",
+                "permission_required": False,
+                "owner_mismatch": False,
+            }),
+        )
+        self.browser_visibility_patch = mock.patch.object(
+            server.core,
+            "set_browser_visibility",
+            new=mock.AsyncMock(return_value={
+                "visibility": "hidden",
+                "permission_required": False,
+                "owner_mismatch": False,
+            }),
+        )
+        self.browser_snapshot_patch.start()
+        self.browser_visibility_patch.start()
+
     def tearDown(self):
         if self.xunfei_patch is not None:
             self.xunfei_patch.stop()
+        self.browser_visibility_patch.stop()
+        self.browser_snapshot_patch.stop()
         self.output_patch.stop()
         self.output_dir.cleanup()
 
@@ -1329,6 +1719,34 @@ class DesktopHistoryTests(unittest.TestCase):
 
         self.assertEqual(record["generation_mode"], server.core.GENERATION_MODE_SINGLE)
 
+    def test_corrupt_history_counts_and_collections_are_ignored_safely(self):
+        archived = self._archive("corrupt-history-fields")
+        manifest_path = Path(archived["session"].session_dir, server.HISTORY_MANIFEST_FILENAME)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update({
+            "completed": "not-a-number",
+            "failed": {"unexpected": "object"},
+            "total": ["also-invalid"],
+            "files": {"filename": "not-a-list"},
+            "failed_items": "not-a-list",
+            "generation_mode": {"unexpected": "object"},
+            "terminated": "false",
+            "preview": "false",
+        })
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        record = server.get_history_record(archived["record"]["id"])
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record["completed"], 0)
+        self.assertEqual(record["failed"], 0)
+        self.assertEqual(record["total"], 0)
+        self.assertEqual(record["files"], [])
+        self.assertEqual(record["failed_items"], [])
+        self.assertEqual(record["generation_mode"], server.core.GENERATION_MODE_SINGLE)
+        self.assertFalse(record["terminated"])
+        self.assertFalse(record["preview"])
+
     def test_history_survives_restart_and_supports_detail_download_and_delete(self):
         archived = self._archive("restart-safe")
         record_id = archived["record"]["id"]
@@ -1393,6 +1811,47 @@ class DesktopHistoryTests(unittest.TestCase):
             [item["id"] for item in server.list_history_records()],
             [archived["record"]["id"]],
         )
+
+    def test_terminated_record_counts_unprocessed_items_as_incomplete(self):
+        session = server.SessionState("terminated-partial")
+        audio_dir = Path(session.session_dir, "audio")
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = audio_dir / "partial.mp3"
+        audio_path.write_bytes(b"partial-audio")
+        session.progress = {
+            "source_file": "partial.docx",
+            "created_at": "2026-08-27T08:00:00",
+            "total_items": 3,
+            "completed": 1,
+            "failed": 0,
+            "config": {
+                "format": "mp3",
+                "content_version": "content-v1",
+                "generation_mode": server.core.GENERATION_MODE_SINGLE,
+            },
+            "items": [{
+                "id": "item-1",
+                "filename": "partial.mp3",
+                "doc_type": "朗读",
+                "category": "测试",
+                "text": "已完成",
+                "status": "done",
+                "output_path": str(audio_path),
+            }],
+        }
+
+        record = server.archive_terminated_record(session)
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record["status"], "terminated")
+        self.assertTrue(record["terminated"])
+        self.assertEqual(record["content_version"], "content-v1")
+        self.assertEqual(
+            (record["completed"], record["failed"], record["total"]),
+            (1, 2, 3),
+        )
+        self.assertTrue(Path(session.session_dir, server.HISTORY_MANIFEST_FILENAME).is_file())
+        self.assertTrue(audio_path.is_file())
 
     def test_completed_sse_replay_keeps_history_id(self):
         session = server.SessionState("sse-history-contract")

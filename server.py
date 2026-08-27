@@ -90,6 +90,104 @@ from uvicorn.config import LOGGING_CONFIG as _UVICORN_DEFAULT_LOG_CONFIG
 
 MAX_LOG_ENTRIES = 500  # 重连时保留最近的结构化日志
 MAX_EVENT_JOURNAL_ENTRIES = 1200  # 每个 SSE 连接按游标独立读取的有界事件日志
+CONTROL_WAIT_INTERVAL_SECONDS = 0.1
+CONTROL_ACTIVE_STATES = {
+    "starting",
+    "running",
+    "pause_requested",
+    "paused",
+    "resume_requested",
+    "terminating",
+}
+CONTROL_TERMINAL_STATES = {
+    "completed",
+    "failed",
+    "cancelled",
+    "terminated",
+}
+DEFAULT_TASK_POLICY = {
+    "retry_count": 1,
+    "operation_timeout_seconds": 120,
+    "keep_logs": True,
+    "completion_notification": True,
+    "open_output_dir": False,
+    "close_browser_on_finish": True,
+    "keep_history": True,
+    "history_limit": 20,
+}
+TASK_OPERATION_TIMEOUT_MIN_SECONDS = 10
+TASK_OPERATION_TIMEOUT_MAX_SECONDS = 3600
+TASK_RETRY_COUNT_MAX = 10
+HISTORY_LIMIT_MAX = 20
+SESSION_STOP_TIMEOUT_SECONDS = 5.0
+PLAYWRIGHT_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+def _coerce_bool(value, default=False) -> bool:
+    """将 API/设置中的布尔值安全地收敛，避免 ``"false"`` 变成 True。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"", "0", "false", "no", "n", "否", "关闭"}:
+            return False
+        if normalized in {"1", "true", "yes", "y", "是", "开启"}:
+            return True
+    return bool(default)
+
+
+def _safe_nonnegative_int(value, default=0) -> int:
+    """读取持久化计数时拒绝坏值，避免损坏清单打断历史接口。"""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            number = int(default)
+        except (TypeError, ValueError, OverflowError):
+            number = 0
+    return max(0, number)
+
+
+def _normalize_task_policy(value) -> dict:
+    """把 Electron 传入的任务策略固定为后端可执行的快照。"""
+    raw = value if isinstance(value, dict) else {}
+
+    def boolean(key, default):
+        return _coerce_bool(raw.get(key, default), default)
+
+    def integer(key, default, minimum, maximum):
+        try:
+            number = int(round(float(raw.get(key, default))))
+        except (TypeError, ValueError, OverflowError):
+            number = default
+        return max(minimum, min(maximum, number))
+
+    return {
+        "retry_count": integer("retry_count", DEFAULT_TASK_POLICY["retry_count"], 0, TASK_RETRY_COUNT_MAX),
+        "operation_timeout_seconds": integer(
+            "operation_timeout_seconds",
+            DEFAULT_TASK_POLICY["operation_timeout_seconds"],
+            TASK_OPERATION_TIMEOUT_MIN_SECONDS,
+            TASK_OPERATION_TIMEOUT_MAX_SECONDS,
+        ),
+        "keep_logs": boolean("keep_logs", DEFAULT_TASK_POLICY["keep_logs"]),
+        "completion_notification": boolean(
+            "completion_notification", DEFAULT_TASK_POLICY["completion_notification"]
+        ),
+        "open_output_dir": boolean("open_output_dir", DEFAULT_TASK_POLICY["open_output_dir"]),
+        "close_browser_on_finish": boolean(
+            "close_browser_on_finish", DEFAULT_TASK_POLICY["close_browser_on_finish"]
+        ),
+        "keep_history": boolean("keep_history", DEFAULT_TASK_POLICY["keep_history"]),
+        "history_limit": integer(
+            "history_limit",
+            DEFAULT_TASK_POLICY["history_limit"],
+            1,
+            HISTORY_LIMIT_MAX,
+        ),
+    }
 
 
 def _integer_progress_count(value, total=None):
@@ -117,6 +215,7 @@ class SessionState:
         self.session_dir = session_output_dir(session_id)
         self.event_seq: int = 0
         self.event_journal = deque(maxlen=MAX_EVENT_JOURNAL_ENTRIES)
+        self._event_lock = threading.RLock()
         # Python 3.9 会在 asyncio.Event() 构造时绑定当前事件循环；会话
         # 可能先由同步上传/测试代码创建，再由 FastAPI 的事件循环消费，
         # 因此不能在这里提前绑定。第一次进入异步上下文时再懒创建。
@@ -128,10 +227,23 @@ class SessionState:
         self.progress: Optional[dict] = None
         self.parse_results: Optional[list] = None
         self.source_fingerprint: Optional[dict] = None
+        self.source_filename: Optional[str] = None
+        self.file_path: Optional[str] = None
+        self.content_version: Optional[str] = None
+        self.browser_policy: dict = {
+            "show_on_login": True,
+            "hide_after_login": True,
+            "keep_browser_hidden": True,
+            "allow_system_chrome": False,
+            "default_hidden": True,
+            "close_browser_on_finish": True,
+        }
+        self.task_policy: dict = copy.deepcopy(DEFAULT_TASK_POLICY)
         self.status: str = "idle"
         self.done: bool = False
         self.ended: bool = False  # 任务流已发送 end；供多 SSE 连接可靠收尾
         self.cancelled: bool = False  # 用户取消标记
+        self.termination_requested: bool = False  # 明确终止请求；与旧取消兼容
         self.cleaning_up: bool = False  # cleanup 期间拒绝新的生成请求
         self.task: Optional[asyncio.Task] = None  # 当前生成任务引用
         self.final_download: Optional[dict] = None  # 最终 download 事件（供重连时重放）
@@ -139,8 +251,59 @@ class SessionState:
         self.final_done: Optional[dict] = None  # 完整 done 事件（含历史记录 ID，供重连时重放）
         self.final_error: Optional[dict] = None  # 终止错误（供并存/重连 SSE 重放）
         self.final_cancelled: Optional[dict] = None  # 取消终态（供断线重连 SSE 重放）
+        self.final_terminated: Optional[dict] = None  # 明确终止终态（保留输出）
         self.last_stats: Optional[dict] = None  # 最新 stats 事件（供重连时重放）
         self.lifecycle_version: int = 0  # cleanup 时递增，使并发中的旧启动请求失效
+
+        # 控制状态由后端单一持有。threading.Event 是故意的：讯飞同步
+        # Playwright 始终运行在专用线程，不能直接等待 asyncio.Event。
+        self.control_state: str = "idle"
+        self.last_checkpoint: Optional[str] = None
+        self.control_state_changed_at: Optional[float] = None
+        self.operation_deadline: Optional[float] = None
+        self.timeout_requested: bool = False
+        self.pause_requested_event = threading.Event()
+        self.resume_event = threading.Event()
+        self.resume_event.set()
+        self.terminate_event = threading.Event()
+        self._control_lock = threading.RLock()
+        self._control_loop = None
+        self._control_loop_thread_id: Optional[int] = None
+        self._operation_lock = None
+        self._operation_lock_loop = None
+        self._operation_lock_guard = threading.Lock()
+        self._browser_state_lock = threading.RLock()
+        self.browser_state: dict = {
+            "visibility": "unavailable",
+            "platform": sys.platform,
+            "permission_required": False,
+            "last_error": "自动化浏览器尚未启动",
+            "pid": None,
+            "process_ids": [],
+            "executable_path": None,
+            "profile_dir": None,
+            "started_at": None,
+            "window_handles": [],
+            "last_operation_at": None,
+            "context_id": None,
+            "page_id": None,
+            "page_count": 0,
+            "logged_in": False,
+            "browser_mode": None,
+            "owner_session_id": None,
+            "owner_mismatch": False,
+        }
+
+    def operation_lock(self):
+        """返回保护生成/编辑/清理临界区的当前事件循环锁。"""
+        loop = asyncio.get_running_loop()
+        with self._operation_lock_guard:
+            if self._operation_lock is None or self._operation_lock_loop is not loop:
+                if self._operation_lock is not None and self._operation_lock.locked():
+                    raise RuntimeError("会话操作锁仍绑定在另一个事件循环")
+                self._operation_lock = asyncio.Lock()
+                self._operation_lock_loop = loop
+            return self._operation_lock
 
     def ensure_event_signal(self) -> asyncio.Event:
         """返回绑定到当前运行循环的 SSE 广播事件。"""
@@ -150,6 +313,283 @@ class SessionState:
                 self.event_signal = asyncio.Event()
                 self._event_signal_loop = loop
             return self.event_signal
+
+    def bind_control_loop(self, loop=None):
+        """记录负责运行会话任务的 asyncio loop，供同步线程投递控制事件。"""
+        loop = loop or asyncio.get_running_loop()
+        with self._control_lock:
+            self._control_loop = loop
+            self._control_loop_thread_id = threading.get_ident()
+
+    def notify_event_signal(self):
+        """在线程安全地唤醒所有 SSE 连接。"""
+        with self._event_signal_lock:
+            signal = self.event_signal
+            loop = self._event_signal_loop
+        if signal is None or loop is None:
+            return
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            signal.set()
+            return
+        if loop.is_running():
+            try:
+                loop.call_soon_threadsafe(signal.set)
+            except RuntimeError:
+                pass
+
+    def event_journal_snapshot(self):
+        """在线程安全地复制 SSE 事件游标，避免同步线程写入时迭代 deque。"""
+        with self._event_lock:
+            return self.event_seq, list(self.event_journal)
+
+    def _schedule_control_event(self, event):
+        """将同步 Playwright 线程产生的控制事件投递回 FastAPI loop。"""
+        with self._control_lock:
+            loop = self._control_loop
+            loop_thread_id = self._control_loop_thread_id
+        if loop is not None and loop.is_running() and threading.get_ident() != loop_thread_id:
+            try:
+                loop.call_soon_threadsafe(push_event, self, event)
+                return
+            except RuntimeError:
+                pass
+        push_event(self, event)
+
+    def _set_control_state(self, state: str, checkpoint=None, *, force=False):
+        if state not in CONTROL_ACTIVE_STATES | CONTROL_TERMINAL_STATES | {"idle"}:
+            raise ValueError(f"未知任务控制状态: {state}")
+        with self._control_lock:
+            changed = force or self.control_state != state
+            checkpoint_value = (
+                str(checkpoint)[:160]
+                if checkpoint is not None and str(checkpoint).strip()
+                else self.last_checkpoint
+            )
+            if checkpoint_value is not None:
+                self.last_checkpoint = checkpoint_value
+            if not changed:
+                return False
+            self.control_state = state
+            self.control_state_changed_at = time.time()
+            event = {
+                "type": "control_state",
+                "state": state,
+                "checkpoint": self.last_checkpoint,
+                "pause_requested": self.pause_requested_event.is_set(),
+                "termination_requested": self.termination_requested,
+                "changed_at": self.control_state_changed_at,
+            }
+        self._schedule_control_event(event)
+        return True
+
+    def control_snapshot(self):
+        """返回 API/SSE 可公开的控制状态快照。"""
+        with self._control_lock:
+            state = self.control_state
+            checkpoint = self.last_checkpoint
+            changed_at = self.control_state_changed_at
+            pause_requested = self.pause_requested_event.is_set()
+            termination_requested = self.termination_requested
+            timeout_requested = self.timeout_requested
+        task = self.task
+        return {
+            "control_state": state,
+            "last_checkpoint": checkpoint,
+            "control_state_changed_at": changed_at,
+            "pause_requested": pause_requested,
+            "termination_requested": termination_requested,
+            "timeout_requested": timeout_requested,
+            "task_active": bool(task and not task.done()),
+        }
+
+    def set_task_policy(self, policy):
+        self.task_policy = _normalize_task_policy(policy)
+
+    def start_operation_timer(self):
+        timeout = _normalize_task_policy(self.task_policy)["operation_timeout_seconds"]
+        with self._control_lock:
+            self.timeout_requested = False
+            self.operation_deadline = time.monotonic() + timeout
+
+    def clear_operation_timer(self):
+        with self._control_lock:
+            self.operation_deadline = None
+
+    def _operation_timeout_reached(self):
+        with self._control_lock:
+            deadline = self.operation_deadline
+            already_requested = self.timeout_requested
+            if deadline is None or already_requested or time.monotonic() < deadline:
+                return already_requested
+            self.timeout_requested = True
+            self.cancelled = True
+            self.pause_requested_event.clear()
+            self.resume_event.set()
+            self.terminate_event.set()
+        self._set_control_state("terminating", "operation-timeout")
+        return True
+
+    def begin_generation(self):
+        """进入真正生成阶段；已排队的暂停请求不能被覆盖。"""
+        with self._control_lock:
+            if self.termination_requested or self.cancelled:
+                return
+            should_run = not self.pause_requested_event.is_set()
+        if should_run:
+            self._set_control_state("running", "generation-start")
+
+    async def wait_at_checkpoint(self, checkpoint: str):
+        """在异步阶段等待暂停恢复；返回 True 表示已请求取消/终止。"""
+        while True:
+            if self._operation_timeout_reached():
+                return True
+            with self._control_lock:
+                cancelled = self.cancelled or self.termination_requested
+                paused = self.pause_requested_event.is_set()
+                resumed = self.resume_event.is_set()
+                state = self.control_state
+            if cancelled:
+                return True
+            if paused:
+                self._set_control_state("paused", checkpoint)
+            elif state in {"paused", "resume_requested"} and resumed:
+                self._set_control_state("running", checkpoint)
+                return False
+            else:
+                return False
+            await asyncio.sleep(CONTROL_WAIT_INTERVAL_SECONDS)
+
+    def control_probe(self, checkpoint="playwright"):
+        """供同步 Playwright 调用的协作式暂停/终止探针。"""
+        while True:
+            if self._operation_timeout_reached():
+                return True
+            with self._control_lock:
+                if self.cancelled or self.termination_requested:
+                    return True
+                paused = self.pause_requested_event.is_set()
+                resumed = self.resume_event.is_set()
+                state = self.control_state
+            if paused:
+                self._set_control_state("paused", checkpoint)
+            elif state in {"paused", "resume_requested"} and resumed:
+                self._set_control_state("running", checkpoint)
+                return False
+            else:
+                return False
+            if self.terminate_event.wait(CONTROL_WAIT_INTERVAL_SECONDS):
+                return True
+
+    def request_pause(self):
+        with self._control_lock:
+            state = self.control_state
+            if state in CONTROL_TERMINAL_STATES or state in {"idle", "terminating"}:
+                return {"ok": False, "reason": "task-not-pausable", "state": state}
+            if state in {"pause_requested", "paused"}:
+                return {"ok": True, "accepted": False, "idempotent": True, "state": state}
+            self.pause_requested_event.set()
+            self.resume_event.clear()
+        self._set_control_state("pause_requested", "pause-requested")
+        return {"ok": True, "accepted": True, "idempotent": False, "state": "pause_requested"}
+
+    def request_resume(self):
+        with self._control_lock:
+            state = self.control_state
+            if state in CONTROL_TERMINAL_STATES or state in {"idle", "terminating"}:
+                return {"ok": False, "reason": "task-not-resumable", "state": state}
+            if state in {"running", "resume_requested"} and not self.pause_requested_event.is_set():
+                return {"ok": True, "accepted": False, "idempotent": True, "state": state}
+            if state not in {"paused", "pause_requested"}:
+                return {"ok": False, "reason": "task-not-paused", "state": state}
+            self.pause_requested_event.clear()
+            self.resume_event.set()
+        self._set_control_state("resume_requested", "resume-requested")
+        return {"ok": True, "accepted": True, "idempotent": False, "state": "resume_requested"}
+
+    def request_terminate(self):
+        with self._control_lock:
+            state = self.control_state
+            if state == "idle":
+                return {"ok": False, "reason": "task-not-terminable", "state": state}
+            if state in {"terminated", "cancelled", "terminating"}:
+                return {"ok": True, "accepted": False, "idempotent": True, "state": state}
+            if state in {"completed", "failed"}:
+                return {"ok": False, "reason": "task-already-finished", "state": state}
+            self.termination_requested = True
+            self.cancelled = True
+            self.pause_requested_event.clear()
+            self.resume_event.set()
+            self.terminate_event.set()
+        self._set_control_state("terminating", "terminate-requested")
+        return {"ok": True, "accepted": True, "idempotent": False, "state": "terminating"}
+
+    def cancel_for_cleanup(self):
+        """cleanup/重新生成沿用旧取消语义，但必须解除可能的暂停等待。"""
+        with self._control_lock:
+            self.cancelled = True
+            self.pause_requested_event.clear()
+            self.resume_event.set()
+            self.terminate_event.set()
+
+    def abort_for_restart(self):
+        """取消旧任务并清除控制闸门，避免新一轮继承旧暂停状态。"""
+        with self._control_lock:
+            self.cancelled = True
+            self.termination_requested = False
+            self.pause_requested_event.clear()
+            self.resume_event.set()
+            self.terminate_event.set()
+
+    def reset_control_for_generation(self):
+        with self._control_lock:
+            self.cancelled = False
+            self.termination_requested = False
+            self.pause_requested_event.clear()
+            self.resume_event.set()
+            self.terminate_event.clear()
+            self.timeout_requested = False
+            self.operation_deadline = None
+            self.control_state = "starting"
+            self.last_checkpoint = None
+            self.control_state_changed_at = time.time()
+
+    def discard_log_history(self):
+        """按任务策略丢弃结束后的日志，只保留状态和终态事件。"""
+        if self.task_policy.get("keep_logs", True):
+            return
+        with self._event_lock:
+            self.log_entries = []
+            self.event_journal = deque(
+                (event for event in self.event_journal if event.get("type") != "log"),
+                maxlen=MAX_EVENT_JOURNAL_ENTRIES,
+            )
+
+    def browser_snapshot(self):
+        with self._browser_state_lock:
+            return copy.deepcopy(self.browser_state)
+
+    def set_browser_state(self, state: Optional[dict], *, emit=True):
+        """保存后端确认的浏览器状态，并按需广播给渲染层。"""
+        incoming = state if isinstance(state, dict) else {}
+        with self._browser_state_lock:
+            merged = {**self.browser_state, **copy.deepcopy(incoming)}
+            if isinstance(merged.get("process_ids"), (tuple, set)):
+                merged["process_ids"] = list(merged["process_ids"])
+            if not isinstance(merged.get("process_ids"), list):
+                merged["process_ids"] = []
+            if isinstance(merged.get("window_handles"), (tuple, set)):
+                merged["window_handles"] = list(merged["window_handles"])
+            if not isinstance(merged.get("window_handles"), list):
+                merged["window_handles"] = []
+            self.browser_state = merged
+            snapshot = copy.deepcopy(merged)
+        if emit:
+            push_event(self, {"type": "browser_state", **snapshot})
+        return snapshot
 
 # 全局会话注册表
 _sessions: dict[str, SessionState] = {}
@@ -163,6 +603,11 @@ SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
 HISTORY_MANIFEST_FILENAME = "history.json"
 HISTORY_SCHEMA_VERSION = 1
+MAX_EDITABLE_CONTENT_SECTIONS = 128
+MAX_EDITABLE_CONTENT_ITEMS = 5000
+MAX_EDITABLE_ITEM_TEXT = 20000
+MAX_EDITABLE_TOTAL_TEXT = 2_000_000
+MAX_EDITABLE_FIELD_LENGTH = 240
 _history_lock = threading.RLock()
 
 # 音色目录先从本地种子/缓存快速加载，避免网络波动阻塞应用启动；在线目录
@@ -303,6 +748,83 @@ def source_fingerprint(filepath: str) -> dict:
         "sha256": digest.hexdigest(),
         "size": size,
     }
+
+
+def normalize_editable_parse_results(parse_results) -> list:
+    """校验并收敛渲染层提交的“已编辑任务输入”。
+
+    解析结果会进入进度文件并最终影响文件名，因此只保留解析器约定的
+    字段，拒绝任意对象/超长内容，避免编辑接口变成无限制 JSON 存储入口。
+    空文本允许保存，由生成阶段以“文本为空”显示为失败项，方便用户先整理
+    完整文档再统一生成。
+    """
+    if not isinstance(parse_results, list) or not parse_results:
+        raise HTTPException(status_code=422, detail="编辑后的内容不能为空")
+    if len(parse_results) > MAX_EDITABLE_CONTENT_SECTIONS:
+        raise HTTPException(status_code=422, detail="题型分组数量超过安全上限")
+
+    def clean_text(value, field, limit=MAX_EDITABLE_FIELD_LENGTH):
+        if value is None:
+            return ""
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            raise HTTPException(status_code=422, detail=f"{field} 格式无效")
+        return str(value).strip()[:limit]
+
+    allowed_item_fields = {
+        "category", "text", "number", "section", "filename_stem", "voice",
+        "role", "roles",
+    }
+    normalized = []
+    total_items = 0
+    total_text = 0
+    for section_index, raw_section in enumerate(parse_results, start=1):
+        if not isinstance(raw_section, dict):
+            raise HTTPException(status_code=422, detail=f"第 {section_index} 个题型分组格式无效")
+        doc_type = clean_text(raw_section.get("doc_type"), "题型名称")
+        if not doc_type:
+            raise HTTPException(status_code=422, detail=f"第 {section_index} 个题型分组缺少题型名称")
+        raw_items = raw_section.get("items")
+        if not isinstance(raw_items, list) or not raw_items:
+            raise HTTPException(status_code=422, detail=f"{doc_type} 没有可编辑内容")
+        section = {"doc_type": doc_type, "items": []}
+        for item_index, raw_item in enumerate(raw_items, start=1):
+            if total_items >= MAX_EDITABLE_CONTENT_ITEMS:
+                raise HTTPException(status_code=422, detail="可编辑内容条目超过安全上限")
+            if not isinstance(raw_item, dict):
+                raise HTTPException(status_code=422, detail=f"{doc_type} 第 {item_index} 条格式无效")
+            text = clean_text(raw_item.get("text"), "文本", MAX_EDITABLE_ITEM_TEXT)
+            total_text += len(text)
+            if total_text > MAX_EDITABLE_TOTAL_TEXT:
+                raise HTTPException(status_code=422, detail="编辑后的文本总量超过安全上限")
+            item = {}
+            for key in allowed_item_fields:
+                if key not in raw_item:
+                    continue
+                value = raw_item.get(key)
+                if key == "text":
+                    item[key] = text
+                elif key == "roles":
+                    if isinstance(value, (list, tuple)):
+                        item[key] = [clean_text(entry, "角色名称") for entry in value[:16] if str(entry or "").strip()]
+                    elif value in (None, ""):
+                        item[key] = []
+                    else:
+                        raise HTTPException(status_code=422, detail="roles 格式无效")
+                elif key == "number":
+                    if value in (None, ""):
+                        continue
+                    try:
+                        item[key] = int(value)
+                    except (TypeError, ValueError, OverflowError):
+                        item[key] = clean_text(value, "题号", 40)
+                else:
+                    item[key] = clean_text(value, key)
+            item.setdefault("text", text)
+            section["items"].append(item)
+            total_items += 1
+        section["item_count"] = len(section["items"])
+        normalized.append(section)
+    return normalized
 
 
 def _atomic_write_json(path: str, data) -> None:
@@ -531,18 +1053,27 @@ def _read_history_manifest(session_dir: str) -> Optional[dict]:
         return None
 
     files = []
-    for item in raw.get("files") or []:
+    raw_files = raw.get("files")
+    if not isinstance(raw_files, (list, tuple)):
+        raw_files = []
+    for item in raw_files:
         cleaned = _clean_history_file(item, session_dir)
         if cleaned:
             files.append(cleaned)
 
-    completed = max(0, int(raw.get("completed") or len(files)))
-    failed = max(0, int(raw.get("failed") or 0))
-    total = max(completed + failed, int(raw.get("total") or 0))
+    completed = _safe_nonnegative_int(raw.get("completed"), len(files))
+    failed = _safe_nonnegative_int(raw.get("failed"), 0)
+    total = max(
+        completed + failed,
+        _safe_nonnegative_int(raw.get("total"), 0),
+    )
     completed_at = str(raw.get("completed_at") or raw.get("created_at") or "")
     zip_path = os.path.join(session_dir, "output.zip")
     failed_items = []
-    for item in (raw.get("failed_items") or [])[:20]:
+    raw_failed_items = raw.get("failed_items")
+    if not isinstance(raw_failed_items, (list, tuple)):
+        raw_failed_items = []
+    for item in raw_failed_items[:20]:
         if not isinstance(item, dict):
             continue
         failed_items.append({
@@ -551,22 +1082,29 @@ def _read_history_manifest(session_dir: str) -> Optional[dict]:
             "error": str(item.get("error") or "")[:240],
         })
 
+    raw_generation_mode = raw.get("generation_mode")
+    generation_mode = (
+        raw_generation_mode
+        if isinstance(raw_generation_mode, str)
+        and raw_generation_mode in core.GENERATION_MODES
+        else core.GENERATION_MODE_SINGLE
+    )
+
     return {
         "id": history_id,
         "session_id": session_id,
         "source_filename": os.path.basename(str(raw.get("source_filename") or "未命名文档.docx")),
+        "content_version": raw.get("content_version"),
         "created_at": str(raw.get("created_at") or completed_at),
         "completed_at": completed_at,
+        "status": str(raw.get("status") or ("terminated" if _coerce_bool(raw.get("terminated")) else "completed"))[:32],
+        "terminated": _coerce_bool(raw.get("terminated")),
         "completed": completed,
         "failed": failed,
         "total": total,
         "format": str(raw.get("format") or "mp3")[:16].lower(),
-        "preview": bool(raw.get("preview")),
-        "generation_mode": (
-            raw.get("generation_mode")
-            if raw.get("generation_mode") in core.GENERATION_MODES
-            else core.GENERATION_MODE_SINGLE
-        ),
+        "preview": _coerce_bool(raw.get("preview")),
+        "generation_mode": generation_mode,
         "zip_available": os.path.isfile(zip_path),
         "available_files": sum(1 for item in files if item["available"]),
         "files": files,
@@ -628,9 +1166,14 @@ def _find_history_record_internal(history_id: str) -> Optional[dict]:
     return None
 
 
-def _trim_history_records() -> None:
+def _trim_history_records(limit=None) -> None:
+    try:
+        effective_limit = int(limit if limit is not None else MAX_HISTORY_RECORDS)
+    except (TypeError, ValueError, OverflowError):
+        effective_limit = MAX_HISTORY_RECORDS
+    effective_limit = max(1, min(HISTORY_LIMIT_MAX, effective_limit))
     records = _history_records()
-    for record in records[MAX_HISTORY_RECORDS:]:
+    for record in records[effective_limit:]:
         session = _sessions.get(record["session_id"])
         if session and session.task and not session.task.done():
             continue
@@ -646,17 +1189,20 @@ def archive_history_record(
     progress: dict,
     file_list: list[dict],
     zip_path: Optional[str],
+    history_limit=None,
 ) -> Optional[dict]:
     """把已完成会话登记为历史记录，并物理淘汰第 21 条及更早记录。"""
     if not file_list or not _is_confined_history_dir(session.session_dir):
         return None
+    progress_items = progress.get("items") if isinstance(progress.get("items"), list) else []
     failed_items = [
         {
             "id": item.get("id", ""),
             "doc_type": item.get("doc_type", ""),
             "error": str(item.get("error") or "")[:240],
         }
-        for item in progress.get("items", [])
+        for item in progress_items
+        if isinstance(item, dict)
         if item.get("status") == "error"
     ][:20]
     now = datetime.now().isoformat()
@@ -665,20 +1211,27 @@ def archive_history_record(
         "generation_mode",
         core.GENERATION_MODE_SINGLE,
     )
-    if generation_mode not in core.GENERATION_MODES:
+    if not isinstance(generation_mode, str) or generation_mode not in core.GENERATION_MODES:
         generation_mode = core.GENERATION_MODE_SINGLE
+    total_items = _safe_nonnegative_int(progress.get("total_items"), 0)
+    completed_items = _safe_nonnegative_int(
+        progress.get("completed") or len(file_list),
+        len(file_list),
+    )
+    failed_items_count = _safe_nonnegative_int(progress.get("failed"), 0)
     manifest = {
         "schema_version": HISTORY_SCHEMA_VERSION,
         "history_id": history_id_for_session(session.session_id),
         "session_id": session.session_id,
         "source_filename": os.path.basename(str(progress.get("source_file") or "未命名文档.docx")),
+        "content_version": progress.get("content_version") or progress_config.get("content_version"),
         "created_at": str(progress.get("created_at") or now),
         "completed_at": now,
-        "total": max(0, int(progress.get("total_items") or 0)),
-        "completed": max(0, int(progress.get("completed") or len(file_list))),
-        "failed": max(0, int(progress.get("failed") or 0)),
+        "total": total_items,
+        "completed": completed_items,
+        "failed": failed_items_count,
         "format": str(progress_config.get("format") or "mp3")[:16].lower(),
-        "preview": bool(progress_config.get("preview")),
+        "preview": _coerce_bool(progress_config.get("preview")),
         "generation_mode": generation_mode,
         "zip_available": bool(zip_path and os.path.isfile(zip_path)),
         "failed_items": failed_items,
@@ -700,7 +1253,84 @@ def archive_history_record(
         return None
     with _history_lock:
         _atomic_write_json(_history_manifest_path(session.session_dir), manifest)
-        _trim_history_records()
+        _trim_history_records(history_limit)
+        record = _read_history_manifest(session.session_dir)
+        return _public_history_record(record, True) if record else None
+
+
+def archive_terminated_record(session: SessionState, history_limit=None) -> Optional[dict]:
+    """为显式终止任务保留已生成文件和可见历史摘要。"""
+    progress = session.progress if isinstance(session.progress, dict) else None
+    if not progress or not _is_confined_history_dir(session.session_dir):
+        return None
+    file_list = core.get_completed_file_list(progress)
+    if not file_list:
+        return None
+    progress_config = progress.get("config") if isinstance(progress.get("config"), dict) else {}
+    now = datetime.now().isoformat()
+    completed = _safe_nonnegative_int(
+        progress.get("completed") or len(file_list),
+        len(file_list),
+    )
+    failed_count = _safe_nonnegative_int(progress.get("failed"), 0)
+    total_count = _safe_nonnegative_int(progress.get("total_items"), 0)
+    total = max(
+        completed + failed_count,
+        total_count,
+        len(file_list),
+    )
+    # 终止不是失败重试：所有尚未完成的条目都要在历史记录里体现为
+    # 未完成，避免列表把“只生成了一半”的任务误显示成已完成。
+    failed = max(failed_count, total - completed)
+    progress_items = progress.get("items") if isinstance(progress.get("items"), list) else []
+    generation_mode = progress_config.get("generation_mode", core.GENERATION_MODE_SINGLE)
+    if not isinstance(generation_mode, str) or generation_mode not in core.GENERATION_MODES:
+        generation_mode = core.GENERATION_MODE_SINGLE
+    manifest = {
+        "schema_version": HISTORY_SCHEMA_VERSION,
+        "history_id": history_id_for_session(session.session_id),
+        "session_id": session.session_id,
+        "source_filename": os.path.basename(str(progress.get("source_file") or session.source_filename or "未命名文档.docx")),
+        "content_version": progress.get("content_version") or progress_config.get("content_version"),
+        "created_at": str(progress.get("created_at") or now),
+        "completed_at": now,
+        "status": "terminated",
+        "terminated": True,
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "format": str(progress_config.get("format") or "mp3")[:16].lower(),
+        "preview": _coerce_bool(progress_config.get("preview")),
+        "generation_mode": generation_mode,
+        "zip_available": os.path.isfile(os.path.join(session.session_dir, "output.zip")),
+        "failed_items": [
+            {
+                "id": str(item.get("id") or "")[:160],
+                "doc_type": str(item.get("doc_type") or "")[:160],
+                "error": str(item.get("error") or "")[:240],
+            }
+            for item in progress_items
+            if isinstance(item, dict)
+            if item.get("status") == "error"
+        ][:20],
+        "files": [
+            {
+                "id": str(item.get("id") or "")[:160],
+                "filename": os.path.basename(str(item.get("filename") or "")),
+                "doc_type": str(item.get("doc_type") or "")[:160],
+                "category": str(item.get("category") or "")[:160],
+                "text": str(item.get("text") or "")[:20000],
+                "text_preview": str(item.get("text_preview") or "")[:500],
+                "voice_keys": _clean_voice_keys(item.get("voice_keys")),
+            }
+            for item in file_list
+        ],
+    }
+    if manifest["generation_mode"] not in core.GENERATION_MODES:
+        manifest["generation_mode"] = core.GENERATION_MODE_SINGLE
+    with _history_lock:
+        _atomic_write_json(_history_manifest_path(session.session_dir), manifest)
+        _trim_history_records(history_limit)
         record = _read_history_manifest(session.session_dir)
         return _public_history_record(record, True) if record else None
 
@@ -775,6 +1405,40 @@ def clear_generated_outputs(session_dir: str) -> None:
             pass
 
 
+def _remove_owned_uploaded_source(session: SessionState) -> bool:
+    """删除浏览器上传的临时源文档，不触碰用户通过文件选择器提供的文件。"""
+    source_path = getattr(session, "file_path", None)
+    if not isinstance(source_path, str) or not source_path:
+        return False
+    try:
+        upload_root = os.path.realpath(os.path.join(core.OUTPUT_BASE, "uploads"))
+        source_real = os.path.realpath(source_path)
+        common = os.path.commonpath([upload_root, source_real])
+        if os.path.normcase(common) != os.path.normcase(upload_root):
+            return False
+    except (OSError, ValueError):
+        return False
+    # 上传文件名带微秒后缀，但仍防御未来代码复用同一源路径的情况。
+    for other in _sessions.values():
+        if other is session:
+            continue
+        other_path = getattr(other, "file_path", None)
+        if not isinstance(other_path, str) or not other_path:
+            continue
+        try:
+            if os.path.realpath(other_path) == source_real:
+                return False
+        except OSError:
+            continue
+    try:
+        if os.path.isfile(source_real):
+            os.remove(source_real)
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def save_parse_cache(session_dir: str, parse_results: list, fingerprint: dict) -> None:
     os.makedirs(session_dir, exist_ok=True)
     meta_path = os.path.join(session_dir, SOURCE_META_FILENAME)
@@ -786,6 +1450,44 @@ def save_parse_cache(session_dir: str, parse_results: list, fingerprint: dict) -
     _atomic_write_json(os.path.join(session_dir, "parsed.json"), parse_results)
     # 元数据最后落盘；中途失败时旧/缺失指纹会让下次安全地重新解析。
     _atomic_write_json(meta_path, fingerprint)
+
+
+def _public_progress_summary(progress: Optional[dict]) -> Optional[dict]:
+    """返回不包含本机路径的会话进度摘要。"""
+    if not isinstance(progress, dict):
+        return None
+    items = []
+    for item in progress.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "id": str(item.get("id") or "")[:160],
+            "filename": os.path.basename(str(item.get("filename") or "")),
+            "doc_type": str(item.get("doc_type") or "")[:160],
+            "status": str(item.get("status") or "pending")[:32],
+            "error": str(item.get("error") or "")[:240] or None,
+        })
+    config = progress.get("config") if isinstance(progress.get("config"), dict) else {}
+    return {
+        "source_file": os.path.basename(str(progress.get("source_file") or "")),
+        "content_version": progress.get("content_version") or config.get("content_version"),
+        "status": str(progress.get("status") or "")[:32],
+        "completed": max(0, int(progress.get("completed") or 0)),
+        "failed": max(0, int(progress.get("failed") or 0)),
+        "total_items": max(0, int(progress.get("total_items") or len(items))),
+        "files": items,
+    }
+
+
+def _public_session_event(event: Optional[dict]) -> Optional[dict]:
+    """返回可供桌面恢复使用的终态事件，不泄露本机绝对路径。"""
+    if not isinstance(event, dict):
+        return None
+    public = copy.deepcopy(event)
+    if public.get("type") == "done":
+        zip_path = public.pop("zip_path", None)
+        public["zip_available"] = bool(public.get("zip_available") or zip_path)
+    return public
 
 
 def _composite_progress_is_valid(progress: dict, items: list) -> bool:
@@ -868,7 +1570,12 @@ def _composite_progress_is_valid(progress: dict, items: list) -> bool:
     return True
 
 
-def progress_is_reusable(progress: Optional[dict], fingerprint: dict) -> bool:
+def progress_is_reusable(
+    progress: Optional[dict],
+    fingerprint: dict,
+    content_version: Optional[str] = None,
+    session_dir: Optional[str] = None,
+) -> bool:
     if not isinstance(progress, dict):
         return False
     items = progress.get("items")
@@ -876,6 +1583,14 @@ def progress_is_reusable(progress: Optional[dict], fingerprint: dict) -> bool:
         return False
     if progress.get("source_fingerprint") != fingerprint:
         return False
+    if content_version:
+        saved_content_version = progress.get("content_version")
+        if saved_content_version is None:
+            saved_content_version = (progress.get("config") or {}).get("content_version")
+        # 旧版进度没有内容版本，保留一次兼容读取；一旦新编辑器写入版本，
+        # 后续所有新进度都会严格按版本比对。
+        if saved_content_version is not None and str(saved_content_version) != str(content_version):
+            return False
     cfg = progress.get("config")
     if not isinstance(cfg, dict):
         return False
@@ -899,13 +1614,31 @@ def progress_is_reusable(progress: Optional[dict], fingerprint: dict) -> bool:
         items,
     ):
         return False
+    audio_root = None
+    if session_dir is not None:
+        try:
+            audio_root = os.path.realpath(os.path.join(os.fspath(session_dir), "audio"))
+        except (TypeError, ValueError, OSError):
+            return False
     for item in items:
         if item.get("status") != "done":
             continue
         output_path = item.get("output_path")
         if not isinstance(output_path, str) or not output_path:
             return False
-        if not os.path.exists(output_path):
+        if audio_root is not None:
+            output_real = os.path.realpath(output_path)
+            try:
+                common = os.path.commonpath([audio_root, output_real])
+            except ValueError:
+                return False
+            if (
+                os.path.normcase(common) != os.path.normcase(audio_root)
+                or output_real == audio_root
+                or not os.path.isfile(output_real)
+            ):
+                return False
+        elif not os.path.isfile(output_path):
             return False
     return True
 
@@ -961,11 +1694,17 @@ def restore_persisted_progress(
     source_filename: str,
     source_path: str,
     excluded_dirs: set[str],
+    content_version: Optional[str] = None,
 ) -> Optional[dict]:
     """复制历史任务的可用进度到当前私有目录，不共享可写产物。"""
     for candidate_dir in _persisted_session_dirs(excluded_dirs | {target_dir}):
         progress = core.load_progress(candidate_dir)
-        if not progress_is_reusable(progress, fingerprint):
+        if not progress_is_reusable(
+            progress,
+            fingerprint,
+            content_version,
+            session_dir=candidate_dir,
+        ):
             continue
         if not _configs_match(progress.get("config", {}), config):
             continue
@@ -1004,6 +1743,10 @@ def restore_persisted_progress(
         restored["source_file"] = source_filename
         restored["source_path"] = source_path
         restored["source_fingerprint"] = fingerprint
+        if content_version:
+            restored["content_version"] = content_version
+            if isinstance(restored.get("config"), dict):
+                restored["config"]["content_version"] = content_version
         return restored
     return None
 
@@ -1015,6 +1758,10 @@ def get_or_create_session(session_id: str) -> SessionState:
             # 优先清理已完成的会话，其次清理最早的
             done_sessions = [sid for sid, s in _sessions.items() if s.done]
             if done_sessions:
+                evicted = _sessions[done_sessions[0]]
+                # 归档完成后不再需要浏览器上传的源文档；清理时仍只允许
+                # 删除 core.OUTPUT_BASE/uploads 内的会话专属文件。
+                _remove_owned_uploaded_source(evicted)
                 del _sessions[done_sessions[0]]
             else:
                 # 不驱逐仍在运行的任务，避免其目录脱离会话表后被恢复扫描读取。
@@ -1023,37 +1770,59 @@ def get_or_create_session(session_id: str) -> SessionState:
     return _sessions[session_id]
 
 
+def _discard_unstarted_session(session_id: str, session: SessionState) -> None:
+    """解析阶段失败时同时释放会话表和空的私有目录。"""
+    if _sessions.get(session_id) is not session:
+        return
+    if session.task is not None and not session.task.done():
+        return
+    _sessions.pop(session_id, None)
+    if _is_confined_history_dir(session.session_dir):
+        shutil.rmtree(session.session_dir, ignore_errors=True)
+
+
 def push_event(session: SessionState, event: dict):
     """向会话队列推送事件，同时更新本地状态。"""
-    session.event_seq += 1
-    event = {**event, "event_seq": session.event_seq}
-    if event["type"] == "log":
-        session.log_entries.append(event["entry"])
-        # 超出上限时丢弃最早的日志（保留最近 MAX_LOG_ENTRIES 条）
-        if len(session.log_entries) > MAX_LOG_ENTRIES:
-            session.log_entries = session.log_entries[-MAX_LOG_ENTRIES:]
-    elif event["type"] == "status":
-        session.status = event["text"]
-    elif event["type"] == "stats":
-        session.last_stats = event
-    elif event["type"] == "done":
-        session.final_done = dict(event)
-        session.done = True
-    elif event["type"] == "error":
-        session.final_error = event
-    elif event["type"] == "cancelled":
-        session.final_cancelled = dict(event)
-    elif event["type"] == "end":
-        session.ended = True
-    session.event_journal.append(event)
+    with session._event_lock:
+        session.event_seq += 1
+        event = {**event, "event_seq": session.event_seq}
+        if event["type"] == "log":
+            if session.task_policy.get("keep_logs", True):
+                session.log_entries.append(event["entry"])
+                # 超出上限时丢弃最早的日志（保留最近 MAX_LOG_ENTRIES 条）
+                if len(session.log_entries) > MAX_LOG_ENTRIES:
+                    session.log_entries = session.log_entries[-MAX_LOG_ENTRIES:]
+        elif event["type"] == "status":
+            session.status = event["text"]
+        elif event["type"] == "stats":
+            session.last_stats = event
+        elif event["type"] == "browser_state":
+            with session._browser_state_lock:
+                session.browser_state = {
+                    **session.browser_state,
+                    **copy.deepcopy({
+                        key: value
+                        for key, value in event.items()
+                        if key not in {"type", "event_seq"}
+                    }),
+                }
+        elif event["type"] == "done":
+            session.final_done = dict(event)
+            session.done = True
+        elif event["type"] == "error":
+            session.final_error = event
+        elif event["type"] == "cancelled":
+            session.final_cancelled = dict(event)
+        elif event["type"] == "terminated":
+            session.final_terminated = dict(event)
+        elif event["type"] == "end":
+            session.ended = True
+        session.event_journal.append(event)
     # asyncio.Event 是广播唤醒：所有 SSE 连接都会按各自游标读取同一事件，
     # 不会像单消费者 Queue 那样在重连窗口互相“偷走”进度。
     # 生成事件通常在 FastAPI 事件循环内推送；同步测试/初始化阶段则没有
     # 可绑定的 loop，此时只记录 journal，SSE 建立时会从 journal 补发。
-    try:
-        session.ensure_event_signal().set()
-    except RuntimeError:
-        pass
+    session.notify_event_signal()
 
 
 # ============================================================================
@@ -1067,6 +1836,7 @@ async def generate_audio_stream(
     config: dict,
 ):
     """串行化讯飞浏览器任务，避免共享页面发生跨会话竞态。"""
+    session.bind_control_loop(asyncio.get_running_loop())
     # /api/generate 会先显式规范化新配置，默认是 composite_cut。对旧前端
     # 或直接调用本函数但没有传 generation_mode 的请求，也必须遵循产品默认，
     # 否则打包客户端一旦前后端版本不同就会悄悄退回逐条生成并显著变慢。
@@ -1074,7 +1844,12 @@ async def generate_audio_stream(
     if "generation_mode" not in raw_config:
         raw_config["generation_mode"] = core.GENERATION_MODE_COMPOSITE
     async with _get_xunfei_generation_lock():
-        await _generate_audio_stream(session, source_filename, filepath, raw_config)
+        session.begin_generation()
+        session.start_operation_timer()
+        try:
+            await _generate_audio_stream(session, source_filename, filepath, raw_config)
+        finally:
+            session.clear_operation_timer()
 
 
 async def _generate_audio_stream(
@@ -1088,6 +1863,19 @@ async def _generate_audio_stream(
     复用 word_tts_app.py 中的所有核心函数。
     """
     config = core.normalize_tts_config(config)
+    task_policy = _normalize_task_policy(session.task_policy)
+    session.task_policy = task_policy
+    # 任务策略属于本次会话的执行控制，不属于音频内容指纹。它不写进
+    # normalize_tts_config 生成的音频配置，避免旧版/失败任务在重试时因为
+    # 新增的 UI 策略字段而被误判为“声音配置发生变化”。
+    content_version = str(
+        session.content_version
+        or config.get("content_version")
+        or core.content_version_for_parse_results(session.parse_results or [])
+    ).strip()
+    if not content_version:
+        content_version = core.content_version_for_parse_results(session.parse_results or [])
+    config["content_version"] = content_version
     # 正常流程会先请求 /api/config；这里仍用缓存兜底注册任意音色，避免
     # 直接调用生成接口时 catalog 尚未进入讯飞客户端注册表。
     await asyncio.to_thread(_load_voice_catalog_sync, False)
@@ -1420,6 +2208,7 @@ async def _generate_audio_stream(
     ):
         if session.final_error:
             return
+        session._set_control_state("failed", "error")
         elapsed_ms = (
             max(0, int(duration_ms))
             if duration_ms is not None
@@ -1444,8 +2233,21 @@ async def _generate_audio_stream(
         })
 
     def emit_cancelled_terminal(reason: str):
-        if session.final_cancelled:
+        if session.final_cancelled or session.final_terminated:
             return
+        with session._control_lock:
+            terminated = session.termination_requested
+            timed_out = session.timeout_requested
+        if timed_out and not terminated:
+            timeout_seconds = session.task_policy.get("operation_timeout_seconds", 120)
+            emit_error_terminal(
+                "生成任务超时",
+                f"任务超过设置的操作超时 {timeout_seconds} 秒，已停止后续提交；"
+                "已确认提交的作品不会自动重复提交。",
+                status_text="生成任务已超时",
+            )
+            return
+        terminal_title = "任务已终止" if terminated else "任务已取消"
         active_progress = session.progress or {}
         completed = max(0, int(active_progress.get("completed") or 0))
         failed = max(0, int(active_progress.get("failed") or 0))
@@ -1460,7 +2262,7 @@ async def _generate_audio_stream(
             stage="complete",
             kind="summary",
             key="task:summary",
-            title="任务已取消",
+            title=terminal_title,
             detail=(
                 f"已完成 {completed} 条，失败 {failed} 条，"
                 f"未处理 {max(total - completed - failed, 0)} 条 · {reason}"
@@ -1468,16 +2270,56 @@ async def _generate_audio_stream(
             progress_snapshot=active_progress or None,
             duration_ms=elapsed_ms,
         )
-        emit_status("已取消")
-        push_event(session, {
-            "type": "cancelled",
+        terminal_state = "terminated" if terminated else "cancelled"
+        terminal_type = "terminated" if terminated else "cancelled"
+        session._set_control_state(terminal_state, "terminal")
+        emit_status(terminal_title)
+        terminal_event = {
+            "type": terminal_type,
             "completed": completed,
-            "failed": failed,
+            "failed": max(failed, total - completed) if terminated else failed,
             "total": total,
             "duration_ms": elapsed_ms,
-        })
+            "preserve_outputs": terminated,
+        }
+        if terminated:
+            completed_files = core.get_completed_file_list(active_progress)
+            terminal_event["file_list"] = [
+                {
+                    "id": item.get("id"),
+                    "filename": os.path.basename(str(item.get("filename") or "")),
+                    "doc_type": item.get("doc_type", ""),
+                    "category": item.get("category", ""),
+                    "text": item.get("text", ""),
+                    "text_preview": item.get("text_preview", ""),
+                    "voice_keys": _clean_voice_keys(item.get("voice_keys")),
+                }
+                for item in completed_files
+            ]
+            terminal_event["zip_available"] = os.path.isfile(
+                os.path.join(session.session_dir, "output.zip")
+            )
+            terminated_record = (
+                archive_terminated_record(
+                    session,
+                    history_limit=session.task_policy.get("history_limit"),
+                )
+                if session.task_policy.get("keep_history", True)
+                else None
+            )
+            if terminated_record:
+                terminal_event["history_id"] = terminated_record.get("id")
+        push_event(session, terminal_event)
+
+    async def wait_for_checkpoint(checkpoint: str, reason: str):
+        if await session.wait_at_checkpoint(checkpoint):
+            emit_cancelled_terminal(reason)
+            return True
+        return False
 
     try:
+        if await wait_for_checkpoint("prepare-start", "任务尚未开始就收到停止请求"):
+            return
         audio_dir = os.path.join(session_dir, "audio")
         os.makedirs(audio_dir, exist_ok=True)
 
@@ -1513,7 +2355,12 @@ async def _generate_audio_stream(
 
         # ---- 检查断点续传 ----
         existing = core.load_progress(session_dir)
-        if not progress_is_reusable(existing, current_fingerprint):
+        if not progress_is_reusable(
+            existing,
+            current_fingerprint,
+            content_version,
+            session_dir=session_dir,
+        ):
             blocked_dirs = {
                 state.session_dir
                 for state in _sessions.values()
@@ -1527,6 +2374,7 @@ async def _generate_audio_stream(
                 source_filename,
                 filepath,
                 blocked_dirs,
+                content_version,
             )
             if restored:
                 existing = restored
@@ -1541,7 +2389,12 @@ async def _generate_audio_stream(
                     detail=f"将从第 {existing['completed'] + 1} 条继续，已完成 {existing['completed']} / {existing['total_items']}",
                     progress_snapshot=existing,
                 )
-        if progress_is_reusable(existing, current_fingerprint):
+        if progress_is_reusable(
+            existing,
+            current_fingerprint,
+            content_version,
+            session_dir=session_dir,
+        ):
             old_config = existing.get("config", {})
             config_changed = not _configs_match(old_config, config)
 
@@ -1670,6 +2523,12 @@ async def _generate_audio_stream(
                     )
                     return
 
+            parse_results = normalize_editable_parse_results(parse_results)
+            session.parse_results = parse_results
+            session.content_version = core.content_version_for_parse_results(parse_results)
+            content_version = session.content_version
+            config["content_version"] = content_version
+
             if not parse_results:
                 parse_duration_ms = round((time.perf_counter() - parse_started_at) * 1000)
                 log(
@@ -1701,6 +2560,7 @@ async def _generate_audio_stream(
             type_names = "、".join(r["doc_type"] for r in parse_results)
             progress = core.build_progress(source_filename, filepath, parse_results, config)
             progress["source_fingerprint"] = current_fingerprint
+            progress["content_version"] = content_version
 
             # 试听模式
             if config.get("preview") and progress["total_items"] > 3:
@@ -1821,8 +2681,10 @@ async def _generate_audio_stream(
 
         emit_stats(progress)
         emit_generation_status(progress)
-        if session.cancelled:
-            emit_cancelled_terminal("生成计划准备完成后已停止任务")
+        if await wait_for_checkpoint(
+            "before-browser-login",
+            "生成计划准备完成后已停止任务",
+        ):
             return
 
         # ---- 讯飞配音会话登录（所有音频都需要浏览器会话）----
@@ -1838,7 +2700,38 @@ async def _generate_audio_stream(
                 detail="将在浏览器中打开讯飞配音，完成后自动继续生成",
             )
             try:
-                await core._xunfei.ensure_session(voice_key=fv)
+                ensure_kwargs = {"voice_key": fv}
+                ensure_kwargs["cancel_check"] = lambda: session.control_probe(
+                    "browser-login"
+                )
+                ensure_kwargs["owner_session_id"] = session.session_id
+                ensure_kwargs["allow_system_chrome"] = bool(
+                    session.browser_policy.get("allow_system_chrome", False)
+                )
+                await core._xunfei.ensure_session(**ensure_kwargs)
+                browser_state = await core.browser_snapshot(
+                    owner_session_id=session.session_id
+                )
+                session.set_browser_state(browser_state)
+                browser_policy = session.browser_policy if isinstance(session.browser_policy, dict) else {}
+                should_hide_browser = bool(
+                    not browser_policy.get("show_on_login", True)
+                    or browser_policy.get("hide_after_login", True)
+                    or browser_policy.get("keep_browser_hidden", False)
+                )
+                if should_hide_browser:
+                    hidden_state = await core.set_browser_visibility(
+                        False,
+                        owner_session_id=session.session_id,
+                    )
+                    session.set_browser_state(hidden_state)
+                    if hidden_state.get("visibility") != "hidden":
+                        reason = hidden_state.get("last_error") or (
+                            "专用自动化浏览器未能隐藏"
+                        )
+                        raise RuntimeError(
+                            f"防偷窥/后台隐藏未完成：{reason}"
+                        )
                 log(
                     "success",
                     "讯飞配音登录成功，开始生成音频",
@@ -1902,8 +2795,10 @@ async def _generate_audio_stream(
                 )
 
         for item in progress["items"]:
-            if session.cancelled:
-                emit_cancelled_terminal("已收到取消请求，未开始的内容不会继续处理")
+            if await wait_for_checkpoint(
+                "before-item-submit",
+                "已收到取消请求，未开始的内容不会继续处理",
+            ):
                 return
             if item["status"] == "done" and item["id"] not in composite_resume_item_ids:
                 continue
@@ -2568,7 +3463,9 @@ async def _generate_audio_stream(
                         work_plan=progress.get("composite_work_plan"),
                         resume=progress.get("composite_works"),
                         debug_dir=os.path.join(session_dir, "composite"),
-                        cancel_check=lambda: session.cancelled,
+                        cancel_check=lambda: session.control_probe("composite-playwright"),
+                        max_retries=session.task_policy.get("retry_count", 1) + 1,
+                        owner_session_id=session.session_id,
                     )
                 except Exception as error:
                     batch_error = str(error)
@@ -2588,7 +3485,9 @@ async def _generate_audio_stream(
                     batch_results = await core._synth_items_batch(
                         item_specs,
                         progress_callback=on_batch_item_progress,
-                        cancel_check=lambda: session.cancelled,
+                        cancel_check=lambda: session.control_probe("batch-playwright"),
+                        max_retries=session.task_policy.get("retry_count", 1) + 1,
+                        owner_session_id=session.session_id,
                     )
                 except Exception as error:
                     batch_error = str(error)
@@ -2762,11 +3661,11 @@ async def _generate_audio_stream(
                 segments=composite_segments_snapshot(),
             )
 
-        if session.cancelled:
+        if await wait_for_checkpoint(
+            "after-synthesis",
+            f"{generation_mode_label}阶段结束后已停止后续任务",
+        ):
             await persist_progress(progress, force=True)
-            emit_cancelled_terminal(
-                f"{generation_mode_label}阶段结束后已停止后续任务"
-            )
             return
 
         if composite_mode and composite_work_states:
@@ -2805,8 +3704,10 @@ async def _generate_audio_stream(
         )
 
         # ---- 清理 + 打包 ----
-        if session.cancelled:
-            emit_cancelled_terminal("音频生成阶段结束后已停止交付整理")
+        if await wait_for_checkpoint(
+            "before-package",
+            "音频生成阶段结束后已停止交付整理",
+        ):
             return
         progress["status"] = "packaging"
         await persist_progress(progress, force=True)
@@ -2859,8 +3760,10 @@ async def _generate_audio_stream(
         progress["status"] = "done"
         await persist_progress(progress, force=True)
 
-        if session.cancelled:
-            emit_cancelled_terminal("交付文件整理结束后已停止任务")
+        if await wait_for_checkpoint(
+            "after-package",
+            "交付文件整理结束后已停止任务",
+        ):
             return
 
         done = progress["completed"]
@@ -2877,8 +3780,10 @@ async def _generate_audio_stream(
         # 保存最终 zip_path 供 SSE 重连重放
         session.final_zip_path = zip_path if file_list else None
         history_record = None
-        if session.cancelled:
-            emit_cancelled_terminal("任务在保存历史记录前已停止")
+        if await wait_for_checkpoint(
+            "before-archive",
+            "任务在保存历史记录前已停止",
+        ):
             return
         if file_list:
             archive_started_at = time.perf_counter()
@@ -2901,24 +3806,55 @@ async def _generate_audio_stream(
                 progress_snapshot=progress,
             )
             try:
-                history_record = await asyncio.to_thread(
-                    archive_history_record,
-                    session,
-                    progress,
-                    file_list,
-                    session.final_zip_path,
-                )
-                log(
-                    "success",
-                    "历史记录保存完成",
-                    stage="archive",
-                    kind="stage",
-                    key="stage:archive",
-                    title="已保存到历史记录",
-                    detail="结果已安全保存在当前电脑，历史记录最多保留 20 条",
-                    progress_snapshot=progress,
-                    duration_ms=round((time.perf_counter() - archive_started_at) * 1000),
-                )
+                if session.task_policy.get("keep_history", True):
+                    history_record = await asyncio.to_thread(
+                        archive_history_record,
+                        session,
+                        progress,
+                        file_list,
+                        session.final_zip_path,
+                        session.task_policy.get("history_limit"),
+                    )
+                else:
+                    history_record = None
+                    log(
+                        "info",
+                        "已按任务设置跳过历史记录归档",
+                        stage="archive",
+                        kind="notice",
+                        key="history:skipped",
+                        title="未保存历史记录",
+                        detail="音频文件仍保留在当前任务目录，可在本次结果页下载",
+                        progress_snapshot=progress,
+                    )
+                if session.task_policy.get("keep_history", True):
+                    if history_record:
+                        log(
+                            "success",
+                            "历史记录保存完成",
+                            stage="archive",
+                            kind="stage",
+                            key="stage:archive",
+                            title="已保存到历史记录",
+                            detail=(
+                                "结果已安全保存在当前电脑，历史记录最多保留 "
+                                f"{session.task_policy.get('history_limit', HISTORY_LIMIT_MAX)} 条"
+                            ),
+                            progress_snapshot=progress,
+                            duration_ms=round((time.perf_counter() - archive_started_at) * 1000),
+                        )
+                    else:
+                        log(
+                            "warn",
+                            "历史记录未写入",
+                            stage="archive",
+                            kind="stage",
+                            key="stage:archive",
+                            title="历史记录保存失败",
+                            detail="本次结果仍保留在任务目录，请先下载后再新建任务。",
+                            progress_snapshot=progress,
+                            duration_ms=round((time.perf_counter() - archive_started_at) * 1000),
+                        )
             except Exception as history_error:
                 log(
                     "warn",
@@ -2950,8 +3886,10 @@ async def _generate_audio_stream(
                 detail="没有成功生成的音频文件，可返回配置后重试",
                 progress_snapshot=progress,
             )
-        if session.cancelled:
-            emit_cancelled_terminal("历史记录处理结束后已停止任务")
+        if await wait_for_checkpoint(
+            "after-archive",
+            "历史记录处理结束后已停止任务",
+        ):
             return
         emit_status(status_text)
         task_duration_ms = round((time.perf_counter() - task_started_at) * 1000)
@@ -2988,25 +3926,45 @@ async def _generate_audio_stream(
         }
         if composite_mode:
             done_event["composite_works"] = composite_work_snapshot()
+        session._set_control_state("completed", "complete")
         push_event(session, done_event)
 
     except asyncio.CancelledError:
         emit_cancelled_terminal("生成进程已安全停止")
     except Exception as e:
-        emit_error_terminal(
-            "生成任务未能完成",
-            str(e),
-            status_text="生成任务未能完成",
-        )
+        if session.termination_requested:
+            emit_cancelled_terminal(f"终止请求已生效：{e}")
+        else:
+            emit_error_terminal(
+                "生成任务未能完成",
+                str(e),
+                status_text="生成任务未能完成",
+            )
     finally:
-        # 无论成功/失败/取消，都关闭讯飞配音浏览器会话，防止进程泄漏
-        if core._XUNFEI_AVAILABLE:
+        # 完成/失败按设置释放浏览器；显式终止必须强制释放，避免用户选择
+        # “保留浏览器”时仍残留自动化会话或后台 Chromium 进程。
+        should_close_browser = (
+            session.termination_requested
+            or session.browser_policy.get("close_browser_on_finish", True)
+        )
+        if core._XUNFEI_AVAILABLE and should_close_browser:
             try:
-                await core._xunfei.close_session()
+                await core._xunfei.close_session(owner_session_id=session.session_id)
             except asyncio.CancelledError:
                 pass
             except Exception as close_err:
                 print(f"[wordtts] 关闭讯飞配音浏览器异常: {close_err}", file=sys.stderr)
+        try:
+            session.set_browser_state(
+                await core.browser_snapshot(owner_session_id=session.session_id)
+            )
+        except Exception as browser_state_error:
+            session.set_browser_state({
+                "visibility": "unavailable",
+                "last_error": str(browser_state_error)[:500],
+                "permission_required": False,
+            })
+        session.discard_log_history()
         push_event(session, {"type": "end"})
 
 
@@ -3019,10 +3977,134 @@ class GenerateRequest(BaseModel):
     source_filename: str
     file_path: str
     config: dict
+    content_version: Optional[str] = None
+    browser_policy: Optional[dict] = None
+    task_policy: Optional[dict] = None
 
 
 class ParseRequest(BaseModel):
     file_path: str
+
+
+class ContentUpdateRequest(BaseModel):
+    parse_results: list
+    content_version: Optional[str] = None
+
+
+class BrowserVisibilityRequest(BaseModel):
+    # 仅用于从防偷窥模式退出时恢复进入前的 Windows 最小化状态。
+    # macOS/Linux 控制器会按平台能力降级为普通显示。
+    minimize: bool = False
+
+
+def _validated_generation_snapshot(req: GenerateRequest, session: SessionState):
+    """只允许生成当前会话在导入阶段确认过的源文档。
+
+    ``file_path`` 来自本地渲染器，但渲染器同时持有本机 API token，不能把
+    请求体当作新的文件授权。生成接口必须绑定到 parse/upload 产生的会话
+    快照，否则拿到 token 的本机进程可以让后端读取任意可读路径。
+    """
+    expected_path = str(session.file_path or "").strip()
+    requested_path = str(req.file_path or "").strip()
+    expected_name = str(session.source_filename or "").strip()
+    requested_name = str(req.source_filename or "").strip()
+    if not expected_path or not expected_name:
+        raise HTTPException(status_code=409, detail="当前会话缺少已导入的源文档，请重新导入")
+    if not requested_path or not requested_name:
+        raise HTTPException(status_code=409, detail="生成请求缺少当前会话的源文档信息")
+    if os.path.basename(requested_name) != requested_name:
+        raise HTTPException(status_code=400, detail="源文件名必须是文件名而不是路径")
+
+    try:
+        expected_real_path = os.path.realpath(expected_path)
+        requested_real_path = os.path.realpath(requested_path)
+        same_path = os.path.normcase(expected_real_path) == os.path.normcase(requested_real_path)
+        is_file = os.path.isfile(expected_real_path)
+    except (OSError, ValueError):
+        same_path = False
+        is_file = False
+    if not same_path or not is_file:
+        raise HTTPException(
+            status_code=409,
+            detail="生成源文档与当前会话不一致或已不可读取，请重新导入文档",
+        )
+    if requested_name != expected_name:
+        raise HTTPException(status_code=409, detail="生成源文件名与当前会话不一致，请重新同步")
+    return expected_name, expected_real_path
+
+
+def _normalize_browser_policy(value) -> dict:
+    raw = value if isinstance(value, dict) else {}
+    default_hidden = _coerce_bool(raw.get("default_hidden", True), True)
+    return {
+        "show_on_login": _coerce_bool(raw.get("show_on_login", True), True),
+        "hide_after_login": _coerce_bool(raw.get("hide_after_login", default_hidden), default_hidden),
+        # 防偷窥/保持隐藏是后端的安全默认，前端只能显式关闭普通模式策略。
+        "keep_browser_hidden": _coerce_bool(raw.get("keep_browser_hidden", True), True),
+        "allow_system_chrome": _coerce_bool(raw.get("allow_system_chrome", False), False),
+        "default_hidden": default_hidden,
+        "close_browser_on_finish": _coerce_bool(raw.get("close_browser_on_finish", True), True),
+    }
+
+
+def _require_control_session(session_id: str) -> SessionState:
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return session
+
+
+async def _wait_for_session_quiescence(
+    session: SessionState,
+    *,
+    timeout=SESSION_STOP_TIMEOUT_SECONDS,
+) -> bool:
+    """等待会话任务和其底层同步 Playwright 调用都真正结束。
+
+    ``Task.cancel()`` 只会取消 asyncio 包装层，不能证明 executor 线程已经
+    停止。因此所有会删除目录、重置事件日志或启动新一轮任务的路径都必须
+    经过这个屏障；超时只能返回失败，不能继续做破坏性操作。
+    """
+    task = session.task
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while task is not None and not task.done():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+        except asyncio.TimeoutError:
+            return False
+        except asyncio.CancelledError:
+            # 任务自身可能因为外部生命周期事件被取消；继续检查底层 worker。
+            break
+        except Exception:
+            break
+
+    remaining = max(0.0, deadline - time.monotonic())
+    if not await core.wait_for_browser_worker_idle(timeout=remaining):
+        return False
+    await asyncio.sleep(0)
+    return task is None or task.done()
+
+
+def _control_action_response(session: SessionState, action: str, result: dict):
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "action": action,
+                "reason": result.get("reason") or "control-rejected",
+                "control_state": result.get("state") or session.control_state,
+            },
+        )
+    return {
+        "session_id": session.session_id,
+        "action": action,
+        "accepted": bool(result.get("accepted")),
+        "idempotent": bool(result.get("idempotent")),
+        **session.control_snapshot(),
+    }
 
 
 # ============================================================================
@@ -3050,7 +4132,7 @@ app.add_middleware(
     allow_origins=[
         "null",  # Electron file:// 协议的 origin 为 "null"
     ],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -3119,6 +4201,10 @@ async def get_config():
         "male_voice": "George",
         "voices": catalog.get("voices") or [],
         "voice_filters": catalog.get("filters") or [],
+        # 讯飞多人配音弹窗搜索的是 common/list 的基础音色名称；普通模式
+        # 仍使用 flat/list 的具体变体。两套目录通过相同 speaker key 关联。
+        "composite_voices": catalog.get("composite_voices") or [],
+        "composite_voice_filters": catalog.get("composite_filters") or [],
         "voice_catalog_meta": catalog.get("_meta") or {},
     }
 
@@ -3258,7 +4344,7 @@ async def parse_document_endpoint(req: ParseRequest):
     try:
         fingerprint = await asyncio.to_thread(source_fingerprint, real_path)
     except Exception as e:
-        _sessions.pop(session_id, None)
+        _discard_unstarted_session(session_id, session)
         raise HTTPException(status_code=422, detail=f"无法读取文档: {e}")
 
     parse_results = await asyncio.to_thread(load_parse_cache, session_dir, fingerprint)
@@ -3272,26 +4358,52 @@ async def parse_document_endpoint(req: ParseRequest):
             find_persisted_parse_cache, fingerprint, blocked_dirs
         )
     cache_reused = parse_results is not None
+    if parse_results is not None:
+        try:
+            parse_results = normalize_editable_parse_results(parse_results)
+        except HTTPException:
+            # 旧版本缓存可能缺少可编辑字段；不要把坏缓存当成解析失败，
+            # 让当前解析器重新产出并覆盖它。
+            parse_results = None
+            cache_reused = False
     if parse_results is None:
         try:
             parse_results, summary = await asyncio.to_thread(
                 core.parse_document_auto, real_path
             )
         except Exception as e:
-            _sessions.pop(session_id, None)
+            _discard_unstarted_session(session_id, session)
             raise HTTPException(status_code=500, detail=f"解析失败: {e}")
         if not parse_results:
-            _sessions.pop(session_id, None)
+            _discard_unstarted_session(session_id, session)
             raise HTTPException(status_code=422, detail=summary or "未识别到支持的题型内容")
-        await asyncio.to_thread(clear_generated_outputs, session_dir)
-        await asyncio.to_thread(save_parse_cache, session_dir, parse_results, fingerprint)
+        try:
+            parse_results = normalize_editable_parse_results(parse_results)
+            await asyncio.to_thread(clear_generated_outputs, session_dir)
+            await asyncio.to_thread(save_parse_cache, session_dir, parse_results, fingerprint)
+        except HTTPException:
+            _discard_unstarted_session(session_id, session)
+            raise
+        except Exception as error:
+            _discard_unstarted_session(session_id, session)
+            raise HTTPException(status_code=500, detail=f"解析失败: {error}")
     elif not os.path.exists(os.path.join(session_dir, "parsed.json")):
-        await asyncio.to_thread(save_parse_cache, session_dir, parse_results, fingerprint)
+        try:
+            await asyncio.to_thread(save_parse_cache, session_dir, parse_results, fingerprint)
+        except Exception as error:
+            _discard_unstarted_session(session_id, session)
+            raise HTTPException(status_code=500, detail=f"解析失败: {error}")
 
+    content_version = core.content_version_for_parse_results(parse_results)
     existing_progress = None
     if cache_reused:
         existing = core.load_progress(session_dir)
-        if progress_is_reusable(existing, fingerprint):
+        if progress_is_reusable(
+            existing,
+            fingerprint,
+            content_version,
+            session_dir=session_dir,
+        ):
             existing_progress = {
                 "completed": existing["completed"],
                 "total": existing["total_items"],
@@ -3303,12 +4415,18 @@ async def parse_document_endpoint(req: ParseRequest):
 
     session.parse_results = parse_results
     session.source_fingerprint = fingerprint
+    session.source_filename = source_filename
+    session.file_path = real_path
+    session.content_version = content_version
+    session.progress = existing if existing_progress else None
+    session.browser_state = session.browser_snapshot()
 
     return {
         "session_id": session_id,
         "source_filename": source_filename,
         "file_path": real_path,
         "parse_results": parse_results,
+        "content_version": session.content_version,
         "existing_progress": existing_progress,
     }
 
@@ -3323,7 +4441,9 @@ async def parse_document_upload(file: UploadFile = File(...)):
     safe_filename = os.path.basename(file.filename)
     if not safe_filename or safe_filename != file.filename:
         raise HTTPException(status_code=400, detail="非法文件名")
-    upload_dir = os.path.join(BASE_DIR, "tts_output", "uploads")
+    # 与 session_output_dir/历史扫描共用核心输出根目录；测试或运行时切换
+    # OUTPUT_BASE 时，上传文件和会话清理必须仍然落在同一个受控目录下。
+    upload_dir = os.path.join(core.OUTPUT_BASE, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
 
     # 添加时间戳后缀防止同名文件覆盖
@@ -3332,21 +4452,37 @@ async def parse_document_upload(file: UploadFile = File(...)):
     unique_filename = f"{name_stem}_{timestamp}{name_ext}"
     filepath = os.path.join(upload_dir, unique_filename)
 
+    def discard_uploaded_file():
+        """解析失败时删除孤儿上传；成功后文件由会话继续持有。"""
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+
     # 限制上传文件大小（最大 50MB）
     MAX_UPLOAD_SIZE = 50 * 1024 * 1024
     content = await file.read()
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail=f"文件过大，最大支持 {MAX_UPLOAD_SIZE // (1024*1024)}MB")
-    with open(filepath, 'wb') as f:
-        f.write(content)
+    try:
+        with open(filepath, 'wb') as f:
+            f.write(content)
+    except OSError as error:
+        discard_uploaded_file()
+        raise HTTPException(status_code=500, detail=f"无法保存上传文件: {error}")
 
     # 复用 parse 逻辑
     source_filename = file.filename
     session_id = core.sanitize_dirname(source_filename) + "_" + datetime.now().strftime("%Y%m%d%H%M%S%f")
-    session = get_or_create_session(session_id)
+    try:
+        session = get_or_create_session(session_id)
+    except Exception:
+        discard_uploaded_file()
+        raise
     session.progress = None
 
     session_dir = session.session_dir
+    summary = ""
     try:
         fingerprint = await asyncio.to_thread(source_fingerprint, filepath)
         blocked_dirs = {
@@ -3357,63 +4493,106 @@ async def parse_document_upload(file: UploadFile = File(...)):
         parse_results = await asyncio.to_thread(
             find_persisted_parse_cache, fingerprint, blocked_dirs
         )
-        if parse_results is None:
+        if parse_results is not None:
+            try:
+                parse_results = normalize_editable_parse_results(parse_results)
+            except HTTPException:
+                # 缓存来自旧版本时，丢弃它并走当前解析器。
+                parse_results = None
+    except Exception as e:
+        _discard_unstarted_session(session_id, session)
+        discard_uploaded_file()
+        raise HTTPException(status_code=500, detail=f"解析失败: {e}")
+    if parse_results is None:
+        try:
             parse_results, summary = await asyncio.to_thread(
                 core.parse_document_auto, filepath
             )
-    except Exception as e:
-        _sessions.pop(session_id, None)
-        raise HTTPException(status_code=500, detail=f"解析失败: {e}")
+        except Exception as e:
+            _discard_unstarted_session(session_id, session)
+            discard_uploaded_file()
+            raise HTTPException(status_code=500, detail=f"解析失败: {e}")
+        if parse_results:
+            try:
+                parse_results = normalize_editable_parse_results(parse_results)
+            except HTTPException:
+                _discard_unstarted_session(session_id, session)
+                discard_uploaded_file()
+                raise
     if not parse_results:
-        _sessions.pop(session_id, None)
-        try:
-            os.remove(filepath)
-        except OSError:
-            pass
+        _discard_unstarted_session(session_id, session)
+        discard_uploaded_file()
         raise HTTPException(status_code=422, detail=summary or "未识别到支持的题型内容")
 
-    await asyncio.to_thread(clear_generated_outputs, session_dir)
-    await asyncio.to_thread(save_parse_cache, session_dir, parse_results, fingerprint)
+    try:
+        parse_results = normalize_editable_parse_results(parse_results)
+        await asyncio.to_thread(clear_generated_outputs, session_dir)
+        await asyncio.to_thread(save_parse_cache, session_dir, parse_results, fingerprint)
+    except HTTPException:
+        _discard_unstarted_session(session_id, session)
+        discard_uploaded_file()
+        raise
+    except Exception as error:
+        _discard_unstarted_session(session_id, session)
+        discard_uploaded_file()
+        raise HTTPException(status_code=500, detail=f"解析失败: {error}")
     session.parse_results = parse_results
     session.source_fingerprint = fingerprint
+    session.source_filename = source_filename
+    session.file_path = filepath
+    session.content_version = core.content_version_for_parse_results(parse_results)
 
     return {
         "session_id": session_id,
         "source_filename": source_filename,
         "file_path": filepath,
         "parse_results": parse_results,
+        "content_version": session.content_version,
         "existing_progress": None,
     }
 
 
 @app.post("/api/generate")
 async def generate_endpoint(req: GenerateRequest):
-    """启动音频生成（异步），通过 SSE 推送进度。"""
-    # 生成只能使用解析阶段已经注册的会话，不能在 cleanup 后由旧请求重新创建。
     session = _sessions.get(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在或已被清理")
+    # 生成、编辑和 cleanup 必须共享同一把会话锁。仅检查 Task 状态无法
+    # 防止两个请求在“检查通过”后同时重置事件日志/输出目录。
+    async with session.operation_lock():
+        return await _generate_endpoint_locked(req, session)
+
+
+async def _generate_endpoint_locked(req: GenerateRequest, session: SessionState):
+    """启动音频生成（异步），通过 SSE 推送进度。"""
     if session.cleaning_up:
         raise HTTPException(status_code=409, detail="会话正在清理，请重新导入文档")
     lifecycle_version = session.lifecycle_version
+    source_filename, filepath = _validated_generation_snapshot(req, session)
 
-    # 防止并发生成：如果已有任务在运行，先取消旧任务并等待其退出
-    if session.task and not session.task.done():
-        session.cancelled = True
-        try:
-            await asyncio.wait_for(session.task, timeout=5.0)
-        except asyncio.CancelledError:
-            pass
-        except asyncio.TimeoutError:
-            session.task.cancel()
-            try:
-                await asyncio.wait_for(session.task, timeout=2.0)
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-        except Exception:
-            pass
+    # 先校验请求快照，再触碰当前任务状态。这样过期的渲染器请求不会
+    # 意外终止一个正在生成的任务，也不会清空它的终态事件。
+    normalized_config = core.normalize_tts_config(req.config)
+    expected_content_version = session.content_version or core.content_version_for_parse_results(
+        session.parse_results or []
+    )
+    requested_content_version = str(req.content_version or "").strip()
+    if requested_content_version and requested_content_version != expected_content_version:
+        raise HTTPException(status_code=409, detail="文档内容版本已变化，请重新同步后再生成")
+    session.content_version = expected_content_version
+    normalized_config["content_version"] = expected_content_version
+
+    # 防止并发生成：先发出协作式停止请求，再等待 asyncio 任务和底层
+    # Playwright executor 都真正排空。超时不得强行 cancel 后继续清目录，
+    # 否则旧线程仍可能写入新一轮的输出/事件。
+    if session.task is not None:
+        session.abort_for_restart()
+        session._set_control_state("terminating", "restart-requested")
+        if not await _wait_for_session_quiescence(session):
+            raise HTTPException(
+                status_code=409,
+                detail="上一轮任务仍在安全退出，请稍后重试；未启动新任务",
+            )
 
     if (
         _sessions.get(req.session_id) is not session
@@ -3427,28 +4606,210 @@ async def generate_endpoint(req: GenerateRequest):
     session.event_seq = 0
     session.log_entries = []
     session.log_seq = 0
-    session.cancelled = False
+    session.reset_control_for_generation()
     session.status = "starting"
     session.final_download = None
     session.final_zip_path = None
     session.final_done = None
     session.final_error = None
     session.final_cancelled = None
+    session.final_terminated = None
     session.last_stats = None
+    session.set_task_policy(req.task_policy)
 
     # 清空上一次生成的事件日志，避免旧终态污染新流。
-    session.event_journal.clear()
+    with session._event_lock:
+        session.event_journal.clear()
     session.ensure_event_signal().clear()
+    session._set_control_state("starting", "generate-requested", force=True)
 
     # 只接受当前讯飞配置；旧版 proxy、旧音色和倍率字段在这里被丢弃。
-    normalized_config = core.normalize_tts_config(req.config)
+    session.source_filename = source_filename
+    session.file_path = filepath
+    session.browser_policy = _normalize_browser_policy(req.browser_policy)
 
     # 在后台启动生成任务（保存引用以防止并发和 orphaned task）
     session.task = asyncio.create_task(
-        generate_audio_stream(session, req.source_filename, req.file_path, normalized_config)
+        generate_audio_stream(session, source_filename, filepath, normalized_config)
     )
 
     return {"session_id": req.session_id, "status": "started"}
+
+
+@app.put("/api/session/{session_id}/content")
+async def update_session_content(session_id: str, req: ContentUpdateRequest):
+    session = _require_control_session(session_id)
+    async with session.operation_lock():
+        return await _update_session_content_locked(session_id, req, session)
+
+
+async def _update_session_content_locked(
+    session_id: str,
+    req: ContentUpdateRequest,
+    session: SessionState,
+):
+    """保存用户编辑后的任务输入，并使旧音频/断点立即失效。"""
+    if session.task and not session.task.done():
+        raise HTTPException(status_code=409, detail="任务生成中，暂时不能编辑内容")
+    if session.final_terminated or session.control_state == "terminated":
+        raise HTTPException(status_code=409, detail="已终止任务的输出已保留，请导入新文档后编辑")
+    base_version = str(req.content_version or "").strip()
+    if base_version and session.content_version and base_version != session.content_version:
+        raise HTTPException(status_code=409, detail="内容已被其他操作更新，请重新载入当前任务")
+
+    normalized = normalize_editable_parse_results(req.parse_results)
+    new_version = core.content_version_for_parse_results(normalized)
+    if new_version == session.content_version:
+        return {
+            "session_id": session_id,
+            "content_version": new_version,
+            "parse_results": normalized,
+            "changed": False,
+        }
+
+    if not session.source_fingerprint or not session.file_path:
+        raise HTTPException(status_code=409, detail="当前任务缺少源文档信息，请重新导入")
+    await asyncio.to_thread(clear_generated_outputs, session.session_dir)
+    await asyncio.to_thread(
+        save_parse_cache,
+        session.session_dir,
+        normalized,
+        session.source_fingerprint,
+    )
+    session.parse_results = normalized
+    session.content_version = new_version
+    session.progress = None
+    session.done = False
+    session.ended = False
+    session.cancelled = False
+    session.termination_requested = False
+    session.final_download = None
+    session.final_zip_path = None
+    session.final_done = None
+    session.final_error = None
+    session.final_cancelled = None
+    session.final_terminated = None
+    session.last_stats = None
+    session.task = None
+    session.status = "idle"
+    # 编辑会开启一条新的任务时间线；旧任务的日志、终态和 event_seq 不能
+    # 在 SSE 重连时继续伪装成当前内容的生成结果。
+    with session._event_lock:
+        session.event_seq = 0
+        session.event_journal.clear()
+        session.log_entries = []
+        session.log_seq = 0
+    session.ensure_event_signal().clear()
+    with session._control_lock:
+        session.pause_requested_event.clear()
+        session.resume_event.set()
+        session.terminate_event.clear()
+    session._set_control_state("idle", "content-updated", force=True)
+    push_event(session, {"type": "content_updated", "content_version": new_version})
+    push_event(session, {"type": "status", "text": "已保存编辑后的任务内容"})
+    return {
+        "session_id": session_id,
+        "content_version": new_version,
+        "parse_results": normalized,
+        "changed": True,
+    }
+
+
+@app.post("/api/session/{session_id}/pause")
+async def pause_session(session_id: str):
+    session = _require_control_session(session_id)
+    return _control_action_response(session, "pause", session.request_pause())
+
+
+@app.post("/api/session/{session_id}/resume")
+async def resume_session(session_id: str):
+    session = _require_control_session(session_id)
+    return _control_action_response(session, "resume", session.request_resume())
+
+
+@app.post("/api/session/{session_id}/terminate")
+async def terminate_session(session_id: str):
+    session = _require_control_session(session_id)
+    return _control_action_response(session, "terminate", session.request_terminate())
+
+
+@app.get("/api/session/{session_id}/browser")
+async def get_session_browser_state(session_id: str):
+    session = _require_control_session(session_id)
+    try:
+        state = await core.browser_snapshot(owner_session_id=session_id)
+    except Exception as error:
+        state = {"visibility": "unavailable", "last_error": str(error)[:500]}
+    session.set_browser_state(state)
+    if state.get("owner_mismatch"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "browser-session-busy",
+                "browser_state": session.browser_snapshot(),
+            },
+        )
+    return {"session_id": session_id, "browser_state": session.browser_snapshot()}
+
+
+async def _set_session_browser_visibility(
+    session_id: str,
+    visible: bool,
+    *,
+    minimize: bool = False,
+):
+    session = _require_control_session(session_id)
+    try:
+        state = await core.set_browser_visibility(
+            visible,
+            minimize=bool(minimize) if visible else False,
+            owner_session_id=session_id,
+        )
+    except Exception as error:
+        state = {
+            **session.browser_snapshot(),
+            "visibility": "unavailable",
+            "last_error": str(error)[:500],
+            "permission_required": False,
+        }
+    session.set_browser_state(state)
+    if (
+        state.get("owner_mismatch")
+        or state.get("permission_required")
+        or state.get("visibility") in {"manual_required", "unavailable"}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": (
+                    "browser-session-busy"
+                    if state.get("owner_mismatch")
+                    else "browser-window-control-unavailable"
+                ),
+                "browser_state": session.browser_snapshot(),
+            },
+        )
+    return {
+        "session_id": session_id,
+        "browser_state": session.browser_snapshot(),
+    }
+
+
+@app.post("/api/session/{session_id}/browser/show")
+async def show_session_browser(
+    session_id: str,
+    req: Optional[BrowserVisibilityRequest] = None,
+):
+    return await _set_session_browser_visibility(
+        session_id,
+        True,
+        minimize=bool(req.minimize) if req else False,
+    )
+
+
+@app.post("/api/session/{session_id}/browser/hide")
+async def hide_session_browser(session_id: str):
+    return await _set_session_browser_visibility(session_id, False)
 
 
 @app.get("/api/progress/{session_id}")
@@ -3462,16 +4823,18 @@ async def progress_sse(session_id: str):
         event_signal = session.ensure_event_signal()
         # 建立连接时一次性冻结快照及水位线。随后队列里早于该水位线的
         # status/stats/log 已被快照覆盖，必须跳过，避免重连后进度倒退。
-        snapshot_event_seq = session.event_seq
-        snapshot_logs = list(session.log_entries)
-        snapshot_status = session.status
-        snapshot_stats = copy.deepcopy(session.last_stats)
-        snapshot_download = copy.deepcopy(session.final_download)
-        snapshot_done_event = copy.deepcopy(session.final_done)
-        snapshot_error = copy.deepcopy(session.final_error)
-        snapshot_cancelled = copy.deepcopy(session.final_cancelled)
-        snapshot_done = session.done
-        snapshot_ended = session.ended
+        with session._event_lock:
+            snapshot_event_seq = session.event_seq
+            snapshot_logs = list(session.log_entries)
+            snapshot_status = session.status
+            snapshot_stats = copy.deepcopy(session.last_stats)
+            snapshot_download = copy.deepcopy(session.final_download)
+            snapshot_done_event = copy.deepcopy(session.final_done)
+            snapshot_error = copy.deepcopy(session.final_error)
+            snapshot_cancelled = copy.deepcopy(session.final_cancelled)
+            snapshot_terminated = copy.deepcopy(session.final_terminated)
+            snapshot_done = session.done
+            snapshot_ended = session.ended
         snapshot_task_done = bool(session.task and session.task.done())
 
         # 如果任务已完成（正常结束），重放最终状态后关闭
@@ -3498,6 +4861,7 @@ async def progress_sse(session_id: str):
             or snapshot_task_done
             or snapshot_error
             or snapshot_cancelled
+            or snapshot_terminated
         ) and not snapshot_done:
             # 先发送已有日志
             if snapshot_logs:
@@ -3510,6 +4874,8 @@ async def progress_sse(session_id: str):
                 yield f"data: {json.dumps(snapshot_download, ensure_ascii=False)}\n\n"
             if snapshot_cancelled:
                 yield f"data: {json.dumps(snapshot_cancelled, ensure_ascii=False)}\n\n"
+            if snapshot_terminated:
+                yield f"data: {json.dumps(snapshot_terminated, ensure_ascii=False)}\n\n"
             if snapshot_error:
                 yield f"data: {json.dumps(snapshot_error, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'end'})}\n\n"
@@ -3544,6 +4910,7 @@ async def progress_sse(session_id: str):
                 return
             if (
                 session.final_cancelled
+                or session.final_terminated
                 or session.final_error
                 or session.ended
                 or (session.task and session.task.done())
@@ -3557,17 +4924,19 @@ async def progress_sse(session_id: str):
                     yield f"data: {json.dumps(session.final_download, ensure_ascii=False)}\n\n"
                 if session.final_cancelled:
                     yield f"data: {json.dumps(session.final_cancelled, ensure_ascii=False)}\n\n"
+                if session.final_terminated:
+                    yield f"data: {json.dumps(session.final_terminated, ensure_ascii=False)}\n\n"
                 if session.final_error:
                     yield f"data: {json.dumps(session.final_error, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'end'})}\n\n"
                 return
 
-            journal_snapshot = list(session.event_journal)
+            _journal_seq, journal_snapshot = session.event_journal_snapshot()
             if journal_snapshot:
                 oldest_seq = int(journal_snapshot[0].get("event_seq") or 0)
                 if cursor_event_seq < oldest_seq - 1:
                     # 极慢连接落后到有界日志之外时，用最新快照重新同步。
-                    cursor_event_seq = session.event_seq
+                    cursor_event_seq = _journal_seq
                     if session.log_entries:
                         yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps({'type': 'status', 'text': session.status}, ensure_ascii=False)}\n\n"
@@ -3604,26 +4973,33 @@ async def progress_sse(session_id: str):
                         yield f"data: {json.dumps(session.final_cancelled, ensure_ascii=False)}\n\n"
                         yield f"data: {json.dumps({'type': 'end'})}\n\n"
                         return
+                    if event_type == "end" and session.final_terminated:
+                        if session.log_entries:
+                            yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(session.final_terminated, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                        return
                     if event_type == "end" and session.final_error:
                         if session.log_entries:
                             yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
                         yield f"data: {json.dumps(session.final_error, ensure_ascii=False)}\n\n"
                         yield f"data: {json.dumps({'type': 'end'})}\n\n"
                         return
-                    if event_type in {"error", "cancelled"} and session.log_entries:
+                    if event_type in {"error", "cancelled", "terminated"} and session.log_entries:
                         yield f"data: {json.dumps({'type': 'log_init', 'entries': session.log_entries}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    if event_type in {"done", "error", "cancelled", "end"}:
-                        if event_type in {"done", "error", "cancelled"}:
+                    if event_type in {"done", "error", "cancelled", "terminated", "end"}:
+                        if event_type in {"done", "error", "cancelled", "terminated"}:
                             yield f"data: {json.dumps({'type': 'end'})}\n\n"
                         return
                 continue
 
             # 清除后再复查，避免事件恰好落在“检查为空”和 wait 之间而丢唤醒。
             event_signal.clear()
+            _latest_event_seq, latest_journal = session.event_journal_snapshot()
             if any(
                 int(event.get("event_seq") or 0) > cursor_event_seq
-                for event in session.event_journal
+                for event in latest_journal
             ):
                 continue
             try:
@@ -3654,6 +5030,23 @@ async def get_session_info(session_id: str):
         "status": session.status,
         "done": session.done,
         "log_count": len(session.log_entries),
+        "cancelled": session.cancelled,
+        "ended": session.ended,
+        "source_filename": session.source_filename,
+        "file_path": session.file_path,
+        "parse_results": session.parse_results,
+        "content_version": session.content_version,
+        "progress": _public_progress_summary(session.progress),
+        "browser_state": session.browser_snapshot(),
+        "browser_policy": copy.deepcopy(session.browser_policy),
+        "task_policy": copy.deepcopy(session.task_policy),
+        "last_stats": copy.deepcopy(session.last_stats),
+        "final_download": _public_session_event(session.final_download),
+        "final_done": _public_session_event(session.final_done),
+        "final_error": _public_session_event(session.final_error),
+        "final_cancelled": _public_session_event(session.final_cancelled),
+        "final_terminated": _public_session_event(session.final_terminated),
+        **session.control_snapshot(),
     }
 
 
@@ -3772,45 +5165,69 @@ async def history_delete(history_id: str):
 
 @app.post("/api/cleanup/{session_id}")
 async def cleanup_session(session_id: str):
-    """清理会话数据（删除生成的音频和临时文件）。"""
     session = _sessions.get(session_id)
     if not session:
         return {"status": "ok", "message": "会话不存在，无需清理"}
+    async with session.operation_lock():
+        return await _cleanup_session_locked(session_id, session)
 
+
+async def _cleanup_session_locked(session_id: str, session: SessionState):
+    """清理会话数据（删除生成的音频和临时文件）。"""
     # 先关闭会话入口，再等待旧任务；避免等待期间有新 generate 穿透。
     session.cleaning_up = True
     session.lifecycle_version += 1
-    session.cancelled = True
+    session.cancel_for_cleanup()
 
-    # 如果有正在运行的任务，等待其退出
-    if session.task and not session.task.done():
-        try:
-            await asyncio.wait_for(session.task, timeout=5.0)
-        except asyncio.CancelledError:
-            pass
-        except asyncio.TimeoutError:
-            if session.task and not session.task.done():
-                session.task.cancel()
-                try:
-                    await asyncio.wait_for(session.task, timeout=2.0)
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
-        except Exception:
-            if session.task and not session.task.done():
-                session.task.cancel()
+    # Task.cancel() 只取消 asyncio 包装层，不能证明同步 Playwright 线程已经
+    # 停止。未排空时保留会话和目录，让调用方稍后重试，绝不做破坏性清理。
+    if not await _wait_for_session_quiescence(session):
+        session.cleaning_up = False
+        raise HTTPException(
+            status_code=409,
+            detail="任务仍在安全退出，请稍后重试；现有输出未删除",
+        )
 
     # 已归档的完成任务只释放内存；历史删除接口才负责物理删除成品。
     archived_record = await asyncio.to_thread(_read_history_manifest, session.session_dir)
     if archived_record and session.done:
+        _remove_owned_uploaded_source(session)
         if _sessions.get(session_id) is session:
             del _sessions[session_id]
         return {"status": "ok", "message": "会话已释放，历史结果已保留", "archived": True}
 
+    # 显式终止和“新建任务时的普通清理”语义不同：终止已经生成的音频必须
+    # 保留。尽量写入一条可从历史中心继续下载的部分结果记录；即使清单写入
+    # 失败，也保留原会话目录，避免为了清理内存而误删用户文件。
+    terminated = bool(
+        session.final_terminated
+        or session.control_state == "terminated"
+        or session.termination_requested
+    )
+    if terminated:
+        terminated_record = (
+            await asyncio.to_thread(
+                archive_terminated_record,
+                session,
+                session.task_policy.get("history_limit"),
+            )
+            if session.task_policy.get("keep_history", True)
+            else None
+        )
+        _remove_owned_uploaded_source(session)
+        if _sessions.get(session_id) is session:
+            del _sessions[session_id]
+        return {
+            "status": "ok",
+            "message": "任务已释放，已生成文件保留",
+            "preserved": True,
+            "archived": bool(terminated_record),
+        }
+
     # 未完成会话的目录独占，可以安全清理。
     if os.path.exists(session.session_dir):
         shutil.rmtree(session.session_dir, ignore_errors=True)
+    _remove_owned_uploaded_source(session)
 
     # 从全局会话表中移除
     if _sessions.get(session_id) is session:
@@ -3829,6 +5246,22 @@ DEFAULT_PORT = 7863
 def run_playwright_packaging_smoke_test():
     """验证打包内的 Playwright driver、Node 复用和 Chromium 可实际启动。"""
     from playwright.sync_api import sync_playwright
+
+    # 正常桌面启动由 Electron 注入 PLAYWRIGHT_NODEJS_PATH，并把 Electron
+    # 进程切到 Node 兼容模式。独立执行这个自检命令时没有 Electron 父进程，
+    # 而 PyInstaller 为了减小安装包已经移除了 driver/node；若机器上有
+    # 普通 Node，则用它完成同一 driver/Chromium 验证，否则给出可操作的
+    # 错误，而不是让 Playwright 只报一个内部 node 路径不存在。
+    configured_node = os.environ.get("PLAYWRIGHT_NODEJS_PATH")
+    if not configured_node or not os.path.isfile(configured_node):
+        fallback_node = shutil.which("node")
+        if fallback_node:
+            os.environ["PLAYWRIGHT_NODEJS_PATH"] = fallback_node
+        else:
+            raise RuntimeError(
+                "打包后端缺少 Playwright Node 运行时。请从 Electron 启动，"
+                "或设置 PLAYWRIGHT_NODEJS_PATH 指向可执行的 node。"
+            )
 
     with sync_playwright() as playwright:
         # Playwright 1.56 默认 headless=True 会寻找单独的

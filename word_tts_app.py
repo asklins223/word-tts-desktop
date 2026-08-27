@@ -158,6 +158,62 @@ except Exception:
     _xunfei = None
 
 
+def _unavailable_browser_snapshot(reason="自动化浏览器尚未启动"):
+    """在无讯飞依赖时仍返回稳定的浏览器状态契约。"""
+    return {
+        "visibility": "unavailable",
+        "platform": sys.platform,
+        "permission_required": False,
+        "last_error": reason,
+        "pid": None,
+        "process_ids": [],
+        "executable_path": None,
+        "profile_dir": None,
+        "started_at": None,
+        "window_handles": [],
+        "context_id": None,
+        "page_id": None,
+        "page_count": 0,
+        "logged_in": False,
+        "browser_mode": None,
+        "owner_session_id": None,
+        "owner_mismatch": False,
+    }
+
+
+async def browser_snapshot(owner_session_id=None):
+    """统一暴露讯飞专用浏览器状态，供后端和渲染层使用。"""
+    if not _XUNFEI_AVAILABLE or _xunfei is None:
+        return _unavailable_browser_snapshot("讯飞配音引擎不可用")
+    return await _xunfei.browser_snapshot(owner_session_id=owner_session_id)
+
+
+async def set_browser_visibility(
+    visible: bool,
+    *,
+    minimize=False,
+    owner_session_id=None,
+):
+    """统一转发专用浏览器窗口显示/隐藏请求。"""
+    if not _XUNFEI_AVAILABLE or _xunfei is None:
+        return _unavailable_browser_snapshot("讯飞配音引擎不可用")
+    return await _xunfei.set_browser_visibility(
+        visible,
+        minimize=minimize,
+        owner_session_id=owner_session_id,
+    )
+
+
+async def wait_for_browser_worker_idle(timeout=None):
+    """等待讯飞同步 Playwright worker 真正退出当前调用。"""
+    if not _XUNFEI_AVAILABLE or _xunfei is None:
+        return True
+    waiter = getattr(_xunfei, "wait_for_playwright_idle", None)
+    if not callable(waiter):
+        return True
+    return await waiter(timeout)
+
+
 # ============================================================================
 # 常量配置
 # ============================================================================
@@ -1433,6 +1489,8 @@ async def _synth_items_batch(
     item_specs,
     progress_callback=None,
     cancel_check=None,
+    max_retries=4,
+    owner_session_id=None,
 ):
     """批量生成多道题，讯飞端先按音色/参数分组后统一下载。
 
@@ -1658,6 +1716,10 @@ async def _synth_items_batch(
             batch_kwargs = {"progress_callback": queue_batch_progress}
             if cancel_check is not None:
                 batch_kwargs["cancel_check"] = cancel_check
+            if max_retries != 4:
+                batch_kwargs["max_retries"] = max(1, int(max_retries))
+            if owner_session_id is not None:
+                batch_kwargs["owner_session_id"] = owner_session_id
             batch_results = await _xunfei.synth_xunfei_batch(
                 jobs,
                 **batch_kwargs,
@@ -1688,8 +1750,15 @@ async def _synth_items_batch(
         batch_kwargs = {}
         if cancel_check is not None:
             batch_kwargs["cancel_check"] = cancel_check
+        if max_retries != 4:
+            batch_kwargs["max_retries"] = max(1, int(max_retries))
+        if owner_session_id is not None:
+            batch_kwargs["owner_session_id"] = owner_session_id
         try:
-            batch_results = await _xunfei.synth_xunfei_batch(jobs, **batch_kwargs)
+            batch_results = await _xunfei.synth_xunfei_batch(
+                jobs,
+                **batch_kwargs,
+            )
         except Exception as error:
             cancelled_type = getattr(_xunfei, "XunfeiCancelled", None)
             if (
@@ -1733,6 +1802,8 @@ async def _synth_items_batch_composite(
     resume=None,
     debug_dir=None,
     cancel_check=None,
+    max_retries=4,
+    owner_session_id=None,
 ):
     """一次提交多人配音作品，再按安全停顿恢复为题目音频。
 
@@ -1857,6 +1928,10 @@ async def _synth_items_batch_composite(
         }
         if cancel_check is not None:
             composite_kwargs["cancel_check"] = cancel_check
+        if max_retries != 4:
+            composite_kwargs["max_retries"] = max(1, int(max_retries))
+        if owner_session_id is not None:
+            composite_kwargs["owner_session_id"] = owner_session_id
         raw_results = await _xunfei.synth_xunfei_composite(
             request_works,
             **composite_kwargs,
@@ -2024,6 +2099,24 @@ def load_progress(session_dir):
     return None
 
 
+def content_version_for_parse_results(parse_results):
+    """为当前“可编辑任务输入”生成稳定版本指纹。
+
+    这个版本和源文件指纹故意分开：用户只修改解析后的文本/命名时，源文档
+    仍然没有变化，但已经生成的音频和断点必须失效，不能复用旧内容。
+    """
+    try:
+        canonical = json.dumps(
+            parse_results if isinstance(parse_results, list) else [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        canonical = "[]"
+    return "v1:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def save_progress(session_dir, progress):
     """保存进度文件（原子写入：先写临时文件再 rename，防止中断时损坏）。"""
     progress_path = os.path.join(session_dir, "progress.json")
@@ -2081,10 +2174,15 @@ def build_progress(source_filename, source_path, parse_results, config):
       - 信息获取题目（听选信息题目/回答问题题目）：问题x.mp3（x 为题号）
       - 其他题型：题型-录音稿x.mp3（x 为同题型内的顺序号）
     """
+    content_version = (
+        str((config or {}).get("content_version") or "").strip()
+        or content_version_for_parse_results(parse_results)
+    )
     config = {
         **normalize_tts_config(config),
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
         "parser_version": PARSER_VERSION,
+        "content_version": content_version,
     }
     ext = FORMAT_MAP["mp3"][1].lstrip('.')
     items = []
@@ -2147,6 +2245,7 @@ def build_progress(source_filename, source_path, parse_results, config):
         "updated_at": datetime.now().isoformat(),
         "status": "parsing",
         "config": config,
+        "content_version": content_version,
         "parse_results": parse_results,
         "total_items": len(items),
         "completed": 0,
@@ -2178,16 +2277,41 @@ def get_completed_file_list(progress):
 # ZIP 打包
 # ============================================================================
 
+def _confined_audio_output_path(session_dir, output_path):
+    """返回会话 audio 目录内的真实文件路径，拒绝符号链接逃逸。"""
+    if not isinstance(output_path, str) or not output_path:
+        return None
+    try:
+        audio_root = os.path.realpath(os.path.join(os.fspath(session_dir), "audio"))
+        real_path = os.path.realpath(output_path)
+        common = os.path.commonpath([audio_root, real_path])
+        if os.path.normcase(common) != os.path.normcase(audio_root):
+            return None
+    except (TypeError, ValueError, OSError):
+        return None
+    if real_path == audio_root or not os.path.isfile(real_path):
+        return None
+    return real_path
+
+
 def create_zip(session_dir, progress):
     """创建包含所有音频和 JSON 的 ZIP 包。"""
     zip_path = os.path.join(session_dir, "output.zip")
 
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         # 添加所有已完成的音频文件
-        for item in progress["items"]:
-            if item["status"] == "done" and item["output_path"] and os.path.exists(item["output_path"]):
-                arcname = "audio/" + item["filename"]
-                zf.write(item["output_path"], arcname)
+        for item in progress.get("items", []):
+            if not isinstance(item, dict) or item.get("status") != "done":
+                continue
+            filename = str(item.get("filename") or "")
+            if not filename or filename != os.path.basename(filename):
+                continue
+            output_path = _confined_audio_output_path(
+                session_dir,
+                item.get("output_path"),
+            )
+            if output_path:
+                zf.write(output_path, "audio/" + filename)
 
         # 添加解析结果 JSON
         parsed_path = os.path.join(session_dir, "parsed.json")

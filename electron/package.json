@@ -1,6 +1,6 @@
 {
   "name": "word-tts-desktop",
-  "version": "2.7.36",
+  "version": "2.7.37",
   "description": "小猪wordTTS 文档配音桌面工具",
   "main": "main.js",
   "author": "asklins223",
@@ -37,6 +37,7 @@
     ],
     "files": [
       "main.js",
+      "settings.js",
       "file-dialogs.js",
       "preload.js",
       "renderer/**/*"

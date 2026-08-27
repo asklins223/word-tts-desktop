@@ -11,7 +11,8 @@
   - 多人合成：在可见编辑器中输入所有行，按音色/参数把不连续段落加入讯飞网页的多段选择队列，一次性标注每个配置组，插入短停顿后点击页面生成，再按 worksId 下载
   - 页面复用：生成阶段保持编辑页，提交完成后进入作品下载页；按 worksId
     获取精确签名地址下载，浏览器下载仅作为按作品名匹配的兜底通道
-  - 反批量检测采用行为拟真：击键抖动、随机间隙、真实鼠标事件、系统 Chrome 真实指纹
+  - 反批量检测采用行为拟真：击键抖动、随机间隙、真实鼠标事件；发布版默认使用
+    隔离的 Playwright Chromium，源码调试时可显式切换系统 Chrome
 
 发音人（默认）:
   - 女声 Amanda（英语女声）
@@ -35,6 +36,12 @@ from functools import partial
 
 from playwright.sync_api import sync_playwright
 from app_paths import ensure_data_dir
+from browser_window_controller import BrowserWindowController
+
+try:
+    import psutil
+except ImportError:  # 源码精简环境仍可运行，发布构建会把 psutil 一并收集。
+    psutil = None
 
 
 def _log(*args, **kwargs):
@@ -50,6 +57,65 @@ BASE_DIR = ensure_data_dir()
 # PyInstaller 的 _MEIPASS，也不能在 Electron 开发时散落到代码目录。
 OUTPUT_DIR = os.path.join(BASE_DIR, "xunfei_output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+def _confined_temp_output_path(output_name):
+    """把合成临时文件名解析到专用输出目录内。"""
+    try:
+        name = os.fspath(output_name)
+    except TypeError:
+        name = str(output_name or "")
+    if isinstance(name, bytes):
+        name = os.fsdecode(name)
+    name = str(name).strip()
+    # output_name 是文件名而不是路径。额外拒绝 Windows 分隔符和盘符，
+    # 这样同一份输入在 macOS/Linux 与 Windows 上都不会逃逸到别处。
+    if (
+        not name
+        or name in {".", ".."}
+        or "\x00" in name
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+    ):
+        raise XunfeiError(f"非法讯飞临时文件名: {name!r}")
+    root = os.path.realpath(OUTPUT_DIR)
+    candidate = os.path.realpath(os.path.join(root, name))
+    try:
+        common = os.path.commonpath([root, candidate])
+    except ValueError as error:
+        raise XunfeiError(f"非法讯飞临时文件名: {name!r}") from error
+    if (
+        os.path.normcase(common) != os.path.normcase(root)
+        or os.path.normcase(candidate) == os.path.normcase(root)
+    ):
+        raise XunfeiError(f"讯飞临时文件路径越界: {name!r}")
+    return candidate
+
+
+def _is_confined_temp_output_path(output_path):
+    """判断临时输出路径是否仍位于讯飞专用目录。"""
+    try:
+        candidate = os.path.realpath(os.fspath(output_path))
+        root = os.path.realpath(OUTPUT_DIR)
+        common = os.path.commonpath([root, candidate])
+    except (OSError, TypeError, ValueError):
+        return False
+    return (
+        os.path.normcase(common) == os.path.normcase(root)
+        and os.path.normcase(candidate) != os.path.normcase(root)
+    )
+
+
+def _remove_confined_temp_output(output_path):
+    """只删除讯飞专用目录内的临时 MP3 及其下载分片。"""
+    if not _is_confined_temp_output_path(output_path):
+        return
+    for candidate in (os.fspath(output_path), f"{output_path}.part"):
+        try:
+            os.remove(candidate)
+        except OSError:
+            pass
 
 HOME_URL = "https://peiyin.xunfei.cn/make"
 # 讯飞当前“我的作品/下载”页实际路由是 /user；旧版 /myworks 已经返回 404。
@@ -74,6 +140,56 @@ _CHROME_CANDIDATES = [
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
 ]
+
+AUTOMATION_BROWSER_ENV = "WORDTTS_AUTOMATION_BROWSER"
+CONTROL_POLL_MAX_INTERVAL_SECONDS = 0.8
+SIGNED_DOWNLOAD_TIMEOUT_SECONDS = 30
+CONTROLLED_NAVIGATION_TIMEOUT_MS = 15000
+
+
+def _find_bundled_chromium(playwright):
+    """返回 Playwright 当前解析出的 Chromium 可执行文件。"""
+    try:
+        executable_path = str(playwright.chromium.executable_path or "").strip()
+    except Exception:
+        return None
+    return executable_path if executable_path and os.path.isfile(executable_path) else None
+
+
+def _select_browser_executable(playwright, allow_system_chrome=False):
+    """选择自动化浏览器并返回 ``(path, mode)``。
+
+    所有运行环境默认只使用 Playwright 解析出的 Chromium，避免系统 Chrome
+    的应用级窗口和 Dock 图标无法与用户会话隔离。系统 Chrome 只作为明确
+    的调试/兼容性降级路径，并必须通过环境变量显式切换。
+    """
+    requested = os.environ.get(AUTOMATION_BROWSER_ENV, "").strip().casefold()
+    if requested not in {"", "bundled", "chromium", "system", "chrome"}:
+        raise XunfeiError(
+            f"{AUTOMATION_BROWSER_ENV} 只支持 bundled 或 system，实际为 {requested!r}"
+        )
+
+    # 环境变量是明确的开发/兼容性覆盖；桌面设置只有在用户明确允许时
+    # 才能把系统 Chrome 作为无环境变量时的降级路径打开。
+    use_system = requested in {"system", "chrome"} or (
+        not requested and bool(allow_system_chrome)
+    )
+
+    if use_system:
+        system_path = _find_chrome()
+        if system_path:
+            return system_path, "system"
+        if requested in {"system", "chrome"}:
+            raise XunfeiError("已指定使用系统 Chrome，但未找到可执行文件")
+
+    bundled_path = _find_bundled_chromium(playwright)
+    if bundled_path:
+        return bundled_path, "bundled"
+
+    raise XunfeiError(
+        "未找到随应用打包的 Playwright Chromium；请先安装 Chromium，"
+        f"或在开发环境设置 {AUTOMATION_BROWSER_ENV}=system"
+    )
 
 # 讯飞平台的三个可调参数取值范围（50 = 默认）
 PARAM_MIN = 0
@@ -241,19 +357,46 @@ class XunfeiSubmissionAmbiguous(XunfeiError):
 
 
 class XunfeiCancelled(XunfeiError):
-    """批量任务被上层取消，停止后续提交/下载。"""
+    """批量任务被上层取消，停止尚未提交的后续工作。"""
+
+
+class XunfeiControlError(XunfeiCancelled):
+    """上层控制探针异常；必须停止自动化，不能按“未取消”继续。"""
+
+
+class XunfeiSessionBusy(XunfeiError):
+    """当前专用浏览器已归属于另一个后端任务。"""
 
 
 def _check_cancel_requested(cancel_check):
-    """执行可选取消探针；探针自身异常不能误杀正常合成。"""
+    """执行可选取消探针；探针异常必须停止，避免控制失败时继续执行。"""
     if not callable(cancel_check):
         return
     try:
         cancelled = bool(cancel_check())
-    except Exception:
-        cancelled = False
+    except XunfeiControlError:
+        raise
+    except Exception as error:
+        raise XunfeiControlError(
+            f"任务控制探针异常，已停止讯飞自动化：{error}"
+        ) from error
     if cancelled:
         raise XunfeiCancelled("讯飞批量任务已取消，已停止后续提交")
+
+
+def _controlled_wait(page, seconds, cancel_check=None, slice_seconds=0.5):
+    """将长等待切成可取消/可暂停的短检查片段。"""
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        _check_cancel_requested(cancel_check)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        wait_seconds = min(remaining, max(0.05, float(slice_seconds)))
+        if page is not None:
+            page.wait_for_timeout(int(wait_seconds * 1000))
+        else:
+            time.sleep(wait_seconds)
 
 
 # ============================================================================
@@ -330,17 +473,37 @@ def register_voice_catalog(voices):
         is_vip = voice.get("is_vip") if "is_vip" in voice else voice.get("isVip")
         if is_vip is None:
             is_vip = previous.get("is_vip") if "is_vip" in previous else previous.get("isVip")
+        composite_name = voice.get("composite_name") or voice.get("common_name")
+        if composite_name in (None, ""):
+            composite_name = previous.get("composite_name") or previous.get("common_name") or name
+        variant_names = voice.get("variant_names")
+        if not isinstance(variant_names, (list, tuple)):
+            variant_names = previous.get("variant_names") or []
+        variant_keys = voice.get("variant_keys")
+        if not isinstance(variant_keys, (list, tuple)):
+            variant_keys = previous.get("variant_keys") or []
+        composite_key = voice.get("composite_key")
+        if composite_key in (None, ""):
+            composite_key = previous.get("composite_key") or key
+        emot_desc = voice.get("emot_desc") if "emot_desc" in voice else voice.get("emotDesc")
+        if emot_desc in (None, ""):
+            emot_desc = previous.get("emot_desc") or previous.get("emotDesc") or ""
         VOICES[key] = {
             "name": name,
             "display": f"{name} ({gender_label})",
             "gender": gender,
             "speaker_no": speaker_no,
             "common_id": common_id,
+            "composite_name": str(composite_name).strip() or name,
+            "composite_key": str(composite_key).strip() or key,
+            "variant_names": [str(item).strip() for item in variant_names if str(item).strip()],
+            "variant_keys": [str(item).strip() for item in variant_keys if str(item).strip()],
             "img_url": voice.get("img_url") or voice.get("imgUrl") or "",
             "language": language,
             "vcn_type": vcn_type,
             "speaker_language": speaker_language,
             "is_vip": is_vip,
+            "emot_desc": str(emot_desc).strip(),
             "emot_type": voice.get("emot_type") or voice.get("emotType"),
             "emot_val": voice.get("emot_val") or voice.get("emotVal"),
         }
@@ -1525,12 +1688,19 @@ def _poll(
     deadline = time.monotonic() + max(0, float(timeout))
     current_interval = max(0.05, float(interval))
     upper_interval = max(current_interval, float(max_interval or current_interval * 2.5))
+    if callable(cancel_check):
+        upper_interval = max(
+            current_interval,
+            min(upper_interval, CONTROL_POLL_MAX_INTERVAL_SECONDS),
+        )
     while True:
         _check_cancel_requested(cancel_check)
         try:
             result = check_fn()
             if result:
                 return result
+        except (XunfeiCancelled, XunfeiControlError):
+            raise
         except Exception:
             pass
         remaining = deadline - time.monotonic()
@@ -1541,6 +1711,8 @@ def _poll(
             current_interval * (0.9 + (time.monotonic() % 0.2)),
             remaining,
         )
+        if callable(cancel_check):
+            sleep_s = min(sleep_s, CONTROL_POLL_MAX_INTERVAL_SECONDS)
         if page is not None:
             page.wait_for_timeout(int(sleep_s * 1000))
         else:
@@ -1609,6 +1781,16 @@ class XunFeiSession:
         self._ctx = None
         self._page = None
         self._logged_in = False
+        self._browser_executable_path = None
+        self._browser_mode = None
+        self._browser_controller = None
+        self._browser_started_at = None
+        self._browser_identity_lock = threading.RLock()
+        self._browser_pid = None
+        self._browser_process_ids = []
+        self._browser_process_ids_before = set()
+        self._browser_window_handles = []
+        self._browser_page_count = 0
         self._real_ua = None
         # 页面状态跟踪（页面复用的关键）。音色 key 和页面显示名称都保留：
         # key 防止同名音色串用，页面回读防止讯飞提交后把音色恢复为默认值。
@@ -1653,10 +1835,10 @@ class XunFeiSession:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _pause(page, base, spread=0.4):
-        """拟人等待 base±spread 秒。"""
+    def _pause(page, base, spread=0.4, cancel_check=None):
+        """拟人等待 base±spread 秒，并在任务控制等待时保持可中断。"""
         seconds = max(0.05, base + ((time.time() * 7) % 1) * 2 * spread - spread)
-        page.wait_for_timeout(int(seconds * 1000))
+        _controlled_wait(page, seconds, cancel_check=cancel_check)
 
     @staticmethod
     def _type_text(page, text):
@@ -1902,54 +2084,63 @@ class XunFeiSession:
         except Exception:
             return False
 
-    def _clear_editor(self, page):
+    def _clear_editor(self, page, cancel_check=None):
         """清空文本编辑器内容。"""
+        _check_cancel_requested(cancel_check)
         _safe_eval(page, JS.CLEAR_EDITOR)
-        page.wait_for_timeout(200)
+        _controlled_wait(page, 0.2, cancel_check=cancel_check)
         actual = _safe_eval(page, JS.GET_EDITOR_TEXT)
         if actual:
             try:
+                _check_cancel_requested(cancel_check)
                 page.locator(".ssml-editor").first.click(timeout=3000)
                 page.keyboard.press(_SELECT_ALL)
                 page.keyboard.press("Backspace")
-                page.wait_for_timeout(200)
+                _controlled_wait(page, 0.2, cancel_check=cancel_check)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 pass
 
-    def _input_text(self, page, text):
+    def _input_text(self, page, text, cancel_check=None):
         """在编辑器中拟人输入文本并验证。"""
-        self._clear_editor(page)
+        _check_cancel_requested(cancel_check)
+        self._clear_editor(page, cancel_check=cancel_check)
         page.locator(".ssml-editor").first.click(timeout=5000)
-        self._pause(page, 0.15, 0.08)
+        self._pause(page, 0.15, 0.08, cancel_check=cancel_check)
         page.keyboard.press(_SELECT_ALL)
         page.keyboard.press("Backspace")
-        self._pause(page, 0.1, 0.05)
+        self._pause(page, 0.1, 0.05, cancel_check=cancel_check)
         self._type_text(page, text)
-        page.wait_for_timeout(150)
+        _check_cancel_requested(cancel_check)
+        _controlled_wait(page, 0.15, cancel_check=cancel_check)
 
         for attempt in range(2):
+            _check_cancel_requested(cancel_check)
             actual = _safe_eval(page, JS.GET_EDITOR_TEXT) or ""
             if len(actual) >= len(text) * 0.85:
                 return True
             _log(f"[xunfei]   输入验证失败 (attempt {attempt + 1})，重试...")
-            self._clear_editor(page)
+            self._clear_editor(page, cancel_check=cancel_check)
             page.locator(".ssml-editor").first.click(timeout=5000)
             self._type_text(page, text)
-            page.wait_for_timeout(150)
+            _controlled_wait(page, 0.15, cancel_check=cancel_check)
         return False
 
     @staticmethod
-    def _clear_editor_with_keyboard(page):
+    def _clear_editor_with_keyboard(page, cancel_check=None):
         """只用真实键盘操作清空编辑器，供多人配音 UI 流程使用。"""
+        _check_cancel_requested(cancel_check)
         # 讯飞失败重试时可能还留着 ssml-float-bar；先用键盘收起它，
         # 避免真实 editor.click 被浮动条遮挡。
         page.keyboard.press("Escape")
-        page.wait_for_timeout(30)
+        _controlled_wait(page, 0.03, cancel_check=cancel_check, slice_seconds=0.03)
         editor = page.locator(".ssml-editor").first
         editor.click(timeout=5000)
         page.keyboard.press(_SELECT_ALL)
         page.keyboard.press("Backspace")
-        page.wait_for_timeout(200)
+        _controlled_wait(page, 0.2, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
         paragraphs = page.locator(".ssml-editor p")
         remaining = []
         for index in range(paragraphs.count()):
@@ -1989,16 +2180,18 @@ class XunFeiSession:
         return values
 
     @classmethod
-    def _input_composite_text(cls, page, rows):
+    def _input_composite_text(cls, page, rows, cancel_check=None):
         """把多人配音的逻辑行按真实编辑器段落输入并回读。"""
+        _check_cancel_requested(cancel_check)
         values = [str(row.get("text") or "") for row in rows]
         if not values or any(not value.strip() for value in values):
             raise XunfeiError("多人配音 UI 文本包含空行，无法安全定位选区")
-        cls._clear_editor_with_keyboard(page)
+        cls._clear_editor_with_keyboard(page, cancel_check=cancel_check)
         editor = page.locator(".ssml-editor").first
         editor.click(timeout=5000)
         cls._type_text(page, "\n".join(values))
-        page.wait_for_timeout(250)
+        _check_cancel_requested(cancel_check)
+        _controlled_wait(page, 0.25, cancel_check=cancel_check)
         actual = cls._read_editor_paragraphs(page)
         if len(actual) != len(values):
             raise XunfeiError(
@@ -2030,7 +2223,9 @@ class XunFeiSession:
         return selected
 
     @classmethod
-    def _select_editor_rows(cls, page, rows, first_index, last_index):
+    def _select_editor_rows(
+        cls, page, rows, first_index, last_index, cancel_check=None
+    ):
         """通过真实页面选区选中一行或一段连续逻辑行。
 
         讯飞编辑器通常会把多行文本放进可滚动的 contenteditable 中。
@@ -2040,6 +2235,7 @@ class XunFeiSession:
         Range 重新建立同一个浏览器选区；三种方式都必须通过精确文本回读。
         任何方式都失败时直接停止，不能把一个本应批量设置的组拆成逐行操作。
         """
+        _check_cancel_requested(cancel_check)
         if first_index < 0 or last_index < first_index or last_index >= len(rows):
             raise XunfeiError("多人配音 UI 选区索引越界")
         paragraphs = page.locator(".ssml-editor p")
@@ -2053,6 +2249,7 @@ class XunFeiSession:
         expected_values = [row["text"] for row in rows[first_index:last_index + 1]]
         if first_index == last_index:
             # Playwright 的 select_text 只选当前段落，绝不退化为编辑器全选。
+            _check_cancel_requested(cancel_check)
             first.select_text(timeout=5000)
             page.wait_for_timeout(80)
             return cls._verify_editor_selection(page, expected_values)
@@ -2078,6 +2275,7 @@ class XunFeiSession:
         # 方式一：先真实选中首行，再滚动到末行并 Shift-click。这个动作
         # 不要求首尾同时出现在视口中，最适合打包客户端的窄窗口和长文档。
         try:
+            _check_cancel_requested(cancel_check)
             first_target = paragraph_text_target(first)
             last_target = paragraph_text_target(last)
             first_target.scroll_into_view_if_needed(timeout=5000)
@@ -2101,12 +2299,15 @@ class XunFeiSession:
                 f"{last_index + 1}（Shift-click）"
             )
             return selected
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             errors.append(f"Shift-click: {error}")
 
         # 方式二：短范围仍优先使用真实鼠标拖选，兼容讯飞页面没有稳定
         # 锚点行为的版本。只有首尾都在当前视口时才执行，避免跨滚动拖选。
         try:
+            _check_cancel_requested(cancel_check)
             first_target = paragraph_text_target(first)
             last_target = paragraph_text_target(last)
             first_target.scroll_into_view_if_needed(timeout=5000)
@@ -2136,6 +2337,8 @@ class XunFeiSession:
                 f"{last_index + 1}（鼠标拖选）"
             )
             return selected
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             errors.append(f"鼠标拖选: {error}")
 
@@ -2143,6 +2346,7 @@ class XunFeiSession:
         # 修改编辑器内容。它是跨滚动场景的页面交互兜底，后续“使用”按钮
         # 仍由页面 UI 读取这个选区并产生 speaker 标记。
         try:
+            _check_cancel_requested(cancel_check)
             selected = _safe_eval(
                 page,
                 JS.SELECT_EDITOR_RANGE,
@@ -2155,6 +2359,8 @@ class XunFeiSession:
                 f"{last_index + 1}（页面选区兜底）"
             )
             return verified
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             errors.append(f"页面选区兜底: {error}")
 
@@ -2194,21 +2400,25 @@ class XunFeiSession:
             return 0
 
     @classmethod
-    def _clear_composite_queue(cls, page):
+    def _clear_composite_queue(cls, page, cancel_check=None):
         """清空讯飞网页的多段选区队列，不改动编辑器文本。"""
         try:
+            _check_cancel_requested(cancel_check)
             # 选区浮动条本身会拦截 editor.click。先用真实键盘 Escape
             # 收起工具条并清掉队列，只有页面仍保留待处理段落时才需要
             # 再点击编辑器确认焦点。
             page.keyboard.press("Escape")
             if cls._read_composite_queue_count(page) == 0:
                 return True
-            page.wait_for_timeout(20)
+            _controlled_wait(page, 0.02, cancel_check=cancel_check, slice_seconds=0.02)
             if cls._read_composite_queue_count(page) == 0:
                 return True
+            _check_cancel_requested(cancel_check)
             editor = page.locator(".ssml-editor").first
             editor.click(timeout=3000)
             page.keyboard.press("Escape")
+        except XunfeiCancelled:
+            raise
         except Exception:
             return False
         return bool(_poll(
@@ -2216,10 +2426,13 @@ class XunFeiSession:
             timeout=3,
             interval=0.1,
             page=page,
+            cancel_check=cancel_check,
         ))
 
     @classmethod
-    def _select_composite_queue_rows(cls, page, rows, ranges, *, native=False):
+    def _select_composite_queue_rows(
+        cls, page, rows, ranges, *, native=False, cancel_check=None
+    ):
         """用讯飞网页真实的 Command/Ctrl 多选队列加入多个不连续区间。
 
         讯飞的多段队列只在真实 pointerup 带有 Command/Ctrl 修饰键时生效，
@@ -2229,6 +2442,7 @@ class XunFeiSession:
         “使用”动作仍只执行一次。Range 路径只负责建立浏览器当前选区，若
         页面版本没有正确接受它，调用方会清空队列并切回原生 select_text。
         """
+        _check_cancel_requested(cancel_check)
         normalized_ranges = [
             (int(first), int(last))
             for first, last in ranges
@@ -2258,6 +2472,7 @@ class XunFeiSession:
 
         def select_exact_text(row_index):
             """用页面 Range 或浏览器原生方式选中一整行正文。"""
+            _check_cancel_requested(cancel_check)
             target = paragraph_text_target(paragraphs.nth(row_index))
             if not native:
                 selected = _safe_eval(
@@ -2317,6 +2532,7 @@ class XunFeiSession:
             原生 select_text/Shift-click 完整选区，再只发送一次带修饰键的
             真实鼠标 pointerup，避免长句换行时依赖鼠标拖动终点。
             """
+            _check_cancel_requested(cancel_check)
             if not box or box["width"] < 4 or box["height"] < 4:
                 raise XunfeiError("多人配音多段选区目标行不可见")
             def send_pointerup():
@@ -2345,6 +2561,7 @@ class XunFeiSession:
         # 点击一次“使用”，不会退化成逐段打开音色面板。
         for first, last in normalized_ranges:
             for row_index in range(first, last + 1):
+                _check_cancel_requested(cancel_check)
                 target, box = select_exact_text(row_index)
                 enqueue_current_selection(target, box)
 
@@ -2363,9 +2580,10 @@ class XunFeiSession:
             interval=0.15,
             max_interval=0.6,
             page=page,
+            cancel_check=cancel_check,
         )
         if actual_count != expected_count:
-            cls._clear_composite_queue(page)
+            cls._clear_composite_queue(page, cancel_check=cancel_check)
             raise XunfeiError(
                 "多人配音多段选区数量校验失败："
                 f"期望 {expected_count} 个待选段，实际 {actual_count} 个"
@@ -2376,8 +2594,9 @@ class XunFeiSession:
         )
         return actual_count
 
-    def _select_voice(self, page, voice_name, voice_key=None):
+    def _select_voice(self, page, voice_name, voice_key=None, cancel_check=None):
         """搜索并选择指定发音人，并以页面实际选中态校验缓存。"""
+        _check_cancel_requested(cancel_check)
         target_key = str(voice_key or "").strip() or None
 
         # 提交作品后讯飞页面可能把发音人恢复为平台默认值。不能只相信
@@ -2389,6 +2608,7 @@ class XunFeiSession:
             else self._current_voice_name == voice_name
         )
         if cache_matches:
+            _check_cancel_requested(cancel_check)
             selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
             if selected:
                 return True
@@ -2419,6 +2639,7 @@ class XunFeiSession:
             return True
 
         for round_idx in range(2):
+            _check_cancel_requested(cancel_check)
             selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
             if selected:
                 return mark_selected()
@@ -2429,16 +2650,22 @@ class XunFeiSession:
             if search_input.count() > 0:
                 search_input.first.click(timeout=3000)
                 search_input.first.fill("")
-                self._pause(page, 0.15, 0.06)
+                self._pause(page, 0.15, 0.06, cancel_check=cancel_check)
+                _check_cancel_requested(cancel_check)
                 search_input.first.fill(voice_name)
                 _poll(
                     lambda: _safe_eval(page, JS.CHECK_SEARCH_RESULT, voice_name),
-                    timeout=5, interval=0.6, page=page,
+                    timeout=5,
+                    interval=0.6,
+                    page=page,
+                    cancel_check=cancel_check,
                 )
 
+            _check_cancel_requested(cancel_check)
             clicked = _safe_eval(page, JS.SEARCH_AND_CLICK_VOICE, voice_name)
             if clicked:
-                self._pause(page, 0.6, 0.25)
+                self._pause(page, 0.6, 0.25, cancel_check=cancel_check)
+                _check_cancel_requested(cancel_check)
                 selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
                 if selected:
                     return mark_selected()
@@ -2446,13 +2673,14 @@ class XunFeiSession:
 
         raise XunfeiError(f"未找到或无法选中发音人: {voice_name}")
 
-    def _apply_params(self, page, speed, pitch, volume):
+    def _apply_params(self, page, speed, pitch, volume, cancel_check=None):
         """
         设置语速/语调/音量三项并回读验证。
         与已应用参数一致时跳过；切换发音人后必须重新应用（站点会重置参数）。
         """
         targets = {"speed": clamp_param(speed), "pitch": clamp_param(pitch),
                    "volume": clamp_param(volume)}
+        _check_cancel_requested(cancel_check)
         if self._applied_params == targets:
             return True
 
@@ -2460,6 +2688,7 @@ class XunFeiSession:
         values = (targets["speed"], targets["pitch"], targets["volume"])
         failed_labels = []
         for idx, (label, value) in enumerate(zip(labels, values)):
+            _check_cancel_requested(cancel_check)
             ok = False
             # 方式一：真实键盘输入（点击 → 全选 → 输入 → Tab 失焦）
             try:
@@ -2469,15 +2698,18 @@ class XunFeiSession:
                     page.keyboard.press(_SELECT_ALL)
                     page.keyboard.type(str(value))
                     page.keyboard.press("Tab")
-                    self._pause(page, 0.25, 0.1)
+                    self._pause(page, 0.25, 0.1, cancel_check=cancel_check)
+                    _check_cancel_requested(cancel_check)
                     readback = _safe_eval(page, JS.READ_PARAM_INPUTS) or []
                     ok = idx < len(readback) and readback[idx].strip() == str(value)
             except Exception:
                 ok = False
             # 方式二：JS 注入兜底 + 回读验证
             if not ok:
+                _check_cancel_requested(cancel_check)
                 _safe_eval(page, JS.SET_PARAM_INPUT, [idx, value])
-                self._pause(page, 0.2, 0.08)
+                self._pause(page, 0.2, 0.08, cancel_check=cancel_check)
+                _check_cancel_requested(cancel_check)
                 readback = _safe_eval(page, JS.READ_PARAM_INPUTS) or []
                 ok = idx < len(readback) and readback[idx].strip() == str(value)
             if not ok:
@@ -2496,8 +2728,9 @@ class XunFeiSession:
         _log(f"[xunfei]   参数已应用: {applied_log}")
         return True
 
-    def _click_generate(self, page):
+    def _click_generate(self, page, cancel_check=None):
         """点击'生成音频'按钮。"""
+        _check_cancel_requested(cancel_check)
         btn = page.locator("button", has_text="生成音频")
         if btn.count() == 0:
             btn = page.locator("button.bg-blue-600")
@@ -2505,6 +2738,11 @@ class XunFeiSession:
             raise XunfeiError("未找到'生成音频'按钮")
         btn.first.click(timeout=5000)
         _log("[xunfei]   已点击生成音频")
+        # 生成按钮一旦点击，讯飞可能已经开始计费/创建作品。这里的短暂
+        # 页面稳定等待不能再读取取消探针；否则“点击成功 -> 取消 -> 未
+        # 捕获 worksId”会把已扣费任务丢出断点记录，下一轮只能冒险重复
+        # 提交。调用方会在这个边界之后用不可打断的确认/worksId 对账事务
+        # 收尾，完成后再在安全检查点响应暂停或终止。
         self._pause(page, 0.6, 0.3)
 
     @staticmethod
@@ -2513,10 +2751,11 @@ class XunFeiSession:
         text = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", str(value or "")).strip()
         return text[:25] or f"wordtts_{uuid.uuid4().hex[:10]}"
 
-    def _set_works_name(self, page, works_name):
+    def _set_works_name(self, page, works_name, cancel_check=None):
         """在作品设置弹窗中写入唯一名称，便于下载页人工核对。"""
         normalized = self._normalize_works_name(works_name)
         try:
+            _check_cancel_requested(cancel_check)
             field = page.locator('input[placeholder*="作品名称"]:visible').first
             if field.count() == 0:
                 return False
@@ -2524,11 +2763,14 @@ class XunFeiSession:
             page.keyboard.press(_SELECT_ALL)
             page.keyboard.insert_text(normalized)
             page.keyboard.press("Tab")
-            self._pause(page, 0.2, 0.08)
+            self._pause(page, 0.2, 0.08, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             actual = field.input_value(timeout=1000)
             if actual == normalized:
                 _log(f"[xunfei]   作品名称已设置: {normalized}")
                 return True
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             _log(f"[xunfei]   作品名称设置失败（继续使用默认名称）: {error}")
         return False
@@ -2935,7 +3177,7 @@ class XunFeiSession:
                         return None
                     if clicked == "clicked":
                         js_click_attempted = True
-                        self._pause(page, 0.18, 0.05)
+                        self._pause(page, 0.18, 0.05, cancel_check=cancel_check)
                         return None
                 # JS click 没有让 React 受控状态变化时，降低频率再用
                 # locator 点击真实 button[role=switch]，避免连续点同一开关。
@@ -2943,7 +3185,7 @@ class XunFeiSession:
                 if now - last_locator_attempt >= 0.65:
                     last_locator_attempt = now
                     if self._click_ai_switch_with_locator(page):
-                        self._pause(page, 0.25, 0.08)
+                        self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
                 return None
 
             # switch 尚未挂载时也给 locator 一次机会；页面继续异步渲染时，
@@ -2952,7 +3194,7 @@ class XunFeiSession:
             if now - last_locator_attempt >= 0.65:
                 last_locator_attempt = now
                 if self._click_ai_switch_with_locator(page):
-                    self._pause(page, 0.25, 0.08)
+                    self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
             return None
 
         result = _poll(
@@ -3008,7 +3250,7 @@ class XunFeiSession:
             if snapshot:
                 _log(f"[xunfei]   AI 弹窗未勾选‘不再提示’，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return False
-        self._pause(page, 0.35, 0.15)
+        self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
 
         if ensure_switch:
             switch_state = self._ensure_ai_switch_off(
@@ -3026,7 +3268,7 @@ class XunFeiSession:
                 if snapshot:
                     _log(f"[xunfei]   AI 标识开关未确认关闭，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
                 return False
-            self._pause(page, 0.35, 0.15)
+            self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
 
         confirmed = bool(_poll(
             lambda: _safe_eval(page, JS.CLICK_AI_CONFIRM),
@@ -3063,7 +3305,7 @@ class XunFeiSession:
             if snapshot:
                 _log(f"[xunfei]   AI 标识确认后弹窗仍存在: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return False
-        self._pause(page, 0.5, 0.2)
+        self._pause(page, 0.5, 0.2, cancel_check=cancel_check)
         return True
 
     def _wait_order_or_error(self, page, timeout, cancel_check=None):
@@ -3108,38 +3350,50 @@ class XunFeiSession:
                 raise XunfeiSubmissionAmbiguous(reason, works_name=works_name)
             return "failed"
 
+        def active_cancel_check():
+            # 点击“确认合成”可能已经触发计费。此后的页面观察、AI 弹窗
+            # 收尾和订单状态等待不能再被暂停/终止探针打断，否则上层拿
+            # 不到 worksId 或作品名，下一轮只能冒险重复提交。提交前仍
+            # 完整响应原有控制探针。
+            return cancel_check if not confirm_clicked else None
+
         def ensure_ai_off(timeout=12):
             kwargs = {"timeout": timeout}
-            if cancel_check is not None:
-                kwargs["cancel_check"] = cancel_check
+            current_cancel_check = active_cancel_check()
+            if current_cancel_check is not None:
+                kwargs["cancel_check"] = current_cancel_check
             return self._ensure_ai_switch_off(page, **kwargs)
 
         def ensure_mp3():
-            if cancel_check is None:
+            current_cancel_check = active_cancel_check()
+            if current_cancel_check is None:
                 return self._ensure_mp3_format(page)
-            return self._ensure_mp3_format(page, cancel_check=cancel_check)
+            return self._ensure_mp3_format(page, cancel_check=current_cancel_check)
 
         def observe_after_first_confirm():
-            if cancel_check is None:
+            current_cancel_check = active_cancel_check()
+            if current_cancel_check is None:
                 return self._observe_after_first_confirm(page)
             return self._observe_after_first_confirm(
                 page,
-                cancel_check=cancel_check,
+                cancel_check=current_cancel_check,
             )
 
         def handle_ai_flag(ensure_switch=False):
             kwargs = {"ensure_switch": ensure_switch}
-            if cancel_check is not None:
-                kwargs["cancel_check"] = cancel_check
+            current_cancel_check = active_cancel_check()
+            if current_cancel_check is not None:
+                kwargs["cancel_check"] = current_cancel_check
             return self._handle_ai_flag_dialog(page, **kwargs)
 
         def wait_order(timeout):
-            if cancel_check is None:
+            current_cancel_check = active_cancel_check()
+            if current_cancel_check is None:
                 return self._wait_order_or_error(page, timeout)
             return self._wait_order_or_error(
                 page,
                 timeout,
-                cancel_check=cancel_check,
+                cancel_check=current_cancel_check,
             )
 
         def ensure_ai_setting(allow_missing=False):
@@ -3166,7 +3420,7 @@ class XunFeiSession:
             interval=0.6,
             max_interval=1.25,
             page=page,
-            cancel_check=cancel_check,
+            cancel_check=active_cancel_check(),
         )
         if not appeared and self._visible_confirm_synth_buttons(page):
             appeared = "confirm"
@@ -3193,7 +3447,7 @@ class XunFeiSession:
                 self._submission_state_uncertain = True
             return settled
 
-        self._pause(page, 0.6, 0.3)
+        self._pause(page, 0.6, 0.3, cancel_check=cancel_check)
 
         # 讯飞“作品设置”弹窗中的格式是独立的 WAV/MP3 单选项。不能依赖
         # 默认勾选，也不能取第一个 option；提交前必须回读并确认 MP3。
@@ -3202,7 +3456,10 @@ class XunFeiSession:
             return "failed"
 
         if works_name:
-            self._set_works_name(page, works_name)
+            works_name_kwargs = {}
+            if cancel_check is not None:
+                works_name_kwargs["cancel_check"] = cancel_check
+            self._set_works_name(page, works_name, **works_name_kwargs)
 
         # “作品设置”就是这次提交使用的最终设置，真实 DOM 中开关位于这里：
         # role="switch"、aria-checked="true"。必须在第一次确认合成前关闭，
@@ -3260,11 +3517,11 @@ class XunFeiSession:
 
         followup = _poll(
             probe_followup,
-            timeout=15,
-            interval=0.35,
-            max_interval=1.0,
-            page=page,
-            cancel_check=cancel_check,
+                timeout=15,
+                interval=0.35,
+                max_interval=1.0,
+                page=page,
+                cancel_check=active_cancel_check(),
         )
         if followup == "ai_modal":
             ai_modal_seen = True
@@ -3281,7 +3538,7 @@ class XunFeiSession:
                 interval=0.35,
                 max_interval=1.0,
                 page=page,
-                cancel_check=cancel_check,
+                cancel_check=active_cancel_check(),
             )
         _log(f"[xunfei]   二次确认前页面状态: {followup or '未发现明确状态'}")
         if followup in ("order", "insufficient", "rate_limited"):
@@ -3300,6 +3557,7 @@ class XunFeiSession:
             interval=0.35,
             max_interval=1.0,
             page=page,
+            cancel_check=active_cancel_check(),
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
         if clicked2:
@@ -3408,8 +3666,10 @@ class XunFeiSession:
         needed_count=1,
         page_index=1,
         works_name=None,
+        cancel_check=None,
     ):
         """获取指定页的已完成作品列表，返回讯飞原始作品对象。"""
+        _check_cancel_requested(cancel_check)
         # 作品列表按最新创建时间返回；批量提交可能超过接口单页上限，
         # 调用方通过 page_index 扫描后续页，不能只依赖第一页的 200 条。
         needed = max(1, int(needed_count or 1))
@@ -3422,14 +3682,28 @@ class XunFeiSession:
             "worksName": str(works_name or "").strip(),
         }
         data = self._signed_api_post(page, API_WORKS_LIST_URL, param)
+        _check_cancel_requested(cancel_check)
         # _signed_api_post 对成功响应返回 dict，对认证/网络/API 错误返回
         # None。记录这个区别，断点恢复时不能把一次列表接口故障误判成
         # worksId 已失效，否则下一轮会重复提交并可能重复计费。
-        self._last_works_list_fetch_ok = isinstance(data, dict)
         if not data:
+            self._last_works_list_fetch_ok = False
             return []
-        items = (data.get("data") or {}).get("userWorksList") or []
-        return items if isinstance(items, list) else []
+        payload = data.get("data")
+        if not isinstance(payload, dict):
+            self._last_works_list_fetch_ok = False
+            return []
+        items = payload.get("userWorksList")
+        if items is None:
+            # 讯飞在“没有作品”时有版本会返回 null，视为一次成功的空扫描；
+            # 缺少 data 或返回非列表则仍视为协议异常，不能据此认定 worksId 失效。
+            self._last_works_list_fetch_ok = True
+            return []
+        if not isinstance(items, list):
+            self._last_works_list_fetch_ok = False
+            return []
+        self._last_works_list_fetch_ok = True
+        return items
 
     def _fetch_works_list_pages(
         self,
@@ -3465,6 +3739,8 @@ class XunFeiSession:
             # 请求的调用形态不变。
             if works_name:
                 fetch_kwargs["works_name"] = str(works_name).strip()
+            if cancel_check is not None:
+                fetch_kwargs["cancel_check"] = cancel_check
             current = self._fetch_works_list_in_page(page, **fetch_kwargs)
             fetch_ok = getattr(self, "_last_works_list_fetch_ok", None)
             if fetch_ok is False:
@@ -3552,19 +3828,20 @@ class XunFeiSession:
                 logged_wait = True
             if time.time() >= deadline:
                 break
-            try:
-                page.wait_for_timeout(1000)
-            except Exception:
-                time.sleep(1)
+            _controlled_wait(page, 1.0, cancel_check=cancel_check)
         return None
 
-    def _wait_for_works_entry(self, page, works_id, timeout=120):
+    def _wait_for_works_entry(self, page, works_id, timeout=120, cancel_check=None):
         """等待同一个 worksId 出现在作品列表中，严禁按名称或最新记录替代。"""
         expected = str(works_id)
         deadline = time.time() + timeout
         logged_wait = False
         while time.time() < deadline:
-            for item in self._fetch_works_list_in_page(page, needed_count=1):
+            _check_cancel_requested(cancel_check)
+            fetch_kwargs = {"needed_count": 1}
+            if cancel_check is not None:
+                fetch_kwargs["cancel_check"] = cancel_check
+            for item in self._fetch_works_list_in_page(page, **fetch_kwargs):
                 if not isinstance(item, dict):
                     continue
                 item_id = item.get("id") or item.get("worksId")
@@ -3574,18 +3851,22 @@ class XunFeiSession:
             if not logged_wait:
                 _log(f"[xunfei]   ⏳ 等待作品列表匹配 worksId: {expected}")
                 logged_wait = True
-            page.wait_for_timeout(2000)
+            _controlled_wait(page, 2.0, cancel_check=cancel_check)
         _log(f"[xunfei]   ⚠️ 作品列表未匹配到 worksId: {expected}")
         return None
 
-    def _wait_for_works_ready(self, page, works_id, timeout=180):
+    def _wait_for_works_ready(self, page, works_id, timeout=180, cancel_check=None):
         """等待精确 worksId 对应的音频文件真正可下载。"""
         expected = str(works_id)
         deadline = time.time() + timeout
         matched_logged = False
         waiting_logged = False
         while time.time() < deadline:
-            items = self._fetch_works_list_in_page(page, needed_count=1)
+            _check_cancel_requested(cancel_check)
+            fetch_kwargs = {"needed_count": 1}
+            if cancel_check is not None:
+                fetch_kwargs["cancel_check"] = cancel_check
+            items = self._fetch_works_list_in_page(page, **fetch_kwargs)
             exact = None
             for item in items:
                 if not isinstance(item, dict):
@@ -3611,7 +3892,10 @@ class XunFeiSession:
                 # audioUrl 尚未补齐时，继续用同一个 worksId 请求签名 URL。
                 # 接口可能先返回 code=0/url 为空，不能把这种状态当成功。
                 sign_url = self._fetch_sign_url_in_page(
-                    page, expected, log_result=False
+                    page,
+                    expected,
+                    log_result=False,
+                    cancel_check=cancel_check,
                 )
                 if sign_url:
                     exact["_download_url"] = sign_url
@@ -3626,15 +3910,23 @@ class XunFeiSession:
                 _log(f"[xunfei]   ⏳ 等待作品列表匹配 worksId: {expected}")
                 waiting_logged = True
 
-            page.wait_for_timeout(2000)
+            _controlled_wait(page, 2.0, cancel_check=cancel_check)
 
         _log(f"[xunfei]   ⚠️ 匹配作品在限定时间内仍不可下载 worksId: {expected}")
         return None
 
-    def _fetch_sign_url_in_page(self, page, works_id, log_result=True):
+    def _fetch_sign_url_in_page(
+        self,
+        page,
+        works_id,
+        log_result=True,
+        cancel_check=None,
+    ):
         """按精确 worksId 请求对应签名 URL。"""
+        _check_cancel_requested(cancel_check)
         param = {"worksId": str(works_id), "worksType": 1}
         data = self._signed_api_post(page, API_SIGN_URL, param)
+        _check_cancel_requested(cancel_check)
         if not data:
             if log_result:
                 _log(f"[xunfei]   签名接口未返回数据 worksId: {works_id}")
@@ -3647,12 +3939,13 @@ class XunFeiSession:
             )
         return url
 
-    def _cleanup_after_item(self, page):
+    def _cleanup_after_item(self, page, cancel_check=None):
         """单条提交后关闭残留弹窗并清空编辑器，不刷新页面。"""
+        _check_cancel_requested(cancel_check)
         _safe_eval(page, JS.CLOSE_ALL_MODALS, [])
         # 讯飞页面的音色和三项参数状态要跨条复用；这里只清空输入内容，
         # 不能用 goto/reload，否则同一音色分组会被迫重复选择和设置参数。
-        self._clear_editor(page)
+        self._clear_editor(page, cancel_check=cancel_check)
         # 不再固定等待 1~2 秒。弹窗关闭动画和编辑器清空完成后立即继续，
         # 如果页面较慢则最多等待 2 秒，避免下一条输入撞上旧弹窗。
         ready = _poll(
@@ -3663,19 +3956,29 @@ class XunFeiSession:
             timeout=2,
             interval=0.1,
             page=page,
+            cancel_check=cancel_check,
         )
         if not ready:
-            self._pause(page, 0.25, 0.08)
+            self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
 
-    def _recover_and_retry(self, page):
+    def _recover_and_retry(self, page, cancel_check=None):
         """合成失败后恢复页面状态（重新加载编辑页，重置音色/参数记忆）。"""
         try:
-            page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_selector(".ssml-editor", timeout=30000)
+            _check_cancel_requested(cancel_check)
+            page.goto(
+                HOME_URL,
+                wait_until="domcontentloaded",
+                timeout=CONTROLLED_NAVIGATION_TIMEOUT_MS,
+            )
+            _check_cancel_requested(cancel_check)
+            page.wait_for_selector(".ssml-editor", timeout=CONTROLLED_NAVIGATION_TIMEOUT_MS)
+            _check_cancel_requested(cancel_check)
             self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None
             return True
+        except XunfeiCancelled:
+            raise
         except Exception as e:
             _log(f"[xunfei]   页面恢复失败: {e}")
             return False
@@ -3684,14 +3987,136 @@ class XunFeiSession:
     # 登录与会话
     # ------------------------------------------------------------------
 
-    def login(self, login_timeout=300):
+    @staticmethod
+    def _process_snapshot():
+        """读取当前进程树中可见的子进程信息；失败时返回空字典。"""
+        if psutil is None:
+            return {}
+        try:
+            parent = psutil.Process(os.getpid())
+            processes = parent.children(recursive=True)
+        except Exception:
+            return {}
+        snapshot = {}
+        for process in processes:
+            try:
+                snapshot[process.pid] = {
+                    "process": process,
+                    "exe": str(process.exe() or ""),
+                    "cmdline": [str(value) for value in (process.cmdline() or [])],
+                    "create_time": float(process.create_time()),
+                }
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+        return snapshot
+
+    def _capture_browser_process_identity(self):
+        """把 Playwright 启动出的 Chromium 主进程绑定到控制器。"""
+        if psutil is None:
+            return
+        executable = os.path.realpath(str(self._browser_executable_path or ""))
+        profile = os.path.realpath(str(PROFILE_DIR or ""))
+        deadline = time.monotonic() + 2.0
+        candidate_snapshot = {}
+        while time.monotonic() < deadline:
+            snapshot = self._process_snapshot()
+            candidates = {}
+            for pid, info in snapshot.items():
+                if pid in self._browser_process_ids_before:
+                    continue
+                exe = os.path.realpath(info.get("exe") or "")
+                cmdline = info.get("cmdline") or []
+                cmdline_text = " ".join(cmdline)
+                exact_executable = bool(executable and exe == executable)
+                profile_match = bool(profile and profile in cmdline_text)
+                if exact_executable or profile_match:
+                    candidates[pid] = info
+            if candidates:
+                candidate_snapshot = candidates
+                break
+            time.sleep(0.05)
+
+        if not candidate_snapshot:
+            return
+        # 主 Chromium 进程没有 --type=renderer/utility 等子进程标记；若
+        # 平台命令行差异较大，退回创建时间最早的匹配进程。
+        main_candidates = [
+            (pid, info) for pid, info in candidate_snapshot.items()
+            if not any(str(arg).startswith("--type=") for arg in info.get("cmdline") or [])
+        ]
+        pool = main_candidates or list(candidate_snapshot.items())
+        main_pid = min(pool, key=lambda item: item[1].get("create_time", float("inf")))[0]
+        process_ids = sorted(candidate_snapshot)
+        with self._browser_identity_lock:
+            self._browser_pid = int(main_pid)
+            self._browser_process_ids = [int(pid) for pid in process_ids]
+            controller = self._browser_controller
+            if controller:
+                controller.attach_processes(self._browser_pid, self._browser_process_ids)
+
+    def browser_snapshot(self):
+        """返回浏览器身份、页面上下文和平台窗口控制状态。"""
+        with self._browser_identity_lock:
+            controller = self._browser_controller
+            if controller is None:
+                return {
+                    "visibility": "unavailable",
+                    "platform": sys.platform,
+                    "permission_required": False,
+                    "last_error": "自动化浏览器尚未启动",
+                    "pid": None,
+                    "process_ids": [],
+                    "executable_path": self._browser_executable_path,
+                    "profile_dir": PROFILE_DIR,
+                    "started_at": self._browser_started_at,
+                    "window_handles": [],
+                    "context_id": id(self._ctx) if self._ctx else None,
+                    "page_id": id(self._page) if self._page else None,
+                    "page_count": self._browser_page_count,
+                    "logged_in": bool(self._logged_in),
+                    "browser_mode": self._browser_mode,
+                }
+            snapshot = controller.snapshot()
+            snapshot.update({
+                "context_id": id(self._ctx) if self._ctx else None,
+                "page_id": id(self._page) if self._page else None,
+                "page_count": self._browser_page_count,
+                "logged_in": bool(self._logged_in),
+                "browser_mode": self._browser_mode,
+            })
+            return snapshot
+
+    def set_browser_visibility(self, visible: bool, *, minimize=False):
+        """对已绑定身份的专用浏览器执行显示/隐藏。"""
+        with self._browser_identity_lock:
+            controller = self._browser_controller
+        if controller is None:
+            return self.browser_snapshot()
+        return controller.set_visibility(bool(visible), minimize=minimize)
+
+    def login(self, login_timeout=300, cancel_check=None, allow_system_chrome=False):
         """
         打开可见的 Chrome 浏览器，导航到讯飞配音。
         首次需要手动登录（手机号+验证码），后续自动复用已保存的登录状态。
         """
+        _check_cancel_requested(cancel_check)
         self._playwright = sync_playwright().start()
 
-        chrome_path = _find_chrome()
+        browser_path, browser_mode = _select_browser_executable(
+            self._playwright,
+            allow_system_chrome=allow_system_chrome,
+        )
+        self._browser_executable_path = browser_path
+        self._browser_mode = browser_mode
+        self._browser_started_at = time.time()
+        self._browser_process_ids_before = set(self._process_snapshot())
+        self._browser_controller = BrowserWindowController(
+            executable_path=browser_path,
+            profile_dir=PROFILE_DIR,
+            started_at=self._browser_started_at,
+        )
         launch_args = [
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
@@ -3731,41 +4156,21 @@ class XunFeiSession:
         os.makedirs(PROFILE_DIR, exist_ok=True)
         _log(f"[xunfei] 浏览器配置目录: {PROFILE_DIR}")
 
-        # 优先使用系统 Chrome（真实 UA / 真实指纹），仅 Chromium 降级时补 UA
-        if chrome_path:
-            launch_kwargs["executable_path"] = chrome_path
-            _log(f"[xunfei] 使用 Chrome: {chrome_path}")
-        else:
-            launch_kwargs["user_agent"] = (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            )
-            _log("[xunfei] 未找到系统 Chrome，使用 Playwright Chromium", )
+        # 无论开发还是发布，都显式传入已解析的 executable path，避免
+        # PLAYWRIGHT_BROWSERS_PATH 只定位资源目录而实际启动了另一份浏览器。
+        _check_cancel_requested(cancel_check)
+        launch_kwargs["executable_path"] = browser_path
+        _log(f"[xunfei] 使用自动化浏览器 ({browser_mode}): {browser_path}")
 
-        try:
-            self._ctx = self._playwright.chromium.launch_persistent_context(
-                **launch_kwargs
-            )
-        except Exception as chrome_error:
-            if "executable_path" in launch_kwargs:
-                _log(f"[xunfei] Chrome 启动失败，改用 Playwright Chromium: {chrome_error}")
-                launch_kwargs.pop("executable_path", None)
-                launch_kwargs.setdefault(
-                    "user_agent",
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36",
-                )
-                self._ctx = self._playwright.chromium.launch_persistent_context(
-                    **launch_kwargs
-                )
-            else:
-                raise
+        self._ctx = self._playwright.chromium.launch_persistent_context(
+            **launch_kwargs
+        )
+        self._capture_browser_process_identity()
 
         self._ctx.add_init_script(STEALTH_SCRIPT)
         self._ctx.add_init_script(MUTE_AUDIO_SCRIPT)
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        self._browser_page_count = len(self._ctx.pages)
 
         # 注册网络响应监听（整个会话期间持续捕获 worksId / sign_url）
         self._response_handler = self._on_response
@@ -3781,7 +4186,11 @@ class XunFeiSession:
         _log("[xunfei] 正在打开讯飞配音...")
 
         try:
+            _check_cancel_requested(cancel_check)
             self._page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
+            _check_cancel_requested(cancel_check)
+        except XunfeiCancelled:
+            raise
         except Exception as goto_error:
             _log(f"[xunfei] 首次加载提示: {goto_error}")
 
@@ -3792,22 +4201,35 @@ class XunFeiSession:
             self._page.wait_for_selector(
                 ".ssml-editor", state="attached", timeout=30000
             )
+            _check_cancel_requested(cancel_check)
+        except XunfeiCancelled:
+            raise
         except Exception:
             _log("[xunfei] 页面编辑器未找到，重试加载...")
             try:
+                _check_cancel_requested(cancel_check)
                 self._page.goto(
-                    HOME_URL, wait_until="domcontentloaded", timeout=60000
+                    HOME_URL,
+                    wait_until="domcontentloaded",
+                    timeout=CONTROLLED_NAVIGATION_TIMEOUT_MS,
                 )
+                _check_cancel_requested(cancel_check)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 pass
             try:
                 self._page.wait_for_selector(
                     ".ssml-editor", state="attached", timeout=30000
                 )
+                _check_cancel_requested(cancel_check)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 raise XunfeiError("无法加载讯飞配音编辑器")
 
         # 检测登录状态
+        _check_cancel_requested(cancel_check)
         if self._is_logged_in(self._page):
             _log("[xunfei] 检测到已保存的登录状态，无需重新登录")
         else:
@@ -3816,7 +4238,7 @@ class XunFeiSession:
             deadline = time.time() + login_timeout
             logged = False
             while time.time() < deadline:
-                self._page.wait_for_timeout(2000)
+                _controlled_wait(self._page, 2.0, cancel_check=cancel_check)
                 if self._is_logged_in(self._page):
                     if self._page.locator(".ssml-editor").count() > 0:
                         logged = True
@@ -3849,6 +4271,115 @@ class XunFeiSession:
                 "请刷新音色目录后重试"
             )
         return number
+
+    @staticmethod
+    def _composite_voice_search_name(info):
+        """返回多人配音 common/list 使用的基础音色名称。"""
+        return str(
+            info.get("composite_name")
+            or info.get("common_name")
+            or info.get("name")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _composite_variant_label(voice_name, composite_name, explicit_label=None):
+        """返回多人配音详情面板中的具体变体短标签。"""
+        explicit = str(explicit_label or "").strip()
+        if explicit:
+            return explicit
+        name = str(voice_name or "").strip()
+        base = str(composite_name or "").strip()
+        if not name or not base:
+            return ""
+        if name.casefold() == base.casefold():
+            return ""
+        if name.casefold().startswith(base.casefold()):
+            suffix = name[len(base):].strip(" -－_")
+            return suffix
+        return ""
+
+    @classmethod
+    def _select_composite_variant(
+        cls, page, voice_name, composite_name, variant_label=None, cancel_check=None
+    ):
+        """基础卡片打开详情后，按具体变体名称选择对应短标签。
+
+        common/list 卡片只展示“欣畅”，详情面板才展示 “Pro+ / Pro”。
+        优先使用 flat/list 提供的 ``emotDesc`` 精确标签；没有该字段时，
+        再从变体名称中提取后缀，避免把 flat/list 的完整名称再次拿去搜索
+        基础卡片。
+        """
+        label = cls._composite_variant_label(voice_name, composite_name, variant_label)
+        if not label:
+            return True
+        scope = cls._composite_ui_scope(page)
+        controls = scope.locator("div.cursor-pointer:visible")
+        try:
+            metadata = controls.evaluate_all(
+                """els => els.map((el, index) => ({
+                    index,
+                    text: (el.innerText || '').trim(),
+                }))"""
+            )
+        except Exception:
+            return False
+        candidates = [
+            item for item in metadata[:200]
+            if cls._normalize_composite_ui_text(item.get("text"))
+            == cls._normalize_composite_ui_text(label)
+        ]
+        if len(candidates) != 1:
+            return False
+        _check_cancel_requested(cancel_check)
+        controls.nth(int(candidates[0]["index"])).click(timeout=5000)
+        # 变体点击由 React 异步更新边框；等到目标短标签所在卡片出现
+        # 讯飞当前选中蓝色边框后再继续点击“使用”。
+        def selected():
+            try:
+                current_controls = scope.locator("div.cursor-pointer:visible")
+                current_metadata = current_controls.evaluate_all(
+                    """els => els.map(el => {
+                            const button = el.querySelector('button');
+                            const nodes = button ? [el, button] : [el];
+                            const styles = nodes.map(node => window.getComputedStyle(node));
+                            const inline = nodes.map(node => String(
+                                node.getAttribute('style') || ''
+                            )).join(' ').replace(/\\s+/g, '').toLowerCase();
+                            const className = nodes.map(node => String(node.className || ''))
+                                .join(' ').toLowerCase();
+                            const selected = styles.some(style => (
+                                style.borderColor === 'rgb(26, 145, 255)'
+                                || style.backgroundColor === 'rgba(26, 145, 255, 0.04)'
+                            ))
+                                || inline.includes('#1a91ff')
+                                || inline.includes('rgba(26,145,255,0.04)')
+                                || className.includes('border-[#1a91ff');
+                            return {
+                                text: (el.innerText || '').trim(),
+                                selected,
+                            };
+                        })"""
+                )
+                return any(
+                    cls._normalize_composite_ui_text(item.get("text"))
+                    == cls._normalize_composite_ui_text(label)
+                    and item.get("selected")
+                    for item in current_metadata[:200]
+                )
+            except Exception:
+                return False
+
+        return bool(
+            _poll(
+                selected,
+                timeout=3,
+                interval=0.08,
+                max_interval=0.3,
+                page=page,
+                cancel_check=cancel_check,
+            )
+        )
 
     @staticmethod
     def _normalize_composite_ui_text(value):
@@ -4003,8 +4534,9 @@ class XunFeiSession:
         return None
 
     @classmethod
-    def _open_composite_voice_panel(cls, page):
+    def _open_composite_voice_panel(cls, page, cancel_check=None):
         """打开“多人配音”面板，并返回其搜索框。"""
+        _check_cancel_requested(cancel_check)
         search_selector = (
             'input[placeholder*="输入主播名称进行搜索"]:visible, '
             'input[placeholder*="输入主播名称"]:visible'
@@ -4024,6 +4556,7 @@ class XunFeiSession:
                 interval=0.08,
                 max_interval=0.3,
                 page=page,
+                cancel_check=cancel_check,
             )
             if not clicked:
                 raise XunfeiError("未找到可用的“多人配音”按钮")
@@ -4037,13 +4570,14 @@ class XunFeiSession:
                 interval=0.08,
                 max_interval=0.4,
                 page=page,
+                cancel_check=cancel_check,
             )
         if not search or search.count() == 0:
             raise XunfeiError("“多人配音”面板未加载音色搜索框")
         return search.first
 
     @classmethod
-    def _close_composite_voice_panel(cls, page):
+    def _close_composite_voice_panel(cls, page, cancel_check=None):
         """关闭多人配音音色面板，避免失败重试时遮挡编辑器。
 
         音色卡片搜索失败时，讯飞页面仍会保留一个 fixed 遮罩层。这个
@@ -4059,6 +4593,7 @@ class XunFeiSession:
         def panel_closed():
             return page.locator(search_selector).count() == 0
 
+        _check_cancel_requested(cancel_check)
         if panel_closed():
             return True
         try:
@@ -4071,6 +4606,7 @@ class XunFeiSession:
             interval=0.1,
             max_interval=0.4,
             page=page,
+            cancel_check=cancel_check,
         ):
             return True
 
@@ -4109,13 +4645,16 @@ class XunFeiSession:
                     page=page,
                 ):
                     return True
+        except XunfeiCancelled:
+            raise
         except Exception:
             pass
         return panel_closed()
 
     @classmethod
-    def _apply_composite_ui_params(cls, page, speed, pitch, volume):
+    def _apply_composite_ui_params(cls, page, speed, pitch, volume, cancel_check=None):
         """在多人配音面板中用键盘设置三项参数并逐项回读。"""
+        _check_cancel_requested(cancel_check)
         targets = (
             clamp_param(speed),
             clamp_param(pitch),
@@ -4137,11 +4676,13 @@ class XunFeiSession:
             interval=0.25,
             max_interval=0.8,
             page=page,
+            cancel_check=cancel_check,
         )
         if inputs is None or inputs.count() < 3:
             raise XunfeiError("“多人配音”面板的语速、语调、音量输入框未完整加载")
 
         for index, (label, value) in enumerate(zip(labels, targets)):
+            _check_cancel_requested(cancel_check)
             field = inputs.nth(index)
 
             def read_expected_value():
@@ -4160,14 +4701,17 @@ class XunFeiSession:
                 # 不能只看到 input_value 正确就立即点击“使用”，否则
                 # 会把上一组音色的旧参数带入标记。80ms 足够让 blur/input
                 # 状态落地，仍比原先每项固定 180ms 更快。
-                page.wait_for_timeout(80)
+                _controlled_wait(page, 0.08, cancel_check=cancel_check, slice_seconds=0.08)
                 actual = _poll(
                     read_expected_value,
                     timeout=1.2,
                     interval=0.025,
                     max_interval=0.12,
                     page=page,
+                    cancel_check=cancel_check,
                 )
+            except XunfeiCancelled:
+                raise
             except Exception as error:
                 raise XunfeiError(
                     f"多人配音 UI 参数[{label}]设置失败: {error}"
@@ -4432,13 +4976,15 @@ class XunFeiSession:
     @classmethod
     def _apply_composite_voice_to_selection(
         cls, page, rows, first_index, last_index, *, config_row=None,
-        verify_ranges=None,
+        verify_ranges=None, cancel_check=None,
     ):
         """给当前精确选区设置音色、参数，并回读页面的 speaker 标记。"""
+        _check_cancel_requested(cancel_check)
         first_row = config_row or rows[first_index]
         voice_key = str(first_row.get("voice_key") or DEFAULT_FEMALE)
         info = dict(get_voice_info(voice_key))
         voice_name = str(info.get("name") or voice_key)
+        composite_name = cls._composite_voice_search_name(info) or voice_name
         speaker_number = cls._speaker_number(voice_key, info)
         if config_row is None:
             for index in range(first_index, last_index + 1):
@@ -4446,19 +4992,24 @@ class XunFeiSession:
                     raise XunfeiError("多人配音批量选区包含不同音色或参数，拒绝套用")
 
         phase_started_at = time.perf_counter()
-        search = cls._open_composite_voice_panel(page)
+        search = cls._open_composite_voice_panel(page, cancel_check=cancel_check)
         panel_open_ms = round((time.perf_counter() - phase_started_at) * 1000)
         card = None
         for search_attempt in range(2):
+            _check_cancel_requested(cancel_check)
             search.click(timeout=3000)
             page.keyboard.press(_SELECT_ALL)
-            page.keyboard.type(voice_name)
+            # 多人配音弹窗的 common/list 只搜索基础名称，例如“欣畅”；
+            # flat/list 目录里的“欣畅-Pro+”是具体变体，直接搜索会得到
+            # 暂无匹配。详情面板再按具体变体短标签完成二次选择。
+            page.keyboard.type(composite_name)
             card = _poll(
-                lambda: cls._find_composite_voice_card(page, voice_name),
+                lambda: cls._find_composite_voice_card(page, composite_name),
                 timeout=5,
                 interval=0.08,
                 max_interval=0.35,
                 page=page,
+                cancel_check=cancel_check,
             )
             if card is not None:
                 break
@@ -4466,15 +5017,28 @@ class XunFeiSession:
                 # 搜索结果偶尔会因弹层刚打开而没有挂载。重新打开同一
                 # 个网页面板即可恢复，不改变编辑器选区，也不盲点其它
                 # 音色卡片。
-                cls._close_composite_voice_panel(page)
-                search = cls._open_composite_voice_panel(page)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                search = cls._open_composite_voice_panel(page, cancel_check=cancel_check)
         if card is None:
-            raise XunfeiError(f"多人配音面板未找到音色卡片: {voice_name}")
+            raise XunfeiError(
+                f"多人配音面板未找到音色卡片: {voice_name}（搜索基础名称 {composite_name}）"
+            )
+        _check_cancel_requested(cancel_check)
         card.click(timeout=5000)
+        if not cls._select_composite_variant(
+            page,
+            voice_name,
+            composite_name,
+            variant_label=info.get("emot_desc"),
+            cancel_check=cancel_check,
+        ):
+            raise XunfeiError(
+                f"多人配音面板未找到具体变体: {voice_name}（基础音色 {composite_name}）"
+            )
         # 选中卡片后面板会重新挂载三项参数输入框；输入框数量出现
         # 之前，旧的输入节点也可能短暂可见。给 React 一次短落地时间，
         # 避免把参数发给上一张卡片的旧表单。
-        page.wait_for_timeout(180)
+        _controlled_wait(page, 0.18, cancel_check=cancel_check)
         card_ms = round((time.perf_counter() - phase_started_at) * 1000)
         params_started_at = time.perf_counter()
         cls._apply_composite_ui_params(
@@ -4482,6 +5046,7 @@ class XunFeiSession:
             first_row.get("speed", PARAM_DEFAULT),
             first_row.get("pitch", PARAM_DEFAULT),
             first_row.get("volume", PARAM_DEFAULT),
+            cancel_check=cancel_check,
         )
         params_ms = round((time.perf_counter() - params_started_at) * 1000)
         apply_started_at = time.perf_counter()
@@ -4501,6 +5066,7 @@ class XunFeiSession:
             interval=0.2,
             max_interval=0.8,
             page=page,
+            cancel_check=cancel_check,
         )
         if not verified:
             raise XunfeiError(
@@ -4511,7 +5077,7 @@ class XunFeiSession:
         # 讯飞页面对包含连续范围的队列有时会保留 pending-range 装饰，
         # 虽然音色已经成功套用。显式用 Escape 清理网页队列，确保下一
         # 个音色配置组不会把上一组的待处理段落一起带入。
-        if verify_ranges and not cls._clear_composite_queue(page):
+        if verify_ranges and not cls._clear_composite_queue(page, cancel_check=cancel_check):
             raise XunfeiError("多人配音上一组多段选区未能清理")
         _log(
             f"[xunfei]   多人配音配置细分 {voice_name}："
@@ -4527,19 +5093,19 @@ class XunFeiSession:
             )
 
     @classmethod
-    def _apply_composite_voice_to_queue(cls, page, rows, ranges):
+    def _apply_composite_voice_to_queue(cls, page, rows, ranges, cancel_check=None):
         """对讯飞网页多段选择队列一次性设置音色和三项参数。"""
+        _check_cancel_requested(cancel_check)
         if not ranges:
             raise XunfeiError("多人配音多段选区没有可套用的音色配置")
         first_index = ranges[0][0]
         first_row = rows[first_index]
         expected_signature = cls._composite_row_signature(first_row)
-        if any(
-            cls._composite_row_signature(rows[index]) != expected_signature
-            for first, last in ranges
-            for index in range(first, last + 1)
-        ):
-            raise XunfeiError("多人配音多段选区包含不同音色或参数，拒绝套用")
+        for first, last in ranges:
+            for index in range(first, last + 1):
+                _check_cancel_requested(cancel_check)
+                if cls._composite_row_signature(rows[index]) != expected_signature:
+                    raise XunfeiError("多人配音多段选区包含不同音色或参数，拒绝套用")
 
         cls._apply_composite_voice_to_selection(
             page,
@@ -4548,6 +5114,7 @@ class XunFeiSession:
             ranges[0][1],
             config_row=first_row,
             verify_ranges=ranges,
+            cancel_check=cancel_check,
         )
         _log(
             f"[xunfei]   多人配音已统一设置 {len(ranges)} 个区间、"
@@ -4580,9 +5147,17 @@ class XunFeiSession:
 
     @classmethod
     def _insert_composite_pause(
-        cls, page, row_index, boundary_ms, *, emit_log=True, verify=True
+        cls,
+        page,
+        row_index,
+        boundary_ms,
+        *,
+        emit_log=True,
+        verify=True,
+        cancel_check=None,
     ):
         """在指定题目末行末尾通过页面停顿按钮插入内部定位标记。"""
+        _check_cancel_requested(cancel_check)
         paragraphs = page.locator(".ssml-editor p")
         paragraph = paragraphs.nth(row_index)
         # 先选中整行，再用方向键折叠到文本末尾，避免点击段落中部把
@@ -4610,6 +5185,7 @@ class XunFeiSession:
             interval=0.04,
             max_interval=0.2,
             page=page,
+            cancel_check=cancel_check,
         )
         if not clicked:
             raise XunfeiError(f"未找到讯飞停顿按钮: {label}")
@@ -4623,6 +5199,7 @@ class XunFeiSession:
                 interval=0.04,
                 max_interval=0.2,
                 page=page,
+                cancel_check=cancel_check,
             )
             if not inserted:
                 raise XunfeiError(
@@ -4632,11 +5209,12 @@ class XunFeiSession:
             _log(f"[xunfei]   已在第 {row_index + 1} 行后插入 {label} 停顿")
 
     @classmethod
-    def _prepare_composite_editor(cls, page, work):
+    def _prepare_composite_editor(cls, page, work, cancel_check=None):
         """用讯飞页面 UI 构造多人作品，返回行和停顿边界。"""
+        _check_cancel_requested(cancel_check)
         started_at = time.perf_counter()
         rows, boundaries = cls._composite_ui_rows(work)
-        cls._input_composite_text(page, rows)
+        cls._input_composite_text(page, rows, cancel_check=cancel_check)
         groups = cls._composite_row_groups(rows)
         queue_plan = cls._composite_signature_ranges(rows)
         _log(
@@ -4655,15 +5233,16 @@ class XunFeiSession:
         # 试探两种选区机制。
         native_selection = False
         for queue_attempt in range(2):
+            _check_cancel_requested(cancel_check)
             if queue_attempt:
                 native_selection = True
                 _log(
                     "[xunfei]   多人配音多段队列应用回读失败，"
                     "重新输入全部文本后再试一次"
                 )
-                cls._close_composite_voice_panel(page)
-                cls._clear_composite_queue(page)
-                cls._input_composite_text(page, rows)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                cls._clear_composite_queue(page, cancel_check=cancel_check)
+                cls._input_composite_text(page, rows, cancel_check=cancel_check)
             try:
                 for entry_index, entry in enumerate(queue_plan, start=1):
                     group_started_at = time.perf_counter()
@@ -4671,14 +5250,18 @@ class XunFeiSession:
                     selection_error = None
                     for selection_attempt in range(2):
                         try:
+                            _check_cancel_requested(cancel_check)
                             cls._select_composite_queue_rows(
                                 page,
                                 rows,
                                 ranges,
                                 native=(native_selection or selection_attempt > 0),
+                                cancel_check=cancel_check,
                             )
                             selection_error = None
                             break
+                        except XunfeiCancelled:
+                            raise
                         except XunfeiError as error:
                             selection_error = error
                             retryable = (
@@ -4692,13 +5275,18 @@ class XunFeiSession:
                                     "[xunfei]   多人配音多段选区回读不一致，"
                                     "清空当前队列后重试一次"
                                 )
-                                if not cls._clear_composite_queue(page):
+                                if not cls._clear_composite_queue(page, cancel_check=cancel_check):
                                     break
                                 continue
                             break
                     if selection_error:
                         raise selection_error
-                    cls._apply_composite_voice_to_queue(page, rows, ranges)
+                    cls._apply_composite_voice_to_queue(
+                        page,
+                        rows,
+                        ranges,
+                        cancel_check=cancel_check,
+                    )
                     voice_name = get_voice_info(
                         rows[ranges[0][0]].get("voice_key") or DEFAULT_FEMALE
                     )["name"]
@@ -4712,49 +5300,84 @@ class XunFeiSession:
                     )
                 queue_error = None
                 break
+            except XunfeiCancelled:
+                raise
             except XunfeiError as error:
                 queue_error = error
-                cls._close_composite_voice_panel(page)
-                cls._clear_composite_queue(page)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                cls._clear_composite_queue(page, cancel_check=cancel_check)
 
         try:
             if queue_error:
                 raise queue_error
+        except XunfeiCancelled:
+            raise
         except XunfeiError as error:
             _log(
                 f"[xunfei]   多人配音多段队列不可用，重新输入后按连续区间处理: {error}"
             )
-            cls._close_composite_voice_panel(page)
-            cls._clear_composite_queue(page)
-            cls._input_composite_text(page, rows)
+            cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+            cls._clear_composite_queue(page, cancel_check=cancel_check)
+            cls._input_composite_text(page, rows, cancel_check=cancel_check)
             marking_plan = cls._composite_marking_plan(rows)
             base_index = marking_plan["base_index"]
             correction_groups = marking_plan["correction_groups"]
             try:
-                cls._select_editor_rows(page, rows, 0, len(rows) - 1)
+                cls._select_editor_rows(
+                    page,
+                    rows,
+                    0,
+                    len(rows) - 1,
+                    cancel_check=cancel_check,
+                )
                 cls._apply_composite_voice_to_selection(
                     page,
                     rows,
                     0,
                     len(rows) - 1,
                     config_row=rows[base_index],
+                    cancel_check=cancel_check,
                 )
+            except XunfeiCancelled:
+                raise
             except XunfeiError as fallback_error:
                 _log(
                     f"[xunfei]   多人配音全文基准标注失败，按连续区间处理: {fallback_error}"
                 )
-                cls._close_composite_voice_panel(page)
-                cls._input_composite_text(page, rows)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                cls._input_composite_text(page, rows, cancel_check=cancel_check)
                 for first_index, last_index in groups:
-                    cls._select_editor_rows(page, rows, first_index, last_index)
+                    _check_cancel_requested(cancel_check)
+                    cls._select_editor_rows(
+                        page,
+                        rows,
+                        first_index,
+                        last_index,
+                        cancel_check=cancel_check,
+                    )
                     cls._apply_composite_voice_to_selection(
-                        page, rows, first_index, last_index
+                        page,
+                        rows,
+                        first_index,
+                        last_index,
+                        cancel_check=cancel_check,
                     )
             else:
                 for first_index, last_index in correction_groups:
-                    cls._select_editor_rows(page, rows, first_index, last_index)
+                    _check_cancel_requested(cancel_check)
+                    cls._select_editor_rows(
+                        page,
+                        rows,
+                        first_index,
+                        last_index,
+                        cancel_check=cancel_check,
+                    )
                     cls._apply_composite_voice_to_selection(
-                        page, rows, first_index, last_index
+                        page,
+                        rows,
+                        first_index,
+                        last_index,
+                        cancel_check=cancel_check,
                     )
             marking_mode = "连续区间回退"
             marking_group_count = len(correction_groups) + 1
@@ -4770,12 +5393,14 @@ class XunFeiSession:
 
         pause_started_at = time.perf_counter()
         for row_index, boundary_ms in boundaries:
+            _check_cancel_requested(cancel_check)
             cls._insert_composite_pause(
                 page,
                 row_index,
                 boundary_ms,
                 emit_log=False,
                 verify=False,
+                cancel_check=cancel_check,
             )
         if boundaries:
             all_pauses_inserted = _poll(
@@ -4788,6 +5413,7 @@ class XunFeiSession:
                 interval=0.04,
                 max_interval=0.2,
                 page=page,
+                cancel_check=cancel_check,
             )
             if not all_pauses_inserted:
                 issues = cls._read_composite_pause_issues(page, boundaries)
@@ -4798,12 +5424,14 @@ class XunFeiSession:
                         f"行 {[item['row'] + 1 for item in duplicate_rows]}"
                     )
                 for item in issues:
+                    _check_cancel_requested(cancel_check)
                     cls._insert_composite_pause(
                         page,
                         item["row"],
                         item["value"],
                         emit_log=False,
                         verify=True,
+                        cancel_check=cancel_check,
                     )
                 if cls._read_composite_pause_issues(page, boundaries):
                     raise XunfeiError("讯飞停顿批量插入后回读仍不完整")
@@ -4833,8 +5461,11 @@ class XunFeiSession:
             raise XunfeiError("尚未登录，请先调用 login()")
         if not output_name:
             output_name = f".xunfei_composite_{uuid.uuid4().hex}.mp3"
-        output_path = os.path.join(OUTPUT_DIR, output_name)
+        output_path = _confined_temp_output_path(output_name)
         page = self._page
+        recovery_kwargs = (
+            {"cancel_check": cancel_check} if cancel_check is not None else {}
+        )
         works_name = self._normalize_works_name(
             work.get("works_name")
             or f"wordtts_composite_{uuid.uuid4().hex[:8]}"
@@ -4849,19 +5480,26 @@ class XunFeiSession:
             )
             try:
                 if page.locator(".ssml-editor").count() == 0:
-                    if not self._recover_and_retry(page):
+                    if not self._recover_and_retry(page, **recovery_kwargs):
                         raise XunfeiError("页面恢复失败")
 
                 # 文本、连续同配置批量选区、音色/参数和内部停顿均通过
                 # 可见讯飞页面完成，并且每次套用前都有选区/标记回读校验。
-                self._prepare_composite_editor(page, work)
+                prepare_kwargs = {}
+                if cancel_check is not None:
+                    prepare_kwargs["cancel_check"] = cancel_check
+                self._prepare_composite_editor(page, work, **prepare_kwargs)
                 _check_cancel_requested(cancel_check)
                 self._mark_works_cutoff()
-                self._click_generate(page)
+                click_kwargs = {}
+                if cancel_check is not None:
+                    click_kwargs["cancel_check"] = cancel_check
+                self._click_generate(page, **click_kwargs)
                 try:
                     confirm_kwargs = {"works_name": works_name}
-                    if cancel_check is not None:
-                        confirm_kwargs["cancel_check"] = cancel_check
+                    # _click_generate 已经跨过提交边界。确认弹窗、订单状态
+                    # 和作品 ID 对账必须完整执行，不能让取消请求造成已扣费
+                    # 作品无法恢复的中间态。
                     status = self._confirm_synth(page, **confirm_kwargs)
                 except XunfeiSubmissionAmbiguous:
                     raise
@@ -4898,16 +5536,17 @@ class XunFeiSession:
                 submission_confirmed = True
 
                 try:
+                    # 确认合成已经成功后进入不可打断的对账事务：即使用户
+                    # 此时请求暂停/终止，也必须先把 worksId 或唯一作品名
+                    # 保存下来，否则下一轮无法判断是否已扣费。
                     works_id = self._consume_works_id(
                         timeout=30,
-                        cancel_check=cancel_check,
                     )
                     if not works_id:
                         works_id = self._recover_works_id_by_name(
                             page,
                             works_name,
                             timeout=60,
-                            cancel_check=cancel_check,
                         )
                 except (XunfeiCancelled, XunfeiSubmissionAmbiguous):
                     raise
@@ -4936,7 +5575,7 @@ class XunFeiSession:
                 )
                 # 此处作品已经提交并拿到 worksId。清理页面属于提交后的
                 # best-effort 操作，异常不能回到外层“提交失败”重试，否则
-                # 同一作品可能再次扣费。
+                # 同一作品可能再次扣费；收尾也不能再被取消探针打断。
                 try:
                     self._cleanup_after_item(page)
                 except Exception as cleanup_error:
@@ -4953,8 +5592,11 @@ class XunFeiSession:
                 last_error = error
                 cooldown = 18 + (time.time() % 10) * 2
                 _log(f"[xunfei]   多人配音频控冷却 {cooldown:.0f}s 后重试提交")
-                page.wait_for_timeout(int(cooldown * 1000))
-                if attempt < max_retries and not self._recover_and_retry(page):
+                _controlled_wait(page, cooldown, cancel_check=cancel_check)
+                if (
+                    attempt < max_retries
+                    and not self._recover_and_retry(page, **recovery_kwargs)
+                ):
                     break
             except Exception as error:
                 if submission_confirmed:
@@ -4965,7 +5607,10 @@ class XunFeiSession:
                     ) from error
                 last_error = error
                 _log(f"[xunfei]   多人配音提交异常: {error}")
-                if attempt < max_retries and not self._recover_and_retry(page):
+                if (
+                    attempt < max_retries
+                    and not self._recover_and_retry(page, **recovery_kwargs)
+                ):
                     break
         raise XunfeiError(f"讯飞多人配音生成失败：{last_error or '已重试仍未成功'}")
 
@@ -4993,7 +5638,7 @@ class XunFeiSession:
         voice_name = get_voice_info(vk)["name"]
         if not output_name:
             output_name = f".xunfei_{uuid.uuid4().hex}.mp3"
-        output_path = os.path.join(OUTPUT_DIR, output_name)
+        output_path = _confined_temp_output_path(output_name)
         # 作品名必须在点击生成前确定并写入页面。它是 worksId 监听漏捕获
         # 时唯一可用于安全对账的幂等键，不能留空后再随机生成。
         works_name = self._normalize_works_name(
@@ -5001,6 +5646,9 @@ class XunFeiSession:
         )
 
         page = self._page
+        recovery_kwargs = (
+            {"cancel_check": cancel_check} if cancel_check is not None else {}
+        )
         last_error = None
         for attempt in range(1, max_retries + 1):
             _check_cancel_requested(cancel_check)
@@ -5008,23 +5656,35 @@ class XunFeiSession:
             _log(f"[xunfei]   第 {attempt}/{max_retries} 次尝试提交...")
             try:
                 if page.locator(".ssml-editor").count() == 0:
-                    if not self._recover_and_retry(page):
+                    if not self._recover_and_retry(page, **recovery_kwargs):
                         raise XunfeiError("页面恢复失败")
 
                 # 同组任务命中这两个缓存时，不会重复切换音色或设置参数。
-                self._select_voice(page, voice_name, voice_key=vk)
-                self._apply_params(page, speed, pitch, volume)
+                voice_kwargs = {"voice_key": vk}
+                params_kwargs = {}
+                if cancel_check is not None:
+                    voice_kwargs["cancel_check"] = cancel_check
+                    params_kwargs["cancel_check"] = cancel_check
+                self._select_voice(page, voice_name, **voice_kwargs)
+                self._apply_params(page, speed, pitch, volume, **params_kwargs)
 
-                if not self._input_text(page, text):
+                input_kwargs = {}
+                if cancel_check is not None:
+                    input_kwargs["cancel_check"] = cancel_check
+                if not self._input_text(page, text, **input_kwargs):
                     raise XunfeiError("文本输入失败")
 
                 _check_cancel_requested(cancel_check)
                 self._mark_works_cutoff()
-                self._click_generate(page)
+                click_kwargs = {}
+                if cancel_check is not None:
+                    click_kwargs["cancel_check"] = cancel_check
+                self._click_generate(page, **click_kwargs)
                 try:
                     confirm_kwargs = {"works_name": works_name}
-                    if cancel_check is not None:
-                        confirm_kwargs["cancel_check"] = cancel_check
+                    # _click_generate 已经跨过提交边界。确认弹窗、订单状态
+                    # 和作品 ID 对账必须完整执行，不能让取消请求造成已扣费
+                    # 作品无法恢复的中间态。
                     status = self._confirm_synth(page, **confirm_kwargs)
                 except XunfeiSubmissionAmbiguous:
                     raise
@@ -5061,16 +5721,17 @@ class XunFeiSession:
                 submission_confirmed = True
 
                 try:
+                    # 确认合成已经成功后进入不可打断的对账事务：即使用户
+                    # 此时请求暂停/终止，也必须先把 worksId 或唯一作品名
+                    # 保存下来，否则下一轮无法判断是否已扣费。
                     works_id = self._consume_works_id(
                         timeout=30,
-                        cancel_check=cancel_check,
                     )
                     if not works_id:
                         works_id = self._recover_works_id_by_name(
                             page,
                             works_name,
                             timeout=60,
-                            cancel_check=cancel_check,
                         )
                 except (XunfeiCancelled, XunfeiSubmissionAmbiguous):
                     raise
@@ -5102,7 +5763,8 @@ class XunFeiSession:
                     f"voice={voice_name}"
                 )
                 # worksId 已经确认，清理失败不能被当作提交失败处理；否则
-                # 外层恢复逻辑会重新点击合成并可能产生重复计费。
+                # 外层恢复逻辑会重新点击合成并可能产生重复计费；收尾不再
+                # 读取取消探针，确保本次已扣费提交先完整落入待下载队列。
                 try:
                     self._cleanup_after_item(page)
                 except Exception as cleanup_error:
@@ -5120,8 +5782,8 @@ class XunFeiSession:
                 last_error = error
                 cooldown = 18 + (time.time() % 10) * 2
                 _log(f"[xunfei]   频控冷却 {cooldown:.0f}s 后重试提交")
-                page.wait_for_timeout(int(cooldown * 1000))
-                self._recover_and_retry(page)
+                _controlled_wait(page, cooldown, cancel_check=cancel_check)
+                self._recover_and_retry(page, **recovery_kwargs)
             except Exception as attempt_error:
                 if submission_confirmed:
                     raise XunfeiSubmissionAmbiguous(
@@ -5131,7 +5793,7 @@ class XunFeiSession:
                     ) from attempt_error
                 last_error = attempt_error
                 _log(f"[xunfei]   第 {attempt} 次提交异常: {attempt_error}")
-                if not self._recover_and_retry(page):
+                if not self._recover_and_retry(page, **recovery_kwargs):
                     break
 
         raise XunfeiError(f"讯飞配音生成失败：{last_error or '已重试仍未成功'}")
@@ -5189,7 +5851,10 @@ class XunFeiSession:
                     # 列表记录可能先出现、音频地址后补齐；只对同一个
                     # worksId 请求签名 URL，绝不复用其它记录的最新地址。
                     audio_url = self._fetch_sign_url_in_page(
-                        page, expected, log_result=False
+                        page,
+                        expected,
+                        log_result=False,
+                        cancel_check=cancel_check,
                     )
                 if audio_url:
                     ready[expected] = {
@@ -5210,7 +5875,7 @@ class XunFeiSession:
                         f"[xunfei]   ⏳ 仍有 {len(remaining)} 条作品等待音频就绪"
                     )
                 _check_cancel_requested(cancel_check)
-                page.wait_for_timeout(2000)
+                _controlled_wait(page, 2.0, cancel_check=cancel_check)
 
         if remaining:
             _log(
@@ -5240,11 +5905,12 @@ class XunFeiSession:
             pass
         return False
 
-    def _select_download_rows(self, page, targets):
+    def _select_download_rows(self, page, targets, cancel_check=None):
         """在讯飞作品页按 worksId 对应的 orderNo 精确勾选作品行。"""
         selected = {}
         missing = list(targets)
         for attempt in range(8):
+            _check_cancel_requested(cancel_check)
             state = _safe_eval(page, JS.SELECT_DOWNLOAD_ROWS, missing or targets) or {}
             for item in state.get("selected") or []:
                 selected[str(item.get("works_id") or "")] = item
@@ -5261,8 +5927,9 @@ class XunFeiSession:
                 break
             if attempt >= 7:
                 break
+            _check_cancel_requested(cancel_check)
             _safe_eval(page, JS.SCROLL_DOWNLOAD_LIST)
-            page.wait_for_timeout(500)
+            _controlled_wait(page, 0.5, cancel_check=cancel_check)
 
         if selected:
             _log(
@@ -5360,8 +6027,9 @@ class XunFeiSession:
         return None
 
     @staticmethod
-    def _download_signed_url(download_url, output_path):
+    def _download_signed_url(download_url, output_path, cancel_check=None):
         """通过精确 worksId 对应的签名地址下载 MP3。"""
+        _check_cancel_requested(cancel_check)
         if (
             not output_path
             or not str(download_url or "").startswith(("http://", "https://"))
@@ -5379,9 +6047,10 @@ class XunFeiSession:
                     "Referer": HOME_URL,
                 },
             )
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=SIGNED_DOWNLOAD_TIMEOUT_SECONDS) as response:
                 with open(temporary_path, "wb") as target:
                     while True:
+                        _check_cancel_requested(cancel_check)
                         chunk = response.read(1024 * 256)
                         if not chunk:
                             break
@@ -5390,6 +6059,8 @@ class XunFeiSession:
                 raise XunfeiError("签名地址返回的文件不是有效 MP3")
             os.replace(temporary_path, output_path)
             return True
+        except XunfeiCancelled:
+            raise
         except (OSError, ValueError, urllib.error.URLError, XunfeiError) as error:
             _log(f"[xunfei]   worksId 签名下载失败: {error}")
             return False
@@ -5427,8 +6098,11 @@ class XunFeiSession:
             page.goto(
                 DOWNLOAD_PAGE_URL,
                 wait_until="domcontentloaded",
-                timeout=60000,
+                timeout=CONTROLLED_NAVIGATION_TIMEOUT_MS,
             )
+            _check_cancel_requested(cancel_check)
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             raise XunfeiError(f"无法打开讯飞作品下载页: {error}")
 
@@ -5459,7 +6133,6 @@ class XunFeiSession:
         if cancel_check is not None:
             records_kwargs["cancel_check"] = cancel_check
         records = self._fetch_works_list_pages(page, **records_kwargs)
-        list_scan_complete = getattr(self, "_last_works_list_scan_complete", None)
         record_indexes = {}
         record_by_id = {}
         for index, record in enumerate(records):
@@ -5485,11 +6158,14 @@ class XunFeiSession:
             )
             if works_id not in ready and not record_found:
                 # 分页扫描可能早于列表刷新，或目标作品虽已存在但列表接口
-                # 没有返回它。先用同一个 worksId 直接请求签名地址；只有
-                # 列表扫描完整且签名接口也确认没有地址时，才把 ID 标成
-                # 失效，避免临时接口故障触发重复合成。
+                # 没有返回它。先用同一个 worksId 直接请求签名地址作为补偿
+                # 路径；即使仍未拿到地址，也保留提交记录，避免临时接口故障
+                # 触发重复合成。
                 direct_url = self._fetch_sign_url_in_page(
-                    page, works_id, log_result=False
+                    page,
+                    works_id,
+                    log_result=False,
+                    cancel_check=cancel_check,
                 )
                 if direct_url:
                     ready[works_id] = {
@@ -5506,20 +6182,18 @@ class XunFeiSession:
                 "item": item,
             }
             if works_id not in ready:
-                works_id_invalid = (
-                    not record_found and list_scan_complete is True
-                )
+                # “列表完整但没看到 ID”仍不能证明作品失效：列表刷新、账号
+                # 权限和异步入库都可能让已提交作品暂时不可见。保留 worksId
+                # 进入下一轮断点对账，绝不因为一次缺行自动重提交并重复计费。
+                works_id_invalid = False
                 result = {
                     **item,
                     "downloaded": False,
+                    "works_id_invalid": works_id_invalid,
                     "error": (
-                        "讯飞作品列表中未找到该 worksId，已标记为失效"
-                        if works_id_invalid
-                        else "作品未在下载页按 worksId 就绪"
+                        "作品未在下载页按 worksId 就绪；已保留提交记录，稍后可继续对账"
                     ),
                 }
-                if works_id_invalid:
-                    result["works_id_invalid"] = True
                 results[works_id] = result
                 _notify_batch_progress(progress_callback, {
                     "job_id": str(item.get("job_id") or ""),
@@ -5543,6 +6217,7 @@ class XunFeiSession:
             if self._download_signed_url(
                 ready_item.get("download_url"),
                 item.get("output_path"),
+                cancel_check=cancel_check,
             ):
                 output_path = item.get("output_path")
                 size = os.path.getsize(output_path)
@@ -5580,7 +6255,14 @@ class XunFeiSession:
         if not browser_targets:
             return results
 
-        selected, missing = self._select_download_rows(page, browser_targets)
+        select_kwargs = {}
+        if cancel_check is not None:
+            select_kwargs["cancel_check"] = cancel_check
+        selected, missing = self._select_download_rows(
+            page,
+            browser_targets,
+            **select_kwargs,
+        )
         _check_cancel_requested(cancel_check)
         selected_targets = [
             target for target in browser_targets
@@ -5764,7 +6446,7 @@ class XunFeiSession:
                         )
                         pending_item = {
                             "works_id": resume_works_id,
-                            "output_path": os.path.join(OUTPUT_DIR, output_name),
+                            "output_path": _confined_temp_output_path(output_name),
                             "voice_key": str(job.get("voice_key") or DEFAULT_FEMALE),
                             "voice_name": str(job.get("voice_name") or ""),
                             "works_name": self._normalize_works_name(
@@ -5800,7 +6482,7 @@ class XunFeiSession:
                             )
                         pending_item = {
                             "works_id": str(recovered_works_id),
-                            "output_path": os.path.join(OUTPUT_DIR, output_name),
+                            "output_path": _confined_temp_output_path(output_name),
                             "voice_key": str(job.get("voice_key") or DEFAULT_FEMALE),
                             "voice_name": str(job.get("voice_name") or ""),
                             "works_name": works_name,
@@ -6011,7 +6693,7 @@ class XunFeiSession:
                 if previous_id:
                     pending_item = {
                         "works_id": str(previous_id),
-                        "output_path": os.path.join(OUTPUT_DIR, work["output_name"]),
+                        "output_path": _confined_temp_output_path(work["output_name"]),
                         "works_name": str(previous.get("works_name") or work["works_name"]),
                         "work_id": work_id,
                         "job_id": work_id,
@@ -6039,7 +6721,7 @@ class XunFeiSession:
                         )
                     pending_item = {
                         "works_id": str(recovered_works_id),
-                        "output_path": os.path.join(OUTPUT_DIR, work["output_name"]),
+                        "output_path": _confined_temp_output_path(work["output_name"]),
                         "works_name": works_name,
                         "work_id": work_id,
                         "job_id": work_id,
@@ -6226,7 +6908,7 @@ class XunFeiSession:
 
         if not output_name:
             output_name = f"xunfei_{vk}_{int(time.time())}.mp3"
-        output_path = os.path.join(OUTPUT_DIR, output_name)
+        output_path = _confined_temp_output_path(output_name)
 
         pending = self._generate_pending_one(
             text,
@@ -6237,12 +6919,16 @@ class XunFeiSession:
             pitch=pitch,
             volume=volume,
         )
-        result = self._download_pending_batch([pending]).get(str(pending["works_id"]))
         output_path = pending["output_path"]
-        if result and result.get("downloaded") and os.path.exists(output_path):
-            _log(f"[xunfei] ✅ 生成成功 ({os.path.getsize(output_path):,} bytes)")
-            return output_path
-        raise XunfeiError("合成已完成但未能下载音频")
+        try:
+            result = self._download_pending_batch([pending]).get(str(pending["works_id"]))
+            if result and result.get("downloaded") and os.path.exists(output_path):
+                _log(f"[xunfei] ✅ 生成成功 ({os.path.getsize(output_path):,} bytes)")
+                return output_path
+            raise XunfeiError("合成已完成但未能下载音频")
+        except Exception:
+            _remove_confined_temp_output(output_path)
+            raise
 
     def close(self):
         """关闭浏览器，保留登录状态（持久化目录不被删除）。"""
@@ -6272,6 +6958,16 @@ class XunFeiSession:
             self._page = None
             self._playwright = None
             self._logged_in = False
+            self._browser_executable_path = None
+            self._browser_mode = None
+            with self._browser_identity_lock:
+                self._browser_controller = None
+                self._browser_started_at = None
+                self._browser_pid = None
+                self._browser_process_ids = []
+                self._browser_process_ids_before = set()
+                self._browser_window_handles = []
+                self._browser_page_count = 0
             self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None
@@ -6304,8 +7000,11 @@ class XunFeiSession:
 
 _session = None
 _session_lock = threading.Lock()
+_browser_owner_session_id = None
 _playwright_executor = None
 _playwright_executor_lock = threading.Lock()
+_playwright_activity_condition = threading.Condition()
+_playwright_pending_calls = 0
 
 
 def _get_playwright_executor():
@@ -6318,6 +7017,49 @@ def _get_playwright_executor():
                 thread_name_prefix="xunfei-playwright",
             )
         return _playwright_executor
+
+
+def _mark_playwright_call_done(_future):
+    global _playwright_pending_calls
+    with _playwright_activity_condition:
+        _playwright_pending_calls = max(0, _playwright_pending_calls - 1)
+        _playwright_activity_condition.notify_all()
+
+
+def _submit_playwright_call(call):
+    """提交同步调用并跟踪到真正完成（包括 asyncio 方被取消的情况）。"""
+    global _playwright_pending_calls
+    with _playwright_activity_condition:
+        _playwright_pending_calls += 1
+    try:
+        future = _get_playwright_executor().submit(call)
+    except Exception:
+        _mark_playwright_call_done(None)
+        raise
+    future.add_done_callback(_mark_playwright_call_done)
+    return future
+
+
+def _wait_for_playwright_idle_sync(timeout=None):
+    deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+    with _playwright_activity_condition:
+        while _playwright_pending_calls:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return False
+            _playwright_activity_condition.wait(remaining)
+        return True
+
+
+async def wait_for_playwright_idle(timeout=None):
+    """等待已提交的同步 Playwright 调用真正退出。
+
+    asyncio 取消只能取消包装 Future，不能中断已经运行的 Sync API。清理会话
+    目录或启动下一轮之前必须调用此屏障，避免旧线程继续写入新一轮产物。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(_wait_for_playwright_idle_sync, timeout)
 
 
 def _notify_batch_progress(callback, payload):
@@ -6336,7 +7078,35 @@ async def _run_playwright_sync(function, *args, **kwargs):
 
     loop = asyncio.get_running_loop()
     call = partial(function, *args, **kwargs)
-    return await loop.run_in_executor(_get_playwright_executor(), call)
+    future = _submit_playwright_call(call)
+    return await asyncio.wrap_future(future, loop=loop)
+
+
+async def _run_playwright_sync_until_done(function, *args, **kwargs):
+    """外层任务取消时，仍等待计费相关的同步调用完成。"""
+    import asyncio
+
+    operation = asyncio.create_task(_run_playwright_sync(function, *args, **kwargs))
+    cancellation_requested = False
+    while True:
+        try:
+            result = await asyncio.shield(operation)
+            break
+        except asyncio.CancelledError:
+            # shield 防止包装 Future 被取消；继续等待专用线程退出，避免
+            # 调用方 finally 提前删除仍在写入的临时 MP3。完成后再把取消
+            # 交还给上层状态机。
+            cancellation_requested = True
+            if operation.done():
+                try:
+                    result = operation.result()
+                except asyncio.CancelledError:
+                    result = None
+                break
+            continue
+    if cancellation_requested:
+        raise asyncio.CancelledError
+    return result
 
 
 def is_available():
@@ -6371,12 +7141,33 @@ def _discard_session_unsafe():
     _session = None
 
 
-async def ensure_session(voice_key="amanda"):
+def _normalize_owner_session_id(value):
+    text = str(value or "").strip()
+    return text or None
+
+
+def _owner_mismatch_state(owner_session_id, current_owner):
+    expected = _normalize_owner_session_id(owner_session_id)
+    if not expected or not current_owner or expected == current_owner:
+        return None
+    return _unavailable_browser_snapshot(
+        "专用自动化浏览器当前归属于另一个任务",
+        owner_session_id=current_owner,
+        owner_mismatch=True,
+    )
+
+
+async def ensure_session(
+    voice_key="amanda",
+    cancel_check=None,
+    owner_session_id=None,
+    allow_system_chrome=False,
+):
     """
     确保讯飞配音浏览器会话已登录。
     如果会话不存在或已损坏，则创建并打开浏览器等待用户登录。
     """
-    global _session
+    global _session, _browser_owner_session_id
 
     if not is_available():
         raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
@@ -6384,26 +7175,59 @@ async def ensure_session(voice_key="amanda"):
     import asyncio
 
     def _locked_create():
-        global _session
+        global _session, _browser_owner_session_id
+        requested_owner = _normalize_owner_session_id(owner_session_id)
+        old_session = None
+
+        # 只在极短的“检查/摘除全局引用”临界区持有锁。健康检查本身会
+        # 读取 Sync Playwright 对象，旧会话 close 和新会话 login 还可能等待
+        # 用户操作；若把它们放在锁内，浏览器状态 API 会把 FastAPI 事件循环
+        # 阻塞数分钟，恢复快捷键和 SSE 也会一起失去响应。
         with _session_lock:
             if _session is not None:
+                mismatch = _owner_mismatch_state(
+                    requested_owner,
+                    _browser_owner_session_id,
+                )
+                if mismatch is not None:
+                    raise XunfeiSessionBusy(mismatch["last_error"])
                 if _session_is_healthy(_session):
+                    if requested_owner and not _browser_owner_session_id:
+                        _browser_owner_session_id = requested_owner
                     return _session
-                _discard_session_unsafe()
-            session = XunFeiSession(voice_key=voice_key)
+                old_session = _session
+                _session = None
+                _browser_owner_session_id = None
+
+        if old_session is not None:
             try:
-                session.login(login_timeout=300)
+                old_session.close()
             except Exception:
-                try:
-                    session.close()
-                except Exception:
-                    pass
-                raise
-            # 必须在线程内写入全局会话。否则两个 asyncio 任务同时首次
-            # 调用 ensure_session 时，第二个任务可能在主事件循环中看见
-            # 仍为空，再创建第二个 Playwright Sync 会话。
+                pass
+
+        session = XunFeiSession(voice_key=voice_key)
+        try:
+            login_kwargs = {"login_timeout": 300}
+            if cancel_check is not None:
+                login_kwargs["cancel_check"] = cancel_check
+            if allow_system_chrome:
+                login_kwargs["allow_system_chrome"] = True
+            session.login(**login_kwargs)
+        except Exception:
+            try:
+                session.close()
+            except Exception:
+                pass
+            raise
+        # 必须在线程内写入全局会话。否则两个 asyncio 任务同时首次
+        # 调用 ensure_session 时，第二个任务可能在主事件循环中看见
+        # 仍为空，再创建第二个 Playwright Sync 会话。所有 ensure/close
+        # 调用又都排在同一个单线程 executor 中，所以这里不会和下一轮
+        # 会话创建交叉覆盖。
+        with _session_lock:
             _session = session
-            return session
+            _browser_owner_session_id = requested_owner
+        return session
 
     # Playwright Sync API 的所有 page/context 操作（包括健康检查）都必须
     # 留在同一个专用线程，不能在 FastAPI/asyncio 事件循环线程或其它
@@ -6414,6 +7238,7 @@ async def ensure_session(voice_key="amanda"):
 async def synth_xunfei(
     text, voice_key="amanda",
     speed=PARAM_DEFAULT, pitch=PARAM_DEFAULT, volume=PARAM_DEFAULT,
+    owner_session_id=None,
 ):
     """
     用讯飞配音生成一条音频，返回 pydub.AudioSegment。
@@ -6434,48 +7259,57 @@ async def synth_xunfei(
     if not is_available():
         raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
 
-    session = await ensure_session(voice_key=voice_key)
+    session = await ensure_session(
+        voice_key=voice_key,
+        owner_session_id=owner_session_id,
+    )
 
     import uuid
     output_name = f".xunfei_{uuid.uuid4().hex[:8]}.mp3"
 
-    result_path = await _run_playwright_sync(
-        session.synth_one,
-        text,
-        output_name,
-        4,          # max_retries
-        voice_key,
-        clamp_param(speed),
-        clamp_param(pitch),
-        clamp_param(volume),
-    )
-
-    if not result_path or not os.path.exists(result_path):
-        raise XunfeiError(f"讯飞配音未生成音频文件: {result_path}")
-
-    fsize = os.path.getsize(result_path)
-    _log(f"[xunfei] 生成完成: {result_path} ({fsize} bytes)")
-    if fsize < 100:
-        raise XunfeiError(f"讯飞配音返回的音频过小 ({fsize} bytes)")
-
-    from pydub import AudioSegment
-    seg = AudioSegment.from_file(result_path, format="mp3", codec="mp3")
-    dur_ms = len(seg)
-    _log(f"[xunfei] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}")
-    if dur_ms < 50:
-        raise XunfeiError(f"解码后音频时长过短 ({dur_ms}ms)")
-    if seg.channels == 0 or seg.frame_rate == 0:
-        raise XunfeiError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
-
-    # 清理临时文件
+    result_path = None
     try:
-        os.remove(result_path)
-    except OSError:
-        pass
-    return seg
+        result_path = await _run_playwright_sync(
+            session.synth_one,
+            text,
+            output_name,
+            4,          # max_retries
+            voice_key,
+            clamp_param(speed),
+            clamp_param(pitch),
+            clamp_param(volume),
+        )
+
+        if not result_path or not os.path.exists(result_path):
+            raise XunfeiError(f"讯飞配音未生成音频文件: {result_path}")
+
+        fsize = os.path.getsize(result_path)
+        _log(f"[xunfei] 生成完成: {result_path} ({fsize} bytes)")
+        if fsize < 100:
+            raise XunfeiError(f"讯飞配音返回的音频过小 ({fsize} bytes)")
+
+        from pydub import AudioSegment
+        seg = AudioSegment.from_file(result_path, format="mp3", codec="mp3")
+        dur_ms = len(seg)
+        _log(f"[xunfei] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}")
+        if dur_ms < 50:
+            raise XunfeiError(f"解码后音频时长过短 ({dur_ms}ms)")
+        if seg.channels == 0 or seg.frame_rate == 0:
+            raise XunfeiError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
+        return seg
+    finally:
+        # 无论下载失败、解码失败还是调用方取消，都不能把临时 MP3 留在
+        # xunfei_output；仅允许删除本模块自己目录内的路径。
+        _remove_confined_temp_output(result_path)
 
 
-async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
+async def synth_xunfei_batch(
+    jobs,
+    progress_callback=None,
+    cancel_check=None,
+    max_retries=4,
+    owner_session_id=None,
+):
     """批量讯飞合成：按音色/参数分组提交，最后统一下载并解码。
 
     ``jobs`` 中每项至少包含 ``job_id``、``text``、``voice_key``、``speed``、
@@ -6491,7 +7325,11 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
 
     import asyncio
     first_voice = str((jobs[0] or {}).get("voice_key") or DEFAULT_FEMALE)
-    session = await ensure_session(voice_key=first_voice)
+    session = await ensure_session(
+        voice_key=first_voice,
+        cancel_check=cancel_check,
+        owner_session_id=owner_session_id,
+    )
     normalized_jobs = []
     for index, job in enumerate(jobs):
         item = dict(job)
@@ -6502,77 +7340,93 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
         item.setdefault("works_name", f"wordtts_{index + 1:04d}_{uuid.uuid4().hex[:8]}")
         normalized_jobs.append(item)
 
+    expected_temp_paths = [
+        _confined_temp_output_path(item["output_name"])
+        for item in normalized_jobs
+    ]
+
     batch_kwargs = {"progress_callback": progress_callback}
     if cancel_check is not None:
         batch_kwargs["cancel_check"] = cancel_check
-    raw_results = await _run_playwright_sync(
-        session.synth_batch,
-        normalized_jobs,
-        4,
-        **batch_kwargs,
-    )
-    decoded = {}
-    from pydub import AudioSegment
+    raw_results = None
+    try:
+        raw_results = await _run_playwright_sync_until_done(
+            session.synth_batch,
+            normalized_jobs,
+            max(1, int(max_retries)),
+            **batch_kwargs,
+        )
+        decoded = {}
+        from pydub import AudioSegment
 
-    for job in normalized_jobs:
-        job_id = str(job["job_id"])
-        result = raw_results.get(job_id) if isinstance(raw_results, dict) else None
-        if not isinstance(result, dict) or not result.get("downloaded"):
-            decoded[job_id] = {
-                "segment": None,
-                "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
-                "works_id_invalid": (
-                    bool(result.get("works_id_invalid"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "ambiguous_works_id": (
-                    bool(result.get("ambiguous_works_id"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "works_name": (
-                    result.get("works_name")
-                    if isinstance(result, dict)
-                    else None
-                ),
-                "error": (result or {}).get("error", "讯飞批量下载失败")
-                if isinstance(result, dict) else "讯飞批量生成无结果",
-            }
-            continue
+        for job in normalized_jobs:
+            _check_cancel_requested(cancel_check)
+            job_id = str(job["job_id"])
+            result = raw_results.get(job_id) if isinstance(raw_results, dict) else None
+            path = result.get("output_path") if isinstance(result, dict) else None
+            try:
+                if not isinstance(result, dict) or not result.get("downloaded"):
+                    decoded[job_id] = {
+                        "segment": None,
+                        "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
+                        "works_id_invalid": (
+                            bool(result.get("works_id_invalid"))
+                            if isinstance(result, dict)
+                            else False
+                        ),
+                        "ambiguous_works_id": (
+                            bool(result.get("ambiguous_works_id"))
+                            if isinstance(result, dict)
+                            else False
+                        ),
+                        "works_name": (
+                            result.get("works_name")
+                            if isinstance(result, dict)
+                            else None
+                        ),
+                        "error": (result or {}).get("error", "讯飞批量下载失败")
+                        if isinstance(result, dict) else "讯飞批量生成无结果",
+                    }
+                    continue
 
-        path = result.get("output_path")
-        try:
-            if not path or not os.path.exists(path):
-                raise XunfeiError(f"讯飞批量音频文件不存在: {path}")
-            size = os.path.getsize(path)
-            if size < 100:
-                raise XunfeiError(f"讯飞批量音频文件过小: {size} bytes")
+                if not path or not os.path.exists(path):
+                    raise XunfeiError(f"讯飞批量音频文件不存在: {path}")
+                size = os.path.getsize(path)
+                if size < 100:
+                    raise XunfeiError(f"讯飞批量音频文件过小: {size} bytes")
 
-            def decode_file(source_path=path):
-                return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
+                def decode_file(source_path=path):
+                    return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
 
-            seg = await asyncio.to_thread(decode_file)
-            if len(seg) < 50:
-                raise XunfeiError(f"解码后音频时长过短 ({len(seg)}ms)")
-            if seg.channels == 0 or seg.frame_rate == 0:
-                raise XunfeiError(
-                    f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})"
+                seg = await asyncio.to_thread(decode_file)
+                _check_cancel_requested(cancel_check)
+                if len(seg) < 50:
+                    raise XunfeiError(f"解码后音频时长过短 ({len(seg)}ms)")
+                if seg.channels == 0 or seg.frame_rate == 0:
+                    raise XunfeiError(
+                        f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})"
+                    )
+                _log(
+                    f"[xunfei] 批量音频解码完成 job={job_id}: "
+                    f"duration={len(seg)}ms size={size:,} bytes"
                 )
-            _log(
-                f"[xunfei] 批量音频解码完成 job={job_id}: "
-                f"duration={len(seg)}ms size={size:,} bytes"
-            )
-            decoded[job_id] = {"segment": seg, "error": None}
-        except Exception as error:
-            decoded[job_id] = {"segment": None, "error": str(error)}
-        finally:
-            if path:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-    return decoded
+                decoded[job_id] = {"segment": seg, "error": None}
+            except XunfeiCancelled:
+                raise
+            except Exception as error:
+                decoded[job_id] = {"segment": None, "error": str(error)}
+            finally:
+                _remove_confined_temp_output(path)
+        return decoded
+    finally:
+        # 失败结果、未返回结果和解码中途取消的任务也必须清理；此处只会
+        # 处理已通过文件名校验的当前批次临时路径，不会碰用户其它文件。
+        for path in expected_temp_paths:
+            _remove_confined_temp_output(path)
+        if isinstance(raw_results, dict):
+            for result in raw_results.values():
+                if isinstance(result, dict):
+                    _remove_confined_temp_output(result.get("output_path"))
 
 
 async def synth_xunfei_composite(
@@ -6580,6 +7434,8 @@ async def synth_xunfei_composite(
     progress_callback=None,
     resume=None,
     cancel_check=None,
+    max_retries=4,
+    owner_session_id=None,
 ):
     """用讯飞多人配音接口生成合并作品并解码完整 MP3。"""
     if not works:
@@ -6596,7 +7452,11 @@ async def synth_xunfei_composite(
         )
     except (AttributeError, IndexError, TypeError):
         pass
-    session = await ensure_session(voice_key=first_voice)
+    session = await ensure_session(
+        voice_key=first_voice,
+        cancel_check=cancel_check,
+        owner_session_id=owner_session_id,
+    )
     normalized_works = []
     for index, work in enumerate(works, start=1):
         item = dict(work)
@@ -6609,107 +7469,220 @@ async def synth_xunfei_composite(
         )
         normalized_works.append(item)
 
+    expected_temp_paths = [
+        _confined_temp_output_path(work["output_name"])
+        for work in normalized_works
+    ]
+
     composite_kwargs = {
         "progress_callback": progress_callback,
         "resume": resume,
     }
     if cancel_check is not None:
         composite_kwargs["cancel_check"] = cancel_check
-    raw_results = await _run_playwright_sync(
-        session.synth_composite,
-        normalized_works,
-        4,
-        **composite_kwargs,
-    )
-    decoded = {}
-    from pydub import AudioSegment
+    raw_results = None
+    try:
+        raw_results = await _run_playwright_sync_until_done(
+            session.synth_composite,
+            normalized_works,
+            max(1, int(max_retries)),
+            **composite_kwargs,
+        )
+        decoded = {}
+        from pydub import AudioSegment
 
-    for work in normalized_works:
-        work_id = str(work["work_id"])
-        result = raw_results.get(work_id) if isinstance(raw_results, dict) else None
-        if not isinstance(result, dict) or not result.get("downloaded"):
-            decoded[work_id] = {
-                "audio": None,
-                "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
-                "ambiguous_works_id": (
-                    bool(result.get("ambiguous_works_id"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "works_name": (
-                    result.get("works_name")
-                    if isinstance(result, dict)
-                    else None
-                ),
-                "works_id_invalid": (
-                    bool(result.get("works_id_invalid"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "error": (result or {}).get("error", "讯飞多人配音下载失败")
-                if isinstance(result, dict) else "讯飞多人配音生成无结果",
-            }
-            continue
+        for work in normalized_works:
+            _check_cancel_requested(cancel_check)
+            work_id = str(work["work_id"])
+            result = raw_results.get(work_id) if isinstance(raw_results, dict) else None
+            path = result.get("output_path") if isinstance(result, dict) else None
+            try:
+                if not isinstance(result, dict) or not result.get("downloaded"):
+                    decoded[work_id] = {
+                        "audio": None,
+                        "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
+                        "ambiguous_works_id": (
+                            bool(result.get("ambiguous_works_id"))
+                            if isinstance(result, dict)
+                            else False
+                        ),
+                        "works_name": (
+                            result.get("works_name")
+                            if isinstance(result, dict)
+                            else None
+                        ),
+                        "works_id_invalid": (
+                            bool(result.get("works_id_invalid"))
+                            if isinstance(result, dict)
+                            else False
+                        ),
+                        "error": (result or {}).get("error", "讯飞多人配音下载失败")
+                        if isinstance(result, dict) else "讯飞多人配音生成无结果",
+                    }
+                    continue
 
-        path = result.get("output_path")
-        try:
-            if not path or not os.path.exists(path):
-                raise XunfeiError(f"讯飞多人配音音频文件不存在: {path}")
-            size = os.path.getsize(path)
-            if size < 100:
-                raise XunfeiError(f"讯飞多人配音音频文件过小: {size} bytes")
+                if not path or not os.path.exists(path):
+                    raise XunfeiError(f"讯飞多人配音音频文件不存在: {path}")
+                size = os.path.getsize(path)
+                if size < 100:
+                    raise XunfeiError(f"讯飞多人配音音频文件过小: {size} bytes")
 
-            def decode_file(source_path=path):
-                return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
+                def decode_file(source_path=path):
+                    return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
 
-            audio = await asyncio.to_thread(decode_file)
-            if len(audio) < 50:
-                raise XunfeiError(f"多人配音解码后音频过短 ({len(audio)}ms)")
-            if audio.channels == 0 or audio.frame_rate == 0:
-                raise XunfeiError(
-                    f"多人配音解码后音频参数异常 (channels={audio.channels}, frame_rate={audio.frame_rate})"
+                audio = await asyncio.to_thread(decode_file)
+                _check_cancel_requested(cancel_check)
+                if len(audio) < 50:
+                    raise XunfeiError(f"多人配音解码后音频过短 ({len(audio)}ms)")
+                if audio.channels == 0 or audio.frame_rate == 0:
+                    raise XunfeiError(
+                        f"多人配音解码后音频参数异常 (channels={audio.channels}, frame_rate={audio.frame_rate})"
+                    )
+                decoded[work_id] = {
+                    "audio": audio,
+                    "works_id": result.get("works_id"),
+                    "error": None,
+                }
+                _log(
+                    f"[xunfei] 多人配音完整作品解码完成 work={work_id}: "
+                    f"duration={len(audio)}ms size={size:,} bytes"
                 )
-            decoded[work_id] = {
-                "audio": audio,
-                "works_id": result.get("works_id"),
-                "error": None,
-            }
-            _log(
-                f"[xunfei] 多人配音完整作品解码完成 work={work_id}: "
-                f"duration={len(audio)}ms size={size:,} bytes"
-            )
-        except Exception as error:
-            decoded[work_id] = {
-                "audio": None,
-                "works_id": result.get("works_id"),
-                "works_id_invalid": bool(result.get("works_id_invalid")),
-                "ambiguous_works_id": bool(result.get("ambiguous_works_id")),
-                "works_name": result.get("works_name"),
-                "error": str(error),
-            }
-        finally:
-            if path:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-    return decoded
+            except XunfeiCancelled:
+                raise
+            except Exception as error:
+                decoded[work_id] = {
+                    "audio": None,
+                    "works_id": result.get("works_id") if isinstance(result, dict) else None,
+                    "works_id_invalid": (
+                        bool(result.get("works_id_invalid"))
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    "ambiguous_works_id": (
+                        bool(result.get("ambiguous_works_id"))
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    "works_name": (
+                        result.get("works_name")
+                        if isinstance(result, dict)
+                        else None
+                    ),
+                    "error": str(error),
+                }
+            finally:
+                _remove_confined_temp_output(path)
+        return decoded
+    finally:
+        for path in expected_temp_paths:
+            _remove_confined_temp_output(path)
+        if isinstance(raw_results, dict):
+            for result in raw_results.values():
+                if isinstance(result, dict):
+                    _remove_confined_temp_output(result.get("output_path"))
 
 
-async def close_session():
+async def close_session(owner_session_id=None):
     """关闭讯飞配音浏览器会话。"""
-    global _session
-    import asyncio
+    global _session, _browser_owner_session_id
 
-    with _session_lock:
-        old = _session
-        _session = None
-    if old is not None:
+    def _close_owned_session():
+        global _session, _browser_owner_session_id
+        # 整个“校验归属 -> 摘除全局引用 -> close”作为一个专用线程调用
+        # 执行。这样 ensure_session 若同时排队，只会在旧 close 完成后运行，
+        # 不会出现新会话已经创建、旧会话随后又被误关的窗口。
+        with _session_lock:
+            mismatch = _owner_mismatch_state(
+                owner_session_id,
+                _browser_owner_session_id,
+            )
+            if mismatch is not None:
+                raise XunfeiSessionBusy(mismatch["last_error"])
+            old = _session
+            _session = None
+            _browser_owner_session_id = None
+        if old is None:
+            return False
         try:
-            await _run_playwright_sync(old.close)
+            old.close()
             _log("[xunfei] 浏览器会话已关闭")
-        except Exception as e:
-            _log(f"[xunfei] 关闭浏览器会话异常: {e}")
+            return True
+        except Exception as error:
+            _log(f"[xunfei] 关闭浏览器会话异常: {error}")
+            return False
+
+    await _run_playwright_sync(_close_owned_session)
+
+
+def _unavailable_browser_snapshot(
+    reason="自动化浏览器尚未启动",
+    *,
+    owner_session_id=None,
+    owner_mismatch=False,
+):
+    return {
+        "visibility": "unavailable",
+        "platform": sys.platform,
+        "permission_required": False,
+        "last_error": reason,
+        "pid": None,
+        "process_ids": [],
+        "executable_path": None,
+        "profile_dir": PROFILE_DIR,
+        "started_at": None,
+        "window_handles": [],
+        "context_id": None,
+        "page_id": None,
+        "page_count": 0,
+        "logged_in": False,
+        "browser_mode": None,
+        "owner_session_id": owner_session_id,
+        "owner_mismatch": bool(owner_mismatch),
+    }
+
+
+async def browser_snapshot(owner_session_id=None):
+    """返回当前专用浏览器的身份和原生窗口状态。"""
+    global _browser_owner_session_id
+    import asyncio
+    with _session_lock:
+        session = _session
+        current_owner = _browser_owner_session_id
+    mismatch = _owner_mismatch_state(owner_session_id, current_owner)
+    if mismatch is not None:
+        return mismatch
+    if session is None:
+        return _unavailable_browser_snapshot()
+    snapshot = await asyncio.to_thread(session.browser_snapshot)
+    snapshot["owner_session_id"] = current_owner
+    snapshot["owner_mismatch"] = False
+    return snapshot
+
+
+async def set_browser_visibility(
+    visible: bool,
+    *,
+    minimize=False,
+    owner_session_id=None,
+):
+    """在不触碰 Playwright Sync API 的情况下控制专用浏览器窗口。"""
+    import asyncio
+    with _session_lock:
+        session = _session
+        current_owner = _browser_owner_session_id
+    mismatch = _owner_mismatch_state(owner_session_id, current_owner)
+    if mismatch is not None:
+        return mismatch
+    if session is None:
+        return _unavailable_browser_snapshot()
+    snapshot = await asyncio.to_thread(
+        session.set_browser_visibility,
+        visible,
+        minimize=minimize,
+    )
+    snapshot["owner_session_id"] = current_owner
+    snapshot["owner_mismatch"] = False
+    return snapshot
 
 
 # ============================================================================

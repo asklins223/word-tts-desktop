@@ -27,7 +27,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { normalizePersistedConfig, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, voiceAssetCacheReady };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { normalizePersistedConfig, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, resolveVoiceKeyForMode, voiceAssetCacheReady, setCurrentConfig: value => { currentConfig = value; } };`, context);
     return { api: context.__rendererTests, storage };
 }
 
@@ -67,6 +67,50 @@ test('生成方式预设支持默认合并模式和原有单条模式', () => {
     assert.equal(
         api.normalizePersistedConfig({ generation_mode: 'unsupported' }).generation_mode,
         'composite_cut',
+    );
+});
+
+test('切换到多人配音模式时保留用户选中的具体变体', () => {
+    const { api } = loadRendererConfigFunctions();
+    api.setCurrentConfig({
+        voices: [
+            {
+                key: 'speaker:591199169',
+                name: '欣畅-Pro+',
+                composite_name: '欣畅',
+                composite_key: 'speaker:591199169',
+                variant_names: ['欣畅-Pro+', '欣畅-Pro'],
+                variant_labels: ['Pro+', 'Pro'],
+                variant_keys: ['speaker:591199169', 'speaker:548016606'],
+            },
+            {
+                key: 'speaker:548016606',
+                name: '欣畅-Pro',
+                composite_name: '欣畅',
+                composite_key: 'speaker:591199169',
+                variant_names: ['欣畅-Pro+', '欣畅-Pro'],
+                variant_labels: ['Pro+', 'Pro'],
+                variant_keys: ['speaker:591199169', 'speaker:548016606'],
+            },
+        ],
+        composite_voices: [{
+            key: 'speaker:591199169',
+            name: '欣畅',
+            composite_name: '欣畅',
+            composite_key: 'speaker:591199169',
+            variant_names: ['欣畅-Pro+', '欣畅-Pro'],
+            variant_labels: ['Pro+', 'Pro'],
+            variant_keys: ['speaker:591199169', 'speaker:548016606'],
+        }],
+    });
+
+    assert.equal(
+        api.resolveVoiceKeyForMode('speaker:548016606', 'composite_cut'),
+        'speaker:548016606',
+    );
+    assert.equal(
+        api.resolveVoiceKeyForMode('欣畅-Pro', 'composite_cut'),
+        'speaker:548016606',
     );
 });
 

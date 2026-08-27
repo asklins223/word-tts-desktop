@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import threading
 import time
@@ -92,6 +93,45 @@ class XunfeiFlowTests(unittest.TestCase):
                 "speaker_no": None,
             }])
             self.assertEqual(xunfei.VOICES["amanda"]["speaker_no"], 544508087)
+
+    def test_composite_voice_search_uses_common_base_name_and_keeps_variant_label(self):
+        info = {
+            "name": "欣畅-Pro+",
+            "composite_name": "欣畅",
+            "speaker_no": 591199169,
+        }
+
+        self.assertEqual(
+            XunFeiSession._composite_voice_search_name(info),
+            "欣畅",
+        )
+        self.assertEqual(
+            XunFeiSession._composite_variant_label(
+                info["name"], info["composite_name"]
+            ),
+            "Pro+",
+        )
+        self.assertEqual(
+            XunFeiSession._composite_variant_label(
+                "美式英语Grant-品质", "英语-Grant", "超拟人（品质）"
+            ),
+            "超拟人（品质）",
+        )
+
+    def test_register_voice_catalog_keeps_variant_emot_desc(self):
+        key = "speaker:test-grant-quality"
+        with mock.patch.dict(xunfei.VOICES, {}, clear=False):
+            xunfei.register_voice_catalog([{
+                "key": key,
+                "name": "美式英语Grant-品质",
+                "gender": "male",
+                "speaker_no": 588614920,
+                "emot_desc": "超拟人（品质）",
+            }])
+            self.assertEqual(
+                xunfei.get_voice_info(key)["emot_desc"],
+                "超拟人（品质）",
+            )
 
     def test_composite_ui_rows_preserve_item_boundaries_and_expand_editor_lines(self):
         session = XunFeiSession()
@@ -329,6 +369,42 @@ class XunfeiFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_composite_variant_selection_accepts_xunfei_selected_background(self):
+        """讯飞当前用蓝色半透明背景表示详情变体选中。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <div class="fixed" style="display:block; width:800px; height:500px">
+                <input placeholder="输入主播名称进行搜索" />
+                <div class="cursor-pointer" style="background-color: transparent;">
+                    超拟人（品质）
+                </div>
+            </div>
+            <script>
+                document.querySelector('.cursor-pointer').addEventListener('click', event => {
+                    event.currentTarget.style.backgroundColor = 'rgba(26, 145, 255, 0.04)';
+                });
+            </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                self.assertTrue(
+                    XunFeiSession._select_composite_variant(
+                        page,
+                        "美式英语Grant-品质",
+                        "英语-Grant",
+                        "超拟人（品质）",
+                    )
+                )
+            finally:
+                browser.close()
+
     def test_composite_voice_mark_validation_rejects_mixed_or_wrong_rows(self):
         """存在错音色、重复标记或参数漂移时必须拒绝继续提交。"""
         try:
@@ -468,6 +544,51 @@ class XunfeiFlowTests(unittest.TestCase):
 
         recover.assert_not_called()
         self.assertEqual(pending["works_id"], "paid-once")
+
+    def test_confirmed_submit_finishes_id_reconciliation_after_cancel_request(self):
+        """提交边界后的取消请求不能打断 worksId 对账。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+        cancel_requested = False
+
+        def confirm_and_request_cancel(*_args, **_kwargs):
+            nonlocal cancel_requested
+            cancel_requested = True
+            return "ok"
+
+        def cancel_check():
+            return cancel_requested
+
+        with mock.patch.object(session, "_select_voice"), \
+                mock.patch.object(session, "_apply_params"), \
+                mock.patch.object(session, "_input_text", return_value=True), \
+                mock.patch.object(session, "_mark_works_cutoff"), \
+                mock.patch.object(session, "_click_generate"), \
+                mock.patch.object(
+                    session,
+                    "_confirm_synth",
+                    side_effect=confirm_and_request_cancel,
+                ) as confirm, \
+                mock.patch.object(
+                    session,
+                    "_consume_works_id",
+                    return_value="paid-after-cancel",
+                ) as consume, \
+                mock.patch.object(session, "_cleanup_after_item") as cleanup:
+            pending = session._generate_pending_one(
+                "hello",
+                voice_key="amanda",
+                cancel_check=cancel_check,
+            )
+
+        self.assertTrue(cancel_requested)
+        self.assertNotIn("cancel_check", confirm.call_args.kwargs)
+        consume.assert_called_once_with(timeout=30)
+        cleanup.assert_called_once_with(page)
+        self.assertEqual(pending["works_id"], "paid-after-cancel")
 
     def test_confirmed_single_submit_without_works_id_is_not_retried(self):
         """确认按钮已成功点击但漏捕获 ID 时，最多只能进入对账。"""
@@ -1471,7 +1592,7 @@ class XunfeiFlowTests(unittest.TestCase):
             ],
         )
 
-    def test_batch_marks_missing_works_id_as_invalid_only_after_reliable_scan(self):
+    def test_batch_keeps_missing_works_id_for_later_reconciliation(self):
         session = XunFeiSession()
         session._logged_in = True
         session._page = mock.Mock()
@@ -1489,8 +1610,19 @@ class XunfeiFlowTests(unittest.TestCase):
                 mock.patch.object(xunfei, "_safe_eval", return_value=True):
             result = session._download_pending_batch(pending)
 
-        self.assertTrue(result["missing-works"]["works_id_invalid"])
-        self.assertIn("失效", result["missing-works"]["error"])
+        self.assertFalse(result["missing-works"]["works_id_invalid"])
+        self.assertIn("保留提交记录", result["missing-works"]["error"])
+
+    def test_works_list_protocol_error_is_not_treated_as_complete_scan(self):
+        session = XunFeiSession()
+        session._signed_api_post = mock.Mock(return_value={"data": {"userWorksList": {}}})
+
+        self.assertEqual(session._fetch_works_list_in_page(mock.Mock()), [])
+        self.assertFalse(session._last_works_list_fetch_ok)
+
+        session._signed_api_post.return_value = {"data": {"userWorksList": None}}
+        self.assertEqual(session._fetch_works_list_in_page(mock.Mock()), [])
+        self.assertTrue(session._last_works_list_fetch_ok)
 
     def test_batch_reuses_submitted_works_id_without_submitting_again(self):
         session = XunFeiSession()
@@ -1753,6 +1885,55 @@ class XunfeiFlowTests(unittest.TestCase):
                 )
             self.assertEqual(Path(output_path).read_bytes(), b"ID3\x04")
             self.assertFalse(Path(f"{output_path}.part").exists())
+
+    def test_temp_output_name_cannot_escape_xunfei_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(xunfei, "OUTPUT_DIR", temp_dir):
+            safe_path = xunfei._confined_temp_output_path(".xunfei-safe.mp3")
+            self.assertEqual(
+                safe_path,
+                os.path.realpath(str(Path(temp_dir, ".xunfei-safe.mp3"))),
+            )
+            for name in ("../escape.mp3", "..\\escape.mp3", "/tmp/escape.mp3", "C:\\escape.mp3"):
+                with self.assertRaises(xunfei.XunfeiError):
+                    xunfei._confined_temp_output_path(name)
+
+    def test_batch_cleanup_removes_failed_temp_output(self):
+        class FakeSession:
+            synth_batch = mock.Mock()
+
+        async def run_batch(*_args, **_kwargs):
+            return {
+                "job": {
+                    "downloaded": False,
+                    "output_path": str(Path(temp_dir, "failed.mp3")),
+                    "error": "download failed",
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(xunfei, "OUTPUT_DIR", temp_dir), \
+                mock.patch.object(xunfei, "is_available", return_value=True), \
+                mock.patch.object(
+                    xunfei,
+                    "ensure_session",
+                    new=mock.AsyncMock(return_value=FakeSession()),
+                ), \
+                mock.patch.object(
+                    xunfei,
+                    "_run_playwright_sync_until_done",
+                    new=mock.AsyncMock(side_effect=run_batch),
+                ):
+            failed_path = Path(temp_dir, "failed.mp3")
+            failed_path.write_bytes(b"partial")
+            result = asyncio.run(xunfei.synth_xunfei_batch([{
+                "job_id": "job",
+                "text": "hello",
+                "voice_key": "amanda",
+            }]))
+
+            self.assertFalse(result["job"]["segment"])
+            self.assertFalse(failed_path.exists())
 
     def test_cleanup_clears_editor_without_navigation(self):
         session = XunFeiSession()
