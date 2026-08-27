@@ -112,7 +112,11 @@ check_environment() {
         exit 1
     fi
     log "同步 Electron Python 构建依赖..."
-    python3 -m pip install --disable-pip-version-check -r "$REQUIREMENTS_FILE"
+    if python3 -c 'import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+        python3 -m pip install --disable-pip-version-check -r "$REQUIREMENTS_FILE"
+    else
+        python3 -m pip install --disable-pip-version-check --break-system-packages -r "$REQUIREMENTS_FILE"
+    fi
     if [ "$isolated_python" -eq 1 ]; then
         python3 -m pip check
     fi

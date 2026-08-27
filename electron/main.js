@@ -190,6 +190,14 @@ function persistWindowSettings() {
         clearTimeout(settingsWriteTimer);
         settingsWriteTimer = null;
     }
+    // 退出前必须把最后一次窗口位置落盘，不能依赖 350ms 防抖。
+    if (mainWindow && !mainWindow.isDestroyed() && appWindowMode !== 'hidden') {
+        try {
+            const bounds = mainWindow.getBounds();
+            if (appWindowMode === 'compact') compactWindowBounds = bounds;
+            else if (appWindowMode === 'full') fullWindowBounds = bounds;
+        } catch (_) { /* 窗口已销毁时不更新边界 */ }
+    }
     const mode = appWindowMode === 'compact' ? 'compact' : restoreWindowMode;
     updateDesktopSettings({
         window: {
@@ -220,23 +228,48 @@ function saveCurrentWindowBounds() {
 
 function applyWindowModeBounds(mode) {
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    const { screen } = require('electron');
+    const clampToWorkArea = (bounds) => {
+        try {
+            const display = screen.getDisplayMatching(bounds);
+            const area = display.workArea;
+            const width = Math.min(bounds.width, area.width);
+            const height = Math.min(bounds.height, area.height);
+            const x = Math.max(area.x, Math.min(bounds.x, area.x + area.width - width));
+            const y = Math.max(area.y, Math.min(bounds.y, area.y + area.height - height));
+            return { x, y, width, height };
+        } catch (_) {
+            return bounds;
+        }
+    };
     if (mode === 'compact') {
         mainWindow.setMinimumSize(
             COMPACT_WINDOW_MIN_SIZE.width,
             COMPACT_WINDOW_MIN_SIZE.height,
         );
         if (compactWindowBounds) {
-            mainWindow.setBounds(compactWindowBounds);
+            mainWindow.setBounds(clampToWorkArea(compactWindowBounds));
         } else {
-            mainWindow.setSize(
-                COMPACT_WINDOW_DEFAULT_SIZE.width,
-                COMPACT_WINDOW_DEFAULT_SIZE.height,
-            );
+            const bounds = {
+                width: COMPACT_WINDOW_DEFAULT_SIZE.width,
+                height: COMPACT_WINDOW_DEFAULT_SIZE.height,
+            };
+            try {
+                const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+                const area = display.workArea;
+                bounds.x = Math.round(area.x + (area.width - bounds.width) / 2);
+                bounds.y = Math.round(area.y + (area.height - bounds.height) / 2);
+            } catch (_) {
+                // 无显示器信息时由窗口管理器决定位置
+            }
+            if (bounds.x !== undefined) mainWindow.setBounds(bounds);
+            else mainWindow.setSize(bounds.width, bounds.height);
+            if (typeof mainWindow.center === 'function' && bounds.x === undefined) mainWindow.center();
         }
         return;
     }
     mainWindow.setMinimumSize(FULL_WINDOW_MIN_SIZE.width, FULL_WINDOW_MIN_SIZE.height);
-    if (fullWindowBounds) mainWindow.setBounds(fullWindowBounds);
+    if (fullWindowBounds) mainWindow.setBounds(clampToWorkArea(fullWindowBounds));
 }
 
 function showMainWindow() {
@@ -1244,13 +1277,13 @@ function registerIpcHandlers() {
 
     const browserSessionRoute = (sessionId, suffix = '') => {
         const id = String(sessionId || '').trim();
-        if (!/^[A-Za-z0-9._-]{1,220}$/.test(id)) return null;
+        if (!id || id.length > 220 || /[\/\\]/.test(id)) return null;
         return `/api/session/${encodeURIComponent(id)}/browser${suffix}`;
     };
 
     const taskSessionRoute = (sessionId, action) => {
         const id = String(sessionId || '').trim();
-        if (!/^[A-Za-z0-9._-]{1,220}$/.test(id)) return null;
+        if (!id || id.length > 220 || /[\/\\]/.test(id)) return null;
         if (!['pause', 'resume', 'terminate'].includes(action)) return null;
         return `/api/session/${encodeURIComponent(id)}/${action}`;
     };

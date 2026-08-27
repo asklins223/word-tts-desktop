@@ -512,9 +512,43 @@ def register_voice_catalog(voices):
 def get_voice_info(voice_key):
     """返回已注册音色信息，避免用未知 key 发起错误合成。"""
     key = str(voice_key or "").strip()
-    if key not in VOICES:
+    if not key:
         raise ValueError(f"未知音色 {key!r}，请刷新讯飞音色目录后重试")
-    return VOICES[key]
+    if key in VOICES:
+        return VOICES[key]
+    # 兼容旧版预设/历史任务中保存的 speaker:xxx 形式，以及变体键
+    normalized = key.strip()
+    lower = normalized.casefold()
+    # 去掉 speaker: 前缀后按 speaker_no 匹配
+    if lower.startswith("speaker:"):
+        speaker_part = normalized.split(":", 1)[1].strip()
+        for info in VOICES.values():
+            if str(info.get("speaker_no") or info.get("speakerNo") or "").strip() == speaker_part:
+                return info
+            if normalized in (info.get("variant_keys") or []):
+                return info
+        # 按 speaker_no 精确匹配
+        for info in VOICES.values():
+            if str(info.get("speaker_no")) == speaker_part:
+                return info
+    # 名称或别名大小写不敏感匹配
+    for k, info in VOICES.items():
+        if k.casefold() == lower:
+            return info
+        if str(info.get("name") or "").strip().casefold() == lower:
+            return info
+        if normalized in (info.get("variant_keys") or []):
+            return info
+        if normalized in (info.get("variant_names") or []):
+            # 变体名称匹配
+            for vn in info.get("variant_names") or []:
+                if str(vn).strip().casefold() == lower:
+                    return info
+    # 兼容意大利语 Anna 等，尝试按 speaker_no 再次查找（不带前缀）
+    for info in VOICES.values():
+        if str(info.get("speaker_no") or "").strip() == normalized:
+            return info
+    raise ValueError(f"未知音色 {key!r}，请刷新讯飞音色目录后重试")
 
 
 # ============================================================================
@@ -4153,6 +4187,14 @@ class XunFeiSession:
             },
         }
 
+        # 清理可能残留的 Singleton 锁，避免上次异常退出后 --user-data-dir 被占用导致 SIGTRAP
+        for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            try:
+                lock_path = os.path.join(PROFILE_DIR, lock_name)
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+            except Exception:
+                pass
         os.makedirs(PROFILE_DIR, exist_ok=True)
         _log(f"[xunfei] 浏览器配置目录: {PROFILE_DIR}")
 
@@ -4314,72 +4356,118 @@ class XunFeiSession:
         if not label:
             return True
         scope = cls._composite_ui_scope(page)
-        controls = scope.locator("div.cursor-pointer:visible")
+        # 若面板无变体选择器（单变体基础音色如 英语-Amanda），无需二次选择
         try:
-            metadata = controls.evaluate_all(
-                """els => els.map((el, index) => ({
-                    index,
-                    text: (el.innerText || '').trim(),
-                }))"""
-            )
+            probe = scope.locator("div.cursor-pointer:visible, [class*='cursor-pointer']:visible, button:visible").count()
+            if probe == 0:
+                return True
         except Exception:
-            return False
-        candidates = [
-            item for item in metadata[:200]
-            if cls._normalize_composite_ui_text(item.get("text"))
-            == cls._normalize_composite_ui_text(label)
-        ]
-        if len(candidates) != 1:
-            return False
+            pass
+        # 轮询等待变体面板挂载，兼容类名变更
+        def find_candidates():
+            for selector in (
+                "div.cursor-pointer:visible",
+                "[class*='cursor-pointer']:visible",
+                "button:visible",
+                "[role='button']:visible",
+            ):
+                controls = scope.locator(selector)
+                if controls.count() == 0:
+                    continue
+                try:
+                    metadata = controls.evaluate_all(
+                        """els => els.map((el, index) => ({
+                            index,
+                            text: (el.innerText || '').trim(),
+                        }))"""
+                    )
+                except Exception:
+                    continue
+                candidates = [
+                    item for item in metadata[:300]
+                    if cls._composite_ui_text_matches(item.get("text"), label)
+                ]
+                if candidates:
+                    exact = [
+                        c for c in candidates
+                        if cls._normalize_composite_ui_text(c.get("text"))
+                        == cls._normalize_composite_ui_text(label)
+                    ]
+                    if len(exact) == 1:
+                        return (controls, exact)
+                    if len(candidates) == 1:
+                        return (controls, candidates)
+                    candidates = sorted(
+                        candidates,
+                        key=lambda x: len(cls._normalize_composite_ui_text(x.get("text"))),
+                    )
+                    return (controls, candidates[:1])
+            return None
+
+        found = _poll(
+            find_candidates,
+            timeout=4,
+            interval=0.2,
+            max_interval=0.6,
+            page=page,
+            cancel_check=cancel_check,
+        )
+        if not found:
+            # 单变体基础音色（如 英语-Amanda 仅教育一档）在详情面板中无变体切换器
+            # 此时变体已默认选中，直接放行到参数设置阶段
+            _log(f"[xunfei] 变体标签未找到: 期望 {label!r}，视为单变体无需选择，直接继续")
+            return True
+        controls, candidates = found
         _check_cancel_requested(cancel_check)
-        controls.nth(int(candidates[0]["index"])).click(timeout=5000)
-        # 变体点击由 React 异步更新边框；等到目标短标签所在卡片出现
-        # 讯飞当前选中蓝色边框后再继续点击“使用”。
+        try:
+            controls.nth(int(candidates[0]["index"])).click(timeout=5000)
+        except Exception as e:
+            _log(f"[xunfei] 变体点击失败 {label!r}: {e}")
+            return False
         def selected():
             try:
-                current_controls = scope.locator("div.cursor-pointer:visible")
-                current_metadata = current_controls.evaluate_all(
-                    """els => els.map(el => {
+                for selector in (
+                    "div.cursor-pointer:visible",
+                    "[class*='cursor-pointer']:visible",
+                    "button:visible",
+                    "[role='button']:visible",
+                ):
+                    cur = scope.locator(selector)
+                    if cur.count() == 0:
+                        continue
+                    cur_meta = cur.evaluate_all(
+                        """els => els.map(el => {
                             const button = el.querySelector('button');
                             const nodes = button ? [el, button] : [el];
                             const styles = nodes.map(node => window.getComputedStyle(node));
-                            const inline = nodes.map(node => String(
-                                node.getAttribute('style') || ''
-                            )).join(' ').replace(/\\s+/g, '').toLowerCase();
-                            const className = nodes.map(node => String(node.className || ''))
-                                .join(' ').toLowerCase();
-                            const selected = styles.some(style => (
-                                style.borderColor === 'rgb(26, 145, 255)'
-                                || style.backgroundColor === 'rgba(26, 145, 255, 0.04)'
-                            ))
-                                || inline.includes('#1a91ff')
-                                || inline.includes('rgba(26,145,255,0.04)')
-                                || className.includes('border-[#1a91ff');
-                            return {
-                                text: (el.innerText || '').trim(),
-                                selected,
-                            };
+                            const inline = nodes.map(node => String(node.getAttribute('style')||'')).join(' ').replace(/\\s+/g,'').toLowerCase();
+                            const className = nodes.map(node => String(node.className||'')).join(' ').toLowerCase();
+                            const ariaSel = el.getAttribute('aria-selected')==='true' || el.getAttribute('data-selected')==='true' || el.querySelector('[aria-selected=\"true\"]')!==null;
+                            const borderSel = styles.some(s => {
+                                const bc=String(s.borderColor||'').toLowerCase();
+                                const bg=String(s.backgroundColor||'').toLowerCase();
+                                return bc.includes('26, 145, 255') || bc.includes('26,145,255') || bc.includes('0, 120, 255') || bc.includes('59, 130, 246') || bg.includes('26, 145, 255');
+                            });
+                            const inlineSel = inline.includes('#1a91ff') || inline.includes('1a91ff') || inline.includes('26,145,255');
+                            const classSel = className.includes('border-[#1a91ff') || className.includes('selected') || className.includes('active') || className.includes('ring-');
+                            return {text:(el.innerText||'').trim(), selected: ariaSel||borderSel||inlineSel||classSel};
                         })"""
-                )
-                return any(
-                    cls._normalize_composite_ui_text(item.get("text"))
-                    == cls._normalize_composite_ui_text(label)
-                    and item.get("selected")
-                    for item in current_metadata[:200]
-                )
+                    )
+                    for it in cur_meta[:300]:
+                        if cls._composite_ui_text_matches(it.get("text"), label) and it.get("selected"):
+                            return True
+                return False
             except Exception:
                 return False
-
-        return bool(
-            _poll(
-                selected,
-                timeout=3,
-                interval=0.08,
-                max_interval=0.3,
-                page=page,
-                cancel_check=cancel_check,
-            )
-        )
+        ok = bool(_poll(selected, timeout=3, interval=0.1, max_interval=0.4, page=page, cancel_check=cancel_check))
+        if not ok:
+            _log(f"[xunfei] 变体选中态未检出但已点击，继续尝试参数设置: {label!r}")
+            try:
+                scope.locator("input.w-12:visible, input[placeholder=\"数值\"]:visible, input:visible").first.wait_for(timeout=1500)
+                return True
+            except Exception:
+                return False
+        return True
 
     @staticmethod
     def _normalize_composite_ui_text(value):

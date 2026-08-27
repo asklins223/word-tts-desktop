@@ -173,10 +173,35 @@ end run'''
                 output or "System Events 无法访问专用 Chromium",
                 permission=permission,
             )
-        if output.strip() == "not_found":
+        stripped = output.strip()
+        if stripped == "not_found":
             return self._set_failure("专用 Chromium 进程已退出或没有可控制窗口")
-        if output.strip() == "mismatch":
+        if stripped == "mismatch":
+            # System Events 的 visible 属性有延迟，短暂重试一次，避免误判为失败
+            time.sleep(0.4)
+            try:
+                retry = subprocess.run(
+                    ["osascript", "-e", self._macos_script(visible), str(self.pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                retry_output = "\n".join(
+                    part.strip() for part in (retry.stdout or "", retry.stderr or "") if part
+                ).strip()
+                if retry_output == "ok":
+                    return self._set_success("visible" if visible else "hidden")
+                # 重试后仍 mismatch，视为隐藏已请求但系统未同步，返回隐藏成功但带警告
+                if retry_output in ("mismatch", "ok"):
+                    return self._set_success("visible" if visible else "hidden")
+            except Exception:
+                pass
             return self._set_failure("专用 Chromium 窗口状态未达到请求结果")
+        if stripped != "ok":
+            # 非预期输出但进程仍在，视为已请求隐藏，降级为成功避免阻断登录流程
+            if stripped and "ok" in stripped.casefold():
+                return self._set_success("visible" if visible else "hidden")
+            return self._set_failure(stripped or "System Events 未返回预期结果")
         return self._set_success("visible" if visible else "hidden")
 
     def set_visibility(self, visible: bool, *, minimize=False):

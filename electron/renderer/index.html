@@ -65,6 +65,21 @@
                 </button>
             </div>
 
+            <div class="sidebar-actions">
+                <button type="button" class="sidebar-action-btn" id="sidebar-settings-btn" title="打开设置">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
+                    <span class="sidebar-action-label">设置</span>
+                </button>
+                <button type="button" class="sidebar-action-btn" id="sidebar-compact-btn" title="切换小窗/完整窗口">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+                    <span class="sidebar-action-label" id="sidebar-compact-label">小窗</span>
+                </button>
+                <button type="button" class="sidebar-action-btn sidebar-action-primary" id="sidebar-privacy-btn" title="一键隐藏">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><rect x="3" y="3" width="18" height="18" rx="4"/></svg>
+                    <span class="sidebar-action-label" id="sidebar-privacy-label">一键隐藏</span>
+                </button>
+            </div>
+
             <div class="sidebar-footnote">
                 <span class="privacy-icon" aria-hidden="true">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -85,11 +100,6 @@
                     <span class="service-state" id="service-state" role="status" aria-live="polite"><span class="service-dot"></span><span class="service-label">正在连接服务</span></span>
                     <button type="button" class="btn-ghost btn-restart" id="retry-service-btn" hidden>重试连接</button>
                     <span class="window-mode-indicator" id="window-mode-indicator">完整窗口</span>
-                    <button type="button" class="btn-ghost btn-window-action" id="compact-toggle-btn" title="切换小窗工作台">小窗</button>
-                    <button type="button" class="btn-ghost btn-window-action" id="privacy-toggle-btn" title="隐藏应用窗口和自动化浏览器">防偷窥</button>
-                    <button type="button" class="btn-ghost btn-window-action" id="hide-window-btn" title="隐藏应用窗口">隐藏</button>
-                    <button type="button" class="btn-ghost btn-window-action" id="browser-toggle-btn" hidden title="显示或隐藏自动化浏览器">显示浏览器</button>
-                    <button type="button" class="btn-ghost btn-window-action" id="settings-btn" title="打开桌面设置">设置</button>
                     <button type="button" id="restart-btn" class="btn-ghost btn-restart" title="清空当前任务并重新开始">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
                         新建任务
@@ -300,25 +310,10 @@
                                         </div>
                                     </section>
 
-                                    <section class="surface-card config-section content-editor-section" id="content-editor-section">
-                                        <div class="section-heading-row">
-                                            <div>
-                                                <span class="section-index">01</span>
-                                                <div><h2>核对文档内容</h2><p>可在生成前修正解析结果；保存后会使旧断点和音频产物失效。</p></div>
-                                            </div>
-                                            <div class="content-editor-meta"><span id="content-editor-count">0 条</span><span id="content-editor-dirty" hidden>有未保存修改</span></div>
-                                        </div>
-                                        <div class="content-editor-list" id="content-editor-list" aria-live="polite"></div>
-                                        <div class="content-editor-actions">
-                                            <button type="button" class="btn-ghost btn-sm" id="content-reset-btn">恢复已保存内容</button>
-                                            <button type="button" class="btn-primary btn-sm" id="content-save-btn" disabled>保存内容修改</button>
-                                        </div>
-                                    </section>
-
                                     <section class="surface-card config-section">
                                         <div class="section-heading-row">
                                             <div>
-                                                <span class="section-index">02</span>
+                                                <span class="section-index">01</span>
                                                 <div><h2>生成方式</h2><p>选择讯飞提交方式；默认一次生成后按停顿切回单段音频。</p></div>
                                             </div>
                                         </div>
@@ -348,7 +343,7 @@
                                     <section class="surface-card config-section">
                                         <div class="section-heading-row">
                                             <div>
-                                                <span class="section-index">03</span>
+                                                <span class="section-index">02</span>
                                                 <div><h2>输出文件</h2><p>选择兼容性与文件体积之间的平衡。</p></div>
                                             </div>
                                         </div>
@@ -756,52 +751,87 @@
     <dialog class="settings-dialog" id="settings-dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
         <form method="dialog" class="settings-dialog-form" id="settings-form">
             <div class="settings-dialog-heading">
-                <div><span class="eyebrow">桌面偏好</span><h2 id="settings-dialog-title">窗口与任务设置</h2><p>设置由主进程保存到本机，网页模式不会写入桌面文件。</p></div>
+                <div><span class="eyebrow">桌面偏好</span><h2 id="settings-dialog-title">设置</h2><p>设置由主进程保存到本机，仅桌面应用生效。</p></div>
                 <button type="button" class="btn-ghost btn-sm" id="settings-close-btn">关闭</button>
             </div>
-            <div class="settings-grid">
-                <section class="settings-group">
-                    <h3>隐私与浏览器</h3>
-                    <label class="settings-check"><input type="checkbox" id="setting-auto-pause"><span><strong>隐藏应用时请求暂停</strong><small>只在安全检查点暂停，不强杀正在提交的浏览器操作。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-auto-resume"><span><strong>恢复应用时自动继续</strong><small>关闭后需要手动点击“恢复”。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-keep-browser-hidden"><span><strong>防偷窥期间保持浏览器隐藏</strong><small>后端会按已绑定的 Chromium 进程控制窗口。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-hide-after-login"><span><strong>登录后隐藏自动化浏览器</strong><small>首次登录仍会显示，登录完成后切到后台。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-show-on-login"><span><strong>首次登录时显示自动化浏览器</strong><small>关闭后会直接以后台方式启动；登录状态不存在时仍会提示。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-allow-system-chrome"><span><strong>允许回退到系统 Chrome</strong><small>默认使用随包 Chromium；仅在兼容性排查时允许使用系统浏览器。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-restore-complete"><span><strong>任务完成时恢复窗口</strong><small>仅在防偷窥模式中生效，便于及时查看结果。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-restore-failure"><span><strong>任务失败时恢复窗口</strong><small>仅在防偷窥模式中生效，便于处理登录或网络错误。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-close-browser"><span><strong>任务结束后关闭自动化浏览器</strong><small>关闭只影响专用会话，不会退出用户自己的 Chrome。</small></span></label>
-                </section>
-                <section class="settings-group">
-                    <h3>窗口</h3>
-                    <label class="settings-field"><span>默认启动模式</span><select id="setting-startup-mode"><option value="full">完整窗口</option><option value="compact">小窗工作台</option></select></label>
-                    <p class="settings-note">小窗与完整窗口复用同一套业务状态；窗口尺寸会在调整后自动记忆。</p>
-                </section>
-                <section class="settings-group">
-                    <h3>快捷键</h3>
-                    <label class="settings-field"><span>恢复窗口（必需）</span><input id="setting-recover-shortcut" maxlength="120" autocomplete="off"></label>
-                    <label class="settings-field"><span>防偷窥</span><input id="setting-privacy-shortcut" maxlength="120" autocomplete="off"></label>
-                    <label class="settings-field"><span>暂停 / 恢复</span><input id="setting-pause-shortcut" maxlength="120" autocomplete="off"></label>
-                    <label class="settings-field"><span>终止任务</span><input id="setting-terminate-shortcut" maxlength="120" autocomplete="off"></label>
-                    <label class="settings-field"><span>小窗切换</span><input id="setting-compact-shortcut" maxlength="120" autocomplete="off"></label>
-                </section>
-                <section class="settings-group">
-                    <h3>任务策略</h3>
-                    <label class="settings-field"><span>失败重试次数</span><input type="number" id="setting-retry-count" min="0" max="10" step="1"></label>
-                    <label class="settings-field"><span>操作超时（秒）</span><input type="number" id="setting-timeout" min="10" max="3600" step="1"></label>
-                    <label class="settings-field"><span>保留历史记录数量</span><input type="number" id="setting-history-limit" min="1" max="20" step="1"></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-keep-logs"><span><strong>保留任务日志</strong><small>关闭后任务结束时不保存日志明细，但终态和文件仍保留。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-completion-notification"><span><strong>完成后显示通知</strong><small>只影响界面提示，不影响生成结果。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-open-output"><span><strong>完成后打开输出目录</strong><small>仅桌面应用生效，会在输出文件准备好后定位到文件。</small></span></label>
-                    <label class="settings-check"><input type="checkbox" id="setting-keep-history"><span><strong>保存到历史记录</strong><small>关闭后任务仍保留当前结果，但不会写入历史中心。</small></span></label>
-                    <p class="settings-note" id="settings-status" role="status">修改后点击保存生效。</p>
-                </section>
+            <div class="settings-body">
+                <nav class="settings-nav" aria-label="设置分类">
+                    <button type="button" class="settings-nav-item is-active" data-settings-tab="window" aria-selected="true">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>
+                        窗口
+                    </button>
+                    <button type="button" class="settings-nav-item" data-settings-tab="privacy" aria-selected="false">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 4v5c0 5-3.5 7.5-7 8-3.5-.5-7-3-7-8V7l7-4z"/><circle cx="12" cy="12" r="2.5"/></svg>
+                        隐私
+                    </button>
+                    <button type="button" class="settings-nav-item" data-settings-tab="browser" aria-selected="false">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
+                        浏览器
+                    </button>
+                    <button type="button" class="settings-nav-item" data-settings-tab="shortcuts" aria-selected="false">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h4M8 12h4M14 8h4M14 12h4M6 16h12"/></svg>
+                        快捷键
+                    </button>
+                    <button type="button" class="settings-nav-item" data-settings-tab="task" aria-selected="false">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 8v8"/><path d="M8 12h8"/><circle cx="12" cy="12" r="9"/></svg>
+                        任务
+                    </button>
+                </nav>
+                <div class="settings-content">
+                    <section class="settings-pane is-active" data-settings-pane="window">
+                        <h3>窗口</h3>
+                        <p class="settings-desc">控制应用启动与窗口形态。</p>
+                        <label class="settings-field"><span>默认启动模式</span><select id="setting-startup-mode"><option value="full">完整窗口</option><option value="compact">小窗工作台</option></select></label>
+                        <p class="settings-note">小窗与完整窗口复用同一业务状态，尺寸自动记忆。</p>
+                    </section>
+                    <section class="settings-pane" data-settings-pane="privacy">
+                        <h3>隐私</h3>
+                        <p class="settings-desc">一键隐藏与防窥相关行为。</p>
+                        <label class="settings-check"><input type="checkbox" id="setting-auto-pause"><span><strong>隐藏时暂停任务</strong><small>仅在安全检查点暂停，不强杀提交中的操作。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-auto-resume"><span><strong>恢复时自动继续</strong><small>关闭后需手动点“继续”。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-keep-browser-hidden"><span><strong>隐藏时保持浏览器隐藏</strong><small>按已绑定 Chromium 进程控制。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-restore-complete"><span><strong>完成时恢复窗口</strong><small>仅一键隐藏时生效。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-restore-failure"><span><strong>失败时恢复窗口</strong><small>仅一键隐藏时生效。</small></span></label>
+                    </section>
+                    <section class="settings-pane" data-settings-pane="browser">
+                        <h3>浏览器</h3>
+                        <p class="settings-desc">自动化浏览器显示与资源回收。</p>
+                        <label class="settings-check"><input type="checkbox" id="setting-show-on-login"><span><strong>首次登录时显示</strong><small>关闭则后台启动，仍可手动显示。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-hide-after-login"><span><strong>登录后自动隐藏</strong><small>首次登录完成后切回后台。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-close-browser"><span><strong>结束后关闭浏览器</strong><small>仅关专用会话，不影响自用 Chrome。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-allow-system-chrome"><span><strong>允许回退系统 Chrome</strong><small>默认随包 Chromium，仅排查时开启。</small></span></label>
+                    </section>
+                    <section class="settings-pane" data-settings-pane="shortcuts">
+                        <h3>快捷键</h3>
+                        <p class="settings-desc">点击输入框后直接按键盘组合自动捕获，Backspace 清空（禁用），Esc 取消。</p>
+                        <label class="settings-field"><span>恢复窗口</span><input class="shortcut-input" data-shortcut-field="recover" id="setting-recover-shortcut" maxlength="120" autocomplete="off" placeholder="按下组合键，例如 CommandOrControl+Alt+Shift+W"></label>
+                        <label class="settings-field"><span>一键隐藏</span><input class="shortcut-input" data-shortcut-field="privacy" id="setting-privacy-shortcut" maxlength="120" autocomplete="off" placeholder="按下组合键"></label>
+                        <label class="settings-field"><span>暂停/恢复</span><input class="shortcut-input" data-shortcut-field="pause_resume" id="setting-pause-shortcut" maxlength="120" autocomplete="off" placeholder="按下组合键"></label>
+                        <label class="settings-field"><span>终止</span><input class="shortcut-input" data-shortcut-field="terminate" id="setting-terminate-shortcut" maxlength="120" autocomplete="off" placeholder="按下组合键（留空禁用）"></label>
+                        <label class="settings-field"><span>小窗切换</span><input class="shortcut-input" data-shortcut-field="compact" id="setting-compact-shortcut" maxlength="120" autocomplete="off" placeholder="按下组合键（留空禁用）"></label>
+                        <p class="settings-note">恢复窗口快捷键不能为空，其它项留空则禁用；设置会自动检测占用。</p>
+                    </section>
+                    <section class="settings-pane" data-settings-pane="task">
+                        <h3>任务</h3>
+                        <p class="settings-desc">重试、超时与历史保留。</p>
+                        <div class="settings-row">
+                            <label class="settings-field"><span>重试次数</span><input type="number" id="setting-retry-count" min="0" max="10" step="1"></label>
+                            <label class="settings-field"><span>超时(秒)</span><input type="number" id="setting-timeout" min="10" max="3600" step="1"></label>
+                            <label class="settings-field"><span>历史条数</span><input type="number" id="setting-history-limit" min="1" max="20" step="1"></label>
+                        </div>
+                        <label class="settings-check"><input type="checkbox" id="setting-keep-logs"><span><strong>保留日志</strong><small>关闭则仅保留终态文件。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-completion-notification"><span><strong>完成通知</strong><small>仅界面提示。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-open-output"><span><strong>打开输出目录</strong><small>完成后定位文件。</small></span></label>
+                        <label class="settings-check"><input type="checkbox" id="setting-keep-history"><span><strong>写入历史</strong><small>关闭则仅保留当前结果。</small></span></label>
+                    </section>
+                    <p class="settings-note" id="settings-status" role="status">修改后保存生效。</p>
+                </div>
             </div>
             <div class="settings-dialog-actions">
-                <button type="button" class="btn-ghost" id="settings-reset-btn">恢复默认设置</button>
+                <button type="button" class="btn-ghost" id="settings-reset-btn">恢复默认</button>
                 <span></span>
                 <button type="button" class="btn-ghost" id="settings-cancel-btn">取消</button>
-                <button type="submit" class="btn-primary" id="settings-save-btn">保存设置</button>
+                <button type="submit" class="btn-primary" id="settings-save-btn">保存</button>
             </div>
         </form>
     </dialog>

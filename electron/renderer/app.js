@@ -2462,8 +2462,8 @@ function bindEvents() {
 // 配置加载
 // ============================================================================
 
-const VOICE_CATALOG_REFRESH_INTERVAL_MS = 1500;
-const VOICE_CATALOG_REFRESH_MAX_ATTEMPTS = 12;
+const VOICE_CATALOG_REFRESH_INTERVAL_MS = 10000;
+const VOICE_CATALOG_REFRESH_MAX_ATTEMPTS = 4;
 let voiceCatalogRefreshTimer = null;
 let voiceCatalogRefreshAttempts = 0;
 let voiceCatalogRefreshInFlight = false;
@@ -2494,10 +2494,11 @@ function scheduleVoiceCatalogRefresh() {
             clearVoiceCatalogRefresh();
             return;
         }
-        // 目录刷新只是首屏增强项，不能在生成/解析期间抢占配置请求或触发
-        // 不必要的工作区重绘；空闲后会继续轮询。
-        if (isGenerating || isParsing || isRestarting) {
-            scheduleVoiceCatalogRefresh();
+        // 目录刷新只是首屏增强项，不能在生成/解析或用户正在配置音色时
+        // 抢占请求或触发重绘；空闲后会继续轮询。
+        if (isGenerating || isParsing || isRestarting || currentStep === 2) {
+            // 用户在配置页时延后更久，避免选中音色被频繁重绘覆盖
+            voiceCatalogRefreshTimer = setTimeout(scheduleVoiceCatalogRefresh, 15000);
             return;
         }
 
@@ -2537,8 +2538,16 @@ async function loadConfig({ silent = false, scheduleCatalogRefresh = true } = {}
                 if (!voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] = createDefaultVoiceParams();
                 if (!voiceParamConfigs[DEFAULT_MALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] = createDefaultVoiceParams();
                 clientConfigInitialized = true;
+                renderVoiceWorkspace();
+            } else if (silent) {
+                // 后台静默刷新：只更新目录并轻量重绘，避免覆盖用户正在进行的音色选择
+                renderVoiceFilters();
+                scheduleVoiceCardsRender();
+                renderVoiceDetails();
+                renderRecentVoiceList();
+            } else {
+                renderVoiceWorkspace();
             }
-            renderVoiceWorkspace();
 
             // 刷新摘要中的音色显示
             updateConfigSummary();
@@ -3652,10 +3661,21 @@ function applyWindowState(state) {
     if (indicator) indicator.textContent = mode === 'compact' ? '小窗模式' : (mode === 'hidden' ? '窗口已隐藏' : '完整窗口');
     const compactButton = $('compact-toggle-btn');
     if (compactButton) compactButton.textContent = mode === 'compact' ? '完整窗口' : '小窗';
-    const hideButton = $('hide-window-btn');
-    if (hideButton) hideButton.textContent = mode === 'hidden' ? '显示' : '隐藏';
+    const compactLabel = $('sidebar-compact-label');
+    if (compactLabel) compactLabel.textContent = mode === 'compact' ? '完整窗口' : '小窗';
+    const sidebarCompact = $('sidebar-compact-btn');
+    if (sidebarCompact) sidebarCompact.title = mode === 'compact' ? '切换到完整窗口' : '切换到小窗模式';
     const privacyButton = $('privacy-toggle-btn');
-    if (privacyButton) privacyButton.textContent = privacyModeActive ? '退出防偷窥' : '防偷窥';
+    if (privacyButton) {
+        privacyButton.textContent = privacyModeActive ? '显示窗口' : '一键隐藏';
+        privacyButton.title = privacyModeActive ? '退出一键隐藏，恢复窗口' : '一键隐藏应用窗口和自动化浏览器';
+    }
+    const privacyLabel = $('sidebar-privacy-label');
+    if (privacyLabel) privacyLabel.textContent = privacyModeActive ? '显示窗口' : '一键隐藏';
+    const sidebarPrivacy = $('sidebar-privacy-btn');
+    if (sidebarPrivacy) {
+        sidebarPrivacy.title = privacyModeActive ? '退出一键隐藏，恢复窗口' : '一键隐藏应用窗口和自动化浏览器';
+    }
 }
 
 const TASK_CONTROL_LABELS = {
@@ -3866,7 +3886,7 @@ async function requestBrowserState() {
 
 async function togglePrivacyMode() {
     if (!isElectron) {
-        showToast('防偷窥模式只在桌面应用中可用', 'warning');
+        showToast('一键隐藏只在桌面应用中可用', 'warning');
         return;
     }
     if (privacyModeActive) {
@@ -3891,7 +3911,7 @@ async function togglePrivacyMode() {
                 'warning',
             );
         } else {
-            showToast('已退出防偷窥模式');
+            showToast('已退出一键隐藏');
         }
         return;
     }
@@ -3923,7 +3943,7 @@ async function togglePrivacyMode() {
             });
         }
         browserVisibilityBeforePrivacy = null;
-        showToast('应用窗口未能隐藏，防偷窥模式未开启', 'warning');
+        showToast('应用窗口未能隐藏，一键隐藏未开启', 'warning');
         return;
     }
     privacyModeActive = true;
@@ -3932,7 +3952,7 @@ async function togglePrivacyMode() {
         void postTaskControl('pause');
     }
     if (result?.state) applyWindowState(result.state);
-    showToast('已进入防偷窥模式，恢复快捷键可重新显示窗口');
+    showToast('已一键隐藏，恢复快捷键可重新显示窗口');
 }
 
 async function toggleCompactMode() {
@@ -3974,10 +3994,15 @@ function handleGlobalShortcut(payload) {
     const action = typeof payload === 'string' ? payload : payload?.action;
     if (action === 'privacy-toggle') void togglePrivacyMode();
     else if (action === 'task-pause-resume') {
-        if (['paused', 'pause_requested', 'resume_requested'].includes(taskControlState)) void postTaskControl('resume');
-        else void postTaskControl('pause');
-    } else if (action === 'task-terminate') void postTaskControl('terminate');
-    else if (action === 'compact-toggle') void toggleCompactMode();
+        if (!currentSession) return;
+        if (['paused', 'pause_requested'].includes(taskControlState)) void postTaskControl('resume');
+        else if (['starting', 'running', 'resume_requested'].includes(taskControlState)) void postTaskControl('pause');
+        else if (taskControlState === 'resume_requested') void postTaskControl('resume');
+    } else if (action === 'task-terminate') {
+        if (!currentSession) return;
+        const activeStates = new Set(['starting', 'running', 'pause_requested', 'paused', 'resume_requested']);
+        if (activeStates.has(taskControlState)) void postTaskControl('terminate');
+    } else if (action === 'compact-toggle') void toggleCompactMode();
 }
 
 function populateSettingsDialog() {
@@ -3988,7 +4013,21 @@ function populateSettingsDialog() {
     const shortcuts = settings.shortcuts || {};
     const startupModeInput = $('setting-startup-mode');
     if (startupModeInput) {
+        // 防御：确保两个启动模式选项都存在，避免旧设置或异常 DOM 导致只有“完整窗口”
+        const hasFull = Boolean(startupModeInput.querySelector('option[value="full"]'));
+        const hasCompact = Boolean(startupModeInput.querySelector('option[value="compact"]'));
+        if (!hasFull || !hasCompact) {
+            startupModeInput.replaceChildren();
+            const fullOpt = document.createElement('option');
+            fullOpt.value = 'full';
+            fullOpt.textContent = '完整窗口';
+            const compactOpt = document.createElement('option');
+            compactOpt.value = 'compact';
+            compactOpt.textContent = '小窗工作台';
+            startupModeInput.append(fullOpt, compactOpt);
+        }
         startupModeInput.value = settings.window?.startup_mode === 'compact' ? 'compact' : 'full';
+        window.WordTTSUI?.syncSelect(startupModeInput);
     }
     [['setting-auto-pause', privacy.auto_pause_on_hide], ['setting-auto-resume', privacy.auto_resume_on_restore],
         ['setting-keep-browser-hidden', privacy.keep_browser_hidden], ['setting-hide-after-login', browser.hide_after_login],
@@ -4011,12 +4050,118 @@ function populateSettingsDialog() {
     if (status) status.textContent = isElectron ? '修改后点击保存生效。恢复窗口快捷键不能留空。' : '网页模式不保存桌面设置。';
 }
 
+function formatShortcutFromEvent(event) {
+    const parts = [];
+    if (event.ctrlKey || event.metaKey) parts.push('CommandOrControl');
+    if (event.altKey) parts.push('Alt');
+    if (event.shiftKey) parts.push('Shift');
+    const key = event.key;
+    if (['Control', 'Meta', 'Alt', 'Shift', 'OS'].includes(key)) {
+        return parts.length ? parts.join('+') : null;
+    }
+    let keyName = '';
+    // Use code for physical key when possible to avoid Shift case confusion.
+    const code = event.code || '';
+    if (/^Key[A-Z]$/.test(code)) {
+        keyName = code.slice(3);
+    } else if (/^Digit[0-9]$/.test(code)) {
+        keyName = code.slice(5);
+    } else if (/^Numpad[0-9]$/.test(code)) {
+        keyName = code.replace('Numpad', 'num');
+    } else if (/^F\d+$/.test(key)) {
+        keyName = key.toUpperCase();
+    } else if (key === ' ') {
+        keyName = 'Space';
+    } else if (key.length === 1) {
+        keyName = key.toUpperCase();
+    } else {
+        const map = {
+            Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete',
+            ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+            Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+            Insert: 'Insert', CapsLock: 'CapsLock',
+            '+': 'Plus', '-': 'Minus', '=': 'Plus', _: 'Minus', ',': 'Comma', '.': 'Period',
+            '/': 'Slash', '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote',
+            '[': 'BracketLeft', ']': 'BracketRight', '`': 'Backquote', ' ': 'Space'
+        };
+        keyName = map[key] || key;
+    }
+    if (!keyName) return parts.length ? parts.join('+') : null;
+    // Avoid duplicate when Shift already adds case: e.g., "A" vs "Shift+A" we still want Shift+A
+    if (!parts.includes(keyName)) parts.push(keyName);
+    else if (keyName === 'Plus' || keyName === 'Minus') parts.push(keyName);
+    return parts.join('+');
+}
+
+function attachShortcutCapture(input) {
+    if (!input || input.dataset.shortcutCaptureAttached === '1') return;
+    input.dataset.shortcutCaptureAttached = '1';
+    input.addEventListener('focus', () => {
+        input.select();
+        input.dataset.previousValue = input.value;
+    });
+    input.addEventListener('blur', () => {
+        // 空值仅恢复键允许留空
+        if (input.dataset.shortcutField === 'recover' && !String(input.value || '').trim()) {
+            // 恢复快捷键不能为空，恢复旧值
+            input.value = input.dataset.previousValue || 'CommandOrControl+Alt+Shift+W';
+        }
+    });
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            return;
+        }
+        if (event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+            event.preventDefault();
+            input.value = input.dataset.previousValue || '';
+            input.blur();
+            return;
+        }
+        if (event.key === 'Backspace' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+            event.preventDefault();
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            return;
+        }
+        const accel = formatShortcutFromEvent(event);
+        if (!accel) return;
+        const hasKey = accel.split('+').some(part => !['CommandOrControl', 'Alt', 'Shift'].includes(part));
+        if (!hasKey) {
+            // 仅修饰键：显示当前修饰状态，等待最终按键
+            event.preventDefault();
+            input.value = accel;
+            return;
+        }
+        event.preventDefault();
+        input.value = accel;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+}
+
+function initShortcutCapture() {
+    $$('.shortcut-input').forEach(attachShortcutCapture);
+}
+
+function switchSettingsTab(tab) {
+    const target = String(tab || 'window').trim() || 'window';
+    $$('.settings-nav-item').forEach(btn => {
+        const active = btn.dataset.settingsTab === target;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    $$('.settings-pane').forEach(pane => {
+        pane.classList.toggle('is-active', pane.dataset.settingsPane === target);
+    });
+}
+
 function openSettingsDialog() {
     if (!isElectron || !desktopSettings) {
         showToast('桌面设置只在 Electron 应用中可用', 'warning');
         return;
     }
     populateSettingsDialog();
+    initShortcutCapture();
+    switchSettingsTab('window');
     const dialog = $('settings-dialog');
     if (dialog?.showModal) dialog.showModal();
 }
@@ -4110,6 +4255,9 @@ async function resetSettingsFromDialog() {
 function bindWindowAndControlEvents() {
     $('compact-toggle-btn')?.addEventListener('click', () => void toggleCompactMode());
     $('privacy-toggle-btn')?.addEventListener('click', () => void togglePrivacyMode());
+    $('sidebar-compact-btn')?.addEventListener('click', () => void toggleCompactMode());
+    $('sidebar-privacy-btn')?.addEventListener('click', () => void togglePrivacyMode());
+    $('sidebar-settings-btn')?.addEventListener('click', openSettingsDialog);
     $('hide-window-btn')?.addEventListener('click', () => {
         if (windowState?.mode === 'hidden') void showApplicationWindow();
         else void hideApplicationWindow();
@@ -4130,6 +4278,10 @@ function bindWindowAndControlEvents() {
     $('settings-close-btn')?.addEventListener('click', () => $('settings-dialog')?.close());
     $('settings-cancel-btn')?.addEventListener('click', () => $('settings-dialog')?.close());
     $('settings-reset-btn')?.addEventListener('click', () => void resetSettingsFromDialog());
+    $$('.settings-nav-item').forEach(btn => {
+        btn.addEventListener('click', () => switchSettingsTab(btn.dataset.settingsTab));
+    });
+    initShortcutCapture();
     if (isElectron) {
         window.electronAPI.onWindowState?.(applyWindowState);
         window.electronAPI.onGlobalShortcut?.(handleGlobalShortcut);

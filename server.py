@@ -491,6 +491,8 @@ class SessionState:
                 return {"ok": False, "reason": "task-not-pausable", "state": state}
             if state in {"pause_requested", "paused"}:
                 return {"ok": True, "accepted": False, "idempotent": True, "state": state}
+            if state not in {"starting", "running"}:
+                return {"ok": False, "reason": "task-not-pausable", "state": state}
             self.pause_requested_event.set()
             self.resume_event.clear()
         self._set_control_state("pause_requested", "pause-requested")
@@ -501,8 +503,10 @@ class SessionState:
             state = self.control_state
             if state in CONTROL_TERMINAL_STATES or state in {"idle", "terminating"}:
                 return {"ok": False, "reason": "task-not-resumable", "state": state}
-            if state in {"running", "resume_requested"} and not self.pause_requested_event.is_set():
-                return {"ok": True, "accepted": False, "idempotent": True, "state": state}
+            if state in {"running", "resume_requested"}:
+                if not self.pause_requested_event.is_set():
+                    return {"ok": True, "accepted": False, "idempotent": True, "state": state}
+                return {"ok": False, "reason": "task-not-paused", "state": state}
             if state not in {"paused", "pause_requested"}:
                 return {"ok": False, "reason": "task-not-paused", "state": state}
             self.pause_requested_event.clear()
@@ -2729,9 +2733,27 @@ async def _generate_audio_stream(
                         reason = hidden_state.get("last_error") or (
                             "专用自动化浏览器未能隐藏"
                         )
-                        raise RuntimeError(
-                            f"防偷窥/后台隐藏未完成：{reason}"
+                        # 后台隐藏是体验增强，失败不应导致登录/生成整体失败
+                        # 仅记录警告，任务仍可继续在可见浏览器下执行
+                        log(
+                            "warning",
+                            f"自动化浏览器后台隐藏未完成：{reason}，将以可见模式继续",
+                            stage="prepare",
+                            kind="notice",
+                            key="browser:hide",
+                            title="浏览器隐藏未完成",
+                            detail=f"{reason}；已继续执行，稍后可手动隐藏",
                         )
+                        if hidden_state.get("permission_required"):
+                            log(
+                                "warning",
+                                "需要辅助功能权限才能隐藏专用浏览器",
+                                stage="prepare",
+                                kind="notice",
+                                key="browser:permission",
+                                title="需要辅助功能权限",
+                                detail="请在系统设置→隐私与安全→辅助功能中授权小猪wordTTS",
+                            )
                 log(
                     "success",
                     "讯飞配音登录成功，开始生成音频",
