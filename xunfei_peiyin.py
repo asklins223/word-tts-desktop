@@ -80,8 +80,13 @@ PARAM_MIN = 0
 PARAM_MAX = 100
 PARAM_DEFAULT = 50
 # makeMultipleSpeakerWork 的临时 ID 可能先于 order_gen 的正式 ID 到达；
-# 给同一轮 Playwright 网络回调一个很短的缓冲窗口，避免过早消费临时值。
-WORKS_ID_FINAL_GRACE_SECONDS = 0.8
+# 给同一轮 Playwright 网络回调一个明确的缓冲窗口，避免网络稍慢时过早
+# 消费临时值，随后又因下一条任务的 request fence 丢掉正式 worksId。
+WORKS_ID_FINAL_GRACE_SECONDS = 3.0
+# 只保留最近的提交请求引用，用于把 response 绑定回真正发起它的本次提交。
+# Playwright 的 request 事件一定先于同一请求的 response 事件，因此即使旧
+# response 延迟到下一条任务之后到达，也不会被新的截止线误认成当前任务。
+MAX_TRACKED_SUBMISSION_REQUESTS = 512
 
 IS_MAC = sys.platform == "darwin"
 _SELECT_ALL = "Meta+A" if IS_MAC else "Control+A"
@@ -220,6 +225,35 @@ class XunfeiRateLimited(XunfeiError):
 
 class XunfeiLoginRequired(XunfeiError):
     """会话失效：需要人工重新扫码登录。"""
+
+
+class XunfeiSubmissionAmbiguous(XunfeiError):
+    """页面已确认提交，但本轮无法安全定位唯一 worksId。
+
+    这是一个不可自动重试的状态：再次点击生成可能会创建第二个作品并重复
+    扣费。上层应持久化 works_name，下一轮只做作品列表对账，不重新提交。
+    """
+
+    def __init__(self, message, works_name=None):
+        super().__init__(message)
+        self.works_name = str(works_name or "").strip() or None
+        self.submission_confirmed = True
+
+
+class XunfeiCancelled(XunfeiError):
+    """批量任务被上层取消，停止后续提交/下载。"""
+
+
+def _check_cancel_requested(cancel_check):
+    """执行可选取消探针；探针自身异常不能误杀正常合成。"""
+    if not callable(cancel_check):
+        return
+    try:
+        cancelled = bool(cancel_check())
+    except Exception:
+        cancelled = False
+    if cancelled:
+        raise XunfeiCancelled("讯飞批量任务已取消，已停止后续提交")
 
 
 # ============================================================================
@@ -1479,12 +1513,20 @@ AI_FLAG_KEYWORD_VARIANTS = [
 ]
 
 
-def _poll(check_fn, timeout, interval=0.5, page=None, max_interval=None):
+def _poll(
+    check_fn,
+    timeout,
+    interval=0.5,
+    page=None,
+    max_interval=None,
+    cancel_check=None,
+):
     """轮询等待 check_fn 返回 truthy；自适应退避但保留延迟页面兜底。"""
     deadline = time.monotonic() + max(0, float(timeout))
     current_interval = max(0.05, float(interval))
     upper_interval = max(current_interval, float(max_interval or current_interval * 2.5))
     while True:
+        _check_cancel_requested(cancel_check)
         try:
             result = check_fn()
             if result:
@@ -1573,7 +1615,8 @@ class XunFeiSession:
         self._current_voice_key = None
         self._current_voice_name = None
         self._applied_params = None  # dict(speed=, pitch=, volume=) 或 None
-        # worksId 捕获（时间戳截止线防跨条错配）
+        # worksId 捕获。时间戳截止线只作为兼容兜底，真实页面优先使用
+        # request->response 序号 fence 防止旧请求的延迟 response 跨条串入。
         self._works_lock = threading.Lock()
         self._works_entries = []     # [(works_id, ts)]
         # order_gen 返回的正式 worksId 与多人编辑页先返回的 tempWorksId
@@ -1582,6 +1625,13 @@ class XunFeiSession:
         self._final_works_entries = []  # [(works_id, ts)]
         self._temporary_works_entries = []  # [(works_id, ts)]
         self._works_cutoff = 0.0
+        self._submission_request_sequence = 0
+        self._submission_request_cutoff = 0
+        self._submission_requests = []  # [(request_token, sequence)]
+        # 作品列表扫描状态：None 表示旧测试桩/兼容实现没有提供状态，False
+        # 表示接口失败或扫描被截断，True 表示至少完整得到了一次列表结果。
+        self._last_works_list_scan_complete = None
+        self._last_works_list_fetch_ok = None
         # sign_url 兜底通道捕获：必须和 worksId 绑定，禁止拿“最新 URL”串条目。
         self._sign_urls = []     # [(works_id, sign_url, ts)]
         # 讯飞网页会为每次 video-api 请求动态生成 sid，并在请求头中补充
@@ -1594,6 +1644,9 @@ class XunFeiSession:
         }
         self._api_authorization = None
         self._response_handler = None
+        self._request_handler = None
+        self._confirm_click_succeeded = False
+        self._submission_state_uncertain = False
 
     # ------------------------------------------------------------------
     # 拟人行为辅助
@@ -1654,9 +1707,53 @@ class XunFeiSession:
             with self._works_lock:
                 self._api_authorization = authorization
 
+    def _on_request(self, request):
+        """记录提交请求序号，供 response 事件做跨任务隔离。"""
+        url = str(getattr(request, "url", "") or "")
+        if "makeMultipleSpeakerWork" not in url and "order_gen" not in url:
+            return
+        # Playwright 不同版本可能为 response.request 返回新的 Python
+        # 包装对象；优先比较稳定的底层实现对象，测试桩则退回自身。
+        request_token = getattr(request, "_impl_obj", None)
+        if request_token is None:
+            request_token = request
+        with self._works_lock:
+            self._submission_request_sequence += 1
+            sequence = self._submission_request_sequence
+            self._submission_requests.append((request_token, sequence))
+            if len(self._submission_requests) > MAX_TRACKED_SUBMISSION_REQUESTS:
+                del self._submission_requests[:-MAX_TRACKED_SUBMISSION_REQUESTS]
+
+    def _submission_sequence_for_request(self, request):
+        """返回 response 对应的提交 request 序号；测试桩/旧页面可返回 None。"""
+        if request is None:
+            return None
+        request_token = getattr(request, "_impl_obj", None)
+        if request_token is None:
+            request_token = request
+        with self._works_lock:
+            for tracked_request, sequence in reversed(self._submission_requests):
+                if tracked_request is request_token:
+                    return sequence
+        return None
+
     def _on_response(self, response):
         url = response.url
         try:
+            request = getattr(response, "request", None)
+            is_submission_response = (
+                "makeMultipleSpeakerWork" in url or "order_gen" in url
+            )
+            request_sequence = self._submission_sequence_for_request(request)
+            if is_submission_response and request_sequence is not None:
+                with self._works_lock:
+                    if request_sequence <= self._submission_request_cutoff:
+                        _log(
+                            f"[xunfei]   忽略跨任务延迟 worksId response: "
+                            f"sequence={request_sequence}, "
+                            f"cutoff={self._submission_request_cutoff}"
+                        )
+                        return
             self._remember_api_request(response.request)
             wid = None
             is_final_work = False
@@ -1667,8 +1764,13 @@ class XunFeiSession:
                 if response_code is None:
                     response_code = data.get("code")
                 if _provider_success_code(response_code):
-                    wid = data.get("tempWorksId") or data.get("worksId")
-                    is_temporary_work = bool(wid)
+                    temporary_id = data.get("tempWorksId")
+                    formal_id = data.get("worksId")
+                    # 某些版本只返回 tempWorksId，另一些版本直接返回
+                    # worksId；只有明确标为 temp 的值才进入临时 ID 保护。
+                    wid = formal_id or temporary_id
+                    is_final_work = bool(formal_id)
+                    is_temporary_work = bool(temporary_id and not formal_id)
             elif "order_gen" in url:
                 data = response.json()
                 response_code = data.get("code")
@@ -1707,15 +1809,26 @@ class XunFeiSession:
             pass
 
     def _mark_works_cutoff(self):
-        """每条任务开始前调用：之后的捕获才属于本条任务。"""
+        """每条任务开始前调用：只接受本次任务发起的提交响应。"""
         with self._works_lock:
             self._works_entries.clear()
             self._final_works_entries.clear()
             self._temporary_works_entries.clear()
             self._sign_urls.clear()
             self._works_cutoff = time.time()
+            self._submission_request_cutoff = self._submission_request_sequence
 
-    def _consume_works_id(self, timeout=12, exclude_ids=None):
+    @staticmethod
+    def _duplicate_pending_work_ids(pending_items):
+        """返回本批次重复的 worksId，禁止后续按字典键静默覆盖。"""
+        counts = {}
+        for item in pending_items or []:
+            works_id = str(item.get("works_id") or "").strip()
+            if works_id:
+                counts[works_id] = counts.get(works_id, 0) + 1
+        return {works_id for works_id, count in counts.items() if count > 1}
+
+    def _consume_works_id(self, timeout=12, exclude_ids=None, cancel_check=None):
         excluded = {
             str(value)
             for value in (exclude_ids or [])
@@ -1723,6 +1836,7 @@ class XunFeiSession:
         }
         deadline = time.time() + timeout
         while time.time() < deadline:
+            _check_cancel_requested(cancel_check)
             with self._works_lock:
                 fresh_final = [
                     e for e in self._final_works_entries
@@ -1743,14 +1857,12 @@ class XunFeiSession:
                     if e[1] >= self._works_cutoff - 0.5
                     and str(e[0]) not in excluded
                 }
-                is_recent_temporary = (
+                temporary_only = (
                     candidate is not None
                     and not fresh_final
                     and str(candidate[0]) in temporary_ids
-                    and time.time() - candidate[1] < WORKS_ID_FINAL_GRACE_SECONDS
-                    and time.time() < deadline
                 )
-                if candidate and not is_recent_temporary:
+                if candidate and not temporary_only:
                     wid = candidate[0]
                     self._works_entries.clear()
                     self._final_works_entries.clear()
@@ -1767,6 +1879,7 @@ class XunFeiSession:
                     continue
                 except Exception:
                     pass
+            _check_cancel_requested(cancel_check)
             time.sleep(0.1)
         return None
 
@@ -2520,7 +2633,7 @@ class XunFeiSession:
             pass
         return None
 
-    def _ensure_mp3_format(self, page, timeout=10):
+    def _ensure_mp3_format(self, page, timeout=10, cancel_check=None):
         """在最终确认合成前强制确认讯飞作品格式为 MP3。
 
         这里不接受“默认应该是 MP3”作为成功条件：必须找到真实的
@@ -2533,7 +2646,13 @@ class XunFeiSession:
                 return result
             return None
 
-        result = _poll(set_probe, timeout=timeout, interval=0.35, page=page)
+        result = _poll(
+            set_probe,
+            timeout=timeout,
+            interval=0.35,
+            page=page,
+            cancel_check=cancel_check,
+        )
         status = result.get("status") if isinstance(result, dict) else None
         if status not in {"already_mp3", "clicked_mp3"}:
             # JS 选择器失败时只按同一套精确规则兜底，绝不退化为 first radio。
@@ -2556,14 +2675,24 @@ class XunFeiSession:
                 return state
             return None
 
-        state = _poll(read_probe, timeout=4, interval=0.25, page=page)
+        state = _poll(
+            read_probe,
+            timeout=4,
+            interval=0.25,
+            page=page,
+            cancel_check=cancel_check,
+        )
         if not isinstance(state, dict) or not state.get("checked"):
             # React 受控单选项偶尔会让 JS click 后的 DOM 更新稍慢；只有在
             # 回读仍未确认时才使用 locator，再次点击同一个 MP3 选项。
             fallback = self._set_mp3_format_with_locator(page)
             if fallback in {"already_locator", "clicked_locator"}:
                 state = _poll(
-                    read_probe, timeout=3, interval=0.25, page=page
+                    read_probe,
+                    timeout=3,
+                    interval=0.25,
+                    page=page,
+                    cancel_check=cancel_check,
                 )
 
         if isinstance(state, dict) and state.get("checked"):
@@ -2638,7 +2767,7 @@ class XunFeiSession:
     # 确认合成弹窗流程
     # ------------------------------------------------------------------
 
-    def _observe_after_first_confirm(self, page):
+    def _observe_after_first_confirm(self, page, cancel_check=None):
         """第一次点击确认合成后的状态探测。"""
 
         def probe():
@@ -2658,8 +2787,10 @@ class XunFeiSession:
             interval=0.4,
             max_interval=1.0,
             page=page,
+            cancel_check=cancel_check,
         )
         if not result:
+            _check_cancel_requested(cancel_check)
             info = _probe_synth_state(page)
             state = (info or {}).get("state")
             result = state if state in {
@@ -2767,7 +2898,7 @@ class XunFeiSession:
             pass
         return None
 
-    def _ensure_ai_switch_off(self, page, timeout=12):
+    def _ensure_ai_switch_off(self, page, timeout=12, cancel_check=None):
         """确保作品设置中的 AI 标识开关为关闭状态。
 
         讯飞有时跳过“AI 标识说明”弹窗，直接展示“作品设置”；因此这个
@@ -2784,7 +2915,11 @@ class XunFeiSession:
             if info and info.get("ai_modal"):
                 # 说明弹窗可以延迟挂载；处理成功后从头回读作品设置，
                 # 不把“当前还没看到 switch”误判为关闭成功。
-                if self._handle_ai_flag_dialog(page, ensure_switch=False):
+                if self._handle_ai_flag_dialog(
+                    page,
+                    ensure_switch=False,
+                    cancel_check=cancel_check,
+                ):
                     js_click_attempted = False
                     last_locator_attempt = 0.0
                 return None
@@ -2826,6 +2961,7 @@ class XunFeiSession:
             interval=0.2,
             max_interval=0.85,
             page=page,
+            cancel_check=cancel_check,
         )
         if result == "off":
             return "off"
@@ -2851,7 +2987,7 @@ class XunFeiSession:
             pass
         return False
 
-    def _handle_ai_flag_dialog(self, page, ensure_switch=True):
+    def _handle_ai_flag_dialog(self, page, ensure_switch=True, cancel_check=None):
         def check_no_remind():
             result = _safe_eval(page, JS.CHECK_NO_REMIND)
             return result if result in {"clicked", "clicked_input", "clicked_label", "already"} else None
@@ -2862,6 +2998,7 @@ class XunFeiSession:
             interval=0.25,
             max_interval=1.0,
             page=page,
+            cancel_check=cancel_check,
         )
         if not checked:
             checked = self._click_no_remind_with_locator(page)
@@ -2874,7 +3011,11 @@ class XunFeiSession:
         self._pause(page, 0.35, 0.15)
 
         if ensure_switch:
-            switch_state = self._ensure_ai_switch_off(page, timeout=12)
+            switch_state = self._ensure_ai_switch_off(
+                page,
+                timeout=12,
+                cancel_check=cancel_check,
+            )
             _log(
                 f"[xunfei]   AI 标识开关关闭: "
                 f"{'✓' if switch_state == 'off' else '未出现' if switch_state == 'not_found' else '✗'}"
@@ -2893,6 +3034,7 @@ class XunFeiSession:
             interval=0.35,
             max_interval=1.0,
             page=page,
+            cancel_check=cancel_check,
         ))
         if not confirmed:
             confirmed = self._click_ai_confirm_with_locator(page)
@@ -2914,6 +3056,7 @@ class XunFeiSession:
             interval=0.25,
             max_interval=1.0,
             page=page,
+            cancel_check=cancel_check,
         )
         if not closed:
             snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
@@ -2923,7 +3066,7 @@ class XunFeiSession:
         self._pause(page, 0.5, 0.2)
         return True
 
-    def _wait_order_or_error(self, page, timeout):
+    def _wait_order_or_error(self, page, timeout, cancel_check=None):
         def probe():
             info = _probe_synth_state(page)
             state = (info or {}).get("state")
@@ -2937,6 +3080,7 @@ class XunFeiSession:
             interval=0.8,
             max_interval=1.5,
             page=page,
+            cancel_check=cancel_check,
         )
         if result:
             return result
@@ -2947,13 +3091,56 @@ class XunFeiSession:
             return "ok"
         return state if state in {"insufficient", "rate_limited", "login"} else None
 
-    def _confirm_synth(self, page, works_name=None):
+    def _confirm_synth(self, page, works_name=None, cancel_check=None):
         """
         处理确认合成弹窗完整流程。
 
         返回: 'ok' | 'insufficient' | 'rate_limited' | 'login' | 'failed'
         """
         initial_ai_state = None
+        self._confirm_click_succeeded = False
+        self._submission_state_uncertain = False
+        confirm_clicked = False
+
+        def uncertain_after_confirm(reason):
+            """确认按钮已点击后无法判定结果时，禁止回到通用重试。"""
+            if confirm_clicked:
+                raise XunfeiSubmissionAmbiguous(reason, works_name=works_name)
+            return "failed"
+
+        def ensure_ai_off(timeout=12):
+            kwargs = {"timeout": timeout}
+            if cancel_check is not None:
+                kwargs["cancel_check"] = cancel_check
+            return self._ensure_ai_switch_off(page, **kwargs)
+
+        def ensure_mp3():
+            if cancel_check is None:
+                return self._ensure_mp3_format(page)
+            return self._ensure_mp3_format(page, cancel_check=cancel_check)
+
+        def observe_after_first_confirm():
+            if cancel_check is None:
+                return self._observe_after_first_confirm(page)
+            return self._observe_after_first_confirm(
+                page,
+                cancel_check=cancel_check,
+            )
+
+        def handle_ai_flag(ensure_switch=False):
+            kwargs = {"ensure_switch": ensure_switch}
+            if cancel_check is not None:
+                kwargs["cancel_check"] = cancel_check
+            return self._handle_ai_flag_dialog(page, **kwargs)
+
+        def wait_order(timeout):
+            if cancel_check is None:
+                return self._wait_order_or_error(page, timeout)
+            return self._wait_order_or_error(
+                page,
+                timeout,
+                cancel_check=cancel_check,
+            )
 
         def ensure_ai_setting(allow_missing=False):
             # “订单支付”/“去下载”弹窗已经说明作品提交完成；此时原来的
@@ -2962,7 +3149,7 @@ class XunFeiSession:
             if allow_missing and initial_ai_state == "off":
                 _log("[xunfei]   作品设置弹窗已关闭，沿用第一次确认前已验证的 AI 标识关闭状态")
                 return True
-            state = self._ensure_ai_switch_off(page, timeout=12)
+            state = ensure_ai_off()
             _log(f"[xunfei]   合成前 AI 标识开关状态: {state}")
             return state == "off"
 
@@ -2979,6 +3166,7 @@ class XunFeiSession:
             interval=0.6,
             max_interval=1.25,
             page=page,
+            cancel_check=cancel_check,
         )
         if not appeared and self._visible_confirm_synth_buttons(page):
             appeared = "confirm"
@@ -2989,16 +3177,27 @@ class XunFeiSession:
                 _log(f"[xunfei]   未找到确认合成按钮，当前可见弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             else:
                 _log("[xunfei]   未找到确认合成按钮，当前没有可识别的可见弹窗")
-            settled = self._wait_order_or_error(page, 4) or "failed"
-            if settled == "ok" and not ensure_ai_setting():
-                return "failed"
+            settled = wait_order(4) or "failed"
+            if settled == "ok":
+                # 某些版本没有弹出“确认合成”按钮，而是直接出现订单
+                # 状态；订单本身已经证明提交发生，后续回读失败也不能重试。
+                confirm_clicked = True
+                self._confirm_click_succeeded = True
+                if not ensure_ai_setting():
+                    return uncertain_after_confirm(
+                        "已出现订单但作品设置回读失败，提交结果不确定"
+                    )
+            elif settled == "failed":
+                # 生成按钮已经点击，但页面没有给出可判定的确认/订单
+                # 状态；不能把这个未知结果当成“未提交”再次点击。
+                self._submission_state_uncertain = True
             return settled
 
         self._pause(page, 0.6, 0.3)
 
         # 讯飞“作品设置”弹窗中的格式是独立的 WAV/MP3 单选项。不能依赖
         # 默认勾选，也不能取第一个 option；提交前必须回读并确认 MP3。
-        if not self._ensure_mp3_format(page):
+        if not ensure_mp3():
             _log("[xunfei]   未能确认作品格式为 MP3，停止提交，避免误生成 WAV")
             return "failed"
 
@@ -3008,7 +3207,7 @@ class XunFeiSession:
         # “作品设置”就是这次提交使用的最终设置，真实 DOM 中开关位于这里：
         # role="switch"、aria-checked="true"。必须在第一次确认合成前关闭，
         # 不能等弹窗切换或订单完成后再处理，否则水印配置已经被提交。
-        initial_ai_state = self._ensure_ai_switch_off(page, timeout=12)
+        initial_ai_state = ensure_ai_off()
         _log(f"[xunfei]   第一次确认前 AI 标识开关状态: {initial_ai_state}")
         if initial_ai_state != "off":
             snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
@@ -3030,18 +3229,22 @@ class XunFeiSession:
             if snapshot:
                 _log(f"[xunfei]   第一次确认合成点击失败，当前可见弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return "failed"
+        confirm_clicked = True
+        self._confirm_click_succeeded = True
 
-        outcome = self._observe_after_first_confirm(page)
+        outcome = observe_after_first_confirm()
         _log(f"[xunfei]   第一次确认后的页面状态: {outcome}")
         ai_modal_seen = outcome == "ai_modal"
         if outcome == "ai_modal":
             _log("[xunfei]   检测到 AI 标识说明弹窗")
-            if not self._handle_ai_flag_dialog(page, ensure_switch=False):
+            if not handle_ai_flag(False):
                 _log("[xunfei]   AI 标识弹窗未完成确认，停止本次合成")
-                return "failed"
+                return uncertain_after_confirm("确认合成后 AI 标识弹窗未完成，提交结果不确定")
         elif outcome in ("order", "insufficient", "rate_limited"):
             if outcome == "order" and not ensure_ai_setting(allow_missing=True):
-                return "failed"
+                return uncertain_after_confirm(
+                    "确认合成后已出现订单，但作品设置回读失败"
+                )
             return "ok" if outcome == "order" else outcome
 
         # AI 弹窗关闭、页面切换和确认合成按钮重新出现之间存在异步延迟。
@@ -3061,31 +3264,35 @@ class XunFeiSession:
             interval=0.35,
             max_interval=1.0,
             page=page,
+            cancel_check=cancel_check,
         )
         if followup == "ai_modal":
             ai_modal_seen = True
             # 少数页面会在第一次 AI 弹窗确认后重新挂载一次弹窗，允许再处理一轮。
             _log("[xunfei]   AI 标识弹窗仍在，重新处理")
-            if not self._handle_ai_flag_dialog(page, ensure_switch=False):
+            if not handle_ai_flag(False):
                 _log("[xunfei]   AI 标识弹窗二次处理失败，停止本次合成")
-                return "failed"
+                return uncertain_after_confirm(
+                    "确认合成后的 AI 标识弹窗未完成，提交结果不确定"
+                )
             followup = _poll(
                 probe_followup,
                 timeout=12,
                 interval=0.35,
                 max_interval=1.0,
                 page=page,
+                cancel_check=cancel_check,
             )
         _log(f"[xunfei]   二次确认前页面状态: {followup or '未发现明确状态'}")
         if followup in ("order", "insufficient", "rate_limited"):
             if followup == "order" and not ensure_ai_setting(allow_missing=True):
-                return "failed"
+                return uncertain_after_confirm("确认合成后已出现订单，但作品设置回读失败")
             return "ok" if followup == "order" else followup
 
         # 真实“作品设置”弹窗的结构是 role="switch" + aria-checked，
         # 它可能不会触发 AI 说明弹窗；二次确认前再次强制回读并关闭。
         if not ensure_ai_setting(allow_missing=True):
-            return "failed"
+            return uncertain_after_confirm("确认合成后作品设置回读失败，提交结果不确定")
         clicked2 = bool(_poll(
             lambda: self._click_confirm_synth_button(page)
             or _safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"),
@@ -3096,25 +3303,27 @@ class XunFeiSession:
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
         if clicked2:
-            settled = self._wait_order_or_error(page, 90) or "ok"
+            confirm_clicked = True
+            self._confirm_click_succeeded = True
+            settled = wait_order(90) or "ok"
             if settled == "ok" and not ensure_ai_setting(allow_missing=True):
-                return "failed"
+                return uncertain_after_confirm("二次确认后作品设置回读失败，提交结果不确定")
             return settled
 
         # 讯飞部分账号/版本在没有 AI 说明弹窗时，第一次“确认合成”就
         # 已经提交任务，不会再显示第二个确认按钮。等待一小段时间确认
         # 没有额度、登录或频控错误后，按已提交处理，避免误重试造成频控。
-        settled = self._wait_order_or_error(page, 12)
+        settled = wait_order(12)
         if settled:
             if settled == "ok" and not ensure_ai_setting(allow_missing=True):
-                return "failed"
+                return uncertain_after_confirm("确认合成后作品设置回读失败，提交结果不确定")
             return settled
         if ai_modal_seen:
             info = _probe_synth_state(page)
             if info and info.get("ai_modal"):
-                return "failed"
+                return uncertain_after_confirm("确认合成后的 AI 标识弹窗仍未关闭，提交结果不确定")
         if not ensure_ai_setting(allow_missing=True):
-            return "failed"
+            return uncertain_after_confirm("确认合成后无法确认作品设置，提交结果不确定")
         return "ok"
 
     # ------------------------------------------------------------------
@@ -3172,24 +3381,182 @@ class XunFeiSession:
             return None
         return data
 
-    def _fetch_works_list_in_page(self, page, needed_count=1):
-        """获取已完成作品列表，返回讯飞原始作品对象。"""
-        # 作品页按最新创建时间返回第 1 页；等待 1~3 个新 worksId 时没必要
-        # 每轮都让页面解析 200 条历史记录。保留足够余量并限制上限，既能
-        # 覆盖批量提交，也能降低 Chrome 在轮询期间的 JSON/DOM 开销。
+    @staticmethod
+    def _works_list_page_size(needed_count):
+        """按讯飞接口约束计算固定页大小，分页期间不能随剩余量变化。"""
+        try:
+            needed = max(1, int(needed_count or 1))
+        except (TypeError, ValueError, OverflowError):
+            needed = 1
+        return max(50, min(200, needed + 20))
+
+    @staticmethod
+    def _works_list_max_pages(needed_count):
+        """为批量列表扫描设置有界页数，避免接口异常时无限轮询。"""
+        try:
+            needed = max(1, int(needed_count or 1))
+        except (TypeError, ValueError, OverflowError):
+            needed = 1
+        # 按实际请求页大小估算所需页数，再额外预留 4 页覆盖历史作品
+        # 插入；同时保留至少 5 页给单条断点任务寻找较早作品。
+        page_size = XunFeiSession._works_list_page_size(needed)
+        return min(100, max(5, (needed + page_size - 1) // page_size + 4))
+
+    def _fetch_works_list_in_page(
+        self,
+        page,
+        needed_count=1,
+        page_index=1,
+        works_name=None,
+    ):
+        """获取指定页的已完成作品列表，返回讯飞原始作品对象。"""
+        # 作品列表按最新创建时间返回；批量提交可能超过接口单页上限，
+        # 调用方通过 page_index 扫描后续页，不能只依赖第一页的 200 条。
         needed = max(1, int(needed_count or 1))
-        page_size = max(50, min(200, needed + 20))
+        page_size = self._works_list_page_size(needed)
+        page_index = max(1, int(page_index or 1))
         param = {
             "needCount": 1,
-            "pageIndex": 1,
+            "pageIndex": page_index,
             "pageSize": page_size,
-            "worksName": "",
+            "worksName": str(works_name or "").strip(),
         }
         data = self._signed_api_post(page, API_WORKS_LIST_URL, param)
+        # _signed_api_post 对成功响应返回 dict，对认证/网络/API 错误返回
+        # None。记录这个区别，断点恢复时不能把一次列表接口故障误判成
+        # worksId 已失效，否则下一轮会重复提交并可能重复计费。
+        self._last_works_list_fetch_ok = isinstance(data, dict)
         if not data:
             return []
         items = (data.get("data") or {}).get("userWorksList") or []
         return items if isinstance(items, list) else []
+
+    def _fetch_works_list_pages(
+        self,
+        page,
+        needed_count=1,
+        expected_ids=None,
+        works_name=None,
+        cancel_check=None,
+    ):
+        """有界分页读取作品列表，直到找到目标 ID 或扫描完安全页数。"""
+        try:
+            target_count = max(1, int(needed_count or 1))
+        except (TypeError, ValueError, OverflowError):
+            target_count = 1
+        expected = {
+            str(value).strip()
+            for value in (expected_ids or [])
+            if str(value or "").strip()
+        }
+        records = []
+        seen_record_ids = set()
+        scan_complete = True
+        self._last_works_list_scan_complete = None
+        page_limit = self._works_list_max_pages(target_count)
+        for page_index in range(1, page_limit + 1):
+            _check_cancel_requested(cancel_check)
+            self._last_works_list_fetch_ok = None
+            fetch_kwargs = {
+                "needed_count": target_count,
+                "page_index": page_index,
+            }
+            # 只有对账时才带作品名过滤参数，保持旧版测试替身和普通列表
+            # 请求的调用形态不变。
+            if works_name:
+                fetch_kwargs["works_name"] = str(works_name).strip()
+            current = self._fetch_works_list_in_page(page, **fetch_kwargs)
+            fetch_ok = getattr(self, "_last_works_list_fetch_ok", None)
+            if fetch_ok is False:
+                scan_complete = False
+                break
+            if not current:
+                break
+            for record in current:
+                if not isinstance(record, dict):
+                    continue
+                record_id = record.get("id") or record.get("worksId")
+                if record_id is None:
+                    records.append(record)
+                    continue
+                normalized_id = str(record_id)
+                if normalized_id in seen_record_ids:
+                    continue
+                seen_record_ids.add(normalized_id)
+                records.append(record)
+            if expected and expected.issubset(seen_record_ids):
+                break
+        else:
+            # 到达安全页数上限但仍未找到全部目标，不能据此断言作品已删除。
+            scan_complete = False
+        self._last_works_list_scan_complete = scan_complete
+        return records
+
+    def _recover_works_id_by_name(
+        self,
+        page,
+        works_name,
+        timeout=60,
+        cancel_check=None,
+    ):
+        """提交已确认但漏捕获 ID 时，只按唯一作品名做安全对账。
+
+        作品名是提交前写入讯飞作品设置弹窗的短唯一值。对账必须同时满足
+        “名称完全一致”和“只找到一个 ID”；否则保持不确定状态，绝不拿最新
+        作品或临时 ID 猜测归属。
+        """
+        target_name = self._normalize_works_name(works_name)
+        target_label = _normalize_download_label(target_name)
+        if not target_label:
+            return None
+        deadline = time.time() + max(0, float(timeout))
+        logged_wait = False
+        while time.time() < deadline:
+            _check_cancel_requested(cancel_check)
+            records = self._fetch_works_list_pages(
+                page,
+                needed_count=1,
+                works_name=target_name,
+                cancel_check=cancel_check,
+            )
+            candidates = {}
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                record_id = record.get("id") or record.get("worksId")
+                record_name = (
+                    record.get("worksName")
+                    or record.get("works_name")
+                    or record.get("name")
+                    or record.get("title")
+                )
+                if record_id is None or not record_name:
+                    continue
+                if _normalize_download_label(record_name) != target_label:
+                    continue
+                candidates[str(record_id)] = record
+            if len(candidates) == 1:
+                works_id = next(iter(candidates))
+                _log(
+                    f"[xunfei] ✅ 通过唯一作品名找回已提交 worksId: "
+                    f"{works_id} ({target_name})"
+                )
+                return works_id
+            if len(candidates) > 1:
+                _log(
+                    f"[xunfei] ⚠️ 作品名对账发现多个 worksId，保持不确定状态: "
+                    f"{target_name}"
+                )
+            elif not logged_wait:
+                _log(f"[xunfei] ⏳ 等待作品列表对账: {target_name}")
+                logged_wait = True
+            if time.time() >= deadline:
+                break
+            try:
+                page.wait_for_timeout(1000)
+            except Exception:
+                time.sleep(1)
+        return None
 
     def _wait_for_works_entry(self, page, works_id, timeout=120):
         """等待同一个 worksId 出现在作品列表中，严禁按名称或最新记录替代。"""
@@ -3265,7 +3632,7 @@ class XunFeiSession:
         return None
 
     def _fetch_sign_url_in_page(self, page, works_id, log_result=True):
-        """在确认作品列表包含该 worksId 后请求对应签名 URL。"""
+        """按精确 worksId 请求对应签名 URL。"""
         param = {"worksId": str(works_id), "worksType": 1}
         data = self._signed_api_post(page, API_SIGN_URL, param)
         if not data:
@@ -3402,6 +3769,8 @@ class XunFeiSession:
 
         # 注册网络响应监听（整个会话期间持续捕获 worksId / sign_url）
         self._response_handler = self._on_response
+        self._request_handler = self._on_request
+        self._page.on("request", self._request_handler)
         self._page.on("response", self._response_handler)
 
         try:
@@ -4451,6 +4820,7 @@ class XunFeiSession:
         *,
         output_name=None,
         max_retries=4,
+        cancel_check=None,
     ):
         """通过讯飞多人配音页面提交作品，返回待下载作品信息。
 
@@ -4471,6 +4841,8 @@ class XunFeiSession:
         )
         last_error = None
         for attempt in range(1, max_retries + 1):
+            _check_cancel_requested(cancel_check)
+            submission_confirmed = False
             _log(
                 f"[xunfei]   多人配音作品提交 {attempt}/{max_retries}: "
                 f"{works_name}（{len(work.get('item_ids') or [])} 道题）"
@@ -4483,21 +4855,74 @@ class XunFeiSession:
                 # 文本、连续同配置批量选区、音色/参数和内部停顿均通过
                 # 可见讯飞页面完成，并且每次套用前都有选区/标记回读校验。
                 self._prepare_composite_editor(page, work)
+                _check_cancel_requested(cancel_check)
                 self._mark_works_cutoff()
                 self._click_generate(page)
-                status = self._confirm_synth(page, works_name=works_name)
+                try:
+                    confirm_kwargs = {"works_name": works_name}
+                    if cancel_check is not None:
+                        confirm_kwargs["cancel_check"] = cancel_check
+                    status = self._confirm_synth(page, **confirm_kwargs)
+                except XunfeiSubmissionAmbiguous:
+                    raise
+                except XunfeiCancelled:
+                    raise
+                except Exception as confirm_error:
+                    if self._confirm_click_succeeded or self._submission_state_uncertain:
+                        raise XunfeiSubmissionAmbiguous(
+                            "确认合成按钮已点击，但后续页面状态异常；"
+                            "已暂停自动重试，请稍后按作品名对账",
+                            works_name=works_name,
+                        ) from confirm_error
+                    raise
                 if status == "insufficient":
                     raise XunfeiQuotaExceeded("讯飞配音额度不足")
                 if status == "login":
                     raise XunfeiLoginRequired("合成过程中弹出登录框，请重新登录")
                 if status == "rate_limited":
+                    if self._confirm_click_succeeded or self._submission_state_uncertain:
+                        raise XunfeiSubmissionAmbiguous(
+                            "确认合成按钮已点击后触发频控，提交结果不确定；"
+                            "已暂停自动重试，请稍后按作品名对账",
+                            works_name=works_name,
+                        )
                     raise XunfeiRateLimited("触发讯飞频控")
                 if status != "ok":
+                    if self._confirm_click_succeeded or self._submission_state_uncertain:
+                        raise XunfeiSubmissionAmbiguous(
+                            "确认合成按钮已点击，但确认流程未完成；"
+                            "已暂停自动重试，请稍后按作品名对账",
+                            works_name=works_name,
+                        )
                     raise XunfeiError("确认合成弹窗流程未完成")
+                submission_confirmed = True
 
-                works_id = self._consume_works_id(timeout=30)
+                try:
+                    works_id = self._consume_works_id(
+                        timeout=30,
+                        cancel_check=cancel_check,
+                    )
+                    if not works_id:
+                        works_id = self._recover_works_id_by_name(
+                            page,
+                            works_name,
+                            timeout=60,
+                            cancel_check=cancel_check,
+                        )
+                except (XunfeiCancelled, XunfeiSubmissionAmbiguous):
+                    raise
+                except Exception as tracking_error:
+                    raise XunfeiSubmissionAmbiguous(
+                        "合成已确认提交，但追踪 worksId 时发生异常；"
+                        "已暂停自动重试，请稍后按作品名对账",
+                        works_name=works_name,
+                    ) from tracking_error
                 if not works_id:
-                    raise XunfeiError("多人配音已提交但未捕获 worksId")
+                    raise XunfeiSubmissionAmbiguous(
+                        "多人配音已确认提交，但无法安全定位唯一 worksId；"
+                        "已暂停自动重试，请稍后按作品名对账",
+                        works_name=works_name,
+                    )
                 pending = {
                     "works_id": str(works_id),
                     "output_path": output_path,
@@ -4509,9 +4934,20 @@ class XunFeiSession:
                     f"[xunfei] ✅ 多人配音作品已提交 worksId={pending['works_id']} "
                     f"work={pending['work_id']}"
                 )
-                self._cleanup_after_item(page)
+                # 此处作品已经提交并拿到 worksId。清理页面属于提交后的
+                # best-effort 操作，异常不能回到外层“提交失败”重试，否则
+                # 同一作品可能再次扣费。
+                try:
+                    self._cleanup_after_item(page)
+                except Exception as cleanup_error:
+                    _log(f"[xunfei]   提交后页面清理异常（不重复提交）: {cleanup_error}")
                 return pending
-            except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+            except (
+                XunfeiQuotaExceeded,
+                XunfeiLoginRequired,
+                XunfeiSubmissionAmbiguous,
+                XunfeiCancelled,
+            ):
                 raise
             except XunfeiRateLimited as error:
                 last_error = error
@@ -4521,6 +4957,12 @@ class XunFeiSession:
                 if attempt < max_retries and not self._recover_and_retry(page):
                     break
             except Exception as error:
+                if submission_confirmed:
+                    raise XunfeiSubmissionAmbiguous(
+                        "多人配音已确认提交，但提交结果整理时发生异常；"
+                        "已暂停自动重试，请稍后按作品名对账",
+                        works_name=works_name,
+                    ) from error
                 last_error = error
                 _log(f"[xunfei]   多人配音提交异常: {error}")
                 if attempt < max_retries and not self._recover_and_retry(page):
@@ -4537,6 +4979,7 @@ class XunFeiSession:
         speed=PARAM_DEFAULT,
         pitch=PARAM_DEFAULT,
         volume=PARAM_DEFAULT,
+        cancel_check=None,
     ):
         """只提交一条合成并返回 worksId，不在本处下载。
 
@@ -4551,10 +4994,17 @@ class XunFeiSession:
         if not output_name:
             output_name = f".xunfei_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(OUTPUT_DIR, output_name)
+        # 作品名必须在点击生成前确定并写入页面。它是 worksId 监听漏捕获
+        # 时唯一可用于安全对账的幂等键，不能留空后再随机生成。
+        works_name = self._normalize_works_name(
+            works_name or f"wordtts_{uuid.uuid4().hex[:16]}"
+        )
 
         page = self._page
         last_error = None
         for attempt in range(1, max_retries + 1):
+            _check_cancel_requested(cancel_check)
+            submission_confirmed = False
             _log(f"[xunfei]   第 {attempt}/{max_retries} 次尝试提交...")
             try:
                 if page.locator(".ssml-editor").count() == 0:
@@ -4568,28 +5018,81 @@ class XunFeiSession:
                 if not self._input_text(page, text):
                     raise XunfeiError("文本输入失败")
 
+                _check_cancel_requested(cancel_check)
                 self._mark_works_cutoff()
                 self._click_generate(page)
-                status = self._confirm_synth(page, works_name=works_name)
+                try:
+                    confirm_kwargs = {"works_name": works_name}
+                    if cancel_check is not None:
+                        confirm_kwargs["cancel_check"] = cancel_check
+                    status = self._confirm_synth(page, **confirm_kwargs)
+                except XunfeiSubmissionAmbiguous:
+                    raise
+                except XunfeiCancelled:
+                    raise
+                except Exception as confirm_error:
+                    if self._confirm_click_succeeded or self._submission_state_uncertain:
+                        raise XunfeiSubmissionAmbiguous(
+                            "确认合成按钮已点击，但后续页面状态异常；"
+                            "已暂停自动重试，请稍后按作品名对账",
+                            works_name=works_name,
+                        ) from confirm_error
+                    raise
                 if status == "insufficient":
                     raise XunfeiQuotaExceeded("讯飞配音额度不足")
                 if status == "login":
                     raise XunfeiLoginRequired("合成过程中弹出登录框，请重新登录")
                 if status == "rate_limited":
+                    if self._confirm_click_succeeded or self._submission_state_uncertain:
+                        raise XunfeiSubmissionAmbiguous(
+                            "确认合成按钮已点击后触发频控，提交结果不确定；"
+                            "已暂停自动重试，请稍后按作品名对账",
+                            works_name=works_name,
+                        )
                     raise XunfeiRateLimited("触发讯飞频控")
                 if status != "ok":
+                    if self._confirm_click_succeeded or self._submission_state_uncertain:
+                        raise XunfeiSubmissionAmbiguous(
+                            "确认合成按钮已点击，但确认流程未完成；"
+                            "已暂停自动重试，请稍后按作品名对账",
+                            works_name=works_name,
+                        )
                     raise XunfeiError("确认合成弹窗流程未完成")
+                submission_confirmed = True
 
-                works_id = self._consume_works_id(timeout=30)
+                try:
+                    works_id = self._consume_works_id(
+                        timeout=30,
+                        cancel_check=cancel_check,
+                    )
+                    if not works_id:
+                        works_id = self._recover_works_id_by_name(
+                            page,
+                            works_name,
+                            timeout=60,
+                            cancel_check=cancel_check,
+                        )
+                except (XunfeiCancelled, XunfeiSubmissionAmbiguous):
+                    raise
+                except Exception as tracking_error:
+                    raise XunfeiSubmissionAmbiguous(
+                        "合成已确认提交，但追踪 worksId 时发生异常；"
+                        "已暂停自动重试，请稍后按作品名对账",
+                        works_name=works_name,
+                    ) from tracking_error
                 if not works_id:
-                    raise XunfeiError("合成已提交但未捕获本条 worksId")
+                    raise XunfeiSubmissionAmbiguous(
+                        "合成已确认提交，但无法安全定位唯一 worksId；"
+                        "已暂停自动重试，请稍后按作品名对账",
+                        works_name=works_name,
+                    )
 
                 pending = {
                     "works_id": str(works_id),
                     "output_path": output_path,
                     "voice_key": vk,
                     "voice_name": voice_name,
-                    "works_name": self._normalize_works_name(works_name) if works_name else "",
+                    "works_name": works_name,
                     "speed": clamp_param(speed),
                     "pitch": clamp_param(pitch),
                     "volume": clamp_param(volume),
@@ -4598,10 +5101,20 @@ class XunFeiSession:
                     f"[xunfei] ✅ 已提交待下载任务 worksId={pending['works_id']} "
                     f"voice={voice_name}"
                 )
-                self._cleanup_after_item(page)
+                # worksId 已经确认，清理失败不能被当作提交失败处理；否则
+                # 外层恢复逻辑会重新点击合成并可能产生重复计费。
+                try:
+                    self._cleanup_after_item(page)
+                except Exception as cleanup_error:
+                    _log(f"[xunfei]   提交后页面清理异常（不重复提交）: {cleanup_error}")
                 return pending
 
-            except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+            except (
+                XunfeiQuotaExceeded,
+                XunfeiLoginRequired,
+                XunfeiSubmissionAmbiguous,
+                XunfeiCancelled,
+            ):
                 raise
             except XunfeiRateLimited as error:
                 last_error = error
@@ -4610,6 +5123,12 @@ class XunFeiSession:
                 page.wait_for_timeout(int(cooldown * 1000))
                 self._recover_and_retry(page)
             except Exception as attempt_error:
+                if submission_confirmed:
+                    raise XunfeiSubmissionAmbiguous(
+                        "合成已确认提交，但提交结果整理时发生异常；"
+                        "已暂停自动重试，请稍后按作品名对账",
+                        works_name=works_name,
+                    ) from attempt_error
                 last_error = attempt_error
                 _log(f"[xunfei]   第 {attempt} 次提交异常: {attempt_error}")
                 if not self._recover_and_retry(page):
@@ -4617,8 +5136,21 @@ class XunFeiSession:
 
         raise XunfeiError(f"讯飞配音生成失败：{last_error or '已重试仍未成功'}")
 
-    def _wait_for_pending_ready(self, page, pending_items, timeout=180):
+    def _wait_for_pending_ready(
+        self,
+        page,
+        pending_items,
+        timeout=180,
+        cancel_check=None,
+    ):
         """批量等待精确 worksId 对应的音频地址就绪。"""
+        _check_cancel_requested(cancel_check)
+        duplicate_ids = self._duplicate_pending_work_ids(pending_items)
+        if duplicate_ids:
+            raise XunfeiError(
+                "批量任务捕获到重复 worksId，拒绝继续下载以免音频错配："
+                + ", ".join(sorted(duplicate_ids))
+            )
         remaining = {
             str(item["works_id"]): item
             for item in pending_items
@@ -4630,10 +5162,16 @@ class XunFeiSession:
 
         deadline = time.time() + timeout
         matched = set()
+        target_count = max(len(remaining), 1)
         while remaining and time.time() < deadline:
-            records = self._fetch_works_list_in_page(
-                page, needed_count=max(len(remaining), 1)
-            )
+            _check_cancel_requested(cancel_check)
+            fetch_kwargs = {
+                "needed_count": target_count,
+                "expected_ids": set(remaining),
+            }
+            if cancel_check is not None:
+                fetch_kwargs["cancel_check"] = cancel_check
+            records = self._fetch_works_list_pages(page, **fetch_kwargs)
             for record in records:
                 if not isinstance(record, dict):
                     continue
@@ -4671,6 +5209,7 @@ class XunFeiSession:
                     _log(
                         f"[xunfei]   ⏳ 仍有 {len(remaining)} 条作品等待音频就绪"
                     )
+                _check_cancel_requested(cancel_check)
                 page.wait_for_timeout(2000)
 
         if remaining:
@@ -4736,7 +5275,13 @@ class XunFeiSession:
             )
         return selected, missing
 
-    def _download_selected_rows(self, page, selected_targets, progress_callback=None):
+    def _download_selected_rows(
+        self,
+        page,
+        selected_targets,
+        progress_callback=None,
+        cancel_check=None,
+    ):
         """点击下载页“下载”，处理确认弹窗并收集所有浏览器下载事件。
 
         下载事件逐个到达时立即通知上层，不能等全部下载事件收集完成后
@@ -4753,6 +5298,7 @@ class XunFeiSession:
 
         page.on("download", on_download)
         try:
+            _check_cancel_requested(cancel_check)
             if not self._click_visible_exact_button(page, "下载"):
                 _log("[xunfei]   ❌ 下载页未找到可用的“下载”按钮")
                 return []
@@ -4760,6 +5306,7 @@ class XunFeiSession:
             # 当前页面通常直接触发多个 MP3 下载；部分账号会先弹出
             # Ant Design 下载确认框，再点击确认按钮。
             page.wait_for_timeout(500)
+            _check_cancel_requested(cancel_check)
             dialog = self._find_visible_dialog(page, "下载")
             if dialog is not None:
                 if not self._click_visible_exact_button(page, "下载", scope=dialog):
@@ -4770,6 +5317,7 @@ class XunFeiSession:
             expected = len(selected_targets)
             deadline = time.time() + 120
             while len(downloads) < expected and time.time() < deadline:
+                _check_cancel_requested(cancel_check)
                 page.wait_for_timeout(500)
             _log(
                 f"[xunfei]   下载页事件完成: {len(downloads)}/{expected} 条"
@@ -4852,15 +5400,29 @@ class XunFeiSession:
             except OSError:
                 pass
 
-    def _download_pending_batch(self, pending_items, progress_callback=None):
+    def _download_pending_batch(
+        self,
+        pending_items,
+        progress_callback=None,
+        cancel_check=None,
+    ):
         """进入讯飞作品下载页，按 worksId 勾选本批次作品后统一下载。"""
+        _check_cancel_requested(cancel_check)
         page = self._page
         if not pending_items:
             return {}
 
+        duplicate_ids = self._duplicate_pending_work_ids(pending_items)
+        if duplicate_ids:
+            raise XunfeiError(
+                "批量任务包含重复 worksId，拒绝按字典键下载以免音频错配："
+                + ", ".join(sorted(duplicate_ids))
+            )
+
         _log(
             f"[xunfei] 进入讯飞作品下载页，准备勾选本批次 {len(pending_items)} 条音频"
         )
+        _check_cancel_requested(cancel_check)
         try:
             page.goto(
                 DOWNLOAD_PAGE_URL,
@@ -4875,14 +5437,29 @@ class XunFeiSession:
             timeout=30,
             interval=0.5,
             page=page,
+            cancel_check=cancel_check,
         ):
             raise XunfeiError("讯飞作品下载页未加载完成")
 
         _log(f"[xunfei] 下载页已打开: {page.url}")
-        ready = self._wait_for_pending_ready(page, pending_items, timeout=180)
-        records = self._fetch_works_list_in_page(
-            page, needed_count=max(len(pending_items), 1)
+        ready = self._wait_for_pending_ready(
+            page,
+            pending_items,
+            timeout=180,
+            cancel_check=cancel_check,
         )
+        _check_cancel_requested(cancel_check)
+        records_kwargs = {
+            "needed_count": max(len(pending_items), 1),
+            "expected_ids": {
+                str(item.get("works_id") or "")
+                for item in pending_items
+            },
+        }
+        if cancel_check is not None:
+            records_kwargs["cancel_check"] = cancel_check
+        records = self._fetch_works_list_pages(page, **records_kwargs)
+        list_scan_complete = getattr(self, "_last_works_list_scan_complete", None)
         record_indexes = {}
         record_by_id = {}
         for index, record in enumerate(records):
@@ -4898,9 +5475,29 @@ class XunFeiSession:
         results = {}
         targets = []
         for item in pending_items:
+            _check_cancel_requested(cancel_check)
             works_id = str(item.get("works_id") or "")
             ready_item = ready.get(works_id) or {}
-            record = ready_item.get("record") or record_by_id.get(works_id) or {}
+            ready_record = ready_item.get("record")
+            record_found = isinstance(ready_record, dict) or works_id in record_by_id
+            record = ready_record if isinstance(ready_record, dict) else (
+                record_by_id.get(works_id) or {}
+            )
+            if works_id not in ready and not record_found:
+                # 分页扫描可能早于列表刷新，或目标作品虽已存在但列表接口
+                # 没有返回它。先用同一个 worksId 直接请求签名地址；只有
+                # 列表扫描完整且签名接口也确认没有地址时，才把 ID 标成
+                # 失效，避免临时接口故障触发重复合成。
+                direct_url = self._fetch_sign_url_in_page(
+                    page, works_id, log_result=False
+                )
+                if direct_url:
+                    ready[works_id] = {
+                        **item,
+                        "record": dict(record),
+                        "download_url": direct_url,
+                    }
+                    ready_item = ready[works_id]
             target = {
                 "works_id": works_id,
                 "order_no": str(record.get("orderNo") or ""),
@@ -4909,14 +5506,25 @@ class XunFeiSession:
                 "item": item,
             }
             if works_id not in ready:
+                works_id_invalid = (
+                    not record_found and list_scan_complete is True
+                )
                 result = {
                     **item,
                     "downloaded": False,
-                    "error": "作品未在下载页按 worksId 就绪",
+                    "error": (
+                        "讯飞作品列表中未找到该 worksId，已标记为失效"
+                        if works_id_invalid
+                        else "作品未在下载页按 worksId 就绪"
+                    ),
                 }
+                if works_id_invalid:
+                    result["works_id_invalid"] = True
                 results[works_id] = result
                 _notify_batch_progress(progress_callback, {
                     "job_id": str(item.get("job_id") or ""),
+                    "works_id": works_id,
+                    "works_id_invalid": works_id_invalid,
                     "downloaded": False,
                     "stage": "saved",
                     "error": result["error"],
@@ -4928,6 +5536,7 @@ class XunFeiSession:
         # worksId 逐条校验过，这条路径不会受浏览器下载事件乱序影响。
         browser_targets = []
         for target in targets:
+            _check_cancel_requested(cancel_check)
             works_id = str(target.get("works_id") or "")
             item = target.get("item") or {}
             ready_item = ready.get(works_id) or {}
@@ -4949,11 +5558,13 @@ class XunFeiSession:
                 )
                 _notify_batch_progress(progress_callback, {
                     "job_id": str(item.get("job_id") or ""),
+                    "works_id": works_id,
                     "downloaded": True,
                     "stage": "downloaded",
                 })
                 _notify_batch_progress(progress_callback, {
                     "job_id": str(item.get("job_id") or ""),
+                    "works_id": works_id,
                     "downloaded": True,
                     "stage": "saved",
                 })
@@ -4970,6 +5581,7 @@ class XunFeiSession:
             return results
 
         selected, missing = self._select_download_rows(page, browser_targets)
+        _check_cancel_requested(cancel_check)
         selected_targets = [
             target for target in browser_targets
             if str(target.get("works_id") or "") in selected
@@ -4985,19 +5597,27 @@ class XunFeiSession:
             results[works_id] = result
             _notify_batch_progress(progress_callback, {
                 "job_id": str(item.get("job_id") or ""),
+                "works_id": works_id,
                 "downloaded": False,
                 "stage": "saved",
                 "error": result["error"],
             })
 
         if selected_targets:
+            _check_cancel_requested(cancel_check)
+            download_kwargs = {
+                "progress_callback": progress_callback,
+            }
+            if cancel_check is not None:
+                download_kwargs["cancel_check"] = cancel_check
             downloads = self._download_selected_rows(
                 page,
                 selected_targets,
-                progress_callback=progress_callback,
+                **download_kwargs,
             )
             remaining_downloads = list(downloads)
             for target in selected_targets:
+                _check_cancel_requested(cancel_check)
                 item = target["item"]
                 works_id = str(target.get("works_id") or "")
                 download_index = self._match_download_index(
@@ -5053,6 +5673,7 @@ class XunFeiSession:
                     _log(f"[xunfei] ❌ 下载页统一下载失败 worksId={works_id}")
                 _notify_batch_progress(progress_callback, {
                     "job_id": str(item.get("job_id") or ""),
+                    "works_id": works_id,
                     "downloaded": bool(result.get("downloaded")),
                     "stage": "downloaded" if result.get("downloaded") else "saved",
                     "error": result.get("error"),
@@ -5060,6 +5681,7 @@ class XunFeiSession:
                 if result.get("downloaded"):
                     _notify_batch_progress(progress_callback, {
                         "job_id": str(item.get("job_id") or ""),
+                        "works_id": works_id,
                         "downloaded": True,
                         "stage": "saved",
                     })
@@ -5081,7 +5703,13 @@ class XunFeiSession:
             groups.setdefault(key, []).append(job)
         return list(groups.values())
 
-    def synth_batch(self, jobs, max_retries=4, progress_callback=None):
+    def synth_batch(
+        self,
+        jobs,
+        max_retries=4,
+        progress_callback=None,
+        cancel_check=None,
+    ):
         """按音色/参数分组，先全部提交合成，最后统一下载。
 
         返回 ``job_id -> result``。单条失败会记录在对应结果中，已成功提交
@@ -5111,6 +5739,7 @@ class XunFeiSession:
             _notify_batch_progress(progress_callback, item)
 
         for group_index, group in enumerate(grouped_jobs, start=1):
+            _check_cancel_requested(cancel_check)
             if not group:
                 continue
             sample = group[0]
@@ -5122,29 +5751,119 @@ class XunFeiSession:
                 f"volume={clamp_param(sample.get('volume'))}，共 {len(group)} 条"
             )
             for job in group:
+                _check_cancel_requested(cancel_check)
                 job_id = str(job.get("job_id") or uuid.uuid4().hex)
                 try:
-                    pending_item = self._generate_pending_one(
-                        job.get("text", ""),
-                        output_name=job.get("output_name"),
-                        works_name=job.get("works_name"),
-                        max_retries=max_retries,
-                        voice_key=job.get("voice_key"),
-                        speed=job.get("speed", PARAM_DEFAULT),
-                        pitch=job.get("pitch", PARAM_DEFAULT),
-                        volume=job.get("volume", PARAM_DEFAULT),
-                    )
+                    resume_works_id = str(job.get("resume_works_id") or "").strip()
+                    ambiguous_works_name = str(
+                        job.get("ambiguous_works_name") or ""
+                    ).strip()
+                    if resume_works_id:
+                        output_name = job.get("output_name") or (
+                            f".xunfei_{uuid.uuid4().hex}.mp3"
+                        )
+                        pending_item = {
+                            "works_id": resume_works_id,
+                            "output_path": os.path.join(OUTPUT_DIR, output_name),
+                            "voice_key": str(job.get("voice_key") or DEFAULT_FEMALE),
+                            "voice_name": str(job.get("voice_name") or ""),
+                            "works_name": self._normalize_works_name(
+                                job.get("works_name")
+                            ),
+                            "speed": clamp_param(job.get("speed")),
+                            "pitch": clamp_param(job.get("pitch")),
+                            "volume": clamp_param(job.get("volume")),
+                        }
+                        resumed = True
+                        _log(
+                            f"[xunfei] ♻️ 复用已提交任务 worksId={resume_works_id} "
+                            f"job={job_id}"
+                        )
+                    elif ambiguous_works_name:
+                        output_name = job.get("output_name") or (
+                            f".xunfei_{uuid.uuid4().hex}.mp3"
+                        )
+                        works_name = self._normalize_works_name(
+                            ambiguous_works_name or job.get("works_name")
+                        )
+                        recovered_works_id = self._recover_works_id_by_name(
+                            self._page,
+                            works_name,
+                            timeout=60,
+                            cancel_check=cancel_check,
+                        )
+                        if not recovered_works_id:
+                            raise XunfeiSubmissionAmbiguous(
+                                "上次已确认提交，但仍无法按作品名定位唯一 worksId；"
+                                "不会重新提交",
+                                works_name=works_name,
+                            )
+                        pending_item = {
+                            "works_id": str(recovered_works_id),
+                            "output_path": os.path.join(OUTPUT_DIR, output_name),
+                            "voice_key": str(job.get("voice_key") or DEFAULT_FEMALE),
+                            "voice_name": str(job.get("voice_name") or ""),
+                            "works_name": works_name,
+                            "speed": clamp_param(job.get("speed")),
+                            "pitch": clamp_param(job.get("pitch")),
+                            "volume": clamp_param(job.get("volume")),
+                        }
+                        resumed = True
+                        _log(
+                            f"[xunfei] ♻️ 通过作品名找回已提交任务 "
+                            f"worksId={recovered_works_id} job={job_id}"
+                        )
+                    else:
+                        generate_kwargs = {
+                            "output_name": job.get("output_name"),
+                            "works_name": job.get("works_name"),
+                            "max_retries": max_retries,
+                            "voice_key": job.get("voice_key"),
+                            "speed": job.get("speed", PARAM_DEFAULT),
+                            "pitch": job.get("pitch", PARAM_DEFAULT),
+                            "volume": job.get("volume", PARAM_DEFAULT),
+                        }
+                        if cancel_check is not None:
+                            generate_kwargs["cancel_check"] = cancel_check
+                        pending_item = self._generate_pending_one(
+                            job.get("text", ""),
+                            **generate_kwargs,
+                        )
+                        resumed = False
                     pending_item["job_id"] = job_id
                     pending.append(pending_item)
                     # 统一下载模式下，提交每个音频段也是可见进度的一部分。
                     # 如果只等到下载页全部返回，长文档在生成阶段会一直显示 0%。
                     report_progress({
                         "job_id": job_id,
+                        "works_id": pending_item.get("works_id"),
+                        "resumed": resumed,
                         "downloaded": False,
                         "stage": "submitted",
                     })
-                except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+                except (
+                    XunfeiQuotaExceeded,
+                    XunfeiLoginRequired,
+                    XunfeiCancelled,
+                ):
                     raise
+                except XunfeiSubmissionAmbiguous as error:
+                    result = {
+                        "job_id": job_id,
+                        "downloaded": False,
+                        "ambiguous_works_id": True,
+                        "works_name": error.works_name or job.get("works_name"),
+                        "error": str(error),
+                    }
+                    results[job_id] = result
+                    report_progress({
+                        "job_id": job_id,
+                        "downloaded": False,
+                        "ambiguous_works_id": True,
+                        "works_name": result["works_name"],
+                        "stage": "saved",
+                        "error": result["error"],
+                    })
                 except Exception as error:
                     result = {
                         "job_id": job_id,
@@ -5159,14 +5878,53 @@ class XunFeiSession:
                         "error": result["error"],
                     })
 
-        if callable(progress_callback):
-            downloaded = self._download_pending_batch(
-                pending,
-                progress_callback=report_progress,
-            )
-        else:
-            downloaded = self._download_pending_batch(pending)
+        duplicate_ids = self._duplicate_pending_work_ids(pending)
+        pending_for_download = []
         for item in pending:
+            _check_cancel_requested(cancel_check)
+            works_id = str(item.get("works_id") or "")
+            if works_id not in duplicate_ids:
+                pending_for_download.append(item)
+                continue
+            job_id = str(item["job_id"])
+            error = f"本批次 worksId 重复，无法安全归属音频：{works_id}"
+            result = {
+                **item,
+                "job_id": job_id,
+                "downloaded": False,
+                "ambiguous_works_id": True,
+                "error": error,
+            }
+            results[job_id] = result
+            report_progress({
+                "job_id": job_id,
+                "works_id": works_id,
+                "ambiguous_works_id": True,
+                "downloaded": False,
+                "stage": "saved",
+                "error": error,
+            })
+
+        download_error = None
+        try:
+            _check_cancel_requested(cancel_check)
+            download_kwargs = {}
+            if callable(progress_callback):
+                download_kwargs["progress_callback"] = report_progress
+            if cancel_check is not None:
+                download_kwargs["cancel_check"] = cancel_check
+            downloaded = self._download_pending_batch(
+                pending_for_download,
+                **download_kwargs,
+            )
+        except XunfeiCancelled:
+            raise
+        except Exception as error:
+            downloaded = {}
+            download_error = f"讯飞批量统一下载异常：{error}"
+            _log(f"[xunfei] ❌ {download_error}")
+
+        for item in pending_for_download:
             job_id = str(item["job_id"])
             works_id = str(item["works_id"])
             result = downloaded.get(works_id)
@@ -5177,7 +5935,7 @@ class XunFeiSession:
                     **item,
                     "job_id": job_id,
                     "downloaded": False,
-                    "error": "合成已提交但统一下载失败",
+                    "error": download_error or "合成已提交但统一下载失败",
                 }
                 results[job_id] = result
             if callable(progress_callback) and (
@@ -5186,6 +5944,8 @@ class XunFeiSession:
             ) not in reported_progress:
                 report_progress({
                     "job_id": job_id,
+                    "works_id": str(result.get("works_id") or works_id),
+                    "works_id_invalid": bool(result.get("works_id_invalid")),
                     "downloaded": bool(result.get("downloaded")),
                     "stage": "saved",
                     "error": result.get("error"),
@@ -5198,6 +5958,7 @@ class XunFeiSession:
         max_retries=4,
         progress_callback=None,
         resume=None,
+        cancel_check=None,
     ):
         """提交多人配音作品并统一下载，返回 work_id -> 文件结果。
 
@@ -5228,6 +5989,7 @@ class XunFeiSession:
             _notify_batch_progress(progress_callback, item)
 
         for work in normalized_works:
+            _check_cancel_requested(cancel_check)
             work_id = str(work.get("work_id") or work.get("job_id") or uuid.uuid4().hex)
             work["work_id"] = work_id
             work["job_id"] = work_id
@@ -5241,6 +6003,10 @@ class XunFeiSession:
             )
             previous = resume_map.get(work_id)
             previous_id = previous.get("works_id") if isinstance(previous, dict) else None
+            previous_ambiguous = bool(
+                previous.get("ambiguous_submission")
+                or previous.get("ambiguous_works_id")
+            ) if isinstance(previous, dict) else False
             try:
                 if previous_id:
                     pending_item = {
@@ -5255,11 +6021,44 @@ class XunFeiSession:
                         f"[xunfei] ♻️ 复用多人配音作品 worksId={pending_item['works_id']} "
                         f"work={work_id}"
                     )
+                elif previous_ambiguous:
+                    works_name = self._normalize_works_name(
+                        (previous or {}).get("works_name") or work["works_name"]
+                    )
+                    recovered_works_id = self._recover_works_id_by_name(
+                        self._page,
+                        works_name,
+                        timeout=60,
+                        cancel_check=cancel_check,
+                    )
+                    if not recovered_works_id:
+                        raise XunfeiSubmissionAmbiguous(
+                            "上次已确认多人配音提交，但仍无法按作品名定位唯一 worksId；"
+                            "不会重新提交",
+                            works_name=works_name,
+                        )
+                    pending_item = {
+                        "works_id": str(recovered_works_id),
+                        "output_path": os.path.join(OUTPUT_DIR, work["output_name"]),
+                        "works_name": works_name,
+                        "work_id": work_id,
+                        "job_id": work_id,
+                        "item_count": int(work.get("item_count") or 0),
+                    }
+                    _log(
+                        f"[xunfei] ♻️ 通过作品名找回多人配音作品 "
+                        f"worksId={recovered_works_id} work={work_id}"
+                    )
                 else:
+                    generate_kwargs = {
+                        "output_name": work.get("output_name"),
+                        "max_retries": max_retries,
+                    }
+                    if cancel_check is not None:
+                        generate_kwargs["cancel_check"] = cancel_check
                     pending_item = self._generate_pending_composite(
                         work,
-                        output_name=work.get("output_name"),
-                        max_retries=max_retries,
+                        **generate_kwargs,
                     )
                     pending_item["job_id"] = work_id
                     pending_item["work_id"] = work_id
@@ -5268,11 +6067,35 @@ class XunFeiSession:
                     "work_id": work_id,
                     "job_id": work_id,
                     "works_id": pending_item.get("works_id"),
+                    "works_name": pending_item.get("works_name") or work.get("works_name"),
                     "stage": "submitted",
                     "downloaded": False,
                 })
-            except (XunfeiQuotaExceeded, XunfeiLoginRequired):
+            except (
+                XunfeiQuotaExceeded,
+                XunfeiLoginRequired,
+                XunfeiCancelled,
+            ):
                 raise
+            except XunfeiSubmissionAmbiguous as error:
+                result = {
+                    "work_id": work_id,
+                    "downloaded": False,
+                    "audio": None,
+                    "ambiguous_works_id": True,
+                    "works_name": error.works_name or work.get("works_name"),
+                    "error": str(error),
+                }
+                results[work_id] = result
+                report_progress({
+                    "work_id": work_id,
+                    "job_id": work_id,
+                    "ambiguous_works_id": True,
+                    "works_name": result["works_name"],
+                    "stage": "saved",
+                    "downloaded": False,
+                    "error": result["error"],
+                })
             except Exception as error:
                 results[work_id] = {
                     "work_id": work_id,
@@ -5288,11 +6111,60 @@ class XunFeiSession:
                     "error": str(error),
                 })
 
-        downloaded = self._download_pending_batch(
-            pending,
-            progress_callback=report_progress if callable(progress_callback) else None,
-        )
+        duplicate_ids = self._duplicate_pending_work_ids(pending)
+        pending_for_download = []
         for pending_item in pending:
+            _check_cancel_requested(cancel_check)
+            works_id = str(pending_item.get("works_id") or "")
+            if works_id not in duplicate_ids:
+                pending_for_download.append(pending_item)
+                continue
+            work_id = str(
+                pending_item.get("work_id")
+                or pending_item.get("job_id")
+                or ""
+            )
+            error = f"本批次 worksId 重复，无法安全归属音频：{works_id}"
+            results[work_id] = {
+                **pending_item,
+                "work_id": work_id,
+                "job_id": work_id,
+                "downloaded": False,
+                "audio": None,
+                "ambiguous_works_id": True,
+                "error": error,
+            }
+            report_progress({
+                "work_id": work_id,
+                "job_id": work_id,
+                "works_id": works_id,
+                "ambiguous_works_id": True,
+                "stage": "saved",
+                "downloaded": False,
+                "error": error,
+            })
+
+        download_error = None
+        try:
+            _check_cancel_requested(cancel_check)
+            download_kwargs = {
+                "progress_callback": report_progress if callable(progress_callback) else None,
+            }
+            if cancel_check is not None:
+                download_kwargs["cancel_check"] = cancel_check
+            downloaded = self._download_pending_batch(
+                pending_for_download,
+                **download_kwargs,
+            )
+        except XunfeiCancelled:
+            raise
+        except Exception as error:
+            downloaded = {}
+            download_error = f"讯飞多人配音统一下载异常：{error}"
+            _log(f"[xunfei] ❌ {download_error}")
+
+        for pending_item in pending_for_download:
+            _check_cancel_requested(cancel_check)
             work_id = str(pending_item.get("work_id") or pending_item.get("job_id") or "")
             works_id = str(pending_item.get("works_id") or "")
             result = downloaded.get(works_id)
@@ -5304,13 +6176,14 @@ class XunFeiSession:
                     "work_id": work_id,
                     "job_id": work_id,
                     "downloaded": False,
-                    "error": "多人配音作品已提交但统一下载失败",
+                    "error": download_error or "多人配音作品已提交但统一下载失败",
                 }
             if callable(progress_callback) and (work_id, "saved") not in reported_progress:
                 report_progress({
                     "work_id": work_id,
                     "job_id": work_id,
                     "works_id": works_id,
+                    "works_id_invalid": bool(results[work_id].get("works_id_invalid")),
                     "stage": "saved",
                     "downloaded": bool(results[work_id].get("downloaded")),
                     "error": results[work_id].get("error"),
@@ -5380,6 +6253,11 @@ class XunFeiSession:
                     self._page.remove_listener("response", self._response_handler)
                 except Exception:
                     pass
+            if self._page and self._request_handler:
+                try:
+                    self._page.remove_listener("request", self._request_handler)
+                except Exception:
+                    pass
             if self._ctx:
                 self._ctx.close()
         except Exception as e:
@@ -5398,10 +6276,18 @@ class XunFeiSession:
             self._current_voice_name = None
             self._applied_params = None
             self._response_handler = None
+            self._request_handler = None
+            self._confirm_click_succeeded = False
+            self._submission_state_uncertain = False
             with self._works_lock:
                 self._works_entries = []
                 self._final_works_entries = []
                 self._temporary_works_entries = []
+                self._submission_request_sequence = 0
+                self._submission_request_cutoff = 0
+                self._submission_requests = []
+                self._last_works_list_scan_complete = None
+                self._last_works_list_fetch_ok = None
                 self._sign_urls = []
                 self._api_base = {
                     "appid": "xfpy",
@@ -5589,7 +6475,7 @@ async def synth_xunfei(
     return seg
 
 
-async def synth_xunfei_batch(jobs, progress_callback=None):
+async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
     """批量讯飞合成：按音色/参数分组提交，最后统一下载并解码。
 
     ``jobs`` 中每项至少包含 ``job_id``、``text``、``voice_key``、``speed``、
@@ -5616,11 +6502,14 @@ async def synth_xunfei_batch(jobs, progress_callback=None):
         item.setdefault("works_name", f"wordtts_{index + 1:04d}_{uuid.uuid4().hex[:8]}")
         normalized_jobs.append(item)
 
+    batch_kwargs = {"progress_callback": progress_callback}
+    if cancel_check is not None:
+        batch_kwargs["cancel_check"] = cancel_check
     raw_results = await _run_playwright_sync(
         session.synth_batch,
         normalized_jobs,
         4,
-        progress_callback=progress_callback,
+        **batch_kwargs,
     )
     decoded = {}
     from pydub import AudioSegment
@@ -5631,6 +6520,22 @@ async def synth_xunfei_batch(jobs, progress_callback=None):
         if not isinstance(result, dict) or not result.get("downloaded"):
             decoded[job_id] = {
                 "segment": None,
+                "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
+                "works_id_invalid": (
+                    bool(result.get("works_id_invalid"))
+                    if isinstance(result, dict)
+                    else False
+                ),
+                "ambiguous_works_id": (
+                    bool(result.get("ambiguous_works_id"))
+                    if isinstance(result, dict)
+                    else False
+                ),
+                "works_name": (
+                    result.get("works_name")
+                    if isinstance(result, dict)
+                    else None
+                ),
                 "error": (result or {}).get("error", "讯飞批量下载失败")
                 if isinstance(result, dict) else "讯飞批量生成无结果",
             }
@@ -5670,7 +6575,12 @@ async def synth_xunfei_batch(jobs, progress_callback=None):
     return decoded
 
 
-async def synth_xunfei_composite(works, progress_callback=None, resume=None):
+async def synth_xunfei_composite(
+    works,
+    progress_callback=None,
+    resume=None,
+    cancel_check=None,
+):
     """用讯飞多人配音接口生成合并作品并解码完整 MP3。"""
     if not works:
         return {}
@@ -5699,12 +6609,17 @@ async def synth_xunfei_composite(works, progress_callback=None, resume=None):
         )
         normalized_works.append(item)
 
+    composite_kwargs = {
+        "progress_callback": progress_callback,
+        "resume": resume,
+    }
+    if cancel_check is not None:
+        composite_kwargs["cancel_check"] = cancel_check
     raw_results = await _run_playwright_sync(
         session.synth_composite,
         normalized_works,
         4,
-        progress_callback,
-        resume,
+        **composite_kwargs,
     )
     decoded = {}
     from pydub import AudioSegment
@@ -5716,6 +6631,21 @@ async def synth_xunfei_composite(works, progress_callback=None, resume=None):
             decoded[work_id] = {
                 "audio": None,
                 "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
+                "ambiguous_works_id": (
+                    bool(result.get("ambiguous_works_id"))
+                    if isinstance(result, dict)
+                    else False
+                ),
+                "works_name": (
+                    result.get("works_name")
+                    if isinstance(result, dict)
+                    else None
+                ),
+                "works_id_invalid": (
+                    bool(result.get("works_id_invalid"))
+                    if isinstance(result, dict)
+                    else False
+                ),
                 "error": (result or {}).get("error", "讯飞多人配音下载失败")
                 if isinstance(result, dict) else "讯飞多人配音生成无结果",
             }
@@ -5752,6 +6682,9 @@ async def synth_xunfei_composite(works, progress_callback=None, resume=None):
             decoded[work_id] = {
                 "audio": None,
                 "works_id": result.get("works_id"),
+                "works_id_invalid": bool(result.get("works_id_invalid")),
+                "ambiguous_works_id": bool(result.get("ambiguous_works_id")),
+                "works_name": result.get("works_name"),
                 "error": str(error),
             }
         finally:

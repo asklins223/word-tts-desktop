@@ -625,6 +625,290 @@ class DesktopGenerationTimelineTests(unittest.TestCase):
         self.assertEqual(done["file_count"], 1)
         self.assertIsNotNone(done["history_id"])
 
+    def test_batch_download_failure_persists_works_id_for_retry(self):
+        """普通批量下载失败后，下一轮只下载原作品而不再次提交计费。"""
+        session = server.SessionState("batch-works-resume")
+        session.parse_results = self._parse_results("需要重试下载的内容")
+        first_specs = []
+        second_specs = []
+
+        async def first_batch(item_specs, progress_callback=None, **_kwargs):
+            first_specs.extend(dict(spec) for spec in item_specs)
+            spec = item_specs[0]
+            item_id = str(spec["item_id"])
+            segment_id = f"{item_id}::segment:0"
+            payload = {
+                "item_id": item_id,
+                "status": "submitted",
+                "completed_segments": 1,
+                "total_segments": 1,
+                "segment_id": segment_id,
+                "works_ids": {segment_id: "works-paid-once"},
+                "ambiguous_works_ids": [],
+            }
+            await progress_callback(payload)
+            await progress_callback({
+                **payload,
+                "status": "error",
+                "completed_segments": 0,
+                "error": "下载页暂时不可用",
+            })
+            return {
+                item_id: {
+                    "audio": None,
+                    "error": "讯飞批量统一下载异常：下载页暂时不可用",
+                },
+            }
+
+        async def second_batch(item_specs, progress_callback=None, **_kwargs):
+            second_specs.extend(dict(spec) for spec in item_specs)
+            spec = item_specs[0]
+            item_id = str(spec["item_id"])
+            segment_id = f"{item_id}::segment:0"
+            self.assertEqual(
+                spec["xunfei_works_ids"],
+                {segment_id: "works-paid-once"},
+            )
+            await progress_callback({
+                "item_id": item_id,
+                "status": "submitted",
+                "completed_segments": 1,
+                "total_segments": 1,
+                "segment_id": segment_id,
+                "works_ids": {segment_id: "works-paid-once"},
+                "ambiguous_works_ids": [],
+            })
+            return {item_id: {"audio": object(), "error": None}}
+
+        def fake_export(_audio, _fmt, _quality, output_path):
+            Path(output_path).write_bytes(b"retried-audio")
+
+        async def exercise(batch):
+            with mock.patch.object(
+                server,
+                "source_fingerprint",
+                return_value={"size": 1},
+            ), mock.patch.object(
+                server.core,
+                "_synth_items_batch",
+                new=batch,
+            ), mock.patch.object(
+                server.core,
+                "export_audio",
+                side_effect=fake_export,
+            ), mock.patch.object(
+                server.core._xunfei,
+                "close_session",
+                new=mock.AsyncMock(),
+            ):
+                await server.generate_audio_stream(
+                    session,
+                    "lesson.docx",
+                    "/missing/lesson.docx",
+                    self._config(),
+                )
+
+        asyncio.run(exercise(first_batch))
+        persisted = server.core.load_progress(session.session_dir)
+        self.assertEqual(
+            persisted["items"][0]["xunfei_works_ids"],
+            {
+                f"{persisted['items'][0]['id']}::segment:0": "works-paid-once",
+            },
+        )
+        self.assertEqual(len(first_specs), 1)
+
+        asyncio.run(exercise(second_batch))
+        self.assertEqual(len(second_specs), 1)
+        self.assertTrue(session.final_done["zip_available"])
+        self.assertEqual(
+            (session.final_done["completed"], session.final_done["failed"]),
+            (1, 0),
+        )
+
+    def test_batch_invalid_works_id_is_removed_before_retry(self):
+        """讯飞确认作品不存在后，下一轮必须重新提交而不是复用坏 ID。"""
+        session = server.SessionState("batch-invalid-works-resume")
+        session.parse_results = self._parse_results("需要重新合成的内容")
+        second_specs = []
+
+        async def first_batch(item_specs, progress_callback=None, **_kwargs):
+            spec = item_specs[0]
+            item_id = str(spec["item_id"])
+            segment_id = f"{item_id}::segment:0"
+            await progress_callback({
+                "item_id": item_id,
+                "status": "submitted",
+                "completed_segments": 1,
+                "total_segments": 1,
+                "segment_id": segment_id,
+                "works_ids": {segment_id: "works-no-longer-exists"},
+                "ambiguous_works_ids": [],
+                "invalid_works_ids": [],
+            })
+            await progress_callback({
+                "item_id": item_id,
+                "status": "error",
+                "completed_segments": 0,
+                "total_segments": 1,
+                "segment_id": segment_id,
+                "works_ids": {},
+                "ambiguous_works_ids": [],
+                "invalid_works_ids": [segment_id],
+                "error": "讯飞作品列表中未找到该 worksId，已标记为失效",
+            })
+            return {
+                item_id: {
+                    "audio": None,
+                    "error": "讯飞作品列表中未找到该 worksId，已标记为失效",
+                },
+            }
+
+        async def second_batch(item_specs, **_kwargs):
+            second_specs.extend(dict(spec) for spec in item_specs)
+            self.assertEqual(item_specs[0].get("xunfei_works_ids"), {})
+            return {
+                str(spec["item_id"]): {"audio": object(), "error": None}
+                for spec in item_specs
+            }
+
+        def fake_export(_audio, _fmt, _quality, output_path):
+            Path(output_path).write_bytes(b"fresh-audio")
+
+        async def exercise(batch):
+            with mock.patch.object(
+                server,
+                "source_fingerprint",
+                return_value={"size": 1},
+            ), mock.patch.object(
+                server.core,
+                "_synth_items_batch",
+                new=batch,
+            ), mock.patch.object(
+                server.core,
+                "export_audio",
+                side_effect=fake_export,
+            ), mock.patch.object(
+                server.core._xunfei,
+                "close_session",
+                new=mock.AsyncMock(),
+            ):
+                await server.generate_audio_stream(
+                    session,
+                    "lesson.docx",
+                    "/missing/lesson.docx",
+                    self._config(),
+                )
+
+        asyncio.run(exercise(first_batch))
+        persisted = server.core.load_progress(session.session_dir)
+        self.assertEqual(persisted["items"][0]["xunfei_works_ids"], {})
+
+        asyncio.run(exercise(second_batch))
+        self.assertEqual(len(second_specs), 1)
+        self.assertTrue(session.final_done["zip_available"])
+        self.assertEqual(
+            (session.final_done["completed"], session.final_done["failed"]),
+            (1, 0),
+        )
+
+    def test_batch_ambiguous_works_name_is_persisted_and_used_for_reconciliation(self):
+        """确认提交但漏捕获 ID 时，断点只携带作品名对账，不重复提交。"""
+        session = server.SessionState("batch-ambiguous-works-resume")
+        session.parse_results = self._parse_results("需要对账的内容")
+        second_specs = []
+
+        async def first_batch(item_specs, progress_callback=None, **_kwargs):
+            spec = item_specs[0]
+            item_id = str(spec["item_id"])
+            segment_id = f"{item_id}::segment:0"
+            await progress_callback({
+                "item_id": item_id,
+                "status": "error",
+                "completed_segments": 0,
+                "total_segments": 1,
+                "segment_id": segment_id,
+                "works_ids": {},
+                "ambiguous_works_ids": [segment_id],
+                "ambiguous_works_names": {segment_id: "wordtts_paid_once"},
+                "invalid_works_ids": [],
+                "error": "已确认提交但未捕获 worksId",
+            })
+            return {
+                item_id: {
+                    "audio": None,
+                    "error": "已确认提交但未捕获 worksId",
+                },
+            }
+
+        async def second_batch(item_specs, progress_callback=None, **_kwargs):
+            second_specs.extend(dict(spec) for spec in item_specs)
+            spec = item_specs[0]
+            item_id = str(spec["item_id"])
+            segment_id = f"{item_id}::segment:0"
+            self.assertEqual(
+                spec["xunfei_ambiguous_works"],
+                {segment_id: "wordtts_paid_once"},
+            )
+            self.assertEqual(spec["xunfei_works_ids"], {})
+            await progress_callback({
+                "item_id": item_id,
+                "status": "submitted",
+                "completed_segments": 1,
+                "total_segments": 1,
+                "segment_id": segment_id,
+                "works_ids": {segment_id: "works-reconciled"},
+                "ambiguous_works_ids": [],
+                "ambiguous_works_names": {},
+                "invalid_works_ids": [],
+            })
+            return {item_id: {"audio": object(), "error": None}}
+
+        def fake_export(_audio, _fmt, _quality, output_path):
+            Path(output_path).write_bytes(b"reconciled-audio")
+
+        async def exercise(batch):
+            with mock.patch.object(
+                server,
+                "source_fingerprint",
+                return_value={"size": 1},
+            ), mock.patch.object(
+                server.core,
+                "_synth_items_batch",
+                new=batch,
+            ), mock.patch.object(
+                server.core,
+                "export_audio",
+                side_effect=fake_export,
+            ), mock.patch.object(
+                server.core._xunfei,
+                "close_session",
+                new=mock.AsyncMock(),
+            ):
+                await server.generate_audio_stream(
+                    session,
+                    "lesson.docx",
+                    "/missing/lesson.docx",
+                    self._config(),
+                )
+
+        asyncio.run(exercise(first_batch))
+        persisted = server.core.load_progress(session.session_dir)
+        self.assertEqual(
+            persisted["items"][0]["xunfei_ambiguous_works"],
+            {
+                f"{persisted['items'][0]['id']}::segment:0": "wordtts_paid_once",
+            },
+        )
+
+        asyncio.run(exercise(second_batch))
+        self.assertEqual(len(second_specs), 1)
+        self.assertTrue(session.final_done["zip_available"])
+        self.assertEqual(
+            (session.final_done["completed"], session.final_done["failed"]),
+            (1, 0),
+        )
+
     def test_composite_task_emits_work_phases_and_mode_in_done(self):
         session = server.SessionState("composite-timeline")
         session.parse_results = self._parse_results("需要合并生成的内容")

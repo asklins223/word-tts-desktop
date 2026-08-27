@@ -1337,7 +1337,7 @@ def build_composite_work_plan(
     used_ids = set()
     stored_work_ids = set()
 
-    def append_work(item_units, work_id=None):
+    def append_work(item_units, work_id=None, works_name=None):
         if not item_units:
             return
         if len(item_units) > max_items:
@@ -1348,8 +1348,15 @@ def build_composite_work_plan(
         resolved_work_id = str(work_id or _stable_composite_work_id(item_ids))
         if any(work["work_id"] == resolved_work_id for work in works):
             raise CompositePlanError("多人配音断点中存在重复作品 ID")
+        # 作品名在提交前写入讯飞页面，并作为漏捕获 worksId 时的对账键。
+        # 从稳定 work_id 派生，进程重启/断点续传时仍保持不变。
+        resolved_works_name = str(
+            works_name
+            or f"wordtts_{hashlib.sha1(resolved_work_id.encode('utf-8')).hexdigest()[:16]}"
+        )[:25]
         works.append({
             "work_id": resolved_work_id,
+            "works_name": resolved_works_name,
             "item_ids": item_ids,
             "items": item_units,
             "item_count": len(item_units),
@@ -1399,7 +1406,7 @@ def build_composite_work_plan(
             raise CompositePlanError(
                 "断点中的多人配音作品超过当前字数上限，拒绝改变作品边界"
             )
-        append_work(item_units, stored_work_id)
+        append_work(item_units, stored_work_id, stored_work.get("works_name"))
         used_ids.update(present_ids)
 
     current = []
@@ -1422,7 +1429,11 @@ def build_composite_work_plan(
     return works
 
 
-async def _synth_items_batch(item_specs, progress_callback=None):
+async def _synth_items_batch(
+    item_specs,
+    progress_callback=None,
+    cancel_check=None,
+):
     """批量生成多道题，讯飞端先按音色/参数分组后统一下载。
 
     返回 ``item_id -> {audio, error}``。每道题的多角色段落仍按照原文顺序
@@ -1432,6 +1443,8 @@ async def _synth_items_batch(item_specs, progress_callback=None):
         return {}
     if not _XUNFEI_AVAILABLE or _xunfei is None:
         raise RuntimeError("讯飞配音引擎不可用（缺少 playwright）")
+    if callable(cancel_check) and cancel_check():
+        raise asyncio.CancelledError
 
     jobs = []
     item_job_ids = {}
@@ -1452,6 +1465,16 @@ async def _synth_items_batch(item_specs, progress_callback=None):
             default_role=spec.get("default_role"),
         )
         ids = []
+        resume_works_ids = (
+            spec.get("xunfei_works_ids")
+            if isinstance(spec.get("xunfei_works_ids"), dict)
+            else {}
+        )
+        resume_ambiguous_names = (
+            spec.get("xunfei_ambiguous_works")
+            if isinstance(spec.get("xunfei_ambiguous_works"), dict)
+            else {}
+        )
         for segment in segment_specs:
             job_id = f"{item_id}::segment:{segment['segment_index']}"
             ids.append(job_id)
@@ -1465,7 +1488,16 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                 "speed": segment["speed"],
                 "pitch": segment["pitch"],
                 "volume": segment["volume"],
+                "works_name": (
+                    f"wordtts_{hashlib.sha1(job_id.encode('utf-8')).hexdigest()[:16]}"
+                ),
             })
+            resume_works_id = str(resume_works_ids.get(job_id) or "").strip()
+            if resume_works_id:
+                jobs[-1]["resume_works_id"] = resume_works_id
+            ambiguous_name = str(resume_ambiguous_names.get(job_id) or "").strip()
+            if ambiguous_name and not resume_works_id:
+                jobs[-1]["ambiguous_works_name"] = ambiguous_name
         item_job_ids[item_id] = ids
 
     batch_results = {}
@@ -1480,7 +1512,38 @@ async def _synth_items_batch(item_specs, progress_callback=None):
         submitted_jobs = {item_id: set() for item_id in item_job_ids}
         downloaded_jobs = {item_id: set() for item_id in item_job_ids}
         saved_jobs = {item_id: {} for item_id in item_job_ids}
+        submitted_works = {item_id: {} for item_id in item_job_ids}
+        ambiguous_works = {item_id: set() for item_id in item_job_ids}
+        ambiguous_work_names = {item_id: {} for item_id in item_job_ids}
+        invalid_works = {item_id: set() for item_id in item_job_ids}
+        terminal_alert_sent = {item_id: set() for item_id in item_job_ids}
         final_progress_sent = set()
+
+        def track_work_event(item_id, job_id, event):
+            works_id = str(event.get("works_id") or "").strip()
+            if event.get("works_id_invalid"):
+                invalid_works[item_id].add(job_id)
+                submitted_works[item_id].pop(job_id, None)
+                ambiguous_works[item_id].discard(job_id)
+                ambiguous_work_names[item_id].pop(job_id, None)
+            elif event.get("ambiguous_works_id"):
+                ambiguous_works[item_id].add(job_id)
+                submitted_works[item_id].pop(job_id, None)
+                works_name = str(event.get("works_name") or "").strip()
+                if works_name:
+                    ambiguous_work_names[item_id][job_id] = works_name
+            elif works_id and job_id not in ambiguous_works[item_id]:
+                ambiguous_works[item_id].discard(job_id)
+                ambiguous_work_names[item_id].pop(job_id, None)
+                submitted_works[item_id][job_id] = works_id
+
+        def work_progress_snapshot(item_id):
+            return {
+                "works_ids": dict(submitted_works[item_id]),
+                "ambiguous_works_ids": sorted(ambiguous_works[item_id]),
+                "ambiguous_works_names": dict(ambiguous_work_names[item_id]),
+                "invalid_works_ids": sorted(invalid_works[item_id]),
+            }
 
         async def consume_batch_progress():
             while True:
@@ -1492,6 +1555,7 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                 if not item_id:
                     continue
                 stage = str(event.get("stage") or "saved")
+                track_work_event(item_id, job_id, event)
                 if stage == "submitted":
                     if job_id not in submitted_jobs[item_id]:
                         submitted_jobs[item_id].add(job_id)
@@ -1501,6 +1565,8 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                                 "status": "submitted",
                                 "completed_segments": len(submitted_jobs[item_id]),
                                 "total_segments": len(item_job_ids[item_id]),
+                                "segment_id": job_id,
+                                **work_progress_snapshot(item_id),
                             })
                             if inspect.isawaitable(callback_result):
                                 await callback_result
@@ -1515,6 +1581,8 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                                 "status": "downloaded",
                                 "completed_segments": len(downloaded_jobs[item_id]),
                                 "total_segments": len(item_job_ids[item_id]),
+                                "segment_id": job_id,
+                                **work_progress_snapshot(item_id),
                             })
                             if inspect.isawaitable(callback_result):
                                 await callback_result
@@ -1522,6 +1590,32 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                             _log(f"[xunfei] 题目下载进度回调异常（已忽略）: {error}")
                 else:
                     saved_jobs[item_id][job_id] = bool(event.get("downloaded"))
+                    if (
+                        (event.get("ambiguous_works_id") or event.get("works_id_invalid"))
+                        and job_id not in terminal_alert_sent[item_id]
+                    ):
+                        terminal_alert_sent[item_id].add(job_id)
+                        try:
+                            callback_result = progress_callback({
+                                "item_id": item_id,
+                                "status": "error",
+                                "completed_segments": sum(
+                                    1 for downloaded in saved_jobs[item_id].values()
+                                    if downloaded
+                                ),
+                                "total_segments": len(item_job_ids[item_id]),
+                                "segment_id": job_id,
+                                "error": event.get("error") or (
+                                    "讯飞已确认提交但作品 ID 不确定"
+                                    if event.get("ambiguous_works_id")
+                                    else "讯飞作品 ID 已失效"
+                                ),
+                                **work_progress_snapshot(item_id),
+                            })
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
+                        except Exception as error:
+                            _log(f"[tts] 题目不确定提交状态回调异常（已忽略）: {error}")
                     if (
                         len(saved_jobs[item_id]) == len(item_job_ids[item_id])
                         and item_id not in final_progress_sent
@@ -1538,6 +1632,7 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                                 "completed_segments": len(item_job_ids[item_id]) - len(failures),
                                 "total_segments": len(item_job_ids[item_id]),
                                 "error": event.get("error") if failures else None,
+                                **work_progress_snapshot(item_id),
                             })
                             if inspect.isawaitable(callback_result):
                                 await callback_result
@@ -1560,10 +1655,23 @@ async def _synth_items_batch(item_specs, progress_callback=None):
                 progress_futures.append(future)
 
         try:
+            batch_kwargs = {"progress_callback": queue_batch_progress}
+            if cancel_check is not None:
+                batch_kwargs["cancel_check"] = cancel_check
             batch_results = await _xunfei.synth_xunfei_batch(
                 jobs,
-                progress_callback=queue_batch_progress,
+                **batch_kwargs,
             )
+        except Exception as error:
+            cancelled_type = getattr(_xunfei, "XunfeiCancelled", None)
+            if (
+                cancelled_type is not None
+                and isinstance(error, cancelled_type)
+                and callable(cancel_check)
+                and cancel_check()
+            ):
+                raise asyncio.CancelledError from error
+            raise
         finally:
             # Sync Playwright 在专用线程中调用完所有回调后才会返回；等待
             # 已排队的跨线程 put 完成，再发送结束标记，防止最后几条进度丢失。
@@ -1577,7 +1685,21 @@ async def _synth_items_batch(item_specs, progress_callback=None):
             progress_queue.put_nowait(None)
             await progress_consumer
     else:
-        batch_results = await _xunfei.synth_xunfei_batch(jobs)
+        batch_kwargs = {}
+        if cancel_check is not None:
+            batch_kwargs["cancel_check"] = cancel_check
+        try:
+            batch_results = await _xunfei.synth_xunfei_batch(jobs, **batch_kwargs)
+        except Exception as error:
+            cancelled_type = getattr(_xunfei, "XunfeiCancelled", None)
+            if (
+                cancelled_type is not None
+                and isinstance(error, cancelled_type)
+                and callable(cancel_check)
+                and cancel_check()
+            ):
+                raise asyncio.CancelledError from error
+            raise
 
     item_results = {}
     for spec in item_specs:
@@ -1610,6 +1732,7 @@ async def _synth_items_batch_composite(
     work_plan=None,
     resume=None,
     debug_dir=None,
+    cancel_check=None,
 ):
     """一次提交多人配音作品，再按安全停顿恢复为题目音频。
 
@@ -1620,6 +1743,8 @@ async def _synth_items_batch_composite(
         return {}
     if not _XUNFEI_AVAILABLE or _xunfei is None:
         raise RuntimeError("讯飞配音引擎不可用（缺少 playwright）")
+    if callable(cancel_check) and cancel_check():
+        raise asyncio.CancelledError
 
     works = build_composite_work_plan(
         item_specs,
@@ -1673,6 +1798,7 @@ async def _synth_items_batch_composite(
             "status": status,
             "stage": stage,
             "works_id": payload.get("works_id"),
+            "works_name": payload.get("works_name") or work.get("works_name"),
             "item_count": int(work.get("item_count") or 0),
             "item_ids": list(work.get("item_ids") or []),
             "total_works": len(works),
@@ -1680,6 +1806,10 @@ async def _synth_items_batch_composite(
             "downloaded_works": len(downloaded_work_ids),
             "error": payload.get("error"),
         }
+        if payload.get("ambiguous_works_id"):
+            callback_payload["ambiguous_works_id"] = True
+        if payload.get("works_id_invalid"):
+            callback_payload["works_id_invalid"] = True
         if isinstance(payload.get("cut_diagnostics"), dict):
             callback_payload["cut_diagnostics"] = dict(payload["cut_diagnostics"])
         callback_result = progress_callback(callback_payload)
@@ -1721,11 +1851,26 @@ async def _synth_items_batch_composite(
         queue_work_progress = None
 
     try:
+        composite_kwargs = {
+            "progress_callback": queue_work_progress,
+            "resume": resume_map,
+        }
+        if cancel_check is not None:
+            composite_kwargs["cancel_check"] = cancel_check
         raw_results = await _xunfei.synth_xunfei_composite(
             request_works,
-            progress_callback=queue_work_progress,
-            resume=resume_map,
+            **composite_kwargs,
         )
+    except Exception as error:
+        cancelled_type = getattr(_xunfei, "XunfeiCancelled", None)
+        if (
+            cancelled_type is not None
+            and isinstance(error, cancelled_type)
+            and callable(cancel_check)
+            and cancel_check()
+        ):
+            raise asyncio.CancelledError from error
+        raise
     finally:
         if progress_consumer is not None:
             with progress_futures_lock:
@@ -1754,6 +1899,21 @@ async def _synth_items_batch_composite(
                 "work_id": work_id,
                 "stage": "error",
                 "works_id": raw.get("works_id") if isinstance(raw, dict) else None,
+                "ambiguous_works_id": (
+                    bool(raw.get("ambiguous_works_id"))
+                    if isinstance(raw, dict)
+                    else False
+                ),
+                "works_id_invalid": (
+                    bool(raw.get("works_id_invalid"))
+                    if isinstance(raw, dict)
+                    else False
+                ),
+                "works_name": (
+                    raw.get("works_name") or work.get("works_name")
+                    if isinstance(raw, dict)
+                    else work.get("works_name")
+                ),
                 "error": message,
             })
             continue
@@ -1813,6 +1973,16 @@ async def _synth_items_batch_composite(
                 "work_id": work_id,
                 "stage": "cut_error",
                 "works_id": raw.get("works_id") if isinstance(raw, dict) else None,
+                "ambiguous_works_id": (
+                    bool(raw.get("ambiguous_works_id"))
+                    if isinstance(raw, dict)
+                    else False
+                ),
+                "works_id_invalid": (
+                    bool(raw.get("works_id_invalid"))
+                    if isinstance(raw, dict)
+                    else False
+                ),
                 "error": message,
                 "cut_diagnostics": cut_diagnostics,
             })
@@ -1958,6 +2128,11 @@ def build_progress(source_filename, source_path, parse_results, config):
                 "status": "pending",
                 "output_path": None,
                 "error": None,
+                # single_segment 批量提交后即使下载/导出失败，也保留每个
+                # 逻辑片段对应的 worksId，下一轮可以只重试下载而不重复计费。
+                "xunfei_works_ids": {},
+                # 页面已确认提交但 worksId 漏捕获时保存的作品名对账键。
+                "xunfei_ambiguous_works": {},
                 "text_preview": text_preview,
                 "merged": False,
                 "merged_count": 1,

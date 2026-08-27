@@ -408,6 +408,253 @@ class XunfeiFlowTests(unittest.TestCase):
         cleanup.assert_called_once_with(page)
         self.assertEqual(pending["works_id"], "final-id")
 
+    def test_post_submit_cleanup_failure_does_not_retry_single_generation(self):
+        """拿到 worksId 后页面清理失败不能再次提交并重复计费。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+
+        with mock.patch.object(session, "_select_voice"), \
+                mock.patch.object(session, "_apply_params"), \
+                mock.patch.object(session, "_input_text", return_value=True), \
+                mock.patch.object(session, "_mark_works_cutoff"), \
+                mock.patch.object(session, "_click_generate"), \
+                mock.patch.object(session, "_confirm_synth", return_value="ok"), \
+                mock.patch.object(session, "_consume_works_id", return_value="paid-once"), \
+                mock.patch.object(
+                    session,
+                    "_cleanup_after_item",
+                    side_effect=RuntimeError("editor cleanup failed"),
+                ), \
+                mock.patch.object(session, "_recover_and_retry") as recover:
+            pending = session._generate_pending_one(
+                "hello",
+                voice_key="amanda",
+                max_retries=2,
+            )
+
+        recover.assert_not_called()
+        self.assertEqual(pending["works_id"], "paid-once")
+
+    def test_post_submit_cleanup_failure_does_not_retry_composite_generation(self):
+        """多人配音拿到 worksId 后清理失败也不能重复提交。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+        work = {
+            "work_id": "composite:cleanup",
+            "works_name": "cleanup-test",
+            "item_ids": ["q1"],
+            "item_count": 1,
+            "items": [],
+        }
+
+        with mock.patch.object(session, "_prepare_composite_editor"), \
+                mock.patch.object(session, "_mark_works_cutoff"), \
+                mock.patch.object(session, "_click_generate"), \
+                mock.patch.object(session, "_confirm_synth", return_value="ok"), \
+                mock.patch.object(session, "_consume_works_id", return_value="paid-once"), \
+                mock.patch.object(
+                    session,
+                    "_cleanup_after_item",
+                    side_effect=RuntimeError("editor cleanup failed"),
+                ), \
+                mock.patch.object(session, "_recover_and_retry") as recover:
+            pending = session._generate_pending_composite(work, max_retries=2)
+
+        recover.assert_not_called()
+        self.assertEqual(pending["works_id"], "paid-once")
+
+    def test_confirmed_single_submit_without_works_id_is_not_retried(self):
+        """确认按钮已成功点击但漏捕获 ID 时，最多只能进入对账。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+
+        with mock.patch.object(session, "_select_voice"), \
+                mock.patch.object(session, "_apply_params"), \
+                mock.patch.object(session, "_input_text", return_value=True), \
+                mock.patch.object(session, "_mark_works_cutoff"), \
+                mock.patch.object(session, "_click_generate") as click_generate, \
+                mock.patch.object(session, "_confirm_synth", return_value="ok"), \
+                mock.patch.object(session, "_consume_works_id", return_value=None), \
+                mock.patch.object(session, "_recover_works_id_by_name", return_value=None), \
+                mock.patch.object(session, "_recover_and_retry") as recover:
+            with self.assertRaises(xunfei.XunfeiSubmissionAmbiguous) as raised:
+                session._generate_pending_one(
+                    "hello",
+                    voice_key="amanda",
+                    max_retries=3,
+                )
+
+        click_generate.assert_called_once_with(page)
+        recover.assert_not_called()
+        self.assertTrue(raised.exception.submission_confirmed)
+        self.assertTrue(raised.exception.works_name)
+
+    def test_confirmed_composite_submit_without_works_id_is_not_retried(self):
+        """多人配音确认成功但漏捕获 ID 也不能走通用重试。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+        work = {
+            "work_id": "composite:ambiguous",
+            "works_name": "ambiguous-composite",
+            "item_ids": ["q1"],
+            "item_count": 1,
+            "items": [],
+        }
+
+        with mock.patch.object(session, "_prepare_composite_editor"), \
+                mock.patch.object(session, "_mark_works_cutoff"), \
+                mock.patch.object(session, "_click_generate") as click_generate, \
+                mock.patch.object(session, "_confirm_synth", return_value="ok"), \
+                mock.patch.object(session, "_consume_works_id", return_value=None), \
+                mock.patch.object(session, "_recover_works_id_by_name", return_value=None), \
+                mock.patch.object(session, "_recover_and_retry") as recover:
+            with self.assertRaises(xunfei.XunfeiSubmissionAmbiguous):
+                session._generate_pending_composite(work, max_retries=3)
+
+        click_generate.assert_called_once_with(page)
+        recover.assert_not_called()
+
+    def test_temporary_works_id_alone_never_becomes_download_id(self):
+        """多人接口的临时 ID 不能在正式 ID 缺失时被当作可下载 ID。"""
+        session = XunFeiSession()
+        now = time.time()
+        with session._works_lock:
+            session._works_cutoff = now - 1
+            session._works_entries = [("temporary-id", now)]
+            session._temporary_works_entries = [("temporary-id", now)]
+
+        self.assertIsNone(session._consume_works_id(timeout=0.02))
+
+    def test_batch_reports_ambiguous_submission_without_attempting_download(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        events = []
+        generated = []
+        download_calls = []
+
+        def ambiguous_generate(_text, **_kwargs):
+            generated.append(_text)
+            raise xunfei.XunfeiSubmissionAmbiguous(
+                "已确认提交但未捕获 worksId",
+                works_name="wordtts_paid_once",
+            )
+
+        def should_not_download(pending, **_kwargs):
+            download_calls.append(list(pending))
+            return {}
+
+        session._generate_pending_one = ambiguous_generate
+        session._download_pending_batch = should_not_download
+        result = session.synth_batch([{
+            "job_id": "ambiguous-job",
+            "text": "hello",
+            "voice_key": "amanda",
+        }], progress_callback=events.append)
+
+        self.assertEqual(generated, ["hello"])
+        self.assertEqual(download_calls, [[]])
+        self.assertTrue(result["ambiguous-job"]["ambiguous_works_id"])
+        self.assertEqual(result["ambiguous-job"]["works_name"], "wordtts_paid_once")
+        self.assertTrue(any(event.get("ambiguous_works_id") for event in events))
+
+    def test_batch_reconciles_ambiguous_name_without_submitting_again(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        recovered = mock.Mock(return_value="works-paid-once")
+        generated = mock.Mock(side_effect=AssertionError("不能重新提交"))
+        session._recover_works_id_by_name = recovered
+        session._generate_pending_one = generated
+        session._download_pending_batch = lambda pending: {
+            item["works_id"]: {**item, "downloaded": True}
+            for item in pending
+        }
+
+        result = session.synth_batch([{
+            "job_id": "resume-ambiguous",
+            "text": "hello",
+            "voice_key": "amanda",
+            "works_name": "wordtts_paid_once",
+            "ambiguous_works_name": "wordtts_paid_once",
+        }])
+
+        generated.assert_not_called()
+        recovered.assert_called_once()
+        self.assertTrue(result["resume-ambiguous"]["downloaded"])
+        self.assertEqual(result["resume-ambiguous"]["works_id"], "works-paid-once")
+
+    def test_composite_reconciles_ambiguous_name_without_submitting_again(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        recovered = mock.Mock(return_value="composite-paid-once")
+        generated = mock.Mock(side_effect=AssertionError("不能重新提交多人作品"))
+        session._recover_works_id_by_name = recovered
+        session._generate_pending_composite = generated
+        session._download_pending_batch = lambda pending, **_kwargs: {
+            item["works_id"]: {**item, "downloaded": True}
+            for item in pending
+        }
+
+        result = session.synth_composite(
+            [{
+                "work_id": "composite-resume-ambiguous",
+                "works_name": "wordtts_composite_paid",
+                "items": [],
+                "item_count": 1,
+            }],
+            resume={
+                "composite-resume-ambiguous": {
+                    "works_name": "wordtts_composite_paid",
+                    "ambiguous_submission": True,
+                },
+            },
+        )
+
+        generated.assert_not_called()
+        recovered.assert_called_once()
+        self.assertTrue(result["composite-resume-ambiguous"]["downloaded"])
+        self.assertEqual(
+            result["composite-resume-ambiguous"]["works_id"],
+            "composite-paid-once",
+        )
+
+    def test_batch_cancel_check_stops_before_next_submission(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        generated = []
+
+        def fake_generate(text, **_kwargs):
+            generated.append(text)
+            return {
+                "works_id": f"works-{len(generated)}",
+                "output_path": f"/tmp/works-{len(generated)}.mp3",
+            }
+
+        session._generate_pending_one = fake_generate
+        session._download_pending_batch = lambda pending, **_kwargs: {}
+
+        self.assertRaises(
+            xunfei.XunfeiCancelled,
+            session.synth_batch,
+            [
+                {"job_id": "first", "text": "first", "voice_key": "amanda"},
+                {"job_id": "second", "text": "second", "voice_key": "amanda"},
+            ],
+            cancel_check=lambda: len(generated) >= 1,
+        )
+        self.assertEqual(generated, ["first"])
+
     def test_composite_rate_limit_recovery_reloads_page_before_retry(self):
         session = XunFeiSession()
         session._logged_in = True
@@ -498,7 +745,8 @@ class XunfeiFlowTests(unittest.TestCase):
         ))
 
         def emit_final_id():
-            time.sleep(0.1)
+            # 覆盖旧的 0.8s grace window，模拟网络稍慢但仍属于同一次提交。
+            time.sleep(1.0)
             session._on_response(FakeResponse(
                 "https://example.test/order_gen",
                 {
@@ -513,6 +761,48 @@ class XunfeiFlowTests(unittest.TestCase):
             self.assertEqual(session._consume_works_id(timeout=1.2), "final-id")
         finally:
             emitter.join(timeout=1)
+
+    def test_submission_response_fence_ignores_delayed_old_request(self):
+        """上一条提交的延迟 response 不能串到下一条作品。"""
+        class FakeRequest:
+            post_data_json = None
+
+            def __init__(self, impl, url):
+                self._impl_obj = impl
+                self.url = url
+
+            @staticmethod
+            def all_headers():
+                return {}
+
+        class FakeResponse:
+            def __init__(self, request, payload):
+                self.url = request.url
+                self.request = request
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        session = XunFeiSession()
+        old_impl = object()
+        session._on_request(FakeRequest(old_impl, "https://example.test/order_gen"))
+        session._mark_works_cutoff()
+
+        # response.request 使用另一个 Python 包装对象，但底层实现对象相同。
+        session._on_response(FakeResponse(
+            FakeRequest(old_impl, "https://example.test/order_gen"),
+            {"code": 0, "data": {"payOrder": {"worksId": "old-id"}}},
+        ))
+        self.assertIsNone(session._consume_works_id(timeout=0.02))
+
+        new_impl = object()
+        session._on_request(FakeRequest(new_impl, "https://example.test/order_gen"))
+        session._on_response(FakeResponse(
+            FakeRequest(new_impl, "https://example.test/order_gen"),
+            {"code": 0, "data": {"payOrder": {"worksId": "new-id"}}},
+        ))
+        self.assertEqual(session._consume_works_id(timeout=0.05), "new-id")
 
     def test_works_id_fallback_can_exclude_temporary_multi_speaker_id(self):
         session = XunFeiSession()
@@ -1136,6 +1426,216 @@ class XunfeiFlowTests(unittest.TestCase):
             ],
         )
         self.assertTrue(all(result[job["job_id"]]["downloaded"] for job in jobs))
+
+    def test_batch_download_exception_returns_each_submitted_works_id(self):
+        """统一下载页异常时也要逐条返回，供断点重试复用作品。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        generated = []
+        events = []
+
+        def fake_generate(text, **_kwargs):
+            works_id = f"works-{len(generated) + 1}"
+            generated.append(text)
+            return {
+                "works_id": works_id,
+                "output_path": f"/tmp/{works_id}.mp3",
+            }
+
+        def fail_download(_pending, **_kwargs):
+            raise xunfei.XunfeiError("下载页暂时不可用")
+
+        session._generate_pending_one = fake_generate
+        session._download_pending_batch = fail_download
+        jobs = [
+            {"job_id": "failed-1", "text": "first", "voice_key": "amanda"},
+            {"job_id": "failed-2", "text": "second", "voice_key": "amanda"},
+        ]
+
+        result = session.synth_batch(jobs, progress_callback=events.append)
+
+        self.assertEqual(generated, ["first", "second"])
+        self.assertEqual(
+            {job_id: result[job_id]["works_id"] for job_id in result},
+            {"failed-1": "works-1", "failed-2": "works-2"},
+        )
+        self.assertTrue(all(not item["downloaded"] for item in result.values()))
+        self.assertTrue(all("统一下载异常" in item["error"] for item in result.values()))
+        self.assertEqual(
+            [(event["job_id"], event["stage"], event.get("works_id")) for event in events],
+            [
+                ("failed-1", "submitted", "works-1"),
+                ("failed-2", "submitted", "works-2"),
+                ("failed-1", "saved", "works-1"),
+                ("failed-2", "saved", "works-2"),
+            ],
+        )
+
+    def test_batch_marks_missing_works_id_as_invalid_only_after_reliable_scan(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        session._page = mock.Mock()
+        session._last_works_list_scan_complete = True
+        pending = [{
+            "job_id": "missing-job",
+            "works_id": "missing-works",
+            "works_name": "missing",
+            "output_path": "/tmp/missing.mp3",
+        }]
+
+        with mock.patch.object(session, "_wait_for_pending_ready", return_value={}), \
+                mock.patch.object(session, "_fetch_works_list_pages", return_value=[]), \
+                mock.patch.object(session, "_fetch_sign_url_in_page", return_value=None), \
+                mock.patch.object(xunfei, "_safe_eval", return_value=True):
+            result = session._download_pending_batch(pending)
+
+        self.assertTrue(result["missing-works"]["works_id_invalid"])
+        self.assertIn("失效", result["missing-works"]["error"])
+
+    def test_batch_reuses_submitted_works_id_without_submitting_again(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        generated = []
+        downloads = []
+
+        def should_not_generate(text, **_kwargs):
+            generated.append(text)
+            raise AssertionError("断点重试不应再次提交讯飞合成")
+
+        def fake_download(pending):
+            downloads.append(list(pending))
+            return {
+                item["works_id"]: {**item, "downloaded": True}
+                for item in pending
+            }
+
+        session._generate_pending_one = should_not_generate
+        session._download_pending_batch = fake_download
+        result = session.synth_batch([{
+            "job_id": "resume-1",
+            "text": "same text",
+            "voice_key": "amanda",
+            "resume_works_id": "works-already-paid",
+        }])
+
+        self.assertEqual(generated, [])
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(downloads[0][0]["works_id"], "works-already-paid")
+        self.assertTrue(result["resume-1"]["downloaded"])
+
+    def test_batch_rejects_duplicate_works_ids_without_download(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        download_calls = []
+
+        def fake_generate(_text, **_kwargs):
+            return {"works_id": "same-works", "output_path": "/tmp/same.mp3"}
+
+        def fake_download(pending, **_kwargs):
+            download_calls.append(list(pending))
+            return {}
+
+        session._generate_pending_one = fake_generate
+        session._download_pending_batch = fake_download
+        result = session.synth_batch([
+            {"job_id": "duplicate-1", "text": "one", "voice_key": "amanda"},
+            {"job_id": "duplicate-2", "text": "two", "voice_key": "amanda"},
+        ])
+
+        self.assertEqual(download_calls, [[]])
+        for job_id in ("duplicate-1", "duplicate-2"):
+            self.assertFalse(result[job_id]["downloaded"])
+            self.assertTrue(result[job_id]["ambiguous_works_id"])
+            self.assertIn("重复", result[job_id]["error"])
+
+    def test_composite_rejects_duplicate_works_ids_without_download(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        download_calls = []
+
+        def fake_generate(work, **_kwargs):
+            return {
+                "works_id": "same-composite-works",
+                "output_path": f"/tmp/{work['work_id']}.mp3",
+                "works_name": work.get("works_name", "composite"),
+            }
+
+        def fake_download(pending, **_kwargs):
+            download_calls.append(list(pending))
+            return {}
+
+        session._generate_pending_composite = fake_generate
+        session._download_pending_batch = fake_download
+        result = session.synth_composite([
+            {"work_id": "composite-1", "items": []},
+            {"work_id": "composite-2", "items": []},
+        ])
+
+        self.assertEqual(download_calls, [[]])
+        for work_id in ("composite-1", "composite-2"):
+            self.assertFalse(result[work_id]["downloaded"])
+            self.assertTrue(result[work_id]["ambiguous_works_id"])
+            self.assertIn("重复", result[work_id]["error"])
+
+    def test_composite_reports_confirmed_ambiguous_submit_without_retry(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        generated = []
+        events = []
+
+        def ambiguous_generate(_work, **_kwargs):
+            generated.append(True)
+            raise xunfei.XunfeiSubmissionAmbiguous(
+                "已确认提交但未捕获 worksId",
+                works_name="wordtts_composite_paid",
+            )
+
+        session._generate_pending_composite = ambiguous_generate
+        session._download_pending_batch = lambda pending, **_kwargs: {}
+        result = session.synth_composite([{
+            "work_id": "composite-ambiguous",
+            "works_name": "wordtts_composite_paid",
+            "items": [],
+            "item_count": 1,
+        }], progress_callback=events.append)
+
+        self.assertEqual(generated, [True])
+        self.assertTrue(result["composite-ambiguous"]["ambiguous_works_id"])
+        self.assertEqual(
+            result["composite-ambiguous"]["works_name"],
+            "wordtts_composite_paid",
+        )
+        self.assertTrue(any(event.get("ambiguous_works_id") for event in events))
+
+    def test_pending_ready_scans_later_works_list_pages(self):
+        session = XunFeiSession()
+        calls = []
+
+        class FakePage:
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        def fake_fetch(_page, needed_count=1, page_index=1):
+            calls.append((needed_count, page_index))
+            if page_index == 1:
+                return [{"id": "newer", "worksName": "other"}]
+            if page_index == 2:
+                return [{
+                    "id": "target",
+                    "worksName": "target-name",
+                    "audioUrl": "https://example.test/target.mp3",
+                }]
+            return []
+
+        session._fetch_works_list_in_page = fake_fetch
+        ready = session._wait_for_pending_ready(
+            FakePage(),
+            [{"works_id": "target", "job_id": "job-target", "output_path": "/tmp/target.mp3"}],
+            timeout=0.1,
+        )
+
+        self.assertEqual(ready["target"]["download_url"], "https://example.test/target.mp3")
+        self.assertEqual([page_index for _needed, page_index in calls], [1, 2])
 
     def test_browser_download_matching_does_not_use_arrival_order(self):
         class FakeDownload:

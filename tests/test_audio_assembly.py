@@ -168,6 +168,95 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(result), {"q1", "q2"})
         self.assertTrue(all(result[item_id]["audio"] is not None for item_id in result))
 
+    async def test_batch_forwards_resume_works_id_and_persists_it_in_progress_events(self):
+        segment = self._raw_segment()
+        captured_jobs = []
+        events = []
+
+        async def fake_batch(jobs, progress_callback=None):
+            captured_jobs.extend(dict(job) for job in jobs)
+            job = jobs[0]
+            progress_callback({
+                "job_id": job["job_id"],
+                "works_id": "works-resumed",
+                "downloaded": True,
+                "stage": "downloaded",
+            })
+            progress_callback({
+                "job_id": job["job_id"],
+                "works_id": "works-resumed",
+                "downloaded": True,
+                "stage": "saved",
+            })
+            return {job["job_id"]: {"segment": segment, "error": None}}
+
+        with mock.patch.object(core._xunfei, "synth_xunfei_batch", new=fake_batch):
+            result = await core._synth_items_batch(
+                [{
+                    "item_id": "resume-q1",
+                    "text": "already submitted",
+                    "rate": 50,
+                    "volume": 50,
+                    "pitch": 50,
+                    "default_voice": core.FEMALE_VOICE,
+                    "xunfei_works_ids": {
+                        "resume-q1::segment:0": "works-resumed",
+                    },
+                }],
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(captured_jobs[0]["resume_works_id"], "works-resumed")
+        self.assertEqual(set(result), {"resume-q1"})
+        self.assertTrue(result["resume-q1"]["audio"] is not None)
+        self.assertEqual(
+            events[-1]["works_ids"],
+            {"resume-q1::segment:0": "works-resumed"},
+        )
+
+    async def test_batch_forwards_ambiguous_works_name_for_safe_retry(self):
+        events = []
+
+        async def fake_batch(jobs, progress_callback=None):
+            job = jobs[0]
+            progress_callback({
+                "job_id": job["job_id"],
+                "downloaded": False,
+                "ambiguous_works_id": True,
+                "works_name": "wordtts_paid_once",
+                "stage": "saved",
+                "error": "已确认提交但未捕获 worksId",
+            })
+            return {
+                job["job_id"]: {
+                    "segment": None,
+                    "ambiguous_works_id": True,
+                    "works_name": "wordtts_paid_once",
+                    "error": "已确认提交但未捕获 worksId",
+                },
+            }
+
+        with mock.patch.object(core._xunfei, "synth_xunfei_batch", new=fake_batch):
+            result = await core._synth_items_batch(
+                [{
+                    "item_id": "ambiguous-q1",
+                    "text": "already paid",
+                    "rate": 50,
+                    "volume": 50,
+                    "pitch": 50,
+                    "default_voice": core.FEMALE_VOICE,
+                }],
+                progress_callback=events.append,
+            )
+
+        self.assertIsNone(result["ambiguous-q1"]["audio"])
+        self.assertTrue(any(
+            event.get("ambiguous_works_names") == {
+                "ambiguous-q1::segment:0": "wordtts_paid_once",
+            }
+            for event in events
+        ))
+
     async def test_composite_batch_downloads_once_then_cuts_each_item(self):
         events = []
         tone = Sine(440).to_audio_segment(duration=700).apply_gain(-3)

@@ -1940,6 +1940,20 @@ async def _generate_audio_stream(
                 "role_voices": item_role_voices,
                 "role_configs": role_configs,
                 "default_role": item_default_role,
+                # 普通批量模式也保留已提交作品的 ID；下载/导出失败时重试
+                # 只重新下载这些作品，避免再次提交讯飞合成。
+                "xunfei_works_ids": (
+                    dict(item.get("xunfei_works_ids"))
+                    if isinstance(item.get("xunfei_works_ids"), dict)
+                    else {}
+                ),
+                # “已确认提交但 worksId 不确定”不能按普通错误重试；保留
+                # 作品名，下一轮只做列表对账，找回后再下载。
+                "xunfei_ambiguous_works": (
+                    dict(item.get("xunfei_ambiguous_works"))
+                    if isinstance(item.get("xunfei_ambiguous_works"), dict)
+                    else {}
+                ),
             })
             # 合并生成已经有作品级阶段日志；如果再为每一题写一条“已排队”，
             # 22 行对话会把日志时间线刷满，而且这些条目随后也不会单独提交。
@@ -1994,6 +2008,10 @@ async def _generate_audio_stream(
         # 连起来，避免长时间停在 0% 或从较高进度倒退。
         batch_processed_floor = float(progress["completed"] + progress["failed"])
         batch_item_progress = {}
+        progress_item_by_id = {
+            str(item.get("id") or ""): item
+            for item in progress.get("items", [])
+        }
         composite_plan = []
         composite_work_states = {}
         composite_display_completed = progress["completed"]
@@ -2109,6 +2127,82 @@ async def _generate_audio_stream(
             if not item_id or status not in {"submitted", "downloaded", "ready", "error"}:
                 return
 
+            # worksId 在普通批量模式中必须先于最终导出持久化。只保留一对一
+            # 映射；重复 ID 属于跨任务歧义，直接丢弃对应的复用资格，
+            # 不能让下一轮把同一个作品写入多个题目。
+            progress_item = progress_item_by_id.get(item_id)
+            if progress_item is not None and (
+                isinstance(event.get("works_ids"), dict)
+                or event.get("ambiguous_works_ids")
+                or isinstance(event.get("ambiguous_works_names"), dict)
+                or event.get("invalid_works_ids")
+            ):
+                raw_works = event.get("works_ids") or {}
+                ambiguous_segments = {
+                    str(value).strip()
+                    for value in (event.get("ambiguous_works_ids") or [])
+                    if str(value or "").strip()
+                }
+                invalid_segments = {
+                    str(value).strip()
+                    for value in (event.get("invalid_works_ids") or [])
+                    if str(value or "").strip()
+                }
+                ambiguous_names = {
+                    str(segment_id or "").strip(): str(works_name or "").strip()
+                    for segment_id, works_name in (event.get("ambiguous_works_names") or {}).items()
+                    if str(segment_id or "").strip() and str(works_name or "").strip()
+                }
+                excluded_segments = ambiguous_segments | invalid_segments
+                normalized_works = {}
+                for raw_segment_id, raw_works_id in raw_works.items():
+                    segment_id = str(raw_segment_id or "").strip()
+                    works_id = str(raw_works_id or "").strip()
+                    if segment_id and works_id and segment_id not in excluded_segments:
+                        normalized_works[segment_id] = works_id
+                works_counts = {}
+                for works_id in normalized_works.values():
+                    works_counts[works_id] = works_counts.get(works_id, 0) + 1
+                safe_works = {
+                    segment_id: works_id
+                    for segment_id, works_id in normalized_works.items()
+                    if works_counts[works_id] == 1
+                }
+                previous_works = progress_item.get("xunfei_works_ids")
+                previous_works = (
+                    dict(previous_works)
+                    if isinstance(previous_works, dict)
+                    else {}
+                )
+                persisted_works = {
+                    segment_id: works_id
+                    for segment_id, works_id in previous_works.items()
+                    if segment_id not in excluded_segments
+                }
+                persisted_works.update(safe_works)
+                previous_ambiguous = progress_item.get("xunfei_ambiguous_works")
+                previous_ambiguous = (
+                    dict(previous_ambiguous)
+                    if isinstance(previous_ambiguous, dict)
+                    else {}
+                )
+                persisted_ambiguous = {
+                    segment_id: works_name
+                    for segment_id, works_name in previous_ambiguous.items()
+                    if segment_id not in excluded_segments
+                    and segment_id not in safe_works
+                }
+                for segment_id in ambiguous_segments:
+                    if ambiguous_names.get(segment_id):
+                        persisted_ambiguous[segment_id] = ambiguous_names[segment_id]
+                if (
+                    previous_works != persisted_works
+                    or previous_ambiguous != persisted_ambiguous
+                ):
+                    progress_item["xunfei_works_ids"] = persisted_works
+                    progress_item["xunfei_ambiguous_works"] = persisted_ambiguous
+                    await persist_progress(progress, force=True)
+
             previous = batch_display_states.get(item_id, "pending")
             total_segments = max(1, int(event.get("total_segments") or 1))
             completed_segments = min(
@@ -2213,12 +2307,26 @@ async def _generate_audio_stream(
                 "done": 4,
                 "error": 5,
             }
-            if incoming != "error" and order.get(incoming, 0) <= order.get(previous, 0):
+            if (
+                incoming != "error"
+                and previous != "error"
+                and order.get(incoming, 0) <= order.get(previous, 0)
+            ):
                 return
 
             state["status"] = incoming
-            if event.get("works_id"):
+            if event.get("works_name"):
+                state["works_name"] = str(event["works_name"])[:25]
+            if event.get("ambiguous_works_id") or event.get("works_id_invalid"):
+                # 该 worksId 无法唯一归属或已被讯飞确认失效，不能在断点
+                # 中继续复用；否则下一轮会继续错配或永远下载同一个坏 ID。
+                state["works_id"] = None
+                state["ambiguous_submission"] = bool(
+                    event.get("ambiguous_works_id")
+                )
+            elif event.get("works_id"):
                 state["works_id"] = str(event["works_id"])
+                state["ambiguous_submission"] = False
             if isinstance(event.get("cut_diagnostics"), dict):
                 state["cut_diagnostics"] = dict(event["cut_diagnostics"])
             if incoming == "cut":
@@ -2256,7 +2364,10 @@ async def _generate_audio_stream(
                 "item_count": item_count,
                 "item_ids": list(state.get("item_ids") or []),
                 "works_id": works_id,
+                "works_name": str(state.get("works_name") or ""),
             }
+            if state.get("ambiguous_submission"):
+                work_detail["ambiguous_submission"] = True
             if isinstance(state.get("cut_diagnostics"), dict):
                 work_detail["cut_diagnostics"] = dict(state["cut_diagnostics"])
             if state.get("error"):
@@ -2366,8 +2477,17 @@ async def _generate_audio_stream(
                             "item_ids": list(work.get("item_ids") or []),
                             "item_count": int(work.get("item_count") or 0),
                             "char_count": int(work.get("char_count") or 0),
+                            "works_name": str(
+                                previous.get("works_name")
+                                or work.get("works_name")
+                                or ""
+                            ),
                             "status": previous_status,
                             "works_id": str(previous.get("works_id") or "") or None,
+                            "ambiguous_submission": bool(
+                                previous.get("ambiguous_submission")
+                                or previous.get("ambiguous_works_id")
+                            ),
                             "cut_item_count": int(previous.get("cut_item_count") or 0),
                             "cut_diagnostics": (
                                 dict(previous["cut_diagnostics"])
@@ -2415,6 +2535,7 @@ async def _generate_audio_stream(
                         work_plan=progress.get("composite_work_plan"),
                         resume=progress.get("composite_works"),
                         debug_dir=os.path.join(session_dir, "composite"),
+                        cancel_check=lambda: session.cancelled,
                     )
                 except Exception as error:
                     batch_error = str(error)
@@ -2434,6 +2555,7 @@ async def _generate_audio_stream(
                     batch_results = await core._synth_items_batch(
                         item_specs,
                         progress_callback=on_batch_item_progress,
+                        cancel_check=lambda: session.cancelled,
                     )
                 except Exception as error:
                     batch_error = str(error)
