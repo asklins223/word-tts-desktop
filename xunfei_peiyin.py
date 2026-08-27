@@ -3869,34 +3869,70 @@ class XunFeiSession:
         return compact_expected in compact_actual
 
     @classmethod
-    def _composite_ui_scope(cls, page):
-        """返回当前多人配音弹层，避免点击被背景遮罩或旧卡片拦截。"""
-        search_selector = (
+    def _composite_voice_search_selector(cls):
+        """返回多人配音弹层内的音色搜索框选择器。"""
+        return (
             'input[placeholder*="搜索主播 / 标签"]:visible, '
             'input[placeholder*="搜索主播"]:visible, '
             'input[placeholder*="输入主播名称进行搜索"]:visible, '
             'input[placeholder*="输入主播名称"]:visible'
         )
-        # 大多数调用发生在编辑器工具栏（尤其是批量停顿）上，此时
-        # 页面没有弹层。先做一次直接查询，避免每次都遍历 fixed 根节点。
-        if page.locator(search_selector).count() == 0:
-            return page
+
+    @classmethod
+    def _composite_panel_scope(cls, page, require_apply_control=True):
+        """返回真正的多人配音弹层，不把右侧栏搜索框当成弹层。
+
+        右侧普通音色栏和“多人配音”弹层都可能使用“搜索主播”占位符。
+        只有位于可见弹层根节点、且提供“使用”操作的搜索框，才属于本
+        自动化流程要操作的多人配音列表。
+        """
+        search_selector = cls._composite_voice_search_selector()
         roots = page.locator(
             'div.fixed:visible, [role="dialog"]:visible, .ant-modal:visible'
         )
+        fallback = None
         try:
             for index in range(min(roots.count(), 20)):
                 root = roots.nth(index)
-                if root.locator(
-                    'input[placeholder*="搜索主播 / 标签"]:visible, '
-                    'input[placeholder*="搜索主播"]:visible, '
-                    'input[placeholder*="输入主播名称进行搜索"]:visible, '
-                    'input[placeholder*="输入主播名称"]:visible'
-                ).count() > 0:
+                if root.locator(search_selector).count() == 0:
+                    continue
+                if fallback is None:
+                    fallback = root
+                if not require_apply_control:
+                    return root
+
+                controls = root.locator(
+                    'button:visible, [role="button"]:visible, '
+                    '[data-speaker-id]:visible, .cursor-pointer:visible'
+                )
+                metadata = controls.evaluate_all(
+                    """els => els.map(el => ({
+                        text: (el.innerText || '').trim(),
+                        disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+                    }))"""
+                )
+                if any(
+                    cls._normalize_composite_ui_text(item.get("text")) == "使用"
+                    for item in metadata
+                ):
                     return root
         except Exception:
             pass
-        return page
+        return fallback if not require_apply_control else None
+
+    @classmethod
+    def _composite_panel_search(cls, page):
+        """返回多人配音弹层搜索框；整页右侧栏搜索框不会被返回。"""
+        scope = cls._composite_panel_scope(page, require_apply_control=True)
+        if scope is None:
+            return None
+        search = scope.locator(cls._composite_voice_search_selector())
+        return search.first if search.count() > 0 else None
+
+    @classmethod
+    def _composite_ui_scope(cls, page):
+        """返回当前多人配音弹层，避免点击被右侧栏或旧卡片拦截。"""
+        return cls._composite_panel_scope(page, require_apply_control=True) or page
 
     @classmethod
     def _click_composite_ui_control(cls, page, label):
@@ -4009,14 +4045,8 @@ class XunFeiSession:
     @classmethod
     def _open_composite_voice_panel(cls, page):
         """打开“多人配音”面板，并返回其搜索框。"""
-        search_selector = (
-            'input[placeholder*="搜索主播 / 标签"]:visible, '
-            'input[placeholder*="搜索主播"]:visible, '
-            'input[placeholder*="输入主播名称进行搜索"]:visible, '
-            'input[placeholder*="输入主播名称"]:visible'
-        )
-        search = page.locator(search_selector)
-        if search.count() == 0:
+        search = cls._composite_panel_search(page)
+        if search is None:
             # 队列刚完成时工具栏按钮可能有几十到几百毫秒的 disabled
             # 状态。立即判失败会触发整组重试，客户端看起来就会慢很多；
             # 这里只等待按钮真正可用，正常路径第一次轮询即完成。
@@ -4034,19 +4064,15 @@ class XunFeiSession:
             if not clicked:
                 raise XunfeiError("未找到可用的“多人配音”按钮")
             search = _poll(
-                lambda: (
-                    page.locator(search_selector)
-                    if page.locator(search_selector).count() > 0
-                    else None
-                ),
+                lambda: cls._composite_panel_search(page),
                 timeout=8,
                 interval=0.08,
                 max_interval=0.4,
                 page=page,
             )
-        if not search or search.count() == 0:
+        if search is None or search.count() == 0:
             raise XunfeiError("“多人配音”面板未加载音色搜索框")
-        return search.first
+        return search
 
     @classmethod
     def _close_composite_voice_panel(cls, page):
@@ -4057,15 +4083,10 @@ class XunFeiSession:
         编辑器坏了。优先使用页面支持的 Escape，再在仍可见时点击面板
         内的明确关闭/取消控件；整个过程只使用浏览器可见 UI 操作。
         """
-        search_selector = (
-            'input[placeholder*="搜索主播 / 标签"]:visible, '
-            'input[placeholder*="搜索主播"]:visible, '
-            'input[placeholder*="输入主播名称进行搜索"]:visible, '
-            'input[placeholder*="输入主播名称"]:visible'
-        )
+        search = cls._composite_panel_search(page)
 
         def panel_closed():
-            return page.locator(search_selector).count() == 0
+            return cls._composite_panel_search(page) is None
 
         if panel_closed():
             return True
@@ -4085,10 +4106,11 @@ class XunFeiSession:
         # 某些页面版本不响应 Escape，但面板会渲染“关闭/取消”按钮。
         # 只在包含音色搜索框的 fixed 弹层内匹配，避免误点编辑器其它按钮。
         try:
-            search = page.locator(search_selector).first
-            scope = search.locator(
-                'xpath=ancestor::*[contains(@class, "fixed")][1]'
+            scope = cls._composite_panel_scope(
+                page, require_apply_control=True
             )
+            if scope is None or search is None:
+                return panel_closed()
             controls = scope.locator(
                 'button:visible, [role="button"]:visible'
             )

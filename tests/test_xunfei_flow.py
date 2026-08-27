@@ -315,6 +315,7 @@ class XunfeiFlowTests(unittest.TestCase):
                     <span>Amanda</span>
                     <span>语速 50 语调 50 音量 50</span>
                 </button>
+                <button class="apply">使用</button>
             </div>
         """
         with sync_playwright() as playwright:
@@ -326,6 +327,60 @@ class XunfeiFlowTests(unittest.TestCase):
                 self.assertIsNotNone(card)
                 self.assertEqual(card.evaluate("el => el.tagName"), "DIV")
                 self.assertEqual(card.locator("img").first.get_attribute("alt"), "英语-Amanda")
+            finally:
+                browser.close()
+
+    def test_composite_panel_does_not_reuse_right_sidebar_search(self):
+        """右侧栏也有同名搜索框时，必须先打开并使用多人配音弹层。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <aside id="right-sidebar">
+                <input id="sidebar-search" placeholder="搜索主播 / 标签" />
+                <button id="sidebar-card">
+                    <img alt="右侧栏-Amanda" />
+                    <span>Amanda</span>
+                </button>
+            </aside>
+            <button id="open-composite">多人配音</button>
+            <script>
+                document.getElementById('open-composite').addEventListener('click', () => {
+                    const panel = document.createElement('div');
+                    panel.id = 'composite-panel';
+                    panel.className = 'fixed';
+                    panel.style = 'display:block; width:800px; height:500px';
+                    panel.innerHTML = `
+                        <input id="composite-search" placeholder="搜索主播 / 标签" />
+                        <div id="composite-card" class="w-full cursor-pointer">
+                            <img alt="多人配音-Amanda" />
+                            <span>Amanda</span>
+                        </div>
+                        <button>使用</button>
+                    `;
+                    document.body.appendChild(panel);
+                });
+            </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                search = XunFeiSession._open_composite_voice_panel(page)
+                self.assertEqual(search.get_attribute("id"), "composite-search")
+                self.assertEqual(
+                    XunFeiSession._composite_ui_scope(page).get_attribute("id"),
+                    "composite-panel",
+                )
+                card = XunFeiSession._find_composite_voice_card(page, "Amanda")
+                self.assertEqual(card.get_attribute("id"), "composite-card")
+                self.assertEqual(
+                    page.locator("#sidebar-search").input_value(),
+                    "",
+                )
             finally:
                 browser.close()
 
