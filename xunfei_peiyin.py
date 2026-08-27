@@ -2336,10 +2336,10 @@ class XunFeiSession:
 
             send_pointerup()
             # 不逐行轮询装饰节点：讯飞会把选区装饰异步批量渲染，逐行等
-            # 反而会在打包客户端里累积数百毫秒。固定给事件 35ms 落地，
+            # 反而会在打包客户端里累积数百毫秒。固定给事件 20ms 落地，
             # 最终统一用 expected_count 回读；总数不符时由上层清空队列
             # 后重试整组，避免以速度换取漏段。
-            page.wait_for_timeout(35)
+            page.wait_for_timeout(20)
 
         # 每行加入同一队列；连续配置仍由上层合并为一个配置组，后续只
         # 点击一次“使用”，不会退化成逐段打开音色面板。
@@ -2359,9 +2359,9 @@ class XunFeiSession:
 
         actual_count = _poll(
             expected_queue_count,
-            timeout=5,
-            interval=0.15,
-            max_interval=0.6,
+            timeout=3,
+            interval=0.1,
+            max_interval=0.4,
             page=page,
         )
         if actual_count != expected_count:
@@ -3984,14 +3984,14 @@ class XunFeiSession:
         以前只按整张控件的包含文本匹配，搜索 ``Amanda`` 时可能先命中
         最近使用卡片，或者在同名前缀音色中选择到错误项。这里只接受带
         音色头像的候选，并优先选择搜索结果的非 button 卡片；候选仍然
-        不唯一时直接报错，交给上层重试，绝不盲点第一项。
+        不唯一时优先按主名称精确匹配，避免 ``Amanda`` 同时命中
+        ``Amanda-教育`` 等变体导致的长时间轮询。
         """
         scope = cls._composite_ui_scope(page)
         controls = scope.locator(
             'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
             '.cursor-pointer:visible'
         )
-        candidates = []
         try:
             metadata = controls.evaluate_all(
                 """els => els.map((el, index) => ({
@@ -4001,10 +4001,13 @@ class XunFeiSession:
                     className: typeof el.className === 'string' ? el.className : '',
                     disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
                     alt: el.querySelector('img[alt]')?.getAttribute('alt') || '',
+                    label: el.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent?.trim() || '',
                 }))"""
             )
         except Exception:
             return None
+        expected_norm = cls._normalize_composite_ui_text(voice_name)
+        candidates = []
         for item in metadata[:300]:
             index = int(item["index"])
             text = str(item.get("text") or "")
@@ -4018,29 +4021,88 @@ class XunFeiSession:
             alt = str(item.get("alt") or "")
             if not cls._composite_ui_text_matches(f"{alt} {text}", voice_name):
                 continue
-            candidates.append(
-                (
-                    str(item.get("tagName") or "").upper(),
-                    str(item.get("className") or ""),
-                    controls.nth(index),
-                )
-            )
+            label = str(item.get("label") or "")
+            candidates.append({
+                "tag": str(item.get("tagName") or "").upper(),
+                "className": str(item.get("className") or ""),
+                "control": controls.nth(index),
+                "text": text,
+                "alt": alt,
+                "label": label,
+            })
+
+        if not candidates:
+            return None
 
         # 讯飞当前页面的搜索结果是 div.w-full 卡片，最近使用列表是
         # button。保留同名情况下的搜索结果优先级，同时兼容未来把结果
         # 渲染成 button 的版本。
         preferred = [
             item for item in candidates
-            if item[0] != "BUTTON" or "w-full" in item[1]
+            if item["tag"] != "BUTTON" or "w-full" in item["className"]
         ]
-        selected = preferred or candidates
-        if len(selected) == 1:
-            return selected[0][2]
-        if len(selected) > 1:
-            raise XunfeiError(
-                f"多人配音音色候选不唯一: {voice_name}（{len(selected)} 项）"
+        pool = preferred or candidates
+        if len(pool) == 1:
+            return pool[0]["control"]
+
+        # 多候选时优先按主名称精确匹配，避免 Amanda 误命中 Amanda-教育
+        def _norm(value):
+            return cls._normalize_composite_ui_text(value)
+
+        exact = []
+        for item in pool:
+            label_norm = _norm(item.get("label") or "")
+            alt_norm = _norm(item.get("alt") or "")
+            text_norm = _norm(item.get("text") or "")
+            # label 优先精确，其次 alt 精确，其次 alt 以 "-name" 结尾的 token 精确
+            if label_norm == expected_norm:
+                exact.append(item)
+                continue
+            if alt_norm == expected_norm:
+                exact.append(item)
+                continue
+            # 兼容 alt 为 "英语-Amanda" 这类前缀形式
+            if alt_norm and expected_norm and alt_norm.split("-")[-1] == expected_norm:
+                exact.append(item)
+                continue
+            if alt_norm and expected_norm and alt_norm.split("－")[-1] == expected_norm:
+                exact.append(item)
+                continue
+            # 全文本恰好等于期望时也算精确（无额外描述的卡片）
+            if text_norm == expected_norm:
+                exact.append(item)
+                continue
+
+        if len(exact) == 1:
+            return exact[0]["control"]
+        if len(exact) > 1:
+            # 多个精确同名（极少见的重复 DOM），优先取第一个 w-full 结果
+            # 避免返回 None 导致上层长时间轮询 5 秒
+            _log(f"[xunfei]   多人配音音色精确候选仍不唯一: {voice_name}（{len(exact)} 项），取首个")
+            return exact[0]["control"]
+
+        # 无精确匹配时，按主标签长度启发式选择最接近的候选，避免长时间轮询
+        # 例如搜索 Amanda 时，Amanda(6) 比 Amanda-教育(10) 更短
+        def _score(item):
+            label_norm = _norm(item.get("label") or "")
+            # 优先用 label 长度，其次用 text 长度
+            primary = label_norm if label_norm else _norm(item.get("text") or "")
+            return len(primary)
+
+        pool_sorted = sorted(pool, key=_score)
+        if len(pool_sorted) >= 2 and _score(pool_sorted[0]) < _score(pool_sorted[1]):
+            _log(
+                f"[xunfei]   多人配音音色候选按长度启发式选择: {voice_name} -> "
+                f"{pool_sorted[0].get('label') or pool_sorted[0].get('alt') or pool_sorted[0].get('text')[:20]!r}"
             )
-        return None
+            return pool_sorted[0]["control"]
+
+        # 仍无法唯一确定时（多个候选长度相同等极少见情况），为避免上层
+        # 轮询 5 秒后才重试，直接取首个并记录，避免用户感知到 2-4 秒停顿
+        _log(
+            f"[xunfei]   多人配音音色候选仍不唯一但已无法按长度区分: {voice_name}（{len(pool)} 项），取首个"
+        )
+        return pool_sorted[0]["control"]
 
     @classmethod
     def _open_composite_voice_panel(cls, page):
@@ -4485,7 +4547,7 @@ class XunFeiSession:
             page.keyboard.type(voice_name)
             card = _poll(
                 lambda: cls._find_composite_voice_card(page, voice_name),
-                timeout=5,
+                timeout=4,
                 interval=0.08,
                 max_interval=0.35,
                 page=page,
@@ -4504,7 +4566,7 @@ class XunFeiSession:
         # 选中卡片后面板会重新挂载三项参数输入框；输入框数量出现
         # 之前，旧的输入节点也可能短暂可见。给 React 一次短落地时间，
         # 避免把参数发给上一张卡片的旧表单。
-        page.wait_for_timeout(180)
+        page.wait_for_timeout(80)
         card_ms = round((time.perf_counter() - phase_started_at) * 1000)
         params_started_at = time.perf_counter()
         cls._apply_composite_ui_params(
