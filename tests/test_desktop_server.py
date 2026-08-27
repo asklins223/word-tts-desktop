@@ -206,6 +206,28 @@ class DesktopSessionIsolationTests(unittest.TestCase):
             }
             self.assertIsNone(server.load_parse_cache(session_dir, current_fingerprint))
 
+    def test_parse_cache_rejects_previous_parser_version(self):
+        with tempfile.TemporaryDirectory() as session_dir:
+            old_fingerprint = {
+                "cache_version": server.PARSE_CACHE_VERSION,
+                "parser_version": server.core.PARSER_VERSION - 1,
+                "sha256": "same",
+                "size": 1,
+            }
+            Path(session_dir, server.SOURCE_META_FILENAME).write_text(
+                json.dumps(old_fingerprint), encoding="utf-8"
+            )
+            Path(session_dir, "parsed.json").write_text(
+                json.dumps([{"items": [{"filename_stem": "旧命名"}]}]),
+                encoding="utf-8",
+            )
+
+            current_fingerprint = {
+                **old_fingerprint,
+                "parser_version": server.core.PARSER_VERSION,
+            }
+            self.assertIsNone(server.load_parse_cache(session_dir, current_fingerprint))
+
     def test_voice_asset_cache_deduplicates_same_voice_key(self):
         with tempfile.TemporaryDirectory() as cache_dir:
             original_cache_dir = server.VOICE_ASSET_CACHE_DIR

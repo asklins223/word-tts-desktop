@@ -27,7 +27,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { normalizePersistedConfig, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, voiceAssetCacheReady };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, voiceAssetCacheReady };`, context);
     return { api: context.__rendererTests, storage };
 }
 
@@ -68,6 +68,28 @@ test('生成方式预设支持默认合并模式和原有单条模式', () => {
         api.normalizePersistedConfig({ generation_mode: 'unsupported' }).generation_mode,
         'composite_cut',
     );
+});
+
+test('男女默认音色相同时仍保持各自的默认语速', () => {
+    const { api } = loadRendererConfigFunctions();
+    const normalized = api.normalizeClientConfig({
+        default_female_voice: 'speaker:shared',
+        default_male_voice: 'speaker:shared',
+        voice_configs: { 'speaker:shared': { volume: 60 } },
+    });
+
+    assert.deepEqual(JSON.parse(JSON.stringify(normalized.role_configs)), {
+        __default_female__: { rate: 50, volume: 60, pitch: 50 },
+        __default_male__: { rate: 35, volume: 60, pitch: 50 },
+    });
+});
+
+test('前端音色参数对非有限数字与后端保持一致', () => {
+    const { api } = loadRendererConfigFunctions();
+
+    assert.equal(api.clampParamValue(Infinity), 50);
+    assert.equal(api.clampParamValue(-Infinity), 50);
+    assert.equal(api.clampParamValue('not-a-number'), 50);
 });
 
 test('当前配置写入 localStorage 前会清理旧角色数据', () => {

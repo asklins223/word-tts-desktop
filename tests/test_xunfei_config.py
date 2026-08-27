@@ -40,6 +40,14 @@ class XunfeiConfigTests(unittest.TestCase):
             config["generation_mode"],
             core.GENERATION_MODE_COMPOSITE,
         )
+        self.assertEqual(
+            config["role_configs"][core.DEFAULT_FEMALE_ROLE_KEY],
+            {"rate": 50, "pitch": 50, "volume": 50},
+        )
+        self.assertEqual(
+            config["role_configs"][core.DEFAULT_MALE_ROLE_KEY],
+            {"rate": 35, "pitch": 50, "volume": 50},
+        )
 
     def test_generation_mode_accepts_legacy_single_segment_and_defaults_safely(self):
         self.assertEqual(
@@ -181,6 +189,22 @@ class XunfeiConfigTests(unittest.TestCase):
         self.assertEqual(
             config["role_configs"]["role:reporter"],
             {"rate": 70, "volume": 80, "pitch": 90},
+        )
+
+    def test_same_voice_migration_keeps_gender_specific_defaults(self):
+        config = core.normalize_tts_config({
+            "default_female_voice": "speaker:shared",
+            "default_male_voice": "speaker:shared",
+            "voice_configs": {"speaker:shared": {"volume": 60}},
+        })
+
+        self.assertEqual(
+            config["role_configs"][core.DEFAULT_FEMALE_ROLE_KEY],
+            {"rate": 50, "volume": 60, "pitch": 50},
+        )
+        self.assertEqual(
+            config["role_configs"][core.DEFAULT_MALE_ROLE_KEY],
+            {"rate": 35, "volume": 60, "pitch": 50},
         )
 
 

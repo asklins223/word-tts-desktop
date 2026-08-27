@@ -200,12 +200,15 @@ BACKEND_CONTRACT_VERSION = 5
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则、音频边界等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 13
+PARSER_VERSION = 14
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
+# 女声 Amanda 默认 50/50/50，男声 George 默认 35/50/50（语速 35）。
 TTS_PARAM_MIN = 0
 TTS_PARAM_MAX = 100
 TTS_PARAM_DEFAULT = 50
+TTS_FEMALE_RATE_DEFAULT = 50
+TTS_MALE_RATE_DEFAULT = 35
 TTS_CONFIG_VERSION = 5
 DEFAULT_FEMALE_ROLE_KEY = "__default_female__"
 DEFAULT_MALE_ROLE_KEY = "__default_male__"
@@ -329,6 +332,17 @@ def normalize_tts_config(config=None):
         "volume": clamp_tts_param(raw.get("volume", TTS_PARAM_DEFAULT)),
         "pitch": clamp_tts_param(raw.get("pitch", TTS_PARAM_DEFAULT)),
     }
+    # 女声/男声的独立默认值：Amanda 50/50/50，George 35/50/50
+    female_base_params = {
+        "rate": TTS_FEMALE_RATE_DEFAULT,
+        "volume": TTS_PARAM_DEFAULT,
+        "pitch": TTS_PARAM_DEFAULT,
+    }
+    male_base_params = {
+        "rate": TTS_MALE_RATE_DEFAULT,
+        "volume": TTS_PARAM_DEFAULT,
+        "pitch": TTS_PARAM_DEFAULT,
+    }
     default_female_voice = _normalize_voice_key(
         raw.get("default_female_voice"), FEMALE_VOICE
     )
@@ -337,19 +351,23 @@ def normalize_tts_config(config=None):
     )
 
     voice_configs = {}
+    legacy_voice_configs = {}
     raw_voice_configs = raw.get("voice_configs")
     if isinstance(raw_voice_configs, dict):
         for key, value in raw_voice_configs.items():
             normalized_key = _normalize_voice_key(key, "")
             if normalized_key:
-                voice_configs[normalized_key] = _normalize_voice_params(value, base_params)
+                legacy_voice_configs[normalized_key] = value
+                # 兼容旧版按音色保存的配置：若该音色为默认男声且未显式指定 rate，则按男声默认值 35 回退
+                fallback = male_base_params if normalized_key == default_male_voice else female_base_params if normalized_key == default_female_voice else base_params
+                voice_configs[normalized_key] = _normalize_voice_params(value, fallback)
     voice_configs.setdefault(
         default_female_voice,
-        _normalize_voice_params(None, base_params),
+        _normalize_voice_params(None, female_base_params),
     )
     voice_configs.setdefault(
         default_male_voice,
-        _normalize_voice_params(None, base_params),
+        _normalize_voice_params(None, male_base_params),
     )
 
     role_voices = {}
@@ -370,14 +388,27 @@ def normalize_tts_config(config=None):
         for key, value in raw_role_configs.items():
             normalized_key = normalize_role_config_key(key)
             if normalized_key:
-                role_configs[normalized_key] = _normalize_voice_params(value, base_params)
+                # 按角色区分默认语速：男声默认 35，女声及其他角色默认 50
+                fallback = male_base_params if normalized_key == DEFAULT_MALE_ROLE_KEY else female_base_params if normalized_key == DEFAULT_FEMALE_ROLE_KEY else base_params
+                role_configs[normalized_key] = _normalize_voice_params(value, fallback)
+    def legacy_params_for_role(voice_key, fallback):
+        # 男女默认槽位允许选择同一个音色。此时不能从已经规范化的共享
+        # voice_configs 读取，否则先建立的女声 50 会覆盖男声 35；只从
+        # 原始按音色配置迁移，并让各槽位使用自己的默认值。
+        source = (
+            legacy_voice_configs.get(voice_key)
+            if default_female_voice == default_male_voice
+            else voice_configs.get(voice_key)
+        )
+        return _normalize_voice_params(source, fallback)
+
     role_configs.setdefault(
         DEFAULT_FEMALE_ROLE_KEY,
-        _normalize_voice_params(voice_configs.get(default_female_voice), base_params),
+        legacy_params_for_role(default_female_voice, female_base_params),
     )
     role_configs.setdefault(
         DEFAULT_MALE_ROLE_KEY,
-        _normalize_voice_params(voice_configs.get(default_male_voice), base_params),
+        legacy_params_for_role(default_male_voice, male_base_params),
     )
 
     # 兼容旧前端的全局三参数，同时保留每个音色/角色的独立配置。

@@ -158,7 +158,7 @@ MAX_HISTORY_RECORDS = 20
 PROGRESS_SAVE_ITEM_INTERVAL = 5
 PROGRESS_SAVE_INTERVAL_SECONDS = 1.0
 STATS_EMIT_INTERVAL_SECONDS = 0.12
-PARSE_CACHE_VERSION = 9
+PARSE_CACHE_VERSION = 10
 SOURCE_META_FILENAME = "source_fingerprint.json"
 SESSION_DIR_PREFIX = "session_"
 HISTORY_MANIFEST_FILENAME = "history.json"
@@ -300,6 +300,7 @@ def source_fingerprint(filepath: str) -> dict:
             digest.update(chunk)
     return {
         "cache_version": PARSE_CACHE_VERSION,
+        "parser_version": core.PARSER_VERSION,
         "sha256": digest.hexdigest(),
         "size": size,
     }

@@ -10,7 +10,7 @@ from docx import Document
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "word_parser"))
 
-from word_parser import TextReadingParser  # noqa: E402
+from word_parser import TextReadingParser, detect_doc_type, split_sentences  # noqa: E402
 
 
 class TextReadingRuleTests(unittest.TestCase):
@@ -121,14 +121,13 @@ class TextReadingRuleTests(unittest.TestCase):
 
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
-            ["SB语篇1", "SB语篇2", "SB语篇3"],
+            ["SB语篇1", "SB语篇2", "SB语篇3", "SB语篇4", "SB语篇5"],
         )
-        self.assertEqual(discourses[0]["text"], "Welcome\nA short introduction.")
-        self.assertEqual(
-            discourses[1]["text"],
-            "The first story\nThe first story text is here.",
-        )
-        self.assertEqual(discourses[2]["text"], "A second paragraph follows.")
+        self.assertEqual(discourses[0]["text"], "Welcome")
+        self.assertEqual(discourses[1]["text"], "A short introduction.")
+        self.assertEqual(discourses[2]["text"], "The first story")
+        self.assertEqual(discourses[3]["text"], "The first story text is here.")
+        self.assertEqual(discourses[4]["text"], "A second paragraph follows.")
 
     def test_legacy_format_keeps_legacy_sentence_splitting(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -209,7 +208,7 @@ class TextReadingRuleTests(unittest.TestCase):
         self.assertEqual(parser._detect_section_ab_profile()["role_audio_mode"], "per_role")
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
-            ["SB-语-C1-1", "SB-语-C1-2"],
+            ["SB语篇-C1-1", "SB语篇-C1-2"],
         )
         self.assertEqual([item["role"] for item in discourses], ["Teng Fei", "Emma"])
 
@@ -247,7 +246,7 @@ class TextReadingRuleTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
-            ["SA-语-C3-1", "SA-语-C3-2", "SA-语-C4-3", "SA-语-C4-4"],
+            ["SA语篇-C3-1", "SA语篇-C3-2", "SA语篇-C4-1", "SA语篇-C4-2"],
         )
 
     def test_isolated_section_marker_does_not_switch_to_new_parser(self):
@@ -315,10 +314,123 @@ class TextReadingRuleTests(unittest.TestCase):
         discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
-            ["RP语篇1", "RP语篇2", "RP语篇3"],
+            ["RP语篇1", "RP语篇2", "RP语篇3", "RP语篇4"],
         )
         self.assertTrue(all(item["section"] == "Reading Plus" for item in discourses))
-        self.assertEqual(discourses[1]["text"], "Small title\nSmall title paragraph.")
+        self.assertEqual(discourses[1]["text"], "Small title")
+        self.assertEqual(discourses[2]["text"], "Small title paragraph.")
+
+    def test_sentence_splitter_keeps_common_english_abbreviations_together(self):
+        self.assertEqual(
+            split_sentences(
+                "Mr. Brown went home. Dr. Smith stayed. "
+                "The U.S. President arrived. For example, e.g. this is one sentence."
+            ),
+            [
+                "Mr. Brown went home.",
+                "Dr. Smith stayed.",
+                "The U.S. President arrived.",
+                "For example, e.g. this is one sentence.",
+            ],
+        )
+
+    def test_vocabulary_type_is_only_detected_for_excel_templates(self):
+        self.assertEqual(detect_doc_type("U6单词导入模板.xlsx"), "词汇")
+        self.assertIsNone(detect_doc_type("词汇-G7-u1.docx"))
+
+    def test_unformatted_short_body_is_not_treated_as_a_heading(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-标题格式提示样本.docx")
+            document = Document()
+            for text in ["课程跟读-标题格式提示样本", "Section B", "语篇跟读"]:
+                document.add_paragraph(text)
+            title = document.add_paragraph()
+            title_run = title.add_run("Article title")
+            title_run.bold = True
+            document.add_paragraph("This is a short paragraph. Another clause")
+            document.add_paragraph("Final sentence.")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        self.assertEqual(
+            [item["text"] for item in discourses],
+            [
+                "Article title",
+                "This is a short paragraph.",
+                "Another clause",
+                "Final sentence.",
+            ],
+        )
+
+    def test_content_before_first_conversation_is_not_dropped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-Conversation前置正文.docx")
+            document = Document()
+            for text in [
+                "课程跟读-Conversation前置正文",
+                "Section B",
+                "段落跟读",
+                "Introductory paragraph.",
+                "Conversation 1",
+                "Teacher: Welcome.",
+                "Student: Thank you.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        paragraphs = [item for item in result["items"] if item["category"] == "段落跟读"]
+        self.assertEqual(
+            [item["text"] for item in paragraphs],
+            ["Introductory paragraph.", "Teacher: Welcome.", "Student: Thank you."],
+        )
+
+    def test_discourse_content_before_first_conversation_is_not_dropped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-语篇Conversation前置正文.docx")
+            document = Document()
+            for text in [
+                "课程跟读-语篇Conversation前置正文",
+                "Section B",
+                "语篇跟读",
+                "Introductory paragraph.",
+                "Conversation 1",
+                "Teacher: Welcome.",
+                "Student: Thank you.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        self.assertEqual(
+            [item["text"] for item in discourses],
+            ["Introductory paragraph.", "Teacher: Welcome.", "Student: Thank you."],
+        )
+        self.assertEqual(
+            [item["filename_stem"] for item in discourses],
+            ["SB语篇1", "SB语篇-C1-1", "SB语篇-C1-2"],
+        )
+
+    def test_heading_format_hint_only_applies_to_first_unit_of_a_paragraph(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-同段落标题正文.docx")
+            document = Document()
+            for text in ["课程跟读-同段落标题正文", "Section B", "语篇跟读"]:
+                document.add_paragraph(text)
+            paragraph = document.add_paragraph()
+            first_run = paragraph.add_run("// Small title")
+            first_run.bold = True
+            paragraph.add_run("\nThe body remains a sentence.")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        self.assertEqual(
+            [item["text"] for item in discourses],
+            ["Small title", "The body remains a sentence."],
+        )
 
 
 if __name__ == "__main__":

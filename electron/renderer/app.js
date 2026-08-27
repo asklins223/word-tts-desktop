@@ -47,6 +47,8 @@ const DEFAULT_FEMALE_ROLE_KEY = '__default_female__';
 const DEFAULT_MALE_ROLE_KEY = '__default_male__';
 const ROLE_CONFIG_PREFIX = 'role:';
 const DEFAULT_VOICE_PARAMS = { rate: 50, volume: 50, pitch: 50 };
+const DEFAULT_FEMALE_VOICE_PARAMS = { rate: 50, volume: 50, pitch: 50 };
+const DEFAULT_MALE_VOICE_PARAMS = { rate: 35, volume: 50, pitch: 50 };
 const GENERATION_MODE_COMPOSITE = 'composite_cut';
 const GENERATION_MODE_SINGLE = 'single_segment';
 const DEFAULT_GENERATION_MODE = GENERATION_MODE_COMPOSITE;
@@ -310,7 +312,7 @@ function renderStep2PresetSelect() {
 function clampParamValue(v) {
     if (v === null || v === undefined || v === '') return 50;
     const n = Math.round(Number(v));
-    if (Number.isNaN(n)) return 50;
+    if (!Number.isFinite(n)) return 50;
     return Math.min(100, Math.max(0, n));
 }
 
@@ -323,7 +325,9 @@ function normalizeRoleKeyClient(value) {
     return String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('zh-CN').slice(0, 80);
 }
 
-function createDefaultVoiceParams() {
+function createDefaultVoiceParams(roleKey = null) {
+    if (roleKey === DEFAULT_MALE_ROLE_KEY) return { ...DEFAULT_MALE_VOICE_PARAMS };
+    if (roleKey === DEFAULT_FEMALE_ROLE_KEY) return { ...DEFAULT_FEMALE_VOICE_PARAMS };
     return { ...DEFAULT_VOICE_PARAMS };
 }
 
@@ -410,7 +414,7 @@ function normalizeClientConfig(config = {}) {
         '192 kbps（高）',
         '320 kbps（极高）',
     ];
-    const baseParams = normalizeVoiceParams(raw);
+    const baseParams = normalizeVoiceParams(raw, DEFAULT_VOICE_PARAMS);
     const defaultFemaleVoice = normalizeVoiceKey(
         raw.default_female_voice || currentConfig?.default_female_voice,
         'amanda',
@@ -420,15 +424,22 @@ function normalizeClientConfig(config = {}) {
         'george',
     );
     const normalizedVoiceConfigs = {};
+    const legacyVoiceConfigValues = {};
     const rawVoiceConfigs = raw.voice_configs && typeof raw.voice_configs === 'object'
         ? raw.voice_configs
         : {};
     Object.entries(rawVoiceConfigs).slice(0, 512).forEach(([key, value]) => {
         const normalizedKey = normalizeVoiceKey(key);
-        if (normalizedKey) normalizedVoiceConfigs[normalizedKey] = normalizeVoiceParams(value, baseParams);
+        if (normalizedKey) {
+            legacyVoiceConfigValues[normalizedKey] = value;
+            let fallback = baseParams;
+            if (normalizedKey === defaultMaleVoice || normalizedKey === 'george') fallback = DEFAULT_MALE_VOICE_PARAMS;
+            else if (normalizedKey === defaultFemaleVoice || normalizedKey === 'amanda') fallback = DEFAULT_FEMALE_VOICE_PARAMS;
+            normalizedVoiceConfigs[normalizedKey] = normalizeVoiceParams(value, fallback);
+        }
     });
-    if (!normalizedVoiceConfigs[defaultFemaleVoice]) normalizedVoiceConfigs[defaultFemaleVoice] = { ...baseParams };
-    if (!normalizedVoiceConfigs[defaultMaleVoice]) normalizedVoiceConfigs[defaultMaleVoice] = { ...baseParams };
+    if (!normalizedVoiceConfigs[defaultFemaleVoice]) normalizedVoiceConfigs[defaultFemaleVoice] = { ...DEFAULT_FEMALE_VOICE_PARAMS };
+    if (!normalizedVoiceConfigs[defaultMaleVoice]) normalizedVoiceConfigs[defaultMaleVoice] = { ...DEFAULT_MALE_VOICE_PARAMS };
 
     const normalizedRoleConfigs = {};
     const rawRoleConfigs = raw.role_configs && typeof raw.role_configs === 'object'
@@ -436,20 +447,31 @@ function normalizeClientConfig(config = {}) {
         : {};
     Object.entries(rawRoleConfigs).slice(0, 512).forEach(([key, value]) => {
         const normalizedKey = normalizeRoleConfigKeyClient(key);
-        if (normalizedKey) normalizedRoleConfigs[normalizedKey] = normalizeVoiceParams(value, baseParams);
+        if (normalizedKey) {
+            let fallback = baseParams;
+            if (normalizedKey === DEFAULT_MALE_ROLE_KEY) fallback = DEFAULT_MALE_VOICE_PARAMS;
+            else if (normalizedKey === DEFAULT_FEMALE_ROLE_KEY) fallback = DEFAULT_FEMALE_VOICE_PARAMS;
+            normalizedRoleConfigs[normalizedKey] = normalizeVoiceParams(value, fallback);
+        }
     });
     // 旧版配置按音色保存参数。首次升级时将旧值复制到两个默认槽位，
     // 之后槽位各自维护，不再因为选用了同一音色而互相覆盖。
+    const legacyParamsForRole = (voiceKey, fallback) => normalizeVoiceParams(
+        defaultFemaleVoice === defaultMaleVoice
+            ? legacyVoiceConfigValues[voiceKey]
+            : normalizedVoiceConfigs[voiceKey],
+        fallback,
+    );
     if (!normalizedRoleConfigs[DEFAULT_FEMALE_ROLE_KEY]) {
         normalizedRoleConfigs[DEFAULT_FEMALE_ROLE_KEY] = normalizeVoiceParams(
-            normalizedVoiceConfigs[defaultFemaleVoice],
-            baseParams,
+            legacyParamsForRole(defaultFemaleVoice, DEFAULT_FEMALE_VOICE_PARAMS),
+            DEFAULT_FEMALE_VOICE_PARAMS,
         );
     }
     if (!normalizedRoleConfigs[DEFAULT_MALE_ROLE_KEY]) {
         normalizedRoleConfigs[DEFAULT_MALE_ROLE_KEY] = normalizeVoiceParams(
-            normalizedVoiceConfigs[defaultMaleVoice],
-            baseParams,
+            legacyParamsForRole(defaultMaleVoice, DEFAULT_MALE_VOICE_PARAMS),
+            DEFAULT_MALE_VOICE_PARAMS,
         );
     }
 
@@ -857,7 +879,7 @@ function discoverVoiceRoles(parseResults = currentSession?.parse_results) {
     }
     roles.forEach(role => {
         const configKey = roleConfigKeyForRole(role);
-        if (!voiceParamConfigs[configKey]) voiceParamConfigs[configKey] = createDefaultVoiceParams();
+        if (!voiceParamConfigs[configKey]) voiceParamConfigs[configKey] = createDefaultVoiceParams(configKey);
     });
     if (!roles.some(role => role.key === activeVoiceRole)) activeVoiceRole = roles[0].key;
     const roleCount = $('voice-role-count');
@@ -873,11 +895,11 @@ function resetTaskVoiceConfiguration() {
     voiceParamConfigs = {
         [DEFAULT_FEMALE_ROLE_KEY]: normalizeVoiceParams(
             voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY],
-            DEFAULT_VOICE_PARAMS,
+            DEFAULT_FEMALE_VOICE_PARAMS,
         ),
         [DEFAULT_MALE_ROLE_KEY]: normalizeVoiceParams(
             voiceParamConfigs[DEFAULT_MALE_ROLE_KEY],
-            DEFAULT_VOICE_PARAMS,
+            DEFAULT_MALE_VOICE_PARAMS,
         ),
     };
     activeVoiceRole = DEFAULT_FEMALE_ROLE_KEY;
@@ -894,7 +916,7 @@ function activeVoiceKeyForRole(role = voiceRoles.find(item => item.key === activ
 function activeVoiceParams() {
     const role = voiceRoles.find(item => item.key === activeVoiceRole);
     const configKey = roleConfigKeyForRole(role || activeVoiceRole);
-    if (!voiceParamConfigs[configKey]) voiceParamConfigs[configKey] = createDefaultVoiceParams();
+    if (!voiceParamConfigs[configKey]) voiceParamConfigs[configKey] = createDefaultVoiceParams(configKey);
     return voiceParamConfigs[configKey];
 }
 
@@ -1084,7 +1106,7 @@ function selectVoiceForActiveRole(key) {
     else if (role?.kind === 'default-female') selectedDefaultFemaleVoice = normalizedKey;
     else roleVoiceMap[activeVoiceRole] = normalizedKey;
     const configKey = roleConfigKeyForRole(role || activeVoiceRole);
-    if (!voiceParamConfigs[configKey]) voiceParamConfigs[configKey] = createDefaultVoiceParams();
+    if (!voiceParamConfigs[configKey]) voiceParamConfigs[configKey] = createDefaultVoiceParams(configKey);
     rememberVoiceUse(normalizedKey);
     void queueVoiceAssetCache(normalizedKey);
     renderVoiceWorkspace();
@@ -1313,11 +1335,11 @@ function applyConfigToForm(config, { includeRoles = true } = {}) {
     const defaultRoleConfigs = {
         [DEFAULT_FEMALE_ROLE_KEY]: normalizeVoiceParams(
             normalized.role_configs?.[DEFAULT_FEMALE_ROLE_KEY],
-            DEFAULT_VOICE_PARAMS,
+            DEFAULT_FEMALE_VOICE_PARAMS,
         ),
         [DEFAULT_MALE_ROLE_KEY]: normalizeVoiceParams(
             normalized.role_configs?.[DEFAULT_MALE_ROLE_KEY],
-            DEFAULT_VOICE_PARAMS,
+            DEFAULT_MALE_VOICE_PARAMS,
         ),
     };
     if (includeRoles) {
@@ -1330,8 +1352,8 @@ function applyConfigToForm(config, { includeRoles = true } = {}) {
         voiceParamConfigs = { ...existingTaskRoleConfigs, ...defaultRoleConfigs };
         roleVoiceMap = existingTaskRoleVoiceMap;
     }
-    voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] ||= createDefaultVoiceParams();
-    voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] ||= createDefaultVoiceParams();
+    voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] ||= createDefaultVoiceParams(DEFAULT_FEMALE_ROLE_KEY);
+    voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] ||= createDefaultVoiceParams(DEFAULT_MALE_ROLE_KEY);
     renderVoiceWorkspace();
     setSelectValue($('format'), normalized.format, 'mp3');
     setSelectValue($('quality'), normalized.quality, '128 kbps（标准）');
@@ -2210,8 +2232,8 @@ async function loadConfig() {
                 voiceParamConfigs = Object.fromEntries(
                     Object.entries(normalized.role_configs || {}).map(([key, value]) => [key, { ...value }]),
                 );
-                if (!voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] = createDefaultVoiceParams();
-                if (!voiceParamConfigs[DEFAULT_MALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] = createDefaultVoiceParams();
+                if (!voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_FEMALE_ROLE_KEY] = createDefaultVoiceParams(DEFAULT_FEMALE_ROLE_KEY);
+                if (!voiceParamConfigs[DEFAULT_MALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] = createDefaultVoiceParams(DEFAULT_MALE_ROLE_KEY);
                 clientConfigInitialized = true;
             }
             renderVoiceWorkspace();
@@ -2822,8 +2844,8 @@ function collectConfig(useDefaults) {
             default_female_voice: currentConfig?.default_female_voice || 'amanda',
             default_male_voice: currentConfig?.default_male_voice || 'george',
             role_configs: {
-                [DEFAULT_FEMALE_ROLE_KEY]: createDefaultVoiceParams(),
-                [DEFAULT_MALE_ROLE_KEY]: createDefaultVoiceParams(),
+                [DEFAULT_FEMALE_ROLE_KEY]: createDefaultVoiceParams(DEFAULT_FEMALE_ROLE_KEY),
+                [DEFAULT_MALE_ROLE_KEY]: createDefaultVoiceParams(DEFAULT_MALE_ROLE_KEY),
             },
             role_voices: {},
         });

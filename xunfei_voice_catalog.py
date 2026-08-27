@@ -20,9 +20,12 @@ from typing import Any, Iterable
 SPEAKER_FLAT_LIST_URL = (
     "https://peiyin.xunfei.cn/video-api/proxy-zhizuo/api/asset/speaker/flat/list"
 )
-COMMON_SPEAKERS_URL = (
-    "https://peiyin.xunfei.cn/video-api/asset/qry_common_speakers"
+SPEAKER_COMMON_LIST_URL = (
+    "https://peiyin.xunfei.cn/video-api/proxy-zhizuo/api/asset/speaker/common/list"
 )
+# 旧名称保留给外部调用方；实现已经切换到网页多人配音实际使用的
+# speaker/common/list 接口，不再调用历史的 qry_common_speakers 接口。
+COMMON_SPEAKERS_URL = SPEAKER_COMMON_LIST_URL
 
 HEADERS = {
     "User-Agent": (
@@ -43,6 +46,14 @@ DEFAULT_MALE_KEY = "george"
 def _provider_success_code(value: Any) -> bool:
     """兼容目录接口返回数字或字符串形式的成功码。"""
     return value is not None and str(value).strip() in {"0", "000000", "200"}
+
+
+def _safe_int(value: Any) -> int:
+    """读取分页元数据；服务端偶尔会返回空值或非数字字符串。"""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _request_json(
@@ -87,6 +98,7 @@ def fetch_flat_list_speakers(timeout: float = 10) -> list[dict[str, Any]]:
     page = 1
     size = 100
     max_pages = 50
+    completed = False
 
     while page <= max_pages:
         data = _request_json(
@@ -97,44 +109,85 @@ def fetch_flat_list_speakers(timeout: float = 10) -> list[dict[str, Any]]:
         if not data or not _provider_success_code(data.get("code")):
             break
         payload = data.get("data") or {}
+        if not isinstance(payload, dict):
+            break
         page_records = payload.get("records") or []
-        if not isinstance(page_records, list) or not page_records:
+        if not isinstance(page_records, list):
+            break
+        if not page_records:
+            completed = True
             break
         records.extend(item for item in page_records if isinstance(item, dict))
 
-        total = int(payload.get("total") or 0)
-        pages = int(payload.get("pages") or 0)
-        if (pages and page >= pages) or len(page_records) < size:
-            break
-        if total and len(records) >= total:
-            break
-        page += 1
+        total = _safe_int(payload.get("total"))
+        pages = _safe_int(payload.get("pages"))
+        if (pages and page < pages) or (total and len(records) < total):
+            page += 1
+            continue
+        if page_records and len(page_records) >= size and not pages and not total:
+            page += 1
+            continue
+        completed = True
+        break
 
-    return records
+    # 中途请求失败时不返回半截目录，交给上层回退到最近一次成功缓存。
+    return records if completed else []
+
+
+def fetch_common_list_speakers(timeout: float = 10) -> list[dict[str, Any]]:
+    """抓取多人配音弹窗使用的基础音色列表（兼容旧逻辑保留）。
+
+    当前讯飞网页的“多人配音”面板与普通音色选择器均使用
+    ``speaker/flat/list`` 返回具体变体（例如 ``欣畅-Pro+``），并通过
+    ``keyword`` 参数在同一接口内完成搜索。早期版本曾使用
+    ``speaker/common/list`` 的基础音色（``欣畅``），会导致配置页选择的
+    ``欣畅-Pro+`` 在弹窗中搜不到（基础名称会命中多个变体，候选不唯一）。
+    该函数保留用于兼容旧缓存读取，新逻辑的 ``composite`` 目录直接复用
+    flat 列表。
+    """
+    records: list[dict[str, Any]] = []
+    page = 1
+    size = 20  # 与讯飞多人配音弹窗当前请求保持一致。
+    max_pages = 50
+    completed = False
+
+    while page <= max_pages:
+        data = _request_json(
+            SPEAKER_COMMON_LIST_URL,
+            params={"current": page, "size": size},
+            timeout=timeout,
+        )
+        if not data or not _provider_success_code(data.get("code")):
+            break
+        payload = data.get("data") or {}
+        if not isinstance(payload, dict):
+            break
+        page_records = payload.get("records") or []
+        if not isinstance(page_records, list):
+            break
+        if not page_records:
+            completed = True
+            break
+        records.extend(item for item in page_records if isinstance(item, dict))
+
+        total = _safe_int(payload.get("total"))
+        pages = _safe_int(payload.get("pages"))
+        if (pages and page < pages) or (total and len(records) < total):
+            page += 1
+            continue
+        if page_records and len(page_records) >= size and not pages and not total:
+            page += 1
+            continue
+        completed = True
+        break
+
+    # 中途请求失败时不返回半截目录，交给上层回退到最近一次成功缓存。
+    return records if completed else []
 
 
 def fetch_common_speakers(timeout: float = 10) -> list[dict[str, Any]]:
-    """抓取推荐音色；推荐接口失败不影响 flat/list 目录使用。"""
-    body = {
-        "param": {"pageSize": 999, "needCount": 1},
-        "base": {
-            "appid": "xfpy",
-            "sid": "",
-            "channelId": "40000001",
-            "userId": "",
-            "osid": 0,
-        },
-    }
-    data = _request_json(
-        COMMON_SPEAKERS_URL,
-        method="POST",
-        body=body,
-        timeout=timeout,
-    )
-    if not data or not _provider_success_code(data.get("code")):
-        return []
-    records = (data.get("data") or {}).get("commonSpeakers") or []
-    return [item for item in records if isinstance(item, dict)]
+    """兼容旧调用名，返回多人配音弹窗的基础音色列表。"""
+    return fetch_common_list_speakers(timeout=timeout)
 
 
 def merge_speakers(
@@ -163,6 +216,215 @@ def merge_speakers(
                 existing[field] = value
 
     return list(merged.values())
+
+
+def _raw_speaker_no(raw: dict[str, Any]) -> Any:
+    return raw.get("speakerNo") or raw.get("speaker_no")
+
+
+def _raw_common_speaker(raw: dict[str, Any]) -> dict[str, Any]:
+    value = raw.get("commonSpeaker")
+    return value if isinstance(value, dict) else {}
+
+
+def _raw_common_id(raw: dict[str, Any]) -> Any:
+    common_speaker = _raw_common_speaker(raw)
+    return (
+        raw.get("commonId")
+        or raw.get("common_id")
+        or common_speaker.get("commonId")
+        or common_speaker.get("common_id")
+    )
+
+
+def _raw_common_name(raw: dict[str, Any]) -> str:
+    common_speaker = _raw_common_speaker(raw)
+    return str(
+        raw.get("composite_name")
+        or raw.get("common_name")
+        or raw.get("commonName")
+        or common_speaker.get("speakerName")
+        or common_speaker.get("speaker_name")
+        or raw.get("speakerName")
+        or raw.get("speaker_name")
+        or raw.get("name")
+        or ""
+    ).strip()
+
+
+def _common_group_key(raw: dict[str, Any]) -> str:
+    common_id = _raw_common_id(raw)
+    if common_id not in (None, ""):
+        return f"id:{common_id}"
+    name = _raw_common_name(raw).casefold()
+    return f"name:{name}" if name else ""
+
+
+def _catalog_entry_identity(raw: dict[str, Any]) -> str:
+    """返回目录条目的稳定身份，用于识别旧版基础音色缓存。"""
+    speaker_no = _raw_speaker_no(raw)
+    if speaker_no not in (None, ""):
+        identity = f"speaker:{speaker_no}"
+    else:
+        common_id = _raw_common_id(raw)
+        if common_id not in (None, ""):
+            identity = f"common:{common_id}"
+        else:
+            identity = ""
+    # 旧版 build_composite_speakers 可能保留相同 speakerNo，却把展示名改成
+    # 基础名称；只比较 ID 会把这种旧结构误当成当前 flat 变体列表。
+    display_name = str(
+        raw.get("speakerName")
+        or raw.get("speaker_name")
+        or raw.get("name")
+        or ""
+    ).strip().casefold()
+    if identity and display_name:
+        return f"{identity}|name:{display_name}"
+    if identity:
+        return identity
+    name = _raw_common_name(raw).casefold()
+    return f"name:{name}" if name else ""
+
+
+def _variant_name(raw: dict[str, Any]) -> str:
+    return str(
+        raw.get("variant_name")
+        or raw.get("variantName")
+        or raw.get("speakerName")
+        or raw.get("speaker_name")
+        or raw.get("name")
+        or ""
+    ).strip()
+
+
+def _variant_label(raw: dict[str, Any]) -> str:
+    """返回多人配音详情面板展示的具体变体标签。"""
+    return str(
+        raw.get("variant_label")
+        or raw.get("variantLabel")
+        or raw.get("emotDesc")
+        or raw.get("emot_desc")
+        or ""
+    ).strip()
+
+
+def build_composite_speakers(
+    common_speakers: Iterable[dict[str, Any]],
+    flat_speakers: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把 common/list 基础音色和 flat/list 具体音色拼成可提交目录。
+
+    common/list 是多人配音页面真正使用的展示来源，但它只返回
+    ``commonId``，不返回提交多人作品必需的 ``speakerNo``。因此每个基础
+    音色从 flat/list 中取网页默认的第一个具体变体作为提交标识，同时把
+    基础名称保存在 ``speakerName``/``composite_name`` 中。这样前端显示、
+    多人配音搜索和最终提交分别使用同一组正确的字段。
+
+    common/list 偶尔会包含已经没有 flat 变体的历史记录；这类记录不放入
+    可生成目录，避免用户选择后才在提交阶段收到缺少 speakerNo 的错误。
+    """
+    flat_records = [item for item in flat_speakers if isinstance(item, dict)]
+    flat_by_group: dict[str, list[dict[str, Any]]] = {}
+    for item in flat_records:
+        group_key = _common_group_key(item)
+        if group_key:
+            flat_by_group.setdefault(group_key, []).append(item)
+
+    common_records = [item for item in common_speakers if isinstance(item, dict)]
+    result: list[dict[str, Any]] = []
+    seen_groups: set[str] = set()
+
+    def make_group(common: dict[str, Any], variants: list[dict[str, Any]], source: str):
+        variants = [
+            item for item in variants
+            if _raw_speaker_no(item) not in (None, "")
+        ]
+        if not variants:
+            return None
+        primary = variants[0]
+        speaker_no = _raw_speaker_no(primary)
+        common_name = _raw_common_name(common)
+        if not common_name:
+            common_name = _raw_common_name(primary)
+        if not common_name:
+            return None
+        variant_names = [_variant_name(item) for item in variants]
+        variant_names = [item for item in variant_names if item]
+        variant_labels = [_variant_label(item) for item in variants]
+        variant_keys = [
+            f"speaker:{_raw_speaker_no(item)}"
+            for item in variants
+            if _raw_speaker_no(item) not in (None, "")
+        ]
+        merged = dict(primary)
+        # 基础音色的展示字段来自 common/list；试听地址等变体字段仍来自
+        # flat/list 的主变体，前端切换到普通模式时仍可继续试听。
+        merged["speakerName"] = common_name
+        merged["commonId"] = _raw_common_id(common) or _raw_common_id(primary)
+        merged["commonSpeaker"] = dict(common)
+        for field in (
+            "speakerGender", "speakerLanguage", "speakerStyle", "speakerDesc",
+            "vipType", "tag", "label", "isTrain", "speakerSpecialty", "imgUrl",
+        ):
+            if common.get(field) not in (None, ""):
+                merged[field] = common[field]
+        merged["_source"] = source
+        merged["_composite_name"] = common_name
+        merged["_composite_variant_names"] = variant_names
+        merged["_composite_variant_labels"] = variant_labels
+        merged["_composite_variant_keys"] = variant_keys
+        merged["_composite_primary_variant_name"] = _variant_name(primary)
+        # 保持现有 Amanda/George 配置 key 不变，避免升级后默认配置产生重复
+        # 角色；普通变体的 key 仍然是 speaker:<speakerNo>。
+        primary_name = _variant_name(primary).casefold()
+        if primary_name == "amanda":
+            merged["key"] = DEFAULT_FEMALE_KEY
+        elif primary_name == "george":
+            merged["key"] = DEFAULT_MALE_KEY
+        return merged
+
+    if common_records:
+        for common in common_records:
+            group_key = _common_group_key(common)
+            variants = flat_by_group.get(group_key, []) if group_key else []
+            if not variants:
+                # 少数旧数据 commonId 类型可能不一致；名称匹配只作为
+                # 兼容兜底，不能跨不同基础音色合并同名变体。
+                common_name = _raw_common_name(common).casefold()
+                variants = [
+                    item for item in flat_records
+                    if _raw_common_name(item).casefold() == common_name
+                ]
+            merged = make_group(common, variants, "common_list")
+            if merged is None:
+                continue
+            result.append(merged)
+            if group_key:
+                seen_groups.add(group_key)
+        return result
+
+    # common/list 暂时不可达时仍从 flat/list 的 commonSpeaker 字段构造一份
+    # 降级目录。它不是首选来源，但可以让应用在接口短暂失败时继续工作。
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    group_first: dict[str, dict[str, Any]] = {}
+    for item in flat_records:
+        group_key = _common_group_key(item)
+        if not group_key or group_key in seen_groups:
+            continue
+        grouped.setdefault(group_key, []).append(item)
+        group_first.setdefault(group_key, item)
+    for group_key, variants in grouped.items():
+        common = _raw_common_speaker(group_first[group_key])
+        if not common:
+            common = {
+                "commonId": _raw_common_id(group_first[group_key]),
+                "speakerName": _raw_common_name(group_first[group_key]),
+            }
+        merged = make_group(common, variants, "flat_list_fallback")
+        if merged is not None:
+            result.append(merged)
+    return result
 
 
 def _text_values(value: Any) -> list[str]:
@@ -297,6 +559,37 @@ def normalize_voice(raw: dict[str, Any]) -> dict[str, Any] | None:
         categories.insert(0, gender_label)
 
     key = _stable_key(raw, name)
+    common_id = _raw_common_id(raw)
+    composite_name = _raw_common_name(raw) or name
+    variant_name = str(
+        raw.get("variant_name")
+        or raw.get("variantName")
+        or raw.get("_composite_primary_variant_name")
+        or name
+    ).strip()
+    variant_names = _unique_text(
+        raw.get("variant_names")
+        or raw.get("_composite_variant_names")
+        or ([variant_name] if variant_name else [])
+    )
+    variant_labels = [
+        str(value).strip()
+        for value in (
+            raw.get("variant_labels")
+            or raw.get("_composite_variant_labels")
+            or []
+        )
+    ]
+    variant_keys = [
+        str(value).strip()
+        for value in (
+            raw.get("variant_keys")
+            or raw.get("_composite_variant_keys")
+            or []
+        )
+        if str(value).strip()
+    ]
+    speaker_no = _raw_speaker_no(raw)
     speaker_language = (
         raw.get("speakerLanguage")
         or raw.get("languageName")
@@ -306,9 +599,18 @@ def normalize_voice(raw: dict[str, Any]) -> dict[str, Any] | None:
     )
     return {
         "key": key,
-        "speaker_no": raw.get("speakerNo") or raw.get("speaker_no"),
-        "common_id": raw.get("commonId") or raw.get("common_id"),
+        "speaker_no": speaker_no,
+        "common_id": common_id,
         "name": name,
+        # common/list 的基础名称是多人配音弹窗的搜索键；flat/list 的
+        # name 仍保留具体变体，供普通模式和兼容旧配置使用。
+        "composite_name": composite_name,
+        "variant_name": variant_name,
+        "variant_names": variant_names,
+        "variant_labels": variant_labels,
+        "variant_keys": variant_keys,
+        "composite_key": str(raw.get("composite_key") or key).strip(),
+        "emot_desc": str(raw.get("emotDesc") or raw.get("emot_desc") or "").strip(),
         "gender": gender or "unknown",
         "gender_label": gender_label or "音色",
         "language": language,
@@ -336,6 +638,13 @@ def _fallback_voice(key: str, name: str, gender: str) -> dict[str, Any]:
         "speaker_no": fallback_speaker_no,
         "common_id": None,
         "name": name,
+        "composite_name": name,
+        "variant_name": name,
+        "variant_names": [name],
+        "variant_labels": [],
+        "variant_keys": [key],
+        "composite_key": key,
+        "emot_desc": "",
         "gender": gender,
         "gender_label": "女声" if gender == "female" else "男声",
         "language": ["英语"],
@@ -351,12 +660,12 @@ def _fallback_voice(key: str, name: str, gender: str) -> dict[str, Any]:
     }
 
 
-def normalize_catalog(
+def _normalize_voice_entries(
     raw_voices: Iterable[dict[str, Any]],
     *,
-    fetched_at: str | None = None,
-    source: str = "cache",
-) -> dict[str, Any]:
+    source: str,
+    sort: bool = True,
+) -> list[dict[str, Any]]:
     voices_by_key: dict[str, dict[str, Any]] = {}
     for raw in raw_voices:
         if not isinstance(raw, dict):
@@ -379,8 +688,18 @@ def normalize_catalog(
     )
 
     voices = list(voices_by_key.values())
-    voices.sort(key=lambda item: (item["key"] not in {"amanda", "george"}, item["name"].casefold()))
+    if sort:
+        voices.sort(
+            key=lambda item: (
+                item["key"] not in {"amanda", "george"},
+                item["name"].casefold(),
+            )
+        )
+    return voices
 
+
+def _build_voice_filters(voices: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    voices = list(voices)
     count_by_filter: dict[str, int] = {"all": len(voices)}
     for voice in voices:
         if voice["gender"] in {"female", "male"}:
@@ -409,7 +728,72 @@ def normalize_catalog(
     preferred_keys = {item["key"] for item in preferred}
     filters.extend(preferred)
     filters.extend(item for item in categories if item["key"] not in preferred_keys)
-    filters = filters[:20]
+    return filters[:20]
+
+
+def normalize_catalog(
+    raw_voices: Iterable[dict[str, Any]],
+    *,
+    composite_raw_voices: Iterable[dict[str, Any]] | None = None,
+    fetched_at: str | None = None,
+    source: str = "cache",
+) -> dict[str, Any]:
+    """规范化音色目录。
+
+    直接使用讯飞 ``speaker/flat/list`` 接口返回的完整列表，``name`` 即为
+    网站上展示的音色名（如 ``欣畅-Pro+``）。``voices`` 与
+    ``composite_voices`` 均为同一份变体列表，App 上用户选择的名称与面板
+    内搜索的关键词完全一致，无需在基础名/变体名之间做额外映射或校准。
+    """
+    raw_voice_list = list(raw_voices)
+    voices = _normalize_voice_entries(raw_voice_list, source=source, sort=True)
+    # 多人配音与普通模式共用同一套 flat 变体，直接使用网站返回的 speakerName。
+    # 旧缓存中的 composite 可能是 common/list 的基础名（已废弃），为避免
+    # 搜索时命中多个变体，一律以当前 flat 列表为准。
+    if composite_raw_voices is None:
+        composite_inputs = raw_voice_list
+    else:
+        # 显式 composite 可能来自旧版 common/list 基础名缓存。不能只比较
+        # 数量：两份列表恰好同长时仍可能完全不是同一组音色；空列表也不应
+        # 让 composite 退化成只有 Amanda/George 的默认项。
+        try:
+            raw_composite = list(composite_raw_voices)
+            voice_identities = {
+                identity
+                for item in raw_voice_list
+                if isinstance(item, dict)
+                for identity in [_catalog_entry_identity(item)]
+                if identity
+            }
+            composite_identities = {
+                identity
+                for item in raw_composite
+                if isinstance(item, dict)
+                for identity in [_catalog_entry_identity(item)]
+                if identity
+            }
+            if (
+                not raw_composite
+                or not voice_identities
+                or not composite_identities
+                or composite_identities != voice_identities
+            ):
+                composite_inputs = raw_voice_list
+            else:
+                composite_inputs = raw_composite
+        except Exception:
+            composite_inputs = raw_voice_list
+    composite_voices = _normalize_voice_entries(
+        composite_inputs,
+        source=source,
+        sort=False,
+    )
+
+    # 旧版本曾通过 commonId 将 flat 变体映射到基础名，现已废弃；
+    # 直接保留网站返回的原始字段，不再做二次映射。
+
+    filters = _build_voice_filters(voices)
+    composite_filters = _build_voice_filters(composite_voices)
 
     return {
         "_meta": {
@@ -417,10 +801,18 @@ def normalize_catalog(
             "source": "https://peiyin.xunfei.cn/make",
             "fetched_at": fetched_at or datetime.now().isoformat(),
             "total_count": len(voices),
+            "composite_count": len(composite_voices),
             "catalog_source": source,
+            # 多人配音面板当前与主面板均使用 flat/list 的具体变体，
+            # 通过 keyword 在同一接口完成搜索，不再区分基础/变体接口。
+            "flat_list_endpoint": SPEAKER_FLAT_LIST_URL,
+            "composite_list_endpoint": SPEAKER_FLAT_LIST_URL,
+            "legacy_composite_endpoint": SPEAKER_COMMON_LIST_URL,
         },
         "voices": voices,
         "filters": filters,
+        "composite_voices": composite_voices,
+        "composite_filters": composite_filters,
     }
 
 
@@ -449,8 +841,11 @@ def load_cached_catalog(base_dir: str, resource_dir: str | None = None) -> dict[
             if not isinstance(payload, dict) or not isinstance(payload.get("voices"), list):
                 continue
             meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+            # 旧缓存的 composite_voices 可能是 common/list 基础名，已与网站不一致；
+            # 直接以当前 voices（flat 变体）作为 composite，保证 App 选择名与面板搜索名一致。
             return normalize_catalog(
                 payload["voices"],
+                composite_raw_voices=payload["voices"],
                 fetched_at=str(meta.get("fetched_at") or "") or None,
                 source="cache",
             )
@@ -476,14 +871,18 @@ def refresh_catalog(
     *,
     timeout: float = 10,
 ) -> dict[str, Any]:
-    """刷新远端目录并写入可写数据目录；失败时回退缓存。"""
+    """刷新远端目录并写入可写数据目录；失败时回退缓存。
+
+    直接使用讯飞 ``speaker/flat/list`` 接口，返回的 ``speakerName``
+    即为网站上展示的音色名（如 ``欣畅-Pro+``），App 上用户选择的名称
+    与面板内搜索关键词完全一致，无需在基础名/变体名之间做额外映射。
+    """
     flat = fetch_flat_list_speakers(timeout=timeout)
-    common = fetch_common_speakers(timeout=timeout)
-    merged = merge_speakers(flat, common)
-    if not merged:
+    if not flat:
         raise RuntimeError("讯飞音色接口未返回有效目录")
     catalog = normalize_catalog(
-        merged,
+        flat,
+        composite_raw_voices=flat,
         fetched_at=datetime.now().isoformat(),
         source="live",
     )

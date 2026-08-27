@@ -11,7 +11,7 @@ Word 文档解析脚本
   4. 课文跟读        — 提取句子跟读（去序号、按序号排序）、段落跟读、语篇跟读
   5. 信息转述及询问   — 提取「第一节 信息转述」的录音稿
   6. 模仿朗读        — 提取每个单元的「外网」(2篇) 和「教材」(1篇)
-  7. 词汇            — 预留接口，未来接入
+  7. 词汇            — 仅支持 Excel 单词导入模板（.xlsx）
 
 设计说明：
   - 每种文档类型对应一个 Parser 子类，通过文件名自动识别
@@ -50,18 +50,50 @@ OUTPUT_DIR = os.path.join(PROJECT_ROOT, "examples", "parsed")
 # 工具函数
 # ============================================================================
 
-def load_paragraphs(filepath):
+def _paragraph_heading_hint(paragraph):
+    """返回 Word 段落是否带有明显的标题格式提示。
+
+    课文跟读的新样本经常把小标题保留为 ``Normal`` 段落样式，但通过
+    粗体或较大的字号区分。解析器原来只读取文本，导致无法区分“短标题”
+    和“没有句末标点的短正文”。这里只记录保守的格式提示，显式 ``//``
+    标记和文本规则仍由上层解析器处理。
+    """
+    style_name = str(paragraph.style.name if paragraph.style else "")
+    if re.search(r"(?:heading|title|subtitle|标题|副标题)", style_name, re.I):
+        return True
+
+    runs = [run for run in paragraph.runs if str(run.text or "").strip()]
+    if not runs:
+        return False
+
+    # 只有整段基本都被标成粗体/大字号时才作为标题提示，避免正文中
+    # 单独加粗一个单词就改变音频边界。
+    if all(run.bold is True for run in runs):
+        return True
+
+    sizes = [run.font.size.pt for run in runs if run.font.size is not None]
+    if len(sizes) == len(runs) and sizes and min(sizes) >= 14:
+        return True
+    return False
+
+
+def load_paragraphs(filepath, *, include_metadata=False):
     """
     加载 Word 文档，返回非空段落列表。
     每个元素为 (原始索引, 文本, 样式名)。
+    ``include_metadata=True`` 时额外返回与段落一一对应的格式提示列表。
     """
     doc = Document(filepath)
     result = []
+    metadata = []
     for i, para in enumerate(doc.paragraphs):
         text = para.text.strip()
         if text:
             style = para.style.name if para.style else ""
             result.append((i, text, style))
+            metadata.append({"heading_hint": _paragraph_heading_hint(para)})
+    if include_metadata:
+        return result, metadata
     return result
 
 
@@ -91,6 +123,33 @@ def sanitize(text):
     return clean_whitespace(remove_zero_width(text))
 
 
+_SENTENCE_ABBREVIATIONS = frozenset({
+    "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "st.",
+    "vs.", "etc.", "e.g.", "i.e.", "no.", "fig.", "inc.", "p.s.",
+})
+
+
+def _is_sentence_abbreviation(current, normalized, punctuation_index):
+    """判断当前句点是否属于缩写，而不是句末标点。"""
+    match = re.search(r"([A-Za-z](?:[A-Za-z.]*)\.)$", current.rstrip())
+    token = match.group(1).casefold() if match else ""
+    if token in _SENTENCE_ABBREVIATIONS:
+        return True
+
+    # U.S.、e.g.、p.m. 等点号缩写在扫描到第一个点时，后面仍紧跟着
+    # “字母 + 点”；先不切分，等整个缩写扫描完再继续判断。
+    next_index = punctuation_index + 1
+    if (
+        next_index + 1 < len(normalized)
+        and normalized[next_index].isalpha()
+        and normalized[next_index + 1] == "."
+    ):
+        return True
+    if re.fullmatch(r"(?:[A-Za-z]\.){2,}", token):
+        return True
+    return False
+
+
 def split_sentences(text):
     """将英文文本按句子切分。
 
@@ -98,6 +157,7 @@ def split_sentences(text):
     - 引号内部的 . ! ? 不会触发切分
     - 闭合引号后跟大写字母时才切分（新句开始）
     - 非引号环境下的 . ! ? 后跟大写字母/开引号时切分
+    - 常见称谓、缩写和点号缩写（如 Mr.、e.g.、U.S.）不误切分
 
     支持直引号 (") 和智能引号 (\u201c \u201d)。
     用于段落跟读和语篇跟读的逐句录音。
@@ -175,6 +235,9 @@ def split_sentences(text):
         if ch in '.!?':
             current += ch
             if not in_quote:
+                if ch == '.' and _is_sentence_abbreviation(current, normalized, i):
+                    i += 1
+                    continue
                 # 向前吞掉闭合括号/方括号（不吞引号，引号单独处理）
                 j = i + 1
                 while j < n and normalized[j] in ')]':
@@ -228,8 +291,12 @@ class BaseParser:
         self.filename = os.path.basename(filepath)
         if self._SKIP_LOAD_PARAGRAPHS:
             self.paras = []
+            self.paragraph_metadata = []
         else:
-            self.paras = load_paragraphs(filepath)
+            self.paras, self.paragraph_metadata = load_paragraphs(
+                filepath,
+                include_metadata=True,
+            )
 
     def parse(self):
         """子类实现：返回解析结果字典"""
@@ -733,7 +800,7 @@ class TextReadingParser(BaseParser):
       - 语篇跟读：按「语篇N」分组，每组可含多段
 
     Section A/B 新格式优先：显式 Conversation 对话按角色边界拆分，
-    普通文章按标题/段落边界生成音频；旧版章节格式继续使用历史规则。
+    普通文章按标题和句子边界生成音频；旧版章节格式继续使用历史规则。
 
     音色/命名规则（仅 Understanding Idea / Reading for writing 章节）：
       讯飞声音参数由前端动态配置，解析器不固定。
@@ -1135,7 +1202,7 @@ class TextReadingParser(BaseParser):
                     units.append('\n'.join(current_lines))
                     current_lines = []
                 # 双斜杠本身是结构标记，不与下一行正文混为一个原始段落；
-                # 后续 append_article_items 会把它和紧邻段落合并成一个音频。
+                # 后续 append_article_items 会把它作为独立标题音频输出。
                 units.append(line)
                 continue
             current_lines.append(line)
@@ -1155,21 +1222,32 @@ class TextReadingParser(BaseParser):
         return value, False
 
     @classmethod
-    def _looks_like_article_heading(cls, text):
+    def _looks_like_article_heading(
+        cls,
+        text,
+        *,
+        formatting_hint=False,
+        is_first_unit=False,
+    ):
         """识别新规则中的文章大标题/小标题。
 
-        新样本的标题使用短文本、粗体或字号区分，但解析主流程只保留
-        统一的段落文本；短文本且没有句末标点是对未带 // 标记样本的
-        稳定兜底规则，显式 // 始终优先。
+        新样本的标题通常使用短文本、粗体或字号区分。格式提示由
+        ``load_paragraphs`` 提供；没有格式提示时，仅允许文章组的第一段
+        使用“短文本且没有句末标点”的保守兜底，避免把普通短正文误当标题。
+        显式 ``//`` 始终优先。
         """
         value, explicit = cls._article_heading(text)
         if not value:
             return False
         if explicit:
             return True
+        if formatting_hint:
+            return True
+        if not is_first_unit:
+            return False
         if cls._role_label(value):
             return False
-        if len(value) > 80 or len(re.split(r'\s+', value)) > 12:
+        if len(value) > 48 or len(re.split(r'\s+', value)) > 8:
             return False
         if re.match(r'^\d+\s*[.、）)]', value):
             return False
@@ -1216,8 +1294,8 @@ class TextReadingParser(BaseParser):
           - 没有显式 Conversation 的多角色段落按 Word 段落/角色行输出，
             角色名通过结构元数据提供给用户配置；显式 Conversation 块中
             每个角色单独输出，拆分模式由文档结构 profile 决定；
-          - 语篇跟读的对话遵循同样的角色拆分规则；文章按段落输出，
-            大标题单独一个音频，// 小标题与其紧邻的一个段落合并。
+          - 语篇跟读的对话遵循同样的角色拆分规则；文章的大标题/小标题
+            单独输出，正文按英文句子拆分为音频。
         """
         format_profile = self._detect_section_ab_profile()
         split_role_audio = format_profile["role_audio_mode"] == "per_role"
@@ -1235,6 +1313,8 @@ class TextReadingParser(BaseParser):
         paragraph_current_number = None
         paragraph_current_lines = []
 
+        # 非 Conversation 语篇单元保存为 ``(文本, 是否带标题格式提示)``；
+        # 这样 Normal 样式但粗体/大字号的小标题也能被正确识别。
         discourse_units = []
         discourse_blocks = []
         discourse_conversation_mode = False
@@ -1284,22 +1364,30 @@ class TextReadingParser(BaseParser):
             clean = sanitize(text)
             if not clean:
                 return
-            sequence_key = f"{current_audio_prefix}:{category}"
-            new_sequence_by_category[sequence_key] = new_sequence_by_category.get(sequence_key, 0) + 1
-            sequence = new_sequence_by_category[sequence_key]
-            if (
+            # 语篇跟读含多个 Conversation 时，要求一个 Conversation 一个语篇，
+            # 命名 SB语篇-C1-1，且每个 Conversation 内题目序号重置
+            if category == self.SUB_DISCOURSE and conversation_number is not None:
+                sequence_key = f"{current_audio_prefix}:{category}:C{conversation_number}"
+                new_sequence_by_category[sequence_key] = new_sequence_by_category.get(sequence_key, 0) + 1
+                sequence = new_sequence_by_category[sequence_key]
+                filename_stem = f"{current_audio_prefix}语篇-C{conversation_number}-{sequence}"
+            elif (
                 category in (self.SUB_PARAGRAPH, self.SUB_DISCOURSE)
                 and conversation_number is not None
             ):
-                # 新题型要求显式 Conversation 的段落/语篇跟读保留对话编号：
-                # SA-段-Cx-y / SA-语-Cx-y，x 为 Conversation 编号，y 为
-                # 当前题型内的音频生成序号。
+                # 段落跟读仍保留原有 SA-段-Cx-y 规则（全局序号）
+                sequence_key = f"{current_audio_prefix}:{category}"
+                new_sequence_by_category[sequence_key] = new_sequence_by_category.get(sequence_key, 0) + 1
+                sequence = new_sequence_by_category[sequence_key]
                 mode_prefix = "段" if category == self.SUB_PARAGRAPH else "语"
                 filename_stem = (
                     f"{current_audio_prefix}-{mode_prefix}-C"
                     f"{conversation_number}-{sequence}"
                 )
             else:
+                sequence_key = f"{current_audio_prefix}:{category}"
+                new_sequence_by_category[sequence_key] = new_sequence_by_category.get(sequence_key, 0) + 1
+                sequence = new_sequence_by_category[sequence_key]
                 filename_stem = f"{current_audio_prefix}{category[:2]}{sequence}"
             item = {
                 "category": category,
@@ -1321,6 +1409,23 @@ class TextReadingParser(BaseParser):
         def flush_dialogue_buffer(category, units, blocks, conversation_mode):
             """输出新版段落/语篇对话。"""
             if conversation_mode:
+                # 文档偶尔会在第一个 Conversation 前放一段引导正文。进入
+                # conversation 模式时不能把已经收集的 units 丢掉；语篇正文
+                # 仍按文章规则处理，段落正文则沿用“一段一个音频”。
+                if units:
+                    if category == self.SUB_DISCOURSE:
+                        append_article_items(units)
+                    else:
+                        for unit in units:
+                            unit_text = (
+                                unit[0]
+                                if isinstance(unit, (tuple, list)) and len(unit) == 2
+                                else unit
+                            )
+                            append_new_block_item(
+                                category,
+                                self._new_clean_text([unit_text]),
+                            )
                 groups = [
                     (conversation_number, text, None)
                     for conversation_number, text in blocks
@@ -1399,39 +1504,61 @@ class TextReadingParser(BaseParser):
             reset_paragraph_state()
 
         def append_article_items(units):
-            """按文章标题/小标题规则输出语篇音频。"""
-            cleaned = []
+            """按文章标题/小标题规则输出语篇音频（新版语篇文章）。
+
+            录制要求：
+            - 对话形式（含角色名如 Teng Fei:）按角色一个音频（已在外层通过
+              conversation_mode 处理，此处仅处理无显式 Conversation 的对话）
+            - 标题（大标题/小标题）单独一段，无标点结尾，各自一个音频
+            - 正文按句拆分，一句一个音频，默认女声
+            - 单独一段话也按句拆分
+            """
+            article_units = []
             for unit in units:
-                value = self._new_clean_text([unit])
-                if value:
-                    cleaned.append(value)
-            if not cleaned:
-                return
+                if isinstance(unit, (tuple, list)) and len(unit) == 2:
+                    article_units.append((str(unit[0]), bool(unit[1])))
+                else:
+                    article_units.append((str(unit), False))
+            article_texts = [unit for unit, _formatting_hint in article_units]
 
-            # 第一个短标题是文章大标题，单独一个音频；显式 // 作为
-            # 小标题时不触发大标题判断，后续按小标题+下一段合并。
-            index = 0
-            first_value, first_explicit = self._article_heading(cleaned[0])
-            if len(cleaned) > 1 and self._looks_like_article_heading(cleaned[0]) and not first_explicit:
-                append_new_block_item(self.SUB_DISCOURSE, first_value)
-                index = 1
-
-            while index < len(cleaned):
-                value, explicit = self._article_heading(cleaned[index])
-                if explicit or self._looks_like_article_heading(value):
-                    if index + 1 < len(cleaned):
-                        next_value = cleaned[index + 1]
-                        append_new_block_item(
-                            self.SUB_DISCOURSE,
-                            f"{value}\n{next_value}",
-                        )
-                        index += 2
+            # 无显式 Conversation 但包含多角色的对话：按角色行一个音频
+            if self._contains_multiple_roles(article_texts):
+                for unit, _formatting_hint in article_units:
+                    cleaned_unit = self._new_clean_text([unit])
+                    if not cleaned_unit:
+                        continue
+                    # 若一行内含多角色（极少），按角色拆分
+                    role_segments = self._role_segments(cleaned_unit)
+                    if len(role_segments) > 1:
+                        for role, role_text in role_segments:
+                            append_new_block_item(self.SUB_DISCOURSE, role_text, role=role)
                     else:
-                        append_new_block_item(self.SUB_DISCOURSE, value)
-                        index += 1
+                        role, _ = role_segments[0] if role_segments else (None, cleaned_unit)
+                        append_new_block_item(self.SUB_DISCOURSE, cleaned_unit, role=role)
+                return
+            for unit_index, (unit, formatting_hint) in enumerate(article_units):
+                cleaned_unit = self._new_clean_text([unit])
+                if not cleaned_unit:
                     continue
-                append_new_block_item(self.SUB_DISCOURSE, cleaned[index])
-                index += 1
+                heading_text, is_explicit = self._article_heading(cleaned_unit)
+                # 显式 //、Word 格式提示或符合首段无标点短标题规则的段落视为标题
+                is_heading = self._looks_like_article_heading(
+                    cleaned_unit,
+                    formatting_hint=formatting_hint,
+                    is_first_unit=unit_index == 0,
+                )
+                if is_heading:
+                    # 标题单独一个音频，去掉 // 前缀后的标题文本
+                    text_to_append = heading_text if is_explicit else cleaned_unit
+                    if text_to_append:
+                        append_new_block_item(self.SUB_DISCOURSE, text_to_append)
+                    continue
+                # 正文：按句拆分，一句一个音频
+                sentences = split_sentences(cleaned_unit)
+                if not sentences:
+                    sentences = [cleaned_unit]
+                for sent in sentences:
+                    append_new_block_item(self.SUB_DISCOURSE, sent)
 
         def flush_discourse():
             nonlocal discourse_current_lines, discourse_current_number
@@ -1455,7 +1582,8 @@ class TextReadingParser(BaseParser):
                 groups = []
                 current = []
                 for unit in discourse_units:
-                    if self.RE_DISCOURSE_NUM.match(unit):
+                    unit_text = unit[0] if isinstance(unit, (tuple, list)) else unit
+                    if self.RE_DISCOURSE_NUM.match(unit_text):
                         if current:
                             groups.append(current)
                             current = []
@@ -1474,7 +1602,7 @@ class TextReadingParser(BaseParser):
             flush_paragraph()
             flush_discourse()
 
-        def append_new_content(target, text):
+        def append_new_content(target, text, *, heading_hint=False):
             lines = self._new_english_lines(text)
             if not lines:
                 return
@@ -1487,9 +1615,19 @@ class TextReadingParser(BaseParser):
                 if discourse_conversation_mode:
                     discourse_current_lines.extend(lines)
                 else:
-                    discourse_units.extend(self._new_article_units(text))
+                    article_units = self._new_article_units(text)
+                    discourse_units.extend(
+                        (unit, bool(heading_hint and unit_index == 0))
+                        for unit_index, unit in enumerate(article_units)
+                    )
 
         for position, (_, text, _) in enumerate(self.paras):
+            paragraph_metadata = (
+                self.paragraph_metadata[position]
+                if position < len(self.paragraph_metadata)
+                else {}
+            )
+            heading_hint = bool(paragraph_metadata.get("heading_hint"))
             section_match = self.RE_SECTION_AB.match(text)
             if section_match:
                 flush_all_new()
@@ -1564,7 +1702,11 @@ class TextReadingParser(BaseParser):
                     discourse_current_number = int(conversation_match.group(1))
                     discourse_current_lines = []
                     continue
-                append_new_content(self.SUB_DISCOURSE, text)
+                append_new_content(
+                    self.SUB_DISCOURSE,
+                    text,
+                    heading_hint=heading_hint,
+                )
 
         flush_all_new()
         return self._result(items)
@@ -2105,8 +2247,6 @@ def detect_doc_type(filename):
         return "信息转述及询问"
     if '模仿朗读' in filename:
         return "模仿朗读"
-    if '词汇' in filename:
-        return "词汇"
     return None
 
 
@@ -2142,12 +2282,6 @@ CONTENT_MARKERS = {
         re.compile(r'模仿朗读'),
         re.compile(r'外网\s*[：:]'),
         re.compile(r'教材\s*[：:]'),
-    ],
-    "词汇": [
-        re.compile(r'词汇例句'),
-        re.compile(r'词汇整理'),
-        re.compile(r'单词名称'),
-        re.compile(r'例句'),
     ],
 }
 

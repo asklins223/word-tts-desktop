@@ -3872,6 +3872,8 @@ class XunFeiSession:
     def _composite_ui_scope(cls, page):
         """返回当前多人配音弹层，避免点击被背景遮罩或旧卡片拦截。"""
         search_selector = (
+            'input[placeholder*="搜索主播 / 标签"]:visible, '
+            'input[placeholder*="搜索主播"]:visible, '
             'input[placeholder*="输入主播名称进行搜索"]:visible, '
             'input[placeholder*="输入主播名称"]:visible'
         )
@@ -3886,6 +3888,8 @@ class XunFeiSession:
             for index in range(min(roots.count(), 20)):
                 root = roots.nth(index)
                 if root.locator(
+                    'input[placeholder*="搜索主播 / 标签"]:visible, '
+                    'input[placeholder*="搜索主播"]:visible, '
                     'input[placeholder*="输入主播名称进行搜索"]:visible, '
                     'input[placeholder*="输入主播名称"]:visible'
                 ).count() > 0:
@@ -4006,6 +4010,8 @@ class XunFeiSession:
     def _open_composite_voice_panel(cls, page):
         """打开“多人配音”面板，并返回其搜索框。"""
         search_selector = (
+            'input[placeholder*="搜索主播 / 标签"]:visible, '
+            'input[placeholder*="搜索主播"]:visible, '
             'input[placeholder*="输入主播名称进行搜索"]:visible, '
             'input[placeholder*="输入主播名称"]:visible'
         )
@@ -4052,6 +4058,8 @@ class XunFeiSession:
         内的明确关闭/取消控件；整个过程只使用浏览器可见 UI 操作。
         """
         search_selector = (
+            'input[placeholder*="搜索主播 / 标签"]:visible, '
+            'input[placeholder*="搜索主播"]:visible, '
             'input[placeholder*="输入主播名称进行搜索"]:visible, '
             'input[placeholder*="输入主播名称"]:visible'
         )
