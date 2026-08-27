@@ -75,23 +75,21 @@ class ListeningSelectionRuleTests(unittest.TestCase):
             result = ListeningSelectionParser(path).parse()
 
         self.assertEqual(result["doc_type"], "听后选择")
-        self.assertEqual(result["item_count"], 4)
+        self.assertEqual(result["item_count"], 2)
         self.assertEqual(
             [item["category"] for item in result["items"]],
-            ["听后选择录音稿"] * 4,
+            ["听后选择录音稿"] * 2,
         )
         self.assertEqual(
             [item["text"] for item in result["items"]],
             [
-                "W: Good morning, Peter! How are you?",
-                "M: I’m fine, thanks.",
-                "M: Hello! I’m Jack.",
-                "W: My name is Emma.",
+                "W: Good morning, Peter! How are you?\nM: I’m fine, thanks.",
+                "M: Hello! I’m Jack.\nW: My name is Emma.",
             ],
         )
         self.assertEqual(
             [item["question_index"] for item in result["items"]],
-            [1, 1, 2, 2],
+            [1, 2],
         )
         self.assertNotIn("How is Peter", result["items"][0]["text"])
         self.assertNotIn("计算机语音提示", result["items"][0]["text"])
@@ -104,7 +102,7 @@ class ListeningSelectionRuleTests(unittest.TestCase):
 
         self.assertIn("检测到 1 种题型", summary)
         self.assertEqual([result["doc_type"] for result in results], ["听后选择"])
-        self.assertEqual(results[0]["item_count"], 4)
+        self.assertEqual(results[0]["item_count"], 2)
 
         first_segments = core.build_synthesis_segments(
             results[0]["items"][0]["text"],
@@ -116,6 +114,7 @@ class ListeningSelectionRuleTests(unittest.TestCase):
             [(segment["voice_key"], segment["text"]) for segment in first_segments],
             [
                 (core.FEMALE_VOICE, "Good morning, Peter! How are you?"),
+                (core.MALE_VOICE, "I’m fine, thanks."),
             ],
         )
 
@@ -127,7 +126,10 @@ class ListeningSelectionRuleTests(unittest.TestCase):
         )
         self.assertEqual(
             [(segment["voice_key"], segment["text"]) for segment in second_segments],
-            [(core.MALE_VOICE, "I’m fine, thanks.")],
+            [
+                (core.MALE_VOICE, "Hello! I’m Jack."),
+                (core.FEMALE_VOICE, "My name is Emma."),
+            ],
         )
 
         lowercase_segments = core.build_synthesis_segments(
@@ -141,6 +143,32 @@ class ListeningSelectionRuleTests(unittest.TestCase):
             [
                 (core.FEMALE_VOICE, "Female line."),
                 (core.MALE_VOICE, "Male line."),
+            ],
+        )
+
+    def test_each_recording_block_stays_one_progress_item(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "听后选择.docx")
+            self._make_document(path)
+            results = [ListeningSelectionParser(path).parse()]
+
+        progress = core.build_progress(
+            "听后选择.docx",
+            str(path),
+            results,
+            {"generation_mode": core.GENERATION_MODE_COMPOSITE},
+        )
+
+        self.assertEqual(progress["total_items"], 2)
+        self.assertEqual(
+            [item["filename"] for item in progress["items"]],
+            ["听后选择-录音稿1.mp3", "听后选择-录音稿2.mp3"],
+        )
+        self.assertEqual(
+            [item["raw_item"]["text"] for item in progress["items"]],
+            [
+                "W: Good morning, Peter! How are you?\nM: I’m fine, thanks.",
+                "M: Hello! I’m Jack.\nW: My name is Emma.",
             ],
         )
 

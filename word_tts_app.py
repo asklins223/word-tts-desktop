@@ -198,9 +198,9 @@ AUDIO_ALGORITHM_VERSION = 8
 # 把旧后端混进新前端，不能继续以“看似启动成功”的方式走逐条生成流程。
 BACKEND_CONTRACT_VERSION = 5
 
-# 解析器版本。解析逻辑变更（如音色分配、文件命名规则等）时递增，
+# 解析器版本。解析逻辑变更（如音色分配、文件命名规则、音频边界等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 12
+PARSER_VERSION = 13
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
 TTS_PARAM_MIN = 0
