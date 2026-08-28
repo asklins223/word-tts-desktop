@@ -76,6 +76,14 @@ class _PostConfirmPage:
 
 
 class XunfeiFlowTests(unittest.TestCase):
+    def test_common_voice_without_speaker_number_is_resolved_by_page(self):
+        self.assertIsNone(
+            xunfei.XunFeiSession._speaker_number(
+                "common:10001135",
+                {"name": "欣畅", "common_id": 10001135},
+            )
+        )
+
     def test_default_voice_fallback_keeps_multi_speaker_identifiers(self):
         self.assertGreater(xunfei.VOICES["amanda"]["speaker_no"], 0)
         self.assertGreater(xunfei.VOICES["george"]["speaker_no"], 0)

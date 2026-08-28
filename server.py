@@ -165,9 +165,9 @@ HISTORY_MANIFEST_FILENAME = "history.json"
 HISTORY_SCHEMA_VERSION = 1
 _history_lock = threading.RLock()
 
-# 音色目录先从本地种子/缓存快速加载，避免网络波动阻塞应用启动；在线目录
-# 会在配置接口返回后后台刷新。远端接口失败时仍由 xunfei_voice_catalog
-# 回退到本地 JSON 缓存。
+# 音色目录首屏直接刷新讯飞多人配音 common/list，保证配置页拿到的名称
+# 可以原样被多人配音弹窗搜索。网络失败时由 xunfei_voice_catalog 回退到
+# 已缓存的 common 目录（旧 flat 缓存也会在读取时聚合成基础名称）。
 _voice_catalog_lock = threading.RLock()
 _voice_catalog_loaded = False
 _voice_catalog_live = False
@@ -237,6 +237,9 @@ def _load_voice_catalog_sync(force_refresh: bool = True) -> dict:
                 core._xunfei.register_voice_catalog(
                     _voice_catalog_data.get("voices") or []
                 )
+                register_aliases = getattr(core._xunfei, "register_voice_aliases", None)
+                if callable(register_aliases):
+                    register_aliases(_voice_catalog_data.get("voice_aliases") or {})
     return _voice_catalog_data
 
 
@@ -3078,13 +3081,12 @@ async def health():
 
 @app.get("/api/config")
 async def get_config():
-    """返回前端所需的配置选项，并在响应后异步刷新音色目录。"""
-    # 配置接口是 Electron 首屏就绪的关键路径，只读取本地种子/缓存；如果
-    # 这里等待讯飞在线目录超时，渲染器会一直显示“正在连接服务”，导致桌面
-    # 端到端冒烟测试及离线启动失败。
-    catalog = await asyncio.to_thread(_load_voice_catalog_sync, False)
-    if (catalog.get("_meta") or {}).get("catalog_source") != "live":
-        _schedule_voice_catalog_refresh()
+    """返回前端所需配置，并确保音色来自讯飞多人配音 common/list。"""
+    # 不能先把 resources/voices.json 的 flat/list 变体返回给渲染器再在
+    # 后台刷新：首屏一旦展示了“欣畅-Pro+”，用户选择后多人配音面板只能
+    # 搜索“欣畅”，这正是旧实现的错配。common/list 是公开分页接口，首屏
+    # 等待一次有界刷新；失败时函数内部仍会立即回退到本地 common 缓存。
+    catalog = await asyncio.to_thread(_load_voice_catalog_sync, True)
     default_female = core.FEMALE_VOICE
     default_male = core.MALE_VOICE
     return {
@@ -3116,10 +3118,11 @@ async def get_config():
         "default_generation_mode": core.DEFAULT_GENERATION_MODE,
         "default_female_voice": default_female,
         "default_male_voice": default_male,
-        "female_voice": "Amanda",
-        "male_voice": "George",
+        "female_voice": "英语-Amanda",
+        "male_voice": "英语-George",
         "voices": catalog.get("voices") or [],
         "voice_filters": catalog.get("filters") or [],
+        "voice_aliases": catalog.get("voice_aliases") or {},
         "voice_catalog_meta": catalog.get("_meta") or {},
     }
 

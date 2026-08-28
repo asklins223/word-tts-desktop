@@ -12,10 +12,10 @@ Word 文档解析 + 讯飞配音音频生成 — 一体化应用
    其他题型使用题型-录音稿x
 
 引擎与音色规则（统一使用讯飞配音 peiyin.xunfei.cn）：
-  - w/W 标识 → 女声 Amanda
-  - m/M 标识 → 男声 George
-  - 无标识   → 默认女声 Amanda
-  - 词汇题型（单词/例句）统一使用默认女声 Amanda（无单独音色）
+  - w/W 标识 → 女声 英语-Amanda
+  - m/M 标识 → 男声 英语-George
+  - 无标识   → 默认女声 英语-Amanda
+  - 词汇题型（单词/例句）统一使用默认女声 英语-Amanda（无单独音色）
   - 生成音频时自动去除 w/m 标识
   - 可调参数为讯飞平台三参数：语速 / 语调 / 音量（0-100，50=默认）
 
@@ -166,9 +166,9 @@ OUTPUT_BASE = os.path.join(BASE_DIR, "tts_output")
 os.makedirs(OUTPUT_BASE, exist_ok=True)
 
 # 音色配置 — 讯飞配音发音人 key
-# 女声 → Amanda (英语女声)；词汇题型同样使用该女声（无单独音色）
+# 女声 → 英语-Amanda；词汇题型同样使用该女声（无单独音色）
 FEMALE_VOICE = "amanda"
-# 男声 → George (英语男声)
+# 男声 → 英语-George
 MALE_VOICE = "george"
 
 # 词汇题型不再使用单独音色，统一走默认女声。

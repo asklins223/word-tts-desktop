@@ -27,7 +27,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, setVoiceCatalog, getResultVoiceEntry, voiceAssetCacheReady };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, setVoiceCatalog, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady };`, context);
     return { api: context.__rendererTests, storage };
 }
 
@@ -82,6 +82,21 @@ test('男女默认音色相同时仍保持各自的默认语速', () => {
         __default_female__: { rate: 50, volume: 60, pitch: 50 },
         __default_male__: { rate: 35, volume: 60, pitch: 50 },
     });
+});
+
+test('多人配音基础目录会迁移旧 flat 音色 key', () => {
+    const { api } = loadRendererConfigFunctions();
+    api.setVoiceCatalog(
+        [{ key: 'common:100', name: '欣畅' }],
+        [],
+        { 'speaker:591199169': 'common:100' },
+    );
+
+    assert.equal(api.canonicalVoiceKey('speaker:591199169'), 'common:100');
+    assert.equal(
+        api.normalizeClientConfig({ default_female_voice: 'speaker:591199169' }).default_female_voice,
+        'common:100',
+    );
 });
 
 test('前端音色参数对非有限数字与后端保持一致', () => {

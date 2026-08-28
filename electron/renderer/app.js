@@ -32,9 +32,10 @@ let currentSession = null;       // { session_id, source_filename, file_path, pa
 let currentConfig = null;        // API 返回的配置
 let clientConfigInitialized = false; // 防止连接重试时用服务端默认值覆盖用户当前设置
 let voiceCatalog = [
-    { key: 'amanda', name: 'Amanda', gender: 'female', gender_label: '女声', language: ['英语'], tags: ['英语'], categories: ['女声', '英语'] },
-    { key: 'george', name: 'George', gender: 'male', gender_label: '男声', language: ['英语'], tags: ['英语'], categories: ['男声', '英语'] },
+    { key: 'amanda', name: '英语-Amanda', gender: 'female', gender_label: '女声', language: ['英语'], tags: ['英语'], categories: ['女声', '英语'] },
+    { key: 'george', name: '英语-George', gender: 'male', gender_label: '男声', language: ['英语'], tags: ['英语'], categories: ['男声', '英语'] },
 ];
+let voiceAliasMap = {};
 let voiceFilterOptions = [];
 let activeVoiceFilter = 'all';
 let activeVoiceRole = '__default_female__';
@@ -321,6 +322,25 @@ function normalizeVoiceKey(value, fallback = '') {
     return key ? key.slice(0, 160) : fallback;
 }
 
+function canonicalVoiceKey(value) {
+    let key = normalizeVoiceKey(value);
+    const legacyDefaultKeys = {
+        amanda: 'amanda',
+        george: 'george',
+        '英语-amanda': 'amanda',
+        '英语-george': 'george',
+    };
+    key = legacyDefaultKeys[key.toLocaleLowerCase('zh-CN')] || key;
+    const seen = new Set();
+    for (let index = 0; key && index < 8 && !seen.has(key); index += 1) {
+        seen.add(key);
+        const next = normalizeVoiceKey(voiceAliasMap[key]);
+        if (!next || next === key) break;
+        key = next;
+    }
+    return key;
+}
+
 function normalizeRoleKeyClient(value) {
     return String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('zh-CN').slice(0, 80);
 }
@@ -415,21 +435,19 @@ function normalizeClientConfig(config = {}) {
         '320 kbps（极高）',
     ];
     const baseParams = normalizeVoiceParams(raw, DEFAULT_VOICE_PARAMS);
-    const defaultFemaleVoice = normalizeVoiceKey(
+    const defaultFemaleVoice = canonicalVoiceKey(
         raw.default_female_voice || currentConfig?.default_female_voice,
-        'amanda',
-    );
-    const defaultMaleVoice = normalizeVoiceKey(
+    ) || 'amanda';
+    const defaultMaleVoice = canonicalVoiceKey(
         raw.default_male_voice || currentConfig?.default_male_voice,
-        'george',
-    );
+    ) || 'george';
     const normalizedVoiceConfigs = {};
     const legacyVoiceConfigValues = {};
     const rawVoiceConfigs = raw.voice_configs && typeof raw.voice_configs === 'object'
         ? raw.voice_configs
         : {};
     Object.entries(rawVoiceConfigs).slice(0, 512).forEach(([key, value]) => {
-        const normalizedKey = normalizeVoiceKey(key);
+        const normalizedKey = canonicalVoiceKey(key);
         if (normalizedKey) {
             legacyVoiceConfigValues[normalizedKey] = value;
             let fallback = baseParams;
@@ -481,7 +499,7 @@ function normalizeClientConfig(config = {}) {
         : {};
     Object.entries(rawRoleVoices).slice(0, 128).forEach(([role, key]) => {
         const roleKey = normalizeRoleKeyClient(role);
-        const voiceKey = normalizeVoiceKey(key);
+        const voiceKey = canonicalVoiceKey(key);
         if (roleKey && voiceKey) normalizedRoleVoices[roleKey] = voiceKey;
     });
 
@@ -567,7 +585,7 @@ function normalizeVoiceEntry(raw) {
 
 function getVoiceEntry(key) {
     const rawKey = String(key ?? '').trim();
-    const normalizedKey = normalizeVoiceKey(rawKey);
+    const normalizedKey = canonicalVoiceKey(rawKey);
     const normalizedName = rawKey.toLocaleLowerCase('zh-CN');
     return voiceCatalog.find(voice => (
         voice.key === normalizedKey
@@ -577,14 +595,14 @@ function getVoiceEntry(key) {
 }
 
 function voiceAssetUrl(key, kind) {
-    const normalizedKey = normalizeVoiceKey(key);
+    const normalizedKey = canonicalVoiceKey(key);
     if (!normalizedKey || !['avatar', 'sample'].includes(kind)) return '';
     return apiUrl(`/api/voice-assets/${encodeURIComponent(normalizedKey)}/${kind}`);
 }
 
 function queueVoiceAssetCache(keys) {
     const values = Array.isArray(keys) ? keys : [keys];
-    const normalizedKeys = [...new Set(values.map(value => normalizeVoiceKey(value)).filter(Boolean))];
+    const normalizedKeys = [...new Set(values.map(value => canonicalVoiceKey(value)).filter(Boolean))];
     const pendingKeys = normalizedKeys.filter(key => (
         !voiceAssetCacheReady.has(key) && !voiceAssetCacheRequests.has(key)
     ));
@@ -633,7 +651,7 @@ function queueVoiceAssetCache(keys) {
 
 function getResultVoiceEntry(key) {
     const voice = getVoiceEntry(key);
-    const normalizedKey = normalizeVoiceKey(voice.key || key);
+    const normalizedKey = canonicalVoiceKey(voice.key || key);
     const useCachedAssets = voiceAssetCacheReady.has(normalizedKey);
     return {
         ...voice,
@@ -737,14 +755,16 @@ function observeVoiceAvatars() {
 function getRecentVoiceKeys() {
     try {
         const raw = JSON.parse(localStorage.getItem(VOICE_RECENT_STORAGE_KEY) || '[]');
-        return Array.isArray(raw) ? raw.map(key => normalizeVoiceKey(key)).filter(Boolean).slice(0, 12) : [];
+        return Array.isArray(raw)
+            ? [...new Set(raw.map(key => canonicalVoiceKey(key)).filter(Boolean))].slice(0, 12)
+            : [];
     } catch (_) {
         return [];
     }
 }
 
 function rememberVoiceUse(key) {
-    const normalizedKey = normalizeVoiceKey(key);
+    const normalizedKey = canonicalVoiceKey(key);
     if (!normalizedKey) return;
     const recent = [normalizedKey, ...getRecentVoiceKeys().filter(item => item !== normalizedKey)].slice(0, 12);
     try {
@@ -754,7 +774,13 @@ function rememberVoiceUse(key) {
     }
 }
 
-function setVoiceCatalog(entries, filters = []) {
+function setVoiceCatalog(entries, filters = [], aliases = {}) {
+    voiceAliasMap = Object.fromEntries(
+        Object.entries(aliases && typeof aliases === 'object' ? aliases : {})
+            .slice(0, 4096)
+            .map(([alias, target]) => [normalizeVoiceKey(alias), normalizeVoiceKey(target)])
+            .filter(([alias, target]) => alias && target && alias !== target),
+    );
     const normalized = Array.isArray(entries) ? entries.map(normalizeVoiceEntry) : [];
     const byKey = new Map();
     [...normalized, ...voiceCatalog].forEach(voice => {
@@ -772,6 +798,42 @@ function setVoiceCatalog(entries, filters = []) {
     if (!filterMap.has('female')) filterMap.set('female', { key: 'female', label: '女声' });
     if (!filterMap.has('male')) filterMap.set('male', { key: 'male', label: '男声' });
     voiceFilterOptions = [...filterMap.values()];
+}
+
+function migrateVoiceSelections() {
+    let changed = false;
+    const migrate = value => {
+        const normalized = canonicalVoiceKey(value);
+        if (normalized !== normalizeVoiceKey(value)) changed = true;
+        return normalized;
+    };
+    const female = migrate(selectedDefaultFemaleVoice);
+    const male = migrate(selectedDefaultMaleVoice);
+    if (female) selectedDefaultFemaleVoice = female;
+    if (male) selectedDefaultMaleVoice = male;
+
+    const migratedRoles = {};
+    Object.entries(roleVoiceMap || {}).forEach(([role, key]) => {
+        const normalizedRole = normalizeRoleKeyClient(role);
+        const migratedKey = migrate(key);
+        if (normalizedRole && migratedKey) migratedRoles[normalizedRole] = migratedKey;
+    });
+    if (JSON.stringify(migratedRoles) !== JSON.stringify(roleVoiceMap || {})) changed = true;
+    roleVoiceMap = migratedRoles;
+
+    try {
+        const raw = JSON.parse(localStorage.getItem(VOICE_RECENT_STORAGE_KEY) || '[]');
+        const recent = Array.isArray(raw)
+            ? [...new Set(raw.map(key => canonicalVoiceKey(key)).filter(Boolean))].slice(0, 12)
+            : [];
+        if (JSON.stringify(recent) !== JSON.stringify(raw)) {
+            localStorage.setItem(VOICE_RECENT_STORAGE_KEY, JSON.stringify(recent));
+            changed = true;
+        }
+    } catch (_) {
+        // localStorage 不可用时不影响当前音色迁移。
+    }
+    return changed;
 }
 
 function roleLooksLikeLabel(label) {
@@ -1098,7 +1160,7 @@ function renderVoiceWorkspace() {
 }
 
 function selectVoiceForActiveRole(key) {
-    const normalizedKey = normalizeVoiceKey(key);
+    const normalizedKey = canonicalVoiceKey(key);
     if (!normalizedKey) return;
     stopVoicePreview();
     const role = voiceRoles.find(item => item.key === activeVoiceRole);
@@ -2224,7 +2286,12 @@ async function loadConfig() {
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             currentConfig = await resp.json();
 
-            setVoiceCatalog(currentConfig.voices, currentConfig.voice_filters);
+            setVoiceCatalog(
+                currentConfig.voices,
+                currentConfig.voice_filters,
+                currentConfig.voice_aliases,
+            );
+            const migratedVoiceSelections = migrateVoiceSelections();
             if (!clientConfigInitialized) {
                 const normalized = normalizeClientConfig(currentConfig);
                 selectedDefaultFemaleVoice = normalized.default_female_voice;
@@ -2236,6 +2303,7 @@ async function loadConfig() {
                 if (!voiceParamConfigs[DEFAULT_MALE_ROLE_KEY]) voiceParamConfigs[DEFAULT_MALE_ROLE_KEY] = createDefaultVoiceParams(DEFAULT_MALE_ROLE_KEY);
                 clientConfigInitialized = true;
             }
+            if (migratedVoiceSelections) rememberCurrentConfig();
             renderVoiceWorkspace();
 
             // 刷新摘要中的音色显示
@@ -3870,16 +3938,18 @@ function resultVoiceKeysForFile(file) {
     // 精确匹配到 key 或名称的值，避免把“女声/男声”等展示文本误当成 key。
     if (!values.length && file?.voice) {
         const legacyValue = String(file.voice).trim();
+        const normalizedLegacyKey = canonicalVoiceKey(legacyValue);
         const normalizedLegacyName = legacyValue.toLocaleLowerCase('zh-CN');
         const legacyVoice = voiceCatalog.find(voice => (
-            normalizeVoiceKey(voice.key) === normalizeVoiceKey(legacyValue)
+            normalizeVoiceKey(voice.key) === normalizedLegacyKey
             || String(voice.name || '').trim().toLocaleLowerCase('zh-CN') === normalizedLegacyName
         ));
         if (legacyVoice) values.push(legacyVoice.key);
+        else if (normalizedLegacyKey && normalizedLegacyKey !== legacyValue) values.push(normalizedLegacyKey);
     }
 
     const canonicalize = value => {
-        const normalized = normalizeVoiceKey(value);
+        const normalized = canonicalVoiceKey(value);
         if (!normalized) return '';
         const normalizedName = String(value ?? '').trim().toLocaleLowerCase('zh-CN');
         const catalogVoice = voiceCatalog.find(voice => (

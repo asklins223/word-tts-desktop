@@ -46,7 +46,7 @@ class DesktopServerSecurityTests(unittest.TestCase):
         response = self.client.get("/api/health?token=test-token")
         self.assertEqual(response.status_code, 200)
 
-    def test_config_reads_local_catalog_before_online_refresh(self):
+    def test_config_refreshes_multi_speaker_catalog_before_returning(self):
         calls = []
         local_catalog = {
             "_meta": {"catalog_source": "live"},
@@ -61,7 +61,7 @@ class DesktopServerSecurityTests(unittest.TestCase):
         with mock.patch.object(server, "_load_voice_catalog_sync", side_effect=load_catalog):
             result = asyncio.run(server.get_config())
 
-        self.assertEqual(calls, [False])
+        self.assertEqual(calls, [True])
         self.assertEqual(result["voice_catalog_meta"]["catalog_source"], "live")
 
 

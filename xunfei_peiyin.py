@@ -14,8 +14,8 @@
   - 反批量检测采用行为拟真：击键抖动、随机间隙、真实鼠标事件、系统 Chrome 真实指纹
 
 发音人（默认）:
-  - 女声 Amanda（英语女声）
-  - 男声 George（英语男声）
+  - 女声 英语-Amanda
+  - 男声 英语-George
 
 依赖:
   pip install playwright && playwright install chromium
@@ -263,19 +263,19 @@ def _check_cancel_requested(cancel_check):
 VOICES = {
     # 女声（默认；词汇题型也使用该女声）
     "amanda": {
-        "name": "Amanda",
-        "display": "Amanda (英语女声)",
+        "name": "英语-Amanda",
+        "display": "英语-Amanda (英语女声)",
         "gender": "female",
-        # 目录刷新失败时仍要能构造多人配音 payload。这个值与仓库内置
-        # 音色种子一致；在线目录返回更完整信息后会覆盖它。
+        # 目录刷新失败时仍要能构造多人配音 payload。在线 common/list
+        # 返回该基础音色后会覆盖名称和 commonId。
         "speaker_no": 544508087,
         "vcn_type": 1,
         "language": "英语",
     },
     # 男声
     "george": {
-        "name": "George",
-        "display": "George (英语男声)",
+        "name": "英语-George",
+        "display": "英语-George (英语男声)",
         "gender": "male",
         "speaker_no": 593031758,
         "vcn_type": 1,
@@ -305,7 +305,9 @@ def register_voice_catalog(voices):
         speaker_no = voice.get("speaker_no")
         if speaker_no in (None, ""):
             speaker_no = voice.get("speakerNo")
-        if speaker_no in (None, ""):
+        # common/list 不提供具体 speakerNo；仅对两个内置默认项保留仓库
+        # 中的已知兜底 ID，其他基础音色交给页面点击后解析实际 ID。
+        if speaker_no in (None, "") and key in {DEFAULT_FEMALE, DEFAULT_MALE}:
             speaker_no = previous.get("speaker_no") or previous.get("speakerNo")
         common_id = voice.get("common_id")
         if common_id in (None, ""):
@@ -344,6 +346,23 @@ def register_voice_catalog(voices):
             "emot_type": voice.get("emot_type") or voice.get("emotType"),
             "emot_val": voice.get("emot_val") or voice.get("emotVal"),
         }
+
+
+def register_voice_aliases(aliases):
+    """注册旧 flat/list key 到当前 common/list key 的不可见兼容映射。"""
+    if not isinstance(aliases, dict):
+        return
+    for alias, target in list(aliases.items())[:4096]:
+        alias_key = str(alias or "").strip()
+        target_key = str(target or "").strip()
+        if not alias_key or not target_key or alias_key == target_key:
+            continue
+        target_info = VOICES.get(target_key)
+        if not isinstance(target_info, dict):
+            continue
+        # 别名只用于兼容旧配置，绝不覆盖当前目录中的真实 key。
+        if alias_key not in VOICES:
+            VOICES[alias_key] = dict(target_info)
 
 
 def get_voice_info(voice_key):
@@ -642,7 +661,8 @@ class JS:
         };
         const voiceLabel = (button) => {
             const label = button.querySelector('p, strong, [class*="name"], [class*="title"]');
-            return normalize(label?.textContent || button.textContent);
+            const alt = button.querySelector('img[alt]')?.getAttribute('alt') || '';
+            return normalize(`${label?.textContent || button.textContent} ${alt}`);
         };
         for (const b of document.querySelectorAll('button')) {
             if (!visible(b) || !selected(b)) continue;
@@ -668,17 +688,18 @@ class JS:
                 && rect.width > 0
                 && rect.height > 0;
         };
-        const labelOf = (button) => normalize(
-            button.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent
-                || button.textContent
-        );
+        const labelOf = (button) => normalize([
+            button.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent,
+            button.textContent,
+            button.querySelector('img[alt]')?.getAttribute('alt'),
+        ].filter(Boolean).join(' '));
         const buttons = Array.from(document.querySelectorAll('button'))
             .filter((button) => visible(button) && labelOf(button).length < 100);
         // 搜索结果的卡片主名称优先精确匹配；只有页面没有提供独立名称节点
         // 时才退回到整张卡片包含匹配。
         const exact = buttons.find((button) => {
-            const label = normalize(button.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent);
-            return label === expected;
+            const label = labelOf(button);
+            return label === expected || label.includes(expected);
         });
         const target = exact || buttons.find((button) => labelOf(button).includes(expected));
         if (target) {
@@ -704,10 +725,11 @@ class JS:
         };
         for (const b of document.querySelectorAll('button')) {
             if (!visible(b)) continue;
-            const label = normalize(
-                b.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent
-                    || b.textContent
-            );
+            const label = normalize([
+                b.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent,
+                b.textContent,
+                b.querySelector('img[alt]')?.getAttribute('alt'),
+            ].filter(Boolean).join(' '));
             if (label === expected || (label.includes(expected) && label.length < 100)) return true;
         }
         return false;
@@ -3835,19 +3857,25 @@ class XunFeiSession:
 
     @staticmethod
     def _speaker_number(voice_key, info):
+        """读取旧目录里的变体 ID；common/list 基础卡片可能没有该字段。
+
+        多人配音选择是通过讯飞页面 UI 完成的。common/list 返回的基础
+        音色卡片没有 speakerNo，页面点击卡片后会自行落到可用变体，因此
+        缺少本地 speakerNo 不能再阻止合成；后续回读会确认页面生成了真实
+        speaker mark。
+        """
         value = info.get("speaker_no") or info.get("speakerNo")
         if value in (None, ""):
             match = re.match(r"^speaker:(\d+)$", str(voice_key or "").strip())
             value = match.group(1) if match else None
+        if value in (None, ""):
+            return None
         try:
             number = int(float(value))
         except (TypeError, ValueError, OverflowError):
-            number = 0
+            return None
         if number <= 0:
-            raise XunfeiError(
-                f"音色 {voice_key!r} 缺少讯飞 speakerNo，无法提交多人配音作品；"
-                "请刷新音色目录后重试"
-            )
+            return None
         return number
 
     @staticmethod
@@ -4493,7 +4521,11 @@ class XunFeiSession:
         if not isinstance(snapshot, list) or len(snapshot) != len(expected_indices):
             return False
 
-        expected_id = str(speaker_number)
+        expected_id = (
+            str(speaker_number)
+            if speaker_number not in (None, "", 0)
+            else None
+        )
         expected_params = None
         if config_row is not None:
             expected_params = {
@@ -4508,7 +4540,14 @@ class XunFeiSession:
             if not item.get("paragraph") or item.get("markCount") != 1:
                 return False
             mark = item.get("marks", [None])[0]
-            if not isinstance(mark, dict) or mark.get("speakerId") != expected_id:
+            if not isinstance(mark, dict):
+                return False
+            # common/list 只返回基础音色 commonId，不返回具体变体的
+            # speakerNo；这时由讯飞页面在点击基础卡片后选择实际 speakerId，
+            # 只要求回读到非空 ID。旧 flat/内置目录仍继续做精确 ID 校验。
+            if expected_id is not None and mark.get("speakerId") != expected_id:
+                return False
+            if expected_id is None and not str(mark.get("speakerId") or "").strip():
                 return False
             if expected_params is not None:
                 for attribute, expected_value in expected_params.items():

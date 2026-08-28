@@ -51,11 +51,114 @@ class XunfeiCatalogTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[0].kwargs["params"], {"current": 1, "size": 20})
         self.assertEqual(request.call_args_list[1].kwargs["params"], {"current": 2, "size": 20})
 
-    def test_common_list_catalog_uses_base_name_and_keeps_default_variant_identifiers(self):
-        # 新版多人配音面板与主面板均使用 flat 变体（欣畅-Pro+），不再
-        # 通过 common/list 的基础名称（欣畅）去重。旧的 base 聚合逻辑
-        # 在 normalize 时会被识别为旧缓存并回退到变体列表，确保配置页
-        # 可选项与面板内卡片一一对应。
+    def test_qry_tags_uses_signed_authenticated_request_when_credentials_are_supplied(self):
+        response = {
+            "code": 0,
+            "data": {
+                "tagCategories": [
+                    {"tagName": "解说", "tagList": [{"tagName": "纪录片"}]}
+                ]
+            },
+        }
+        credentials = {
+            "authorization": "session-for-test",
+            "user_id": "user-for-test",
+            "sid": "sid-for-test",
+        }
+        with patch.object(catalog, "_request_json", return_value=response) as request:
+            categories = catalog.fetch_tag_categories(
+                timeout=1,
+                credentials=credentials,
+            )
+
+        self.assertEqual(categories[0]["tagName"], "解说")
+        self.assertEqual(request.call_args.args[0], catalog.SPEAKER_TAGS_URL)
+        self.assertEqual(request.call_args.kwargs["method"], "POST")
+        body = request.call_args.kwargs["body"]
+        self.assertEqual(body["param"], {"tagType": 1})
+        self.assertEqual(body["base"]["userId"], "user-for-test")
+        self.assertEqual(
+            request.call_args.kwargs["headers"]["sign"],
+            catalog._build_api_sign(body["param"], body["base"]),
+        )
+
+    def test_refresh_uses_common_list_as_the_primary_catalog_source(self):
+        common = [
+            {
+                "commonId": 100,
+                "speakerName": "多人基础音色",
+                "speakerGender": 2,
+                "speakerLanguage": "普通话",
+                "tag": "最新|广告",
+            }
+        ]
+        with patch.object(catalog, "fetch_common_list_speakers", return_value=common), \
+                patch.object(catalog, "fetch_tag_categories", return_value=[]) as fetch_tags, \
+                patch.object(catalog, "fetch_flat_list_speakers", side_effect=AssertionError("不应读取 flat/list")):
+            with tempfile.TemporaryDirectory() as base_dir:
+                result = catalog.refresh_catalog(base_dir, timeout=1)
+
+        self.assertEqual(result["_meta"]["speaker_list_endpoint"], catalog.SPEAKER_COMMON_LIST_URL)
+        self.assertEqual(result["_meta"]["tags_source"], "frozen_snapshot")
+        fetch_tags.assert_not_called()
+        self.assertEqual(result["_meta"]["provider_count"], 1)
+        names = {item["name"] for item in result["voices"]}
+        self.assertIn("多人基础音色", names)
+        self.assertNotIn("多人基础音色-Pro", names)
+
+    def test_fixed_tag_snapshot_matches_complete_qry_tags_hierarchy(self):
+        expected_labels = [
+            "最热", "最新", "超拟人", "解说", "教育培训", "有声阅读",
+            "体育解说", "游戏解说", "纪录片", "情感", "短视频", "新闻主持",
+            "大会主持", "新闻", "资讯", "广告营销", "直播", "广告", "娱乐",
+            "自创特色", "影视动漫", "语音助手", "方言", "多语种", "英语", "俄语",
+            "法语", "西班牙语", "日语", "韩语", "德语", "阿拉伯语", "泰语",
+            "马来语", "印尼语", "意大利语", "菲律宾语", "葡萄牙语", "越南语",
+            "波兰语", "童声", "老年", "女声", "男声",
+        ]
+
+        self.assertEqual(
+            catalog._tag_category_labels(catalog.FIXED_TAG_CATEGORIES),
+            expected_labels,
+        )
+        self.assertEqual(len(catalog.FIXED_TAG_CATEGORIES), 14)
+        self.assertEqual(catalog.FIXED_TAG_CATEGORIES[3]["id"], "1010010")
+        self.assertEqual(
+            catalog.FIXED_TAG_CATEGORIES[9]["tagList"][-1]["tagName"],
+            "波兰语",
+        )
+
+    def test_tag_filters_do_not_truncate_the_fixed_snapshot(self):
+        labels = catalog._tag_category_labels(catalog.FIXED_TAG_CATEGORIES)
+        payload = catalog.normalize_catalog([], source="test")
+        filter_labels = {item["label"] for item in payload["filters"]}
+        self.assertTrue(set(labels).issubset(filter_labels))
+
+    def test_common_list_uses_english_amanda_and_george_as_default_names(self):
+        payload = catalog.normalize_catalog([
+            {
+                "commonId": 10001009,
+                "speakerName": "英语-Amanda",
+                "speakerGender": 2,
+                "speakerLanguage": "英语",
+            },
+            {
+                "commonId": 10001089,
+                "speakerName": "英语-George",
+                "speakerGender": 1,
+                "speakerLanguage": "英语",
+            },
+        ], source="live")
+
+        by_key = {item["key"]: item for item in payload["voices"]}
+        self.assertEqual(by_key["amanda"]["name"], "英语-Amanda")
+        self.assertEqual(by_key["george"]["name"], "英语-George")
+        self.assertNotIn("Amanda", {item["name"] for item in payload["voices"]})
+        self.assertNotIn("George", {item["name"] for item in payload["voices"]})
+
+    def test_common_list_catalog_uses_base_name_and_keeps_common_id(self):
+        # App 必须显示 common/list 的基础名称（欣畅），而不是右侧 flat
+        # 列表里的欣畅-Pro+/欣畅-Pro 变体；多人配音弹窗按基础名称搜索。
         common = [{
             "commonId": 10001135,
             "speakerName": "欣畅",
@@ -87,18 +190,21 @@ class XunfeiCatalogTests(unittest.TestCase):
             composite_raw_voices=catalog.build_composite_speakers(common, flat),
             source="test",
         )
-        # 旧 base 列表会被识别并回退为变体列表
-        composite_names = {item["name"] for item in payload["composite_voices"]}
-        self.assertIn("欣畅-Pro+", composite_names)
-        self.assertIn("欣畅-Pro", composite_names)
-        variant = next(item for item in payload["voices"] if item["name"] == "欣畅-Pro+")
-        self.assertEqual(variant["common_id"], 10001135)
-        # 新逻辑的 composite 直接是变体，不再有独立的 base composite_key
-        self.assertEqual(variant["name"], "欣畅-Pro+")
+        names = {item["name"] for item in payload["voices"]}
+        self.assertIn("欣畅", names)
+        self.assertNotIn("欣畅-Pro+", names)
+        self.assertNotIn("欣畅-Pro", names)
+        base = next(item for item in payload["voices"] if item["name"] == "欣畅")
+        self.assertEqual(base["common_id"], 10001135)
+        self.assertEqual(base["speaker_no"], 591199169)
+        self.assertEqual(
+            payload["voice_aliases"]["speaker:591199169"],
+            "common:10001135",
+        )
 
     def test_composite_catalog_keeps_provider_variant_labels(self):
-        # 旧的 base 聚合（欣畅 -> Pro+/Pro）在新逻辑中不再作为 composite
-        # 的展示名称，但 flat 变体的 emot_desc 仍需保留供 UI 展示。
+        # common/list 展示基础名；旧缓存转化时仍可以保留第一个变体的
+        # emot_desc 作为兼容信息，但不能把变体名暴露为主列表。
         common = [{"commonId": 10001135, "speakerName": "欣畅"}]
         flat = [
             {
@@ -117,20 +223,43 @@ class XunfeiCatalogTests(unittest.TestCase):
 
         composite = catalog.build_composite_speakers(common, flat)
         self.assertEqual(composite[0]["_composite_variant_labels"], ["Pro+", "Pro"])
-        # 新逻辑的 composite 直接是变体列表，旧 base 列表会被回退
+        # 旧变体缓存会降级为一个 common/list 风格的基础音色卡片。
         payload = catalog.normalize_catalog(
             flat,
             composite_raw_voices=flat,
             source="test",
         )
-        # 变体列表应保留 emot_desc
         self.assertEqual(
-            next(item for item in payload["composite_voices"] if item["name"] == "欣畅-Pro")["emot_desc"],
-            "Pro",
+            [item["name"] for item in payload["composite_voices"] if item["key"].startswith("common:")],
+            ["欣畅"],
         )
         self.assertEqual(
-            next(item for item in payload["voices"] if item["name"] == "欣畅-Pro")["emot_desc"],
-            "Pro",
+            next(item for item in payload["voices"] if item["name"] == "欣畅")["emot_desc"],
+            "Pro+",
+        )
+
+    def test_old_normalized_cache_is_migrated_to_common_key_with_alias(self):
+        old_variant = {
+            "key": "speaker:591199169",
+            "speaker_no": 591199169,
+            "common_id": 10001135,
+            "name": "欣畅-Pro+",
+            "composite_name": "欣畅",
+            "gender": "female",
+        }
+        payload = catalog.normalize_catalog(
+            [old_variant],
+            composite_raw_voices=[old_variant],
+            source="cache",
+        )
+
+        self.assertEqual(
+            [voice["key"] for voice in payload["voices"] if voice["name"] == "欣畅"],
+            ["common:10001135"],
+        )
+        self.assertEqual(
+            payload["voice_aliases"]["speaker:591199169"],
+            "common:10001135",
         )
 
     def test_composite_falls_back_when_old_base_list_has_same_length(self):
@@ -161,12 +290,12 @@ class XunfeiCatalogTests(unittest.TestCase):
             [
                 item["name"]
                 for item in payload["composite_voices"]
-                if item["key"].startswith("speaker:")
+                if item["key"].startswith("common:")
             ],
-            ["Voice A-Pro", "Voice B-Pro"],
+            ["Voice A", "Voice B"],
         )
 
-    def test_empty_composite_list_falls_back_to_flat_variants(self):
+    def test_empty_composite_list_falls_back_to_flat_variants_without_common_metadata(self):
         flat = [{"speakerNo": 101, "speakerName": "Voice A-Pro"}]
 
         payload = catalog.normalize_catalog(
@@ -194,7 +323,7 @@ class XunfeiCatalogTests(unittest.TestCase):
 
         self.assertEqual(
             [item["name"] for item in payload["composite_voices"]],
-            ["Voice A-Pro", "Amanda", "George"],
+            ["Voice A", "英语-Amanda", "英语-George"],
         )
 
     def test_normalizes_filters_and_replaces_provider_wording(self):
