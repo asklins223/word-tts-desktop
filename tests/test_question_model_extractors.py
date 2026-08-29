@@ -11,6 +11,7 @@ import os
 import pytest
 
 from question_model import (
+    EXTRACTORS,
     QUESTION_TYPE_CODES,
     ParseCandidate,
     ResolutionState,
@@ -128,10 +129,128 @@ class TestListeningSelection:
         assert candidate.confidence < 0.95
 
 
+class TestListeningResponse:
+    @pytest.fixture()
+    def candidate(self):
+        candidate, _ = extract_from_baseline("S1-听后应答")
+        return candidate
+
+    def test_one_question_item_per_prompt_sentence(self, candidate):
+        """方案 4 节映射表：每个待应答句一条 QuestionItem。"""
+        assert candidate.type_code == "listening_response"
+        assert len(candidate.entities) == 7
+        assert all(hasattr(e, "question_type") for e in candidate.entities)
+        numbers = sorted(q.question_number for q in candidate.entities)
+        assert numbers == list(range(1, 8))
+
+    def test_audio_only_draft(self, candidate):
+        assert candidate.audio_only
+        assert "listening_response_expected_answer_not_extracted" in candidate.diagnostics
+        assert all(e.resolution_state is ResolutionState.DRAFT
+                   for e in candidate.entities)
+
+
+class TestInfoRetelling:
+    def test_stimulus_only_with_diagnostics(self):
+        """当前只解析出整段录音稿：只出 Stimulus，任务未拆分必须写诊断。"""
+        candidate, _ = extract_from_baseline("信息转述及询问信息 7上- U1")
+        assert candidate.type_code == "info_retelling"
+        assert len(candidate.entities) == 1
+        assert all(hasattr(e, "stimulus_type") for e in candidate.entities)
+        assert candidate.audio_only
+        assert "info_retelling_task_split_not_extracted" in candidate.diagnostics
+
+
+class TestImitationReading:
+    @pytest.fixture()
+    def candidate(self):
+        candidate, _ = extract_from_baseline("模仿朗读-7上-U5-U6")
+        return candidate
+
+    def test_one_passage_stimulus_per_item(self, candidate):
+        assert candidate.type_code == "imitation_reading"
+        assert len(candidate.entities) == 6
+        assert all(e.stimulus_type == "reading_passage" for e in candidate.entities)
+
+    def test_locator_carries_source_and_unit(self, candidate):
+        """外网/教材来源与单元号进入定位，4 外网 + 2 教材。"""
+        locators = [e.source_locator for e in candidate.entities]
+        assert sum("模仿朗读-外网" in l for l in locators) == 4
+        assert sum("模仿朗读-教材" in l for l in locators) == 2
+        assert any("朗读1" in l for l in locators)
+        assert len(set(e.stimulus_id for e in candidate.entities)) == 6
+
+
+class TestTextReading:
+    @pytest.fixture()
+    def candidate(self):
+        candidate, _ = extract_from_baseline("课文跟读-G7-1")
+        return candidate
+
+    def test_content_units_not_questions(self, candidate):
+        """课文跟读是学习内容：必须映射为 ContentUnit，不伪装成考试小题。"""
+        assert candidate.type_code == "text_reading"
+        assert len(candidate.entities) == 82
+        kinds = [e.content_kind for e in candidate.entities]
+        assert kinds.count("sentence_reading") == 29
+        assert kinds.count("paragraph_reading") == 17
+        assert kinds.count("discourse_reading") == 36
+        assert all(e.unit_kind == "LEARNING_CONTENT" for e in candidate.entities)
+
+    def test_structural_numbers_preserved(self, candidate):
+        discourses = [e for e in candidate.entities
+                      if e.content_kind == "discourse_reading"]
+        assert all(e.discourse_number is not None for e in discourses)
+        assert all(e.sentence_number is not None for e in discourses)
+
+    def test_unique_ids_and_determinism(self, candidate):
+        assert len({e.content_unit_id for e in candidate.entities}) == 82
+        again, _ = extract_from_baseline("课文跟读-G7-1")
+        assert again.to_dict() == candidate.to_dict()
+
+    def test_missing_sentence_number_uses_ordinal(self):
+        """7上-Starter 的段落条目 sentence_number=None：按条目顺序定位且 id 唯一。"""
+        candidate, _ = extract_from_baseline("课文跟读-7上-Starter Unit 1 Hello")
+        assert len(candidate.entities) == 37
+        assert len({e.content_unit_id for e in candidate.entities}) == 37
+        assert all("条目" in e.source_locator
+                   for e in candidate.entities
+                   if e.content_kind == "paragraph_reading")
+
+
+class TestVocabulary:
+    @pytest.fixture()
+    def candidate(self):
+        candidate, _ = extract_from_baseline("U6单词导入模板")
+        return candidate
+
+    def test_words_and_example_sentences(self, candidate):
+        assert candidate.type_code == "vocabulary"
+        assert len(candidate.entities) == 80
+        kinds = [e.content_kind for e in candidate.entities]
+        assert kinds.count("word") == 40
+        assert kinds.count("example_sentence") == 40
+        assert all(e.unit_kind == "LEARNING_CONTENT" for e in candidate.entities)
+
+    def test_entry_numbers_preserved(self, candidate):
+        words = [e for e in candidate.entities if e.content_kind == "word"]
+        assert sorted(e.entry_number for e in words) == list(range(1, 41))
+        assert len({e.content_unit_id for e in candidate.entities}) == 80
+
+
+class TestRegistryAlignment:
+    def test_extractors_cover_all_registered_types(self):
+        """全部注册题型必须接入原子小题抽取。"""
+        from question_types import QUESTION_TYPES
+        registered = {qt.key for qt in QUESTION_TYPES}
+        assert registered == set(QUESTION_TYPE_CODES)
+        assert registered == set(EXTRACTORS.keys())
+
+
 class TestGuardRails:
     def test_unregistered_type_rejected(self):
         with pytest.raises(KeyError):
-            extract_candidate("课文跟读", {"items": []}, "doc")
+            extract_candidate("不存在的题型", {"items": []}, "doc")
 
     def test_invalid_type_code_rejected(self):
         from question_model import QuestionItem

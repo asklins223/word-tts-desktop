@@ -172,6 +172,51 @@ class QuestionItem:
 
 
 @dataclass(frozen=True)
+class ContentUnit:
+    """非考试学习内容单元（课文跟读、词汇等）。
+
+    方案 3.2：不伪装成 QuestionItem；unit_kind 恒为 LEARNING_CONTENT，
+    仍可作为 OperationScope 的目标进入统一操作流程。
+    """
+
+    content_unit_id: str
+    content_kind: str            # discourse_reading / paragraph_reading / sentence_reading / word / example_sentence
+    text: str
+    source_locator: str
+    section: str | None = None
+    discourse_number: int | None = None
+    sentence_number: int | None = None
+    entry_number: int | None = None   # 词汇词条、朗读任务等顺序号
+    unit_kind: str = "LEARNING_CONTENT"
+    resolution_state: ResolutionState = ResolutionState.DRAFT
+    content_hash: str = field(default="", compare=False)
+
+    def __post_init__(self):
+        if not self.content_hash:
+            object.__setattr__(self, "content_hash", content_hash({
+                "content_unit_id": self.content_unit_id,
+                "content_kind": self.content_kind,
+                "text": self.text,
+                "unit_kind": self.unit_kind,
+            }))
+
+    def to_dict(self) -> dict:
+        return {
+            "content_unit_id": self.content_unit_id,
+            "content_kind": self.content_kind,
+            "text": self.text,
+            "source_locator": self.source_locator,
+            "section": self.section,
+            "discourse_number": self.discourse_number,
+            "sentence_number": self.sentence_number,
+            "entry_number": self.entry_number,
+            "unit_kind": self.unit_kind,
+            "resolution_state": self.resolution_state.value,
+            "content_hash": self.content_hash,
+        }
+
+
+@dataclass(frozen=True)
 class ParseCandidate:
     """结构层与题型层之间的中间协议（方案 5.2.1）。
 
@@ -183,7 +228,7 @@ class ParseCandidate:
     type_code: str
     type_version: str = "1"
     claimed_blocks: tuple[str, ...] = ()   # 候选声明的原文范围（source_locator）
-    entities: tuple[Stimulus | QuestionItem, ...] = ()
+    entities: tuple[Stimulus | QuestionItem | ContentUnit, ...] = ()
     confidence: float = 0.95
     diagnostics: tuple[str, ...] = ()
     capabilities: Mapping[str, bool] = field(default_factory=dict)
