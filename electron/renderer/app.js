@@ -845,7 +845,7 @@ function setVoiceCatalog(entries, filters = [], aliases = {}) {
         if (voice?.key && !byKey.has(voice.key)) byKey.set(voice.key, voice);
     });
     voiceCatalog = [...byKey.values()];
-    const filterMap = new Map([['all', { key: 'all', label: '全部音色' }], ['recent', { key: 'recent', label: '最近使用' }]]);
+    const filterMap = new Map([['all', { key: 'all', label: '全部音色' }]]);
     if (Array.isArray(filters)) {
         filters.forEach(filter => {
             const key = String(filter?.key || '').trim();
@@ -855,7 +855,25 @@ function setVoiceCatalog(entries, filters = [], aliases = {}) {
     }
     if (!filterMap.has('female')) filterMap.set('female', { key: 'female', label: '女声' });
     if (!filterMap.has('male')) filterMap.set('male', { key: 'male', label: '男声' });
-    voiceFilterOptions = [...filterMap.values()];
+    filterMap.set('recent', { key: 'recent', label: '最近使用' });
+    const priorityFilters = ['英语', '多语种']
+        .map(label => [...filterMap.values()].find(filter => filter.label === label))
+        .filter(Boolean);
+    const priorityKeys = new Set(priorityFilters.map(filter => filter.key));
+    voiceFilterOptions = [
+        filterMap.get('all'),
+        ...priorityFilters,
+        filterMap.get('recent'),
+        ...[...filterMap.values()].filter(filter => (
+            filter.key !== 'all'
+            && filter.key !== 'recent'
+            && !priorityKeys.has(filter.key)
+        )),
+    ].filter(Boolean);
+}
+
+function getVoiceFilterOptions() {
+    return voiceFilterOptions.map(filter => ({ ...filter }));
 }
 
 function migrateVoiceSelections() {
@@ -1085,6 +1103,25 @@ function voiceTags(voice, limit = 2) {
     return [...new Set(values.filter(Boolean))].slice(0, limit);
 }
 
+function voiceHasPreview(voice) {
+    return Boolean(String(voice?.audio_url || voice?.fallback_audio_url || '').trim());
+}
+
+function createVoicePreviewButton(voice) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'voice-card-preview';
+    button.dataset.voicePreviewKey = voice.key;
+    button.dataset.audioName = `音色 ${voice.name}`;
+    const hasPreview = voiceHasPreview(voice);
+    button.disabled = !hasPreview;
+    button.title = hasPreview ? `试听 ${voice.name}` : `${voice.name}暂无示例音频`;
+    button.setAttribute('aria-label', hasPreview ? `试听 ${voice.name}` : `${voice.name}暂无示例音频`);
+    button.innerHTML = '<svg class="icon-play" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><svg class="icon-pause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+    button.setAttribute('aria-pressed', 'false');
+    return button;
+}
+
 function renderVoiceFilters() {
     const container = $('voice-filter-row');
     if (!container) return;
@@ -1114,12 +1151,16 @@ function renderVoiceCards() {
     }
     const fragment = document.createDocumentFragment();
     matches.forEach((voice, index) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = `voice-card${voice.key === selectedKey ? ' is-selected' : ''}`;
-        button.dataset.voiceKey = voice.key;
-        button.setAttribute('role', 'option');
-        button.setAttribute('aria-selected', voice.key === selectedKey ? 'true' : 'false');
+        const card = document.createElement('div');
+        card.className = `voice-card${voice.key === selectedKey ? ' is-selected' : ''}`;
+        card.dataset.voiceKey = voice.key;
+        card.setAttribute('role', 'listitem');
+        card.setAttribute('aria-label', `${voice.name}，${voiceHasPreview(voice) ? '可试听' : '暂无示例音频'}`);
+        const selectButton = document.createElement('button');
+        selectButton.type = 'button';
+        selectButton.className = 'voice-card-select';
+        selectButton.setAttribute('aria-pressed', voice.key === selectedKey ? 'true' : 'false');
+        selectButton.setAttribute('aria-label', `选择音色 ${voice.name}`);
         const avatar = document.createElement('span');
         avatar.className = 'voice-avatar';
         // 首屏卡片直接加载，滚动到后续音色时再按可见区域加载，避免
@@ -1138,8 +1179,12 @@ function renderVoiceCards() {
             tags.appendChild(tagEl);
         });
         copy.append(name, tags);
-        button.append(avatar, copy);
-        fragment.appendChild(button);
+        selectButton.append(avatar, copy);
+        const actions = document.createElement('span');
+        actions.className = 'voice-card-actions';
+        actions.appendChild(createVoicePreviewButton(voice));
+        card.append(selectButton, actions);
+        fragment.appendChild(card);
     });
     // 一次性挂载，避免每个音色卡片都触发布局计算。
     grid.replaceChildren(fragment);
@@ -1189,7 +1234,7 @@ function setVoiceParamInputs(params) {
 
 function renderVoiceDetails() {
     const role = voiceRoles.find(item => item.key === activeVoiceRole);
-    const voice = getVoiceEntry(activeVoiceKeyForRole(role));
+    const voice = getResultVoiceEntry(activeVoiceKeyForRole(role));
     const detailRole = $('voice-detail-role');
     const detailName = $('voice-detail-name');
     const detailMeta = $('voice-detail-meta');
@@ -1200,7 +1245,11 @@ function renderVoiceDetails() {
     setVoiceParamInputs(activeVoiceParams());
     const previewButton = $('voice-preview-btn');
     if (previewButton) {
-        previewButton.disabled = !voice.audio_url;
+        const hasPreview = voiceHasPreview(voice);
+        previewButton.disabled = !hasPreview;
+        previewButton.title = hasPreview ? `试听 ${voice.name}` : `${voice.name}暂无示例音频`;
+        previewButton.setAttribute('aria-label', hasPreview ? `试听 ${voice.name}` : `${voice.name}暂无示例音频`);
+        previewButton.dataset.audioName = `音色 ${voice.name}`;
         setVoicePreviewButtonState(
             voicePreviewAudio?._previewButton?.id === 'voice-preview-btn',
         );
@@ -1245,6 +1294,7 @@ function updateActiveVoiceParam(param, value) {
 function setResultVoicePreviewButtonState(button, isPlaying) {
     if (!button) return;
     button.classList.toggle('is-playing', Boolean(isPlaying));
+    button.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
     updatePlayIcon(button, Boolean(isPlaying));
 }
 
@@ -1268,6 +1318,7 @@ function setVoicePreviewButtonState(isPlaying) {
     const button = $('voice-preview-btn');
     if (!button) return;
     button.classList.toggle('is-playing', Boolean(isPlaying));
+    button.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
     updatePlayIcon(button, Boolean(isPlaying));
 }
 
@@ -1364,16 +1415,20 @@ function setVoiceDetailCollapsed(collapsed) {
 }
 
 function toggleVoicePreview() {
-    const voice = getVoiceEntry(activeVoiceKeyForRole());
-    if (!voice.audio_url) return;
+    const voice = getResultVoiceEntry(activeVoiceKeyForRole());
+    if (!voiceHasPreview(voice)) return;
     playVoiceSample(voice, $('voice-preview-btn'));
 }
 
 function bindVoiceWorkspaceEvents() {
-    $('voice-search-input')?.addEventListener('input', scheduleVoiceCardsRender);
+    $('voice-search-input')?.addEventListener('input', () => {
+        stopVoicePreview();
+        scheduleVoiceCardsRender();
+    });
     $('voice-filter-row')?.addEventListener('click', event => {
         const button = event.target.closest('[data-voice-filter]');
         if (!button) return;
+        stopVoicePreview();
         activeVoiceFilter = button.dataset.voiceFilter || 'all';
         renderVoiceFilters();
         renderVoiceCards();
@@ -1386,6 +1441,12 @@ function bindVoiceWorkspaceEvents() {
         renderVoiceWorkspace();
     });
     $('voice-browser-grid')?.addEventListener('click', event => {
+        const previewButton = event.target.closest('[data-voice-preview-key]');
+        if (previewButton) {
+            const voice = getResultVoiceEntry(previewButton.dataset.voicePreviewKey);
+            if (voiceHasPreview(voice)) playVoiceSample(voice, previewButton);
+            return;
+        }
         const button = event.target.closest('[data-voice-key]');
         if (button) selectVoiceForActiveRole(button.dataset.voiceKey);
     });

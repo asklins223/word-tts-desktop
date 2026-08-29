@@ -1473,6 +1473,7 @@ body.platform-win32 #toolbar {
 }
 
 .voice-card {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1508,6 +1509,25 @@ body.platform-win32 #toolbar {
 .voice-card.is-selected {
     background: var(--accent-bg);
     border-color: var(--accent-light);
+}
+
+.voice-card-select {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    min-height: 42px;
+    padding: 0;
+    color: inherit;
+    text-align: left;
+    background: transparent;
+    cursor: pointer;
+}
+
+.voice-card-select:focus-visible {
+    outline: 3px solid rgba(var(--accent-rgb), 0.2);
+    outline-offset: 2px;
 }
 
 .voice-avatar {
@@ -1548,9 +1568,54 @@ body.platform-win32 #toolbar {
 
 .voice-card-copy {
     display: flex;
+    flex: 1;
     flex-direction: column;
     min-width: 0;
     gap: 4px;
+}
+
+.voice-card-actions {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    margin-inline-start: auto;
+}
+
+.voice-card-preview {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    padding: 0;
+    color: var(--accent);
+    background: var(--panel);
+    border: 1px solid var(--accent-light);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: color var(--transition), background var(--transition), border-color var(--transition), transform 120ms ease;
+}
+
+.voice-card-preview:hover {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+    transform: translateY(-1px);
+}
+
+.voice-card-preview.is-playing {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.voice-card-preview:disabled {
+    color: var(--text-faint);
+    background: var(--panel-subtle);
+    border-color: var(--border-light);
+    cursor: not-allowed;
+    transform: none;
 }
 
 .voice-card-copy strong {
@@ -1718,9 +1783,10 @@ body.platform-win32 #toolbar {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 31px;
-    height: 31px;
-    flex: 0 0 31px;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    padding: 0;
     color: var(--accent);
     background: var(--panel);
     border: 1px solid var(--accent-light);

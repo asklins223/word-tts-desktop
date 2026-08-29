@@ -27,7 +27,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, historyStatusPresentation, setVoiceCatalog, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isAcceptedGenerationSnapshot, isWaitingForGenerationCleanup, isCancellationSettledSnapshot };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, historyStatusPresentation, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isAcceptedGenerationSnapshot, isWaitingForGenerationCleanup, isCancellationSettledSnapshot };`, context);
     return { api: context.__rendererTests, storage };
 }
 
@@ -117,6 +117,21 @@ test('多人配音基础目录会迁移旧 flat 音色 key', () => {
     assert.equal(
         api.normalizeClientConfig({ default_female_voice: 'speaker:591199169' }).default_female_voice,
         'common:100',
+    );
+});
+
+test('音色分类把英语和多语种放在最近使用之前', () => {
+    const { api } = loadRendererConfigFunctions();
+    api.setVoiceCatalog([], [
+        { key: 'female', label: '女声', count: 1 },
+        { key: 'tag:多语种', label: '多语种', count: 1 },
+        { key: 'tag:英语', label: '英语', count: 1 },
+        { key: 'male', label: '男声', count: 1 },
+    ]);
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.getVoiceFilterOptions().map(filter => filter.label))),
+        ['全部音色', '英语', '多语种', '最近使用', '女声', '男声'],
     );
 });
 

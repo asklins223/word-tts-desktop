@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -12,16 +13,21 @@ class XunfeiCatalogTests(unittest.TestCase):
         first_page = {
             "code": 0,
             "data": {
-                "records": [{"speakerNo": index, "speakerName": f"Voice {index}"} for index in range(100)],
-                "total": 200,
+                "records": [{"speakerNo": index, "speakerName": f"Voice {index}"} for index in range(40)],
+                "total": 80,
                 "pages": 2,
             },
         }
 
-        with patch.object(catalog, "_request_json", side_effect=[first_page, None]):
+        with patch.object(catalog, "_request_json", side_effect=[first_page, None]) as request:
             records = catalog.fetch_flat_list_speakers(timeout=1)
 
         self.assertEqual(records, [])
+        self.assertEqual(request.call_args_list[0].args[0], catalog.SPEAKER_FLAT_LIST_URL)
+        self.assertEqual(
+            request.call_args_list[0].kwargs["params"],
+            {"current": 1, "size": 40, "scope": "common"},
+        )
 
     def test_common_list_fetches_all_pages_with_the_multi_speaker_endpoint(self):
         first_page = {
@@ -82,7 +88,7 @@ class XunfeiCatalogTests(unittest.TestCase):
             catalog._build_api_sign(body["param"], body["base"]),
         )
 
-    def test_refresh_uses_common_list_as_the_primary_catalog_source(self):
+    def test_refresh_uses_common_list_as_primary_and_merges_flat_preview_audio(self):
         common = [
             {
                 "commonId": 100,
@@ -92,19 +98,94 @@ class XunfeiCatalogTests(unittest.TestCase):
                 "tag": "最新|广告",
             }
         ]
+        flat = [
+            {
+                "speakerNo": 123,
+                "speakerName": "多人基础音色-Pro+",
+                "audioUrl": "https://example.test/voice.wav",
+                "commonSpeaker": {"commonId": 100, "speakerName": "多人基础音色"},
+            }
+        ]
         with patch.object(catalog, "fetch_common_list_speakers", return_value=common), \
                 patch.object(catalog, "fetch_tag_categories", return_value=[]) as fetch_tags, \
-                patch.object(catalog, "fetch_flat_list_speakers", side_effect=AssertionError("不应读取 flat/list")):
+                patch.object(catalog, "fetch_flat_list_speakers", return_value=flat) as fetch_flat:
             with tempfile.TemporaryDirectory() as base_dir:
                 result = catalog.refresh_catalog(base_dir, timeout=1)
 
         self.assertEqual(result["_meta"]["speaker_list_endpoint"], catalog.SPEAKER_COMMON_LIST_URL)
         self.assertEqual(result["_meta"]["tags_source"], "frozen_snapshot")
         fetch_tags.assert_not_called()
+        fetch_flat.assert_called_once_with(1)
         self.assertEqual(result["_meta"]["provider_count"], 1)
         names = {item["name"] for item in result["voices"]}
         self.assertIn("多人基础音色", names)
         self.assertNotIn("多人基础音色-Pro", names)
+        voice = next(item for item in result["voices"] if item["name"] == "多人基础音色")
+        self.assertEqual(voice["audio_url"], "https://example.test/voice.wav")
+        self.assertEqual(result["_meta"]["preview_audio_endpoint"], catalog.SPEAKER_FLAT_LIST_URL)
+        self.assertEqual(result["_meta"]["preview_audio_count"], 1)
+
+    def test_refresh_keeps_cached_preview_when_flat_list_is_temporarily_empty(self):
+        common = [{
+            "commonId": 100,
+            "speakerName": "已有缓存音色",
+            "speakerGender": 2,
+            "speakerLanguage": "普通话",
+        }]
+        with tempfile.TemporaryDirectory() as base_dir:
+            cache_dir = Path(base_dir) / "cache"
+            cache_dir.mkdir()
+            (cache_dir / "voices.json").write_text(
+                json.dumps({
+                    "_meta": {"speaker_list_endpoint": catalog.SPEAKER_COMMON_LIST_URL},
+                    "voices": [{
+                        "common_id": 100,
+                        "name": "已有缓存音色",
+                        "audio_url": "https://example.test/cached.wav",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            with patch.object(catalog, "fetch_common_list_speakers", return_value=common), \
+                    patch.object(catalog, "fetch_tag_categories", return_value=[]), \
+                    patch.object(catalog, "fetch_flat_list_speakers", return_value=[]):
+                result = catalog.refresh_catalog(base_dir, timeout=1)
+
+        voice = next(item for item in result["voices"] if item["name"] == "已有缓存音色")
+        self.assertEqual(voice["audio_url"], "https://example.test/cached.wav")
+        self.assertEqual(result["_meta"]["preview_audio_count"], 1)
+
+    def test_merge_preview_audio_uses_common_id_then_name_fallback(self):
+        common = [
+            {"commonId": 100, "speakerName": "按 ID 匹配"},
+            {"commonId": 200, "speakerName": "按名称匹配"},
+            {"commonId": 300, "speakerName": "没有示例"},
+        ]
+        flat = [
+            {
+                "speakerNo": 1,
+                "speakerName": "按 ID 匹配-Pro+",
+                "audioUrl": "https://example.test/id.wav",
+                "commonSpeaker": {"commonId": 100, "speakerName": "按 ID 匹配"},
+            },
+            {
+                "speakerNo": 2,
+                "speakerName": "按名称匹配-Pro+",
+                "audioUrl": "https://example.test/name.wav",
+                "commonSpeaker": {"speakerName": "按名称匹配"},
+            },
+            {
+                "speakerNo": 3,
+                "speakerName": "没有示例-Pro+",
+                "commonSpeaker": {"commonId": 300, "speakerName": "没有示例"},
+            },
+        ]
+
+        merged = catalog.merge_preview_audio(common, flat)
+
+        self.assertEqual(merged[0]["audioUrl"], "https://example.test/id.wav")
+        self.assertEqual(merged[1]["audioUrl"], "https://example.test/name.wav")
+        self.assertNotIn("audioUrl", merged[2])
 
     def test_fixed_tag_snapshot_matches_complete_qry_tags_hierarchy(self):
         expected_labels = [
@@ -138,14 +219,14 @@ class XunfeiCatalogTests(unittest.TestCase):
         payload = catalog.normalize_catalog([
             {
                 "commonId": 10001009,
-                "speakerName": "英语-Amanda",
-                "speakerGender": 2,
+                "speakerName": "英语-George",
+                "speakerGender": 1,
                 "speakerLanguage": "英语",
             },
             {
                 "commonId": 10001089,
-                "speakerName": "英语-George",
-                "speakerGender": 1,
+                "speakerName": "英语-Amanda",
+                "speakerGender": 2,
                 "speakerLanguage": "英语",
             },
         ], source="live")
@@ -153,8 +234,82 @@ class XunfeiCatalogTests(unittest.TestCase):
         by_key = {item["key"]: item for item in payload["voices"]}
         self.assertEqual(by_key["amanda"]["name"], "英语-Amanda")
         self.assertEqual(by_key["george"]["name"], "英语-George")
+        self.assertEqual(
+            [item["name"] for item in payload["voices"][:2]],
+            ["英语-Amanda", "英语-George"],
+        )
         self.assertNotIn("Amanda", {item["name"] for item in payload["voices"]})
         self.assertNotIn("George", {item["name"] for item in payload["voices"]})
+
+    def test_catalog_prioritizes_english_then_multilingual_and_filters(self):
+        payload = catalog.normalize_catalog([
+            {
+                "commonId": 1,
+                "speakerName": "普通话音色",
+                "speakerGender": 2,
+                "speakerLanguage": "普通话",
+                "tag": "最热",
+            },
+            {
+                "commonId": 2,
+                "speakerName": "多语种音色",
+                "speakerGender": 1,
+                "speakerLanguage": "韩语",
+                "tag": "多语种",
+            },
+            {
+                "commonId": 3,
+                "speakerName": "英语音色",
+                "speakerGender": 2,
+                "speakerLanguage": "英语",
+            },
+        ], source="live")
+
+        self.assertEqual(
+            [item["name"] for item in payload["voices"]],
+            ["英语-Amanda", "英语-George", "英语音色", "多语种音色", "普通话音色"],
+        )
+        self.assertEqual(
+            [item["label"] for item in payload["filters"][:5]],
+            ["全部", "英语", "多语种", "女声", "男声"],
+        )
+        filter_labels = [item["label"] for item in payload["filters"]]
+        self.assertEqual(len(filter_labels), len(set(filter_labels)))
+
+    def test_language_sort_and_filter_share_name_and_alias_detection(self):
+        payload = catalog.normalize_catalog([
+            {"commonId": 4, "speakerName": "English Voice"},
+            {"commonId": 5, "speakerName": "Multilingual Voice"},
+            {"commonId": 6, "speakerName": "普通话音色"},
+        ], source="live")
+
+        self.assertEqual(
+            [item["name"] for item in payload["voices"]],
+            ["英语-Amanda", "英语-George", "English Voice", "Multilingual Voice", "普通话音色"],
+        )
+        english = next(item for item in payload["voices"] if item["name"] == "English Voice")
+        multilingual = next(item for item in payload["voices"] if item["name"] == "Multilingual Voice")
+        self.assertIn("英语", english["categories"])
+        self.assertIn("多语种", multilingual["categories"])
+        self.assertEqual(
+            next(item["count"] for item in payload["filters"] if item["label"] == "英语"),
+            3,
+        )
+        self.assertEqual(
+            next(item["count"] for item in payload["filters"] if item["label"] == "多语种"),
+            1,
+        )
+
+    def test_builtin_default_keys_stay_in_english_group_without_language_fields(self):
+        payload = catalog.normalize_catalog([
+            {"commonId": 7, "speakerName": "普通话音色"},
+            {"commonId": 8, "speakerName": "Amanda"},
+        ], source="live")
+
+        self.assertEqual(
+            [item["name"] for item in payload["voices"][:2]],
+            ["Amanda", "英语-George"],
+        )
 
     def test_common_list_catalog_uses_base_name_and_keeps_common_id(self):
         # App 必须显示 common/list 的基础名称（欣畅），而不是右侧 flat
@@ -323,7 +478,7 @@ class XunfeiCatalogTests(unittest.TestCase):
 
         self.assertEqual(
             [item["name"] for item in payload["composite_voices"]],
-            ["Voice A", "英语-Amanda", "英语-George"],
+            ["英语-Amanda", "英语-George", "Voice A"],
         )
 
     def test_normalizes_filters_and_replaces_provider_wording(self):
