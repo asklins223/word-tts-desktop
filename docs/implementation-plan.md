@@ -17,7 +17,7 @@
 | T9 | 本地完成；真实账号现场验证按产品豁免 | 启动时已接入安全恢复、干预过期和限量 GC；持久 scheduler 只认安全的 `WAITING_RETRY`、可重试错误、未跨外部副作用边界的步骤，并要求 run 存在 `WORKFLOW_GENERATE` 同意事件才无人值守派发，由正式运行时以 `MAX_ACTIVE=1`、队列上限 4 派发。真实讯飞自动重试的账号现场验证按产品决定豁免（账号无额度）。 |
 | T10 | 本地硬门通过 | 2A gate、迁移/schema 负向检查、全量 Python/Electron 回归和进程 kill 探针通过；硬门细节见 `docs/2a-acceptance-report.md` 与 `docs/2a-gate-report.json`。 |
 | T11 | 逻辑链路完成；真实账号 smoke 按产品豁免 | `XunfeiTTSAdapter`、固定 `composite_cut` smoke harness、无页面逻辑 smoke 和预算已完成；正式桌面 App 和后端默认开启真实讯飞，`--disable-real-provider`/`WORDTTS_ENABLE_REAL_PROVIDER=0` 仅用于显式离线诊断，`--smoke-test` 始终离线；真实账号 smoke 因账号无额度按产品决定豁免并在发布门留痕，额度恢复后应补做受控 smoke。 |
-| T12 | 本地完成 | Application Service/WorkflowEngine 已承接编排；路由保持薄层；生产模式旧 `/api/*` 返回 410，新 `/api/v1` 为运行入口。 |
+| T12 | 本地完成 | Application Service/WorkflowEngine 已承接编排；路由保持薄层。旧会话/生成引擎与旧 `/api/*` 路由已按方案 13.1 于 2026-08-29 **物理删除**（server.py 4074→646 行），未迁移路径由中间件统一返回 `410 API_VERSION_RETIRED`；`test_desktop_server` 收敛为活跃面安全/契约测试。 |
 | T13 | 本地完成 | Provider Port、BrowserRuntime、SubmissionTracker、ArtifactDownloader、能力快照和 Xunfei 适配边界已抽取；新增 Provider 不改 Engine。 |
 | T14 | 本地完成 | Parser/AudioProcessor/Verifier 端口、稳定 identity/version/hash、流式校验和 segment 边界校验已落地。 |
 | T15 | 本地完成；具体外部系统待接入 | Full profile 的 ExternalRecord、业务主键唯一映射、记录 lease/fencing、operation、receipt、verify/reconcile、人工解决、跨 run binding 和 FakeExternal 测试已完成；具体业务系统及其凭据不在当前请求中，真实集成保持关闭。 |
@@ -26,7 +26,7 @@
 
 ## 当前可重复验证
 
-本轮 2.7.45 最新证据：Python `309` 项、Electron Node tests `84` 项通过（新增 source-staging 分块暂存 8 项、Store workspace 投影 4 项、停顿快速路径优先级 1 项）；2A gate、OpenAPI 契约检查通过。当前 DMG 为 [`小猪wordTTS-2.7.45-arm64.dmg`](../electron/release/小猪wordTTS-2.7.45-arm64.dmg)，SHA-256=`31c5d9ffb536f361c3629f81d1e0928a1338c2a552b8dc1396167a5f16df067f`，已通过后端 Playwright/Chromium smoke、桌面 `--smoke-test` 与 ad-hoc 签名校验。正式包默认启用真实 Provider，只有 `--smoke-test`、`--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 才进入离线路径。
+本轮 2.7.45 最新证据：Python `272` 项、Electron Node tests `84` 项通过（新增 source-staging 分块暂存 8 项、Store workspace 投影 4 项、停顿快速路径优先级 1 项；server.py 旧引擎删除后 `test_desktop_server` 收敛为 6 项活跃面测试）；2A gate、OpenAPI 契约检查通过。当前 DMG 为 [`小猪wordTTS-2.7.45-arm64.dmg`](../electron/release/小猪wordTTS-2.7.45-arm64.dmg)，SHA-256=`31c5d9ffb536f361c3629f81d1e0928a1338c2a552b8dc1396167a5f16df067f`，已通过后端 Playwright/Chromium smoke、桌面 `--smoke-test` 与 ad-hoc 签名校验。正式包默认启用真实 Provider，只有 `--smoke-test`、`--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 才进入离线路径。
 
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py' -q
