@@ -64,6 +64,23 @@ CREATE TABLE document_revisions (
         REFERENCES source_documents(source_document_id) ON DELETE RESTRICT
 );
 
+-- 文档版本成员关系：revision 行按内容寻址、跨文档版本复用，
+-- "某文档版本包含哪些实体版本"由此表表达（方案 7.1 显式关联约束）。
+CREATE TABLE document_revision_members (
+    document_revision_id TEXT NOT NULL,
+    entity_kind          TEXT NOT NULL CHECK (
+        entity_kind IN ('QUESTION', 'STIMULUS', 'CONTENT_UNIT')
+    ),
+    entity_revision_id   TEXT NOT NULL CHECK (length(entity_revision_id) > 0),
+    ordinal              INTEGER NOT NULL DEFAULT 0 CHECK (ordinal >= 0),
+    PRIMARY KEY (document_revision_id, entity_kind, entity_revision_id),
+    FOREIGN KEY (document_revision_id)
+        REFERENCES document_revisions(document_revision_id) ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_document_revision_members_entity
+    ON document_revision_members(entity_kind, entity_revision_id);
+
 -- ============================================================
 -- 章节 / 题组
 -- ============================================================

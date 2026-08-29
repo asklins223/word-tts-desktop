@@ -134,18 +134,6 @@ def sync_sub_type_registry(conn: sqlite3.Connection) -> int:
     return conn.total_changes - before
 
 
-def _question_revision_id(content_hash: str) -> str:
-    return f"question-revision:{content_hash}"
-
-
-def _stimulus_revision_id(content_hash: str) -> str:
-    return f"stimulus-revision:{content_hash}"
-
-
-def _content_unit_revision_id(content_hash: str) -> str:
-    return f"content-unit-revision:{content_hash}"
-
-
 def _options_json(options) -> str:
     return json.dumps(
         [{"option_id": o.option_id, "text": o.text} for o in options],
@@ -185,7 +173,7 @@ def _persist_stimulus(conn, entity: Stimulus, source_document_id: str,
         (entity.stimulus_id, source_document_id, entity.sub_type_code,
          entity.stimulus_type, entity.material_source, created),
     )
-    revision_id = _stimulus_revision_id(entity.content_hash)
+    revision_id = entity.stimulus_revision_id
     conn.execute(
         """
         INSERT OR IGNORE INTO stimulus_revisions
@@ -233,7 +221,7 @@ def _persist_question(conn, entity: QuestionItem, source_document_id: str,
         (entity.question_id, source_document_id, family_code,
          entity.question_type, created),
     )
-    revision_id = _question_revision_id(entity.content_hash)
+    revision_id = entity.question_revision_id
     conn.execute(
         """
         INSERT OR IGNORE INTO question_revisions
@@ -278,7 +266,7 @@ def _persist_content_unit(conn, entity: ContentUnit, source_document_id: str,
         (entity.content_unit_id, source_document_id, entity.content_kind,
          entity.unit_kind, created),
     )
-    revision_id = _content_unit_revision_id(entity.content_hash)
+    revision_id = entity.content_unit_revision_id
     conn.execute(
         """
         INSERT OR IGNORE INTO content_unit_revisions
@@ -323,15 +311,27 @@ def persist_candidate(
     }
     stimulus_revision_by_id: dict[str, str] = {}
 
+    def _record_membership(entity_kind: str, entity_revision_id: str, ordinal: int):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO document_revision_members
+                (document_revision_id, entity_kind, entity_revision_id, ordinal)
+            VALUES (?, ?, ?, ?)
+            """,
+            (document_revision_id, entity_kind, entity_revision_id, ordinal),
+        )
+
     for entity in candidate.entities:
         if isinstance(entity, Stimulus):
             revision_id = _persist_stimulus(
                 conn, entity, source_document_id, document_revision_id, created)
+            _record_membership("STIMULUS", revision_id, counts["stimuli"])
             stimulus_revision_by_id[entity.stimulus_id] = revision_id
             counts["stimuli"] += 1
         elif isinstance(entity, QuestionItem):
             revision_id = _persist_question(
                 conn, entity, source_document_id, document_revision_id, created)
+            _record_membership("QUESTION", revision_id, counts["questions"])
             counts["questions"] += 1
             if entity.stimulus_id:
                 stimulus_revision_id = stimulus_revision_by_id.get(entity.stimulus_id)
@@ -354,8 +354,9 @@ def persist_candidate(
                 )
                 counts["question_stimuli"] += 1
         elif isinstance(entity, ContentUnit):
-            _persist_content_unit(
+            revision_id = _persist_content_unit(
                 conn, entity, source_document_id, document_revision_id, created)
+            _record_membership("CONTENT_UNIT", revision_id, counts["content_units"])
             counts["content_units"] += 1
         else:
             raise TypeError(f"未知的实体类型: {type(entity).__name__}")

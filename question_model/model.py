@@ -145,6 +145,11 @@ def slugify(locator: str) -> str:
     return re.sub(r"[\s/\\]+", "-", locator.strip())
 
 
+def revision_id(prefix: str, entity_id: str, content_hash_hex: str) -> str:
+    """身份 + 内容派生的不可变版本号。"""
+    return f"{prefix}:{hashlib.sha256(f'{entity_id}|{content_hash_hex}'.encode('utf-8')).hexdigest()}"
+
+
 def build_identity(kind: str, source_key: str, locator: str) -> str:
     """``question:<source>:<locator>`` / ``stimulus:<source>:<locator>``。"""
     return f"{kind}:{source_key}:{slugify(locator)}"
@@ -180,16 +185,21 @@ class Stimulus:
         _validate_sub_type(self.sub_type_code, allowed_roles=None)
         if not self.content_hash:
             object.__setattr__(self, "content_hash", content_hash({
-                "stimulus_id": self.stimulus_id,
                 "sub_type_code": self.sub_type_code,
                 "stimulus_type": self.stimulus_type,
                 "text": self.text,
                 "material_source": self.material_source,
             }))
 
+    @property
+    def stimulus_revision_id(self) -> str:
+        return revision_id("stimulus-revision", self.stimulus_id,
+                           self.content_hash)
+
     def to_dict(self) -> dict:
         return {
             "stimulus_id": self.stimulus_id,
+            "stimulus_revision_id": self.stimulus_revision_id,
             "sub_type_code": self.sub_type_code,
             "stimulus_type": self.stimulus_type,
             "text": self.text,
@@ -225,8 +235,8 @@ class QuestionItem:
     def __post_init__(self):
         _validate_sub_type(self.question_type, allowed_roles=("question",))
         if not self.content_hash:
+            # 纯内容指纹：不含 question_id（身份），供 revision 匹配配对
             object.__setattr__(self, "content_hash", content_hash({
-                "question_id": self.question_id,
                 "question_type": self.question_type,
                 "stem": self.stem,
                 "options": [(o.option_id, o.text) for o in self.options],
@@ -245,8 +255,9 @@ class QuestionItem:
 
     @property
     def question_revision_id(self) -> str:
-        """内容寻址的版本号；v0006 落库后改为持久化 revision 表。"""
-        return f"question-revision:{self.content_hash[:16]}"
+        """版本号 = 身份 + 内容 派生；不同小题同内容不撞主键。"""
+        return revision_id("question-revision", self.question_id,
+                           self.content_hash)
 
     @property
     def question_fields_complete(self) -> bool:
@@ -299,16 +310,21 @@ class ContentUnit:
         _validate_sub_type(self.content_kind, allowed_roles=("content",))
         if not self.content_hash:
             object.__setattr__(self, "content_hash", content_hash({
-                "content_unit_id": self.content_unit_id,
                 "content_kind": self.content_kind,
                 "text": self.text,
                 "entry_kind": self.entry_kind,
                 "unit_kind": self.unit_kind,
             }))
 
+    @property
+    def content_unit_revision_id(self) -> str:
+        return revision_id("content-unit-revision", self.content_unit_id,
+                           self.content_hash)
+
     def to_dict(self) -> dict:
         return {
             "content_unit_id": self.content_unit_id,
+            "content_unit_revision_id": self.content_unit_revision_id,
             "content_kind": self.content_kind,
             "text": self.text,
             "source_locator": self.source_locator,

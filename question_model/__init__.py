@@ -23,6 +23,15 @@ from .model import (
 )
 from .adjudication import AdjudicatedParse, BlockConflict, adjudicate
 from .extractors import EXTRACTORS, extract_candidate
+from .revision_match import (
+    ALGORITHM_VERSION,
+    DECISION_AMBIGUOUS,
+    DECISION_CHANGED,
+    DECISION_MATCHED,
+    DECISION_NEW,
+    DECISION_REMOVED,
+    match_document_revisions,
+)
 from .persistence import (
     SCHEMA_VERSION,
     create_document_revision,
@@ -33,6 +42,12 @@ from .persistence import (
 )
 
 __all__ = [
+    "ALGORITHM_VERSION",
+    "DECISION_AMBIGUOUS",
+    "DECISION_CHANGED",
+    "DECISION_MATCHED",
+    "DECISION_NEW",
+    "DECISION_REMOVED",
     "IDENTITY_VERSION",
     "QUESTION_TYPE_CODES",
     "SUB_TYPE_REGISTRY",
@@ -57,4 +72,5 @@ __all__ = [
     "extract_candidate",
     "persist_candidate",
     "persist_parse",
+    "match_document_revisions",
 ]
