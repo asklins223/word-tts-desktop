@@ -29,7 +29,8 @@ from PyInstaller.utils.hooks import collect_data_files
 # 数据文件（资源）
 # ============================================================================
 datas = [
-    # word_parser 没有 __init__.py；运行时会把这个目录加入 sys.path。
+    # word_parser 现在是 question_types 包之上的兼容门面，但仍以 data
+    # 方式打包、运行时把该目录加入 sys.path（workflow.parser 按路径加载它）。
     # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
     ('word_parser/word_parser.py', 'word_parser'),
     # 迁移运行器通过 ``Path(__file__).parent / 'migrations'`` 在运行时
@@ -53,6 +54,18 @@ hiddenimports = [
     # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx / openpyxl 的导入。
     'docx',
     'openpyxl',
+    # 题型切片包：wordtts.config 静态导入 question_types，正常会被 Analysis
+    # 跟随；显式列出以防切片被误判为可选依赖。
+    'question_types',
+    'question_types.base',
+    'question_types.text_utils',
+    'question_types.info_acquisition',
+    'question_types.listening_selection',
+    'question_types.listening_response',
+    'question_types.text_reading',
+    'question_types.info_retelling',
+    'question_types.imitation_reading',
+    'question_types.vocabulary',
     'xunfei',
     'xunfei.config',
     'xunfei.errors',

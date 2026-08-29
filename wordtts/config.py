@@ -3,6 +3,7 @@
 
 import os
 
+from question_types import QUESTION_TYPES
 from wordtts.bootstrap import BASE_DIR
 
 
@@ -19,8 +20,13 @@ FEMALE_VOICE = "amanda"
 # 男声 → 英语-George
 MALE_VOICE = "george"
 
-# 词汇题型不再使用单独音色，统一走默认女声。
-WORD_CATEGORIES = frozenset({"单词", "例句"})
+# 词汇题型不再使用单独音色，统一走默认女声。强制女声的 category 由
+# 各题型切片声明，这里从注册表汇总。
+WORD_CATEGORIES = frozenset(
+    category
+    for question_type in QUESTION_TYPES
+    for category in question_type.force_female_categories
+)
 
 # 每条解析结果（每道题）最终独立导出一个音频文件；合并模式只在讯飞端
 # 临时合并作品，下载后仍会按安全停顿恢复为题目级文件。
@@ -103,12 +109,5 @@ COMPOSITE_OUTER_EDGE_TRIM_MIN_MS = 600
 COMPOSITE_MIN_OUTPUT_MS = 40
 
 
-TYPE_COLORS = {
-    "信息获取": "#0e7490",
-    "听后选择": "#2563eb",
-    "听后应答": "#7c3aed",
-    "课文跟读": "#15803d",
-    "信息转述及询问": "#b45309",
-    "模仿朗读": "#9f1239",
-    "词汇": "#1e40af",
-}
+# 题型展示颜色由各题型切片声明，这里从注册表派生；前端经 server.py 读取。
+TYPE_COLORS = {qt.key: qt.color for qt in QUESTION_TYPES}
