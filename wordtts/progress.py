@@ -163,6 +163,15 @@ def build_progress(source_filename, source_path, parse_results, config):
     return {
         "source_file": source_filename,
         "source_path": source_path,
+        # 方案 6.4：progress.json 只是规范化模型的兼容投影；这些元数据
+        # 标记投影代际与来源，数据库永远是唯一写入源。
+        "projection": {
+            "schema_version": 1,
+            "projection_generation": 1,
+            "parser_version": PARSER_VERSION,
+            "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
+            "source_model": "atomic-question-model/v1",
+        },
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
         "status": "parsing",
