@@ -18,18 +18,22 @@ from .model import (
     build_identity,
     content_hash,
 )
+from .adjudication import AdjudicatedParse, BlockConflict, adjudicate
 from .extractors import EXTRACTORS, extract_candidate
 
 __all__ = [
     "IDENTITY_VERSION",
     "QUESTION_TYPE_CODES",
+    "AdjudicatedParse",
     "Answer",
+    "BlockConflict",
     "ContentUnit",
     "Option",
     "ParseCandidate",
     "QuestionItem",
     "ResolutionState",
     "Stimulus",
+    "adjudicate",
     "build_identity",
     "content_hash",
     "EXTRACTORS",
