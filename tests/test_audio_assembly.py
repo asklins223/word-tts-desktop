@@ -7,6 +7,8 @@ from pydub import AudioSegment
 from pydub.generators import Sine
 
 import word_tts_app as core
+import wordtts.batch
+import wordtts.synthesis
 
 
 class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
@@ -26,7 +28,7 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
             calls.append((text, voice, rate, volume, pitch))
             return self._raw_segment()
 
-        with mock.patch.object(core, "_synth_segment", side_effect=fake_synth_segment):
+        with mock.patch.object(wordtts.synthesis, "_synth_segment", side_effect=fake_synth_segment):
             result = await core._synth_item(
                 "W: first\nsecond line\nM: final",
                 rate=50,
@@ -50,7 +52,7 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
             calls.append((text, voice, rate, volume, pitch))
             return self._raw_segment()
 
-        with mock.patch.object(core, "_synth_segment", side_effect=fake_synth_segment):
+        with mock.patch.object(wordtts.synthesis, "_synth_segment", side_effect=fake_synth_segment):
             await core._synth_item(
                 "Reporter: opening\nMr Yan: answer",
                 rate=50,
@@ -80,7 +82,7 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
             calls.append((text, voice, rate, volume, pitch))
             return self._raw_segment()
 
-        with mock.patch.object(core, "_synth_segment", side_effect=fake_synth_segment):
+        with mock.patch.object(wordtts.synthesis, "_synth_segment", side_effect=fake_synth_segment):
             await core._synth_item(
                 "M: default male\nReporter: role text",
                 rate=50,
@@ -303,7 +305,7 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with mock.patch.object(
-            core,
+            wordtts.batch,
             "_XUNFEI_AVAILABLE",
             True,
         ), mock.patch.object(
