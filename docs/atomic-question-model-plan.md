@@ -828,8 +828,8 @@ external_operation_targets(
 
 待完成：
 
-1. ~~真实 TTS 引擎接入 OperationAdapter~~ 已完成（42ddbf0，TtsEngineAudioAdapter 接 wordtts 合成核心，引擎函数可注入）；
-2. 阶段3 统一结构分段器（各 Parser 仍独立重扫全文）与听后选择/信息转述业务字段抽取；
-3. 旧 UI 命令桥接与 progress.json 单向投影元数据（schema_version/generation）；
-4. 历史数据回填脚本（legacy_aliases 的存量回填部分）；
+1. ~~真实 TTS 引擎接入~~ 已完成（42ddbf0）；
+2. ~~阶段3 统一结构读取/分段/业务字段抽取~~ 已完成：统一结构读取（193b7aa/f24467a）、章节范围切片（65332c4）、实体回溯链（bd147ff）、听后选择题干+选项（2cc9f41）、信息转述/询问信息任务拆分与 asking_info 激活（f3282bf）。按范围分发解析（各解析器改为范围扫描）与更多文档格式的题干/选项/答案样本适配，属持续增强；
+3. ~~progress.json 投影元数据~~ 已完成（2a33328）；~~存量回填脚本~~ 已完成（5d8db65）；
+4. 旧 UI 命令桥接（server/API 层消费 workflow 命令）；
 5. 阶段5A 灰度/feature flag/监控指标。
