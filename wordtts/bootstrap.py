@@ -32,11 +32,6 @@ _RESOURCE_DIR = resource_dir()
 if _RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _RESOURCE_DIR)
 
-WORD_PARSER_DIR = os.path.join(_RESOURCE_DIR, "word_parser")
-
-if WORD_PARSER_DIR not in sys.path:
-    sys.path.insert(0, WORD_PARSER_DIR)
-
 # ---- 查找并配置 imageio-ffmpeg 自带的静态 ffmpeg ----
 #
 # pydub 在导入 AudioSegment 时就会扫描 PATH，并在找不到 ffmpeg 时发出

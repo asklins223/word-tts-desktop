@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import word_tts_app as core
+import wordtts as core
 
 
 class XunfeiConfigTests(unittest.TestCase):

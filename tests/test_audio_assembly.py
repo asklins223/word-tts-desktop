@@ -6,7 +6,7 @@ from unittest import mock
 from pydub import AudioSegment
 from pydub.generators import Sine
 
-import word_tts_app as core
+import wordtts as core
 import wordtts.batch
 import wordtts.synthesis
 

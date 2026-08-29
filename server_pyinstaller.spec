@@ -29,10 +29,6 @@ from PyInstaller.utils.hooks import collect_data_files
 # 数据文件（资源）
 # ============================================================================
 datas = [
-    # word_parser 现在是 question_types 包之上的兼容门面，但仍以 data
-    # 方式打包、运行时把该目录加入 sys.path（workflow.parser 按路径加载它）。
-    # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
-    ('word_parser/word_parser.py', 'word_parser'),
     # 迁移运行器通过 ``Path(__file__).parent / 'migrations'`` 在运行时
     # 读取 SQL。db 本身不是一个带 package data 的第三方包，因此必须显式
     # 将迁移目录放进 frozen backend；否则首个 /api/v1/workflows 请求会在
@@ -51,7 +47,7 @@ datas += collect_data_files('playwright', include_py_files=False)
 binaries = []
 hiddenimports = [
     # 这些导入位于容错分支内，显式列出以避免 PyInstaller 将其判为可选。
-    # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx / openpyxl 的导入。
+    # openpyxl 在 question_types.vocabulary 中是 try/except 导入。
     'docx',
     'openpyxl',
     # 题型切片包：wordtts.config 静态导入 question_types，正常会被 Analysis

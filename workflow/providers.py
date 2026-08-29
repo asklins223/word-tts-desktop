@@ -494,7 +494,7 @@ class XunfeiTTSAdapter:
         if not item_specs:
             raise DomainError("VALIDATION_ERROR", "Xunfei submission plan is empty")
         try:
-            from word_tts_app import build_composite_work_plan
+            from wordtts.composite_plan import build_composite_work_plan
 
             works = build_composite_work_plan(
                 item_specs,
@@ -571,10 +571,10 @@ class XunfeiTTSAdapter:
         """Encode a decoded composite and cut it only at verified pauses."""
 
         try:
-            import word_tts_app as legacy_ui
+            from wordtts.composite_cut import cut_composite_audio
 
             diagnostics: dict[str, Any] = {}
-            pieces = legacy_ui.cut_composite_audio(
+            pieces = cut_composite_audio(
                 audio,
                 len(item_specs),
                 item_lengths=[len(str(item.get("text") or "")) for item in item_specs],
@@ -656,12 +656,12 @@ class XunfeiTTSAdapter:
         quality = profile.get("quality")
         try:
             if generation_mode == "single_segment":
-                import word_tts_app as legacy_ui
+                from wordtts.batch import _synth_items_batch
 
                 kwargs = {"cancel_check": cancel_check} if callable(cancel_check) else {}
                 if callable(progress_callback):
                     kwargs["progress_callback"] = progress_callback
-                raw_single = _run_sync(lambda: legacy_ui._synth_items_batch(item_specs, **kwargs))
+                raw_single = _run_sync(lambda: _synth_items_batch(item_specs, **kwargs))
                 output, segments = self._legacy_single_audio_outputs(raw_single, item_specs, quality=quality)
                 result = {"audio": output, "segments": segments}
             else:

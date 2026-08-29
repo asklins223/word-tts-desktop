@@ -9,7 +9,6 @@ database identity and cache rules.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -179,7 +178,7 @@ def normalize_item(
 
 
 class LegacyWordParser(ParserPort):
-    """Adapter around the existing ``word_parser.py`` implementation."""
+    """Adapter around the question_types registry implementation."""
 
     def __init__(
         self,
@@ -199,7 +198,7 @@ class LegacyWordParser(ParserPort):
             raise ParserError("UNSUPPORTED_MEDIA_TYPE", "only .docx and .xlsx sources are supported")
         source_sha256, size = document_hash(path)
         source_basis = str(kwargs.get("source_basis") or source_sha256[:32])
-        parse_callable = self.parse_callable or _load_legacy_parse_callable()
+        parse_callable = self.parse_callable or _load_parse_callable()
         try:
             raw_results, summary = parse_callable(str(path))
         except ParserError:
@@ -241,19 +240,13 @@ class LegacyWordParser(ParserPort):
         )
 
 
-def _load_legacy_parse_callable() -> Callable[[str], tuple[list[Mapping[str, Any]], str]]:
-    module_path = Path(__file__).resolve().parents[1] / "word_parser" / "word_parser.py"
-    if not module_path.is_file():
-        raise ParserError("PARSER_ERROR", "legacy parser module is unavailable")
-    spec = importlib.util.spec_from_file_location("wordtts_legacy_word_parser", module_path)
-    if spec is None or spec.loader is None:
-        raise ParserError("PARSER_ERROR", "legacy parser module cannot be loaded")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    parser = getattr(module, "parse_document_auto", None)
-    if not callable(parser):
-        raise ParserError("PARSER_ERROR", "legacy parser entry point is unavailable")
-    return parser
+def _load_parse_callable() -> Callable[[str], tuple[list[Mapping[str, Any]], str]]:
+    """返回题型注册表的文档解析入口（question_types.parse_document_auto）。"""
+    try:
+        from question_types import parse_document_auto
+    except ImportError as exc:
+        raise ParserError("PARSER_ERROR", "question type registry is unavailable") from exc
+    return parse_document_auto
 
 
 def _text_or_none(value: Any) -> str | None:

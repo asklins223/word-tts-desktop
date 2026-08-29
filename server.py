@@ -44,10 +44,6 @@ RESOURCE_DIR = resource_dir()
 if RESOURCE_DIR not in sys.path:
     sys.path.insert(0, RESOURCE_DIR)
 
-WORD_PARSER_DIR = os.path.join(RESOURCE_DIR, "word_parser")
-if WORD_PARSER_DIR not in sys.path:
-    sys.path.insert(0, WORD_PARSER_DIR)
-
 # Playwright 的 PyInstaller 运行时会在 frozen 进程中默认把浏览器目录
 # 解析到 playwright/driver/package/.local-browsers。Electron 打包流程为了
 # 保留 Chromium 的完整目录结构，会把浏览器复制到 _MEIPASS/playwright_browsers；
@@ -88,11 +84,13 @@ if getattr(sys, "frozen", False):
             os.environ.setdefault("ELECTRON_RUN_AS_NODE", "1")
 
 # ============================================================================
-# 导入核心模块（复用 word_tts_app 的全部逻辑）
+# 导入核心模块
 # ============================================================================
-# word_tts_app 在 import 时会执行模块级代码（路径设置、ffmpeg 配置等），
-# 这里只加载解析、音频和讯飞配音核心函数。
-import word_tts_app as core
+# wordtts 在 import 时会执行模块级引导（编码设置、ffmpeg 配置等）；
+# 这里只加载解析、音频和讯飞配音核心函数。题型注册表（解析器、
+# supported_types）位于 question_types 包。
+import wordtts as core
+import question_types
 import xunfei_voice_catalog as _voice_catalog
 
 from fastapi import FastAPI, HTTPException
@@ -514,7 +512,7 @@ async def get_config():
     return {
         "formats": ["mp3"],
         "qualities": list(core.QUALITY_BITRATE.keys()),
-        "supported_types": list(core.PARSER_MAP.keys()),
+        "supported_types": list(question_types.PARSER_MAP.keys()),
         "type_colors": core.TYPE_COLORS,
         "tts_engine": "xunfei",
         "tts_parameters": ["rate", "pitch", "volume"],
