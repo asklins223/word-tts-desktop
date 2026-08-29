@@ -241,12 +241,16 @@ class LegacyWordParser(ParserPort):
 
 
 def _load_parse_callable() -> Callable[[str], tuple[list[Mapping[str, Any]], str]]:
-    """返回题型注册表的文档解析入口（question_types.parse_document_auto）。"""
+    """返回题型注册表的文档解析入口。
+
+    方案阶段3：统一结构读取（``parse_document_once``，文档只加载一次），
+    输出与 ``parse_document_auto`` 逐字节等价（tests/test_segmenter.py 锁定）。
+    """
     try:
-        from question_types import parse_document_auto
+        from question_types.segmenter import parse_document_once
     except ImportError as exc:
         raise ParserError("PARSER_ERROR", "question type registry is unavailable") from exc
-    return parse_document_auto
+    return parse_document_once
 
 
 def _text_or_none(value: Any) -> str | None:

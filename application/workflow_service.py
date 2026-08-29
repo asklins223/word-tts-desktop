@@ -152,6 +152,18 @@ class WorkflowApplicationService:
             except OSError as exc:
                 raise WorkflowApplicationError("PERSISTENCE_ERROR", "managed source could not be prepared for parsing") from exc
 
+        # 方案 6.4 桥接：workflow 主链路的解析同步落原子模型（旁路写入，
+        # 失败不阻断主流程；幂等重放由 persist_parse 保证）
+        from application.atomic_bridge import bridge_parse_to_atomic_model
+
+        self._atomic_bridge = bridge_parse_to_atomic_model(
+            self.repository.database,
+            source_path=temp_path,
+            filename=filename,
+            source_sha256=parsed.source_sha256,
+            workflow_id=workflow_id,
+        )
+
         serialized = canonical_json(parsed.as_dict()).encode("utf-8")
         try:
             staged = self.artifact_store.stage_stream(io.BytesIO(serialized), expected_size=len(serialized))
