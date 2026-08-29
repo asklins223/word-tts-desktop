@@ -31,7 +31,12 @@ from . import (  # noqa: F401
     xunfei_bridge,
 )
 
-from .audio_io import _looks_like_mp3_file, sanitize_dirname  # noqa: F401
+from .audio_io import (  # noqa: F401
+    _looks_like_mp3_file,
+    export_audio,
+    now_str,
+    sanitize_dirname,
+)
 from .batch import (  # noqa: F401
     _synth_items_batch,
     _synth_items_batch_composite,
@@ -39,24 +44,32 @@ from .batch import (  # noqa: F401
 )
 from .composite_cut import (  # noqa: F401
     CompositeCutError,
+    _audio_dbfs,
     _edge_silence_length,
+    _find_composite_silence_runs,
     _select_composite_silence_runs,
+    _trim_composite_edge_silence,
     cut_composite_audio,
     format_composite_cut_diagnostics,
 )
 from .composite_plan import (  # noqa: F401
     CompositePlanError,
+    _composite_item_from_spec,
+    _stable_composite_work_id,
     build_composite_work_plan,
 )
 from .config import (  # noqa: F401
     AUDIO_ALGORITHM_VERSION,
     BACKEND_CONTRACT_VERSION,
+    COMPOSITE_BOUNDARY_MS,
     COMPOSITE_MAX_ITEMS_PER_WORK,
+    COMPOSITE_MAX_TEXT_LENGTH,
     DEFAULT_GENERATION_MODE,
     FEMALE_VOICE,
     FORMAT_MAP,
     GENERATION_MODE_COMPOSITE,
     GENERATION_MODE_SINGLE,
+    GENERATION_MODES,
     LEGACY_AUDIO_ALGORITHM_VERSION,
     MALE_VOICE,
     OUTPUT_BASE,
@@ -87,12 +100,15 @@ from .speakers import (  # noqa: F401
 from .synthesis import (  # noqa: F401
     _concat_audio_segments,
     _synth_item,
+    _synth_segment,
     build_synthesis_segments,
 )
 from .tts_config import (  # noqa: F401
     DEFAULT_FEMALE_ROLE_KEY,
     DEFAULT_MALE_ROLE_KEY,
     ROLE_CONFIG_PREFIX,
+    _normalize_voice_key,
+    _normalize_voice_params,
     clamp_tts_param,
     normalize_role_config_key,
     normalize_role_key,
@@ -104,7 +120,9 @@ from .xunfei_bridge import _xunfei, _XUNFEI_AVAILABLE  # noqa: F401
 __all__ = [
     "AUDIO_ALGORITHM_VERSION",
     "BACKEND_CONTRACT_VERSION",
+    "COMPOSITE_BOUNDARY_MS",
     "COMPOSITE_MAX_ITEMS_PER_WORK",
+    "COMPOSITE_MAX_TEXT_LENGTH",
     "CompositeCutError",
     "CompositePlanError",
     "DEFAULT_FEMALE_ROLE_KEY",
@@ -114,6 +132,7 @@ __all__ = [
     "FORMAT_MAP",
     "GENERATION_MODE_COMPOSITE",
     "GENERATION_MODE_SINGLE",
+    "GENERATION_MODES",
     "LEGACY_AUDIO_ALGORITHM_VERSION",
     "MALE_VOICE",
     "OUTPUT_BASE",
@@ -129,11 +148,19 @@ __all__ = [
     "TYPE_COLORS",
     "WORD_CATEGORIES",
     "_XUNFEI_AVAILABLE",
+    "_audio_dbfs",
     "_edge_silence_length",
     "_looks_like_mp3_file",
+    "_find_composite_silence_runs",
     "_concat_audio_segments",
+    "_composite_item_from_spec",
+    "_normalize_voice_key",
+    "_normalize_voice_params",
     "_select_composite_silence_runs",
     "_synth_item",
+    "_synth_segment",
+    "_stable_composite_work_id",
+    "_trim_composite_edge_silence",
     "_synth_items_batch",
     "_synth_items_batch_composite",
     "_xunfei",
@@ -144,6 +171,7 @@ __all__ = [
     "create_zip",
     "cut_composite_audio",
     "default_voice_for_item",
+    "export_audio",
     "format_composite_cut_diagnostics",
     "generate_item_audio",
     "get_completed_file_list",
@@ -152,6 +180,7 @@ __all__ = [
     "normalize_role_config_key",
     "normalize_role_key",
     "normalize_tts_config",
+    "now_str",
     "parse_speakers",
     "parse_speakers_with_roles",
     "role_config_key",

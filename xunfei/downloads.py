@@ -1,7 +1,7 @@
 """Download, works-list reconciliation, and page recovery actions.
 
 These methods remain a mixin because they share the live page/session state
-with the legacy session.  The boundary is intentionally about responsibility:
+with the browser session.  The boundary is intentionally about responsibility:
 works-list/API/download behavior is isolated from editor and confirmation UI.
 """
 
@@ -36,6 +36,7 @@ from .helpers import (
     safe_eval as _safe_eval,
 )
 from .page_scripts import JS
+from .signing import _build_api_sign
 
 
 class DownloadMixin:

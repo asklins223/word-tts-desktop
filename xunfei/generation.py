@@ -1,4 +1,4 @@
-"""Generation orchestration for the legacy Xunfei session.
+"""Generation orchestration for the Xunfei session.
 
 This mixin owns single/composite submission retries, batch grouping, readiness
 polling, and result decoding handoff.  It deliberately delegates page actions

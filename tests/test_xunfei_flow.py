@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import xunfei
+import xunfei.config as xunfei_config
 import xunfei.downloads as xunfei_downloads
 import xunfei.runtime as xunfei_runtime
 from xunfei import XunFeiSession
@@ -78,6 +79,21 @@ class _PostConfirmPage:
 
 
 class XunfeiFlowTests(unittest.TestCase):
+    def test_package_preserves_public_config_exports(self):
+        for name in (
+            "IS_MAC",
+            "MAX_TRACKED_SUBMISSION_REQUESTS",
+            "MUTE_AUDIO_SCRIPT",
+            "STEALTH_SCRIPT",
+            "WORKS_ID_FINAL_GRACE_SECONDS",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, xunfei.__all__)
+                self.assertEqual(
+                    getattr(xunfei, name),
+                    getattr(xunfei_config, name),
+                )
+
     def test_common_voice_without_speaker_number_is_resolved_by_page(self):
         self.assertIsNone(
             xunfei.XunFeiSession._speaker_number(
@@ -1564,6 +1580,31 @@ class XunfeiFlowTests(unittest.TestCase):
             xunfei._build_api_sign(param, base),
             "c9b3e6ea75dccb702f69104c1d94d771",
         )
+
+    def test_signed_api_post_uses_split_signing_module(self):
+        session = XunFeiSession()
+        param = {"needCount": 1, "pageIndex": 1, "pageSize": 50, "worksName": ""}
+        response = {"data": {"code": 0, "userWorksList": []}}
+
+        with mock.patch.object(
+            xunfei_downloads,
+            "_safe_eval",
+            side_effect=[
+                {"userId": "user-1", "sessid": "session-1"},
+                response,
+            ],
+        ) as safe_eval:
+            result = session._signed_api_post(
+                object(), xunfei.API_WORKS_LIST_URL, param
+            )
+
+        self.assertEqual(result, response["data"])
+        request_payload = safe_eval.call_args_list[1].args[2]
+        request_url, request_param, base, headers = request_payload
+        self.assertEqual(request_url, xunfei.API_WORKS_LIST_URL)
+        self.assertEqual(request_param, param)
+        self.assertEqual(headers["authorization"], "session-1")
+        self.assertEqual(headers["sign"], xunfei._build_api_sign(param, base))
 
     def test_works_id_matching_is_exact(self):
         session = XunFeiSession()

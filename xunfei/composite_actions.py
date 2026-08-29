@@ -1,7 +1,7 @@
 """Composite-speaker editor actions for the Xunfei page.
 
 The mixin owns editor selection, speaker marking, pause insertion, and the
-composite preparation plan.  It shares the live page state with the legacy
+composite preparation plan.  It shares the live page state with the browser
 session but has no workflow or persistence responsibilities.
 """
 

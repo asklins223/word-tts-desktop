@@ -1,7 +1,7 @@
 """Browser session lifecycle for the Xunfei provider.
 
-The compatibility module keeps the historical import path, while this mixin
-owns browser startup, login readiness, and cleanup of session state.
+This module owns browser startup, login readiness, and cleanup of session
+state; the concrete session combines it with the focused provider mixins.
 """
 
 from __future__ import annotations

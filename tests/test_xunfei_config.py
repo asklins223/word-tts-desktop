@@ -8,6 +8,26 @@ import wordtts as core
 
 
 class XunfeiConfigTests(unittest.TestCase):
+    def test_former_word_tts_facade_exports_remain_available_from_package(self):
+        for name in (
+            "_audio_dbfs",
+            "_composite_item_from_spec",
+            "_find_composite_silence_runs",
+            "_normalize_voice_key",
+            "_normalize_voice_params",
+            "_stable_composite_work_id",
+            "_synth_segment",
+            "_trim_composite_edge_silence",
+            "COMPOSITE_BOUNDARY_MS",
+            "COMPOSITE_MAX_TEXT_LENGTH",
+            "GENERATION_MODES",
+            "export_audio",
+            "now_str",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, core.__all__)
+                self.assertTrue(hasattr(core, name))
+
     def test_three_platform_parameters_are_integer_values_between_zero_and_hundred(self):
         config = core.normalize_tts_config({
             "rate": -20,

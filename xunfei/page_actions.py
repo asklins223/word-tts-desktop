@@ -1,8 +1,8 @@
-"""Page interaction actions for the legacy Xunfei session.
+"""Page interaction actions for the Xunfei session.
 
-This mixin owns DOM interaction and confirmation dialogs.  It intentionally
-keeps the existing method names so the compatibility session can migrate one
-boundary at a time without changing callers.
+This mixin owns DOM interaction and confirmation dialogs.  It keeps the
+session's established method names so callers do not need to know the module
+boundaries.
 """
 
 from __future__ import annotations

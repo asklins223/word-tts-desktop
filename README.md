@@ -63,7 +63,7 @@ build_electron_windows.bat
 
 ## 项目目录约定
 
-- `word_parser/` 仅保留解析器源码；示例输入放在 `examples/documents/`，示例解析结果放在 `examples/parsed/`。
+- `question_types/` 按题型保留解析器源码与注册表；可运行 `python3 -m question_types` 批量解析示例文档，示例输入放在 `examples/documents/`，示例解析结果放在 `examples/parsed/`。
 - `resources/voices.json` 是打包进应用的音色种子目录；在线刷新后的可写缓存位于用户数据目录的 `cache/voices.json`。
 - `app_paths.py` 统一解析只读资源目录和可写数据目录。Electron 通过 `WORDTTS_DATA_DIR` 指定用户数据位置，源码直接运行时使用 `.runtime/`。
 

@@ -1,8 +1,8 @@
 """命令行批量解析入口：``python -m question_types``。
 
 遍历 examples/documents 下的 Word/Excel 文档，解析全部可识别题型并
-把汇总 JSON 保存到 examples/parsed/parsed_results.json。这是原
-word_parser 模块的示例用法，随题型注册表一起保留。
+把汇总 JSON 保存到 examples/parsed/parsed_results.json。这是原文档解析
+入口的示例用法，随题型注册表一起保留。
 """
 
 import json
