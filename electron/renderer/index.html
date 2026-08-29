@@ -484,6 +484,9 @@
                                             <span>内容分类</span>
                                             <div class="type-stats" id="type-stats"></div>
                                         </div>
+                                        <button type="button" class="btn-ghost btn-sm generation-cancel-btn" id="cancel-generation-btn" hidden>
+                                            停止生成
+                                        </button>
                                         <div class="processing-tip">
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
                                             完成后可进入下一步试听并统一保存
@@ -497,6 +500,7 @@
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 1-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
                                                 重试生成
                                             </button>
+                                            <button type="button" class="btn-ghost btn-sm" id="resolve-not-submitted-btn" hidden>确认未提交后重试</button>
                                             <button type="button" class="btn-ghost btn-sm" id="return-config-btn">返回配置</button>
                                         </div>
                                     </div>
@@ -659,13 +663,13 @@
                                 <div>
                                     <span class="eyebrow">任务归档</span>
                                     <h1 id="history-title" tabindex="-1">历史记录</h1>
-                                    <p>查看、试听或下载最近完成的音频任务，记录仅保存在当前电脑。</p>
+                                    <p>查看本机生成任务的状态、试听和下载已验证的音频。</p>
                                 </div>
                                 <div class="history-heading-actions">
                                     <button type="button" class="btn-ghost" id="history-back-btn">← 返回当前任务</button>
                                     <div class="history-limit-card" aria-label="历史记录容量">
                                         <strong id="history-count">0 / 20</strong>
-                                        <small>超出上限后自动移除最早记录</small>
+                                        <small>列表最多显示最近 20 条，历史事实不会自动删除</small>
                                     </div>
                                 </div>
                             </div>
@@ -717,6 +721,7 @@
 
     <script src="vendor/wavesurfer.min.js"></script>
     <script src="ui-components.js"></script>
+    <script src="workflow-store.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

@@ -1,10 +1,13 @@
 {
   "name": "word-tts-desktop",
-  "version": "2.7.41",
+  "version": "2.7.44",
   "description": "小猪wordTTS 文档配音桌面工具",
   "main": "main.js",
   "author": "asklins223",
   "license": "MIT",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/asklins223/word-tts-desktop.git"
@@ -13,6 +16,11 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "test": "node --test test/*.test.js",
+    "lint:contracts": "redocly lint ../contracts/openapi.yaml",
+    "generate:contracts": "openapi-typescript ../contracts/openapi.yaml -o ../contracts/generated.ts",
+    "check:generated": "node ../scripts/check_generated_contracts.js",
+    "typecheck:contracts": "tsc --noEmit --target ES2022 --moduleResolution node --lib ES2022,DOM ../contracts/domain.ts ../contracts/generated.ts",
+    "check:contracts": "npm run lint:contracts && npm run check:generated && npm run typecheck:contracts",
     "build:icons": "cd .. && node scripts/run_python.js scripts/build_app_icons.py",
     "build:python": "cd .. && node scripts/run_pyinstaller.js server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp && node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend",
     "build": "npm run build:icons && npm run build:python && electron-builder",
@@ -38,6 +46,10 @@
     "files": [
       "main.js",
       "file-dialogs.js",
+      "workflow-api.js",
+      "workflow-proxy.js",
+      "workflow-event-transport.js",
+      "workflow-artifact-transport.js",
       "preload.js",
       "renderer/**/*"
     ],
@@ -96,8 +108,11 @@
     }
   },
   "devDependencies": {
+    "@redocly/cli": "2.49.0",
     "@electron/notarize": "3.1.1",
     "electron": "43.2.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.2"
   }
 }

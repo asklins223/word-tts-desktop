@@ -1,0 +1,2142 @@
+openapi: 3.1.0
+info:
+  title: wordTTS Automation API
+  version: 1.0.0-test
+  description: Local-only workflow API. No legacy API compatibility is provided.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://127.0.0.1:{port}/api/v1
+    variables:
+      port:
+        default: '17321'
+        description: Port announced by the Electron main process.
+security:
+  - capability: []
+paths:
+  /health:
+    get:
+      summary: Get Versioned Health
+      operationId: getVersionedHealth
+      responses:
+        '200':
+          description: Local backend readiness and contract version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonObject'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /config:
+    get:
+      summary: Get Desktop Configuration
+      operationId: getVersionedConfig
+      responses:
+        '200':
+          description: Non-secret renderer configuration and voice catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonObject'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /voice-assets/cache:
+    post:
+      summary: Cache Voice Presentation Assets
+      operationId: cacheVoiceAssets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceAssetCacheRequest'
+      responses:
+        '200':
+          description: Best-effort local cache result; failures fall back to catalog URLs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAssetCacheResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /voice-assets/{voice_key}/{kind}:
+    parameters:
+      - name: voice_key
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 200 }
+      - name: kind
+        in: path
+        required: true
+        schema: { type: string, enum: [avatar, sample] }
+    get:
+      summary: Read Cached Voice Presentation Asset
+      operationId: getVoiceAsset
+      responses:
+        '200':
+          description: Cached image or audio sample.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            audio/mpeg:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflows:
+    post:
+      summary: Create Workflow
+      operationId: createWorkflow
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowCreateRequest'
+      responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '201':
+          description: New draft workflow.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowEnvelope'
+        '200':
+          description: Existing workflow for the same idempotency key and request hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    get:
+      summary: List Workflow History
+      operationId: listWorkflows
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: Bounded history projection without storage paths.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /workflows/{workflow_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+    get:
+      summary: Get Workflow
+      operationId: getWorkflow
+      responses:
+        '200':
+          description: Latest persisted workflow snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Patch Draft Workflow
+      operationId: patchDraftWorkflow
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowPatchRequest'
+      responses:
+        '200':
+          description: Updated draft snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/active:
+    get:
+      summary: List Active Workflow Restart Candidates
+      operationId: listActiveWorkflows
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Bounded active workflows with safe takeover/resume facts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActiveWorkflowListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /workflows/{workflow_id}/workspace:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+    get:
+      summary: Get Workflow Workspace Projection
+      operationId: getWorkflowWorkspace
+      responses:
+        '200':
+          description: Server-owned snapshot, item, artifact, blocker and action projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowWorkspaceEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Patch Workflow Workspace Revision
+      operationId: patchWorkflowWorkspace
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowPatchRequest'
+      responses:
+        '200':
+          description: Updated server-owned workspace projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowWorkspaceEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/items:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+    get:
+      summary: List Workflow Items
+      operationId: listWorkflowItems
+      responses:
+        '200':
+          description: Normalized item projection for one workflow.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowItemsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflows/{workflow_id}/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+    get:
+      summary: List Workflow Artifacts
+      operationId: listWorkflowArtifacts
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
+      responses:
+        '200':
+          description: Safe Artifact metadata; storage keys are omitted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactListResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /workflows/{workflow_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+    post:
+      summary: Archive Terminal Workflow
+      operationId: archiveWorkflow
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowCommandRequest'
+      responses:
+        '202':
+          description: Workflow hidden from the history projection while its facts remain retained.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/source-imports:
+    post:
+      summary: Create Source Import
+      operationId: createSourceImport
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceImportCreateRequest'
+      responses:
+        '201':
+          description: Created import session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '200':
+          description: Existing import session for the same request hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /source-imports/{import_id}:
+    parameters:
+      - $ref: '#/components/parameters/ImportId'
+    get:
+      summary: Get Source Import
+      operationId: getSourceImport
+      responses:
+        '200':
+          description: Persisted import/generation status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /source-imports/{import_id}/generations:
+    parameters:
+      - $ref: '#/components/parameters/ImportId'
+    post:
+      summary: Create Source Import Generation
+      operationId: createSourceImportGeneration
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerationRequest'
+      responses:
+        '201':
+          description: New staging generation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /source-imports/{import_id}/generations/{generation}:
+    parameters:
+      - $ref: '#/components/parameters/ImportId'
+      - name: generation
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    get:
+      summary: Get Source Import Generation
+      operationId: getSourceImportGeneration
+      responses:
+        '200':
+          description: Immutable status for the requested generation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportGenerationStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /source-imports/{import_id}/content:
+    put:
+      summary: Write Source Import Content
+      operationId: writeSourceImportContent
+      parameters:
+        - $ref: '#/components/parameters/ImportId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/StagingGeneration'
+        - $ref: '#/components/parameters/SourceWriteGrant'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Content verified and bound to a READY source Artifact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '200':
+          description: Already READY with the same server-calculated fingerprint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '202':
+          description: Same generation is still being written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '507':
+          $ref: '#/components/responses/InsufficientStorage'
+
+  /source-imports/{import_id}/generations/{generation}/writer-tickets:
+    post:
+      summary: Create Source Writer Ticket
+      operationId: createSourceWriterTicket
+      parameters:
+        - $ref: '#/components/parameters/ImportId'
+        - name: generation
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerationRequest'
+      responses:
+        '201':
+          description: Opaque single-use source writer grant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceWriterTicket'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /source-imports/{import_id}/abort:
+    post:
+      summary: Abort Source Import
+      operationId: abortSourceImport
+      parameters:
+        - $ref: '#/components/parameters/ImportId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SourceImportCommandRequest'
+      responses:
+        '202':
+          description: Current generation marked ABORTED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceImportStatus'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/parse:
+    post:
+      summary: Parse Workflow
+      operationId: parseWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ParseRequest'
+      responses:
+        '202':
+          description: Parse accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '200':
+          description: Existing parse command result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/generate:
+    post:
+      summary: Generate Workflow
+      operationId: generateWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRequest'
+      responses:
+        '202':
+          description: Current run accepted or resumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '200':
+          description: Existing command result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/export-zip:
+    post:
+      summary: Create or Reuse ZIP Delivery Artifact
+      operationId: exportWorkflowZip
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportZipRequest'
+      responses:
+        '201':
+          description: Deterministic ZIP Artifact created or reused for this terminal workflow.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportZipResponse'
+        '200':
+          description: Existing export command result for the same idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportZipResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/retry-hold:
+    post:
+      summary: Hold Automatic Retry
+      operationId: holdWorkflowRetry
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowCommandRequest'
+      responses:
+        '202':
+          description: Automatic retry held for user configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '200':
+          description: Existing hold command result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/pause:
+    post:
+      summary: Pause Workflow
+      operationId: pauseWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlCommandRequest'
+      responses:
+        '202':
+          description: Pause accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '200':
+          description: Idempotent no-op or existing result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/resume:
+    post:
+      summary: Resume Workflow
+      operationId: resumeWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlCommandRequest'
+      responses:
+        '202':
+          description: Resume accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '200':
+          description: Idempotent no-op or existing result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/retry:
+    post:
+      summary: Retry Workflow Target
+      operationId: retryWorkflowTarget
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TargetedCommandRequest'
+      responses:
+        '202':
+          description: Target retry accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/reconcile:
+    post:
+      summary: Reconcile Workflow Target
+      operationId: reconcileWorkflowTarget
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TargetedCommandRequest'
+      responses:
+        '202':
+          description: Read-only reconciliation accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/cancel:
+    post:
+      summary: Cancel Workflow
+      operationId: cancelWorkflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlCommandRequest'
+      responses:
+        '202':
+          description: Cancellation accepted; unresolved side effects remain BLOCKED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '200':
+          description: Idempotent terminal no-op.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/reruns:
+    post:
+      summary: Create Workflow Rerun
+      operationId: createWorkflowRerun
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RerunRequest'
+      responses:
+        '201':
+          description: New run created; parent run remains immutable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowEnvelope'
+        '202':
+          description: New run creation accepted for asynchronous preparation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/external-records:
+    post:
+      summary: Ensure External Record Mapping
+      operationId: ensureExternalRecord
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalRecordRequest'
+      responses:
+        '201':
+          description: Durable business-key mapping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalRecord'
+        '200':
+          description: Idempotently reused mapping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalRecord'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/InsufficientStorage'
+
+  /external-records/{mapping_id}:
+    get:
+      summary: Get External Record Mapping
+      operationId: getExternalRecord
+      parameters:
+        - name: mapping_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Current mapping projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /external-records/{mapping_id}/leases:
+    post:
+      summary: Acquire External Record Lease
+      operationId: acquireExternalRecordLease
+      parameters:
+        - name: mapping_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalLeaseRequest'
+      responses:
+        '201':
+          description: Fenced lease for one external mapping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalLease'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /workflows/{workflow_id}/external-operations:
+    post:
+      summary: Prepare External Operation
+      operationId: prepareExternalOperation
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalOperationRequest'
+      responses:
+        '201':
+          description: Operation intent recorded before any external call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalOperation'
+        '200':
+          description: Idempotently reused operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalOperation'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /external-operations/{operation_id}:
+    get:
+      summary: Get External Operation
+      operationId: getExternalOperation
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Current external operation projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /external-operations/{operation_id}/begin:
+    post:
+      summary: Begin External Operation
+      operationId: beginExternalOperation
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalLeaseReference'
+      responses:
+        '202':
+          description: Local IN_FLIGHT state committed; the worker may call the external system.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalOperation'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /external-operations/{operation_id}/submissions:
+    post:
+      summary: Record External Submission
+      operationId: observeExternalSubmission
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalSubmissionRequest'
+      responses:
+        '202':
+          description: External receipt observed and bound locally.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalOperation'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /external-operations/{operation_id}/resolve:
+    post:
+      summary: Resolve External Operation
+      operationId: resolveExternalOperation
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalResolveRequest'
+      responses:
+        '202':
+          description: Evidence-backed manual resolution.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalOperation'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /attempts/{attempt_id}/resolve:
+    post:
+      summary: Resolve Attempt
+      operationId: resolveAttempt
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveRequest'
+      responses:
+        '202':
+          description: Evidence-backed manual decision accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/event-tickets:
+    post:
+      summary: Create Workflow Event Ticket
+      operationId: createWorkflowEventTicket
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventTicketRequest'
+      responses:
+        '201':
+          description: Short-lived, single-use SSE ticket.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventTicket'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /workflows/{workflow_id}/events:
+    get:
+      summary: Stream Workflow Events
+      operationId: streamWorkflowEvents
+      security:
+        - capability: []
+          sseTicket: []
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/LastEventId'
+        - $ref: '#/components/parameters/SseTicket'
+      responses:
+        '200':
+          description: Persistent SSE snapshot/catch-up stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                x-event-data-schema:
+                  $ref: '#/components/schemas/WorkflowEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Expired'
+
+  /artifacts/{artifact_id}/content-tickets:
+    post:
+      summary: Create Artifact Content Ticket
+      operationId: createArtifactContentTicket
+      parameters:
+        - $ref: '#/components/parameters/ArtifactId'
+      responses:
+        '201':
+          description: Short-lived, single-use artifact read ticket.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactTicket'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /artifacts/{artifact_id}/content:
+    get:
+      summary: Read Artifact Content
+      operationId: readArtifactContent
+      security:
+        - capability: []
+          artifactTicket: []
+      parameters:
+        - $ref: '#/components/parameters/ArtifactId'
+        - $ref: '#/components/parameters/ArtifactTicket'
+      responses:
+        '200':
+          description: Streamed content from an immutable Blob.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Expired'
+
+components:
+  securitySchemes:
+    capability:
+      type: apiKey
+      in: header
+      name: X-Desktop-Capability
+    sseTicket:
+      type: apiKey
+      in: header
+      name: X-SSE-Ticket
+    artifactTicket:
+      type: apiKey
+      in: header
+      name: X-Artifact-Ticket
+  parameters:
+    WorkflowId:
+      name: workflow_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    ImportId:
+      name: import_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    AttemptId:
+      name: attempt_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    IdempotencyKey:
+      name: X-Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 256 }
+    LastEventId:
+      name: Last-Event-ID
+      in: header
+      required: false
+      schema: { type: string, maxLength: 256 }
+    SseTicket:
+      name: X-SSE-Ticket
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 512 }
+    ArtifactTicket:
+      name: X-Artifact-Ticket
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 512 }
+    StagingGeneration:
+      name: X-Staging-Generation
+      in: header
+      required: true
+      schema: { type: integer, minimum: 1 }
+    SourceWriteGrant:
+      name: X-Source-Write-Grant
+      in: header
+      required: true
+      schema: { type: string, minLength: 32, maxLength: 512 }
+  responses:
+    Unauthorized:
+      description: Missing, invalid, expired or replayed capability/ticket.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: Resource or sender is not authorized.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Resource not found or intentionally hidden.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: State, idempotency, target, content or cursor conflict.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Expired:
+      description: Ticket or cursor is expired and must be recreated/re-synchronized.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    PayloadTooLarge:
+      description: Upload or decompressed content exceeds a configured limit.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    UnsupportedMediaType:
+      description: File type or container is not allowed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BadRequest:
+      description: Request shape or value is invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RateLimited:
+      description: The bounded local queue is full or the provider requires backoff.
+      headers:
+        Retry-After:
+          description: Seconds before retrying the same operation.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InsufficientStorage:
+      description: The configured local storage budget is exhausted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    JsonObject:
+      type: object
+      additionalProperties: true
+    WorkflowCreateRequest:
+      type: object
+      required: [workflow_type, configuration]
+      additionalProperties: false
+      properties:
+        workflow_type: { type: string, minLength: 1, maxLength: 128 }
+        business_key: { type: string, maxLength: 256 }
+        configuration: { $ref: '#/components/schemas/JsonObject' }
+    WorkflowPatchRequest:
+      type: object
+      required: [expected_state_version]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        configuration_revision: { type: [integer, 'null'], minimum: 1 }
+        configuration: { $ref: '#/components/schemas/JsonObject' }
+        item_overrides:
+          type: array
+          maxItems: 10000
+          items:
+            type: object
+            required: [item_id, patch]
+            additionalProperties: false
+            properties:
+              item_id: { type: string }
+              patch: { $ref: '#/components/schemas/JsonObject' }
+    ParseRequest:
+      type: object
+      required: [expected_state_version]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        source_artifact_id: { type: string }
+    GenerateRequest:
+      type: object
+      required: [expected_state_version]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        configuration_revision: { type: [integer, 'null'], minimum: 1 }
+        reason: { type: [string, 'null'], maxLength: 1000 }
+        generation_mode: { type: [string, 'null'], enum: [composite_cut, single_segment, null] }
+        provider: { type: [string, 'null'], maxLength: 128 }
+        account_scope: { type: [string, 'null'], maxLength: 256 }
+        item_ids:
+          type: [array, 'null']
+          minItems: 1
+          maxItems: 2000
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+    ExportZipRequest:
+      type: object
+      required: [expected_state_version]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        include_item_ids:
+          type: [array, 'null']
+          minItems: 1
+          maxItems: 2000
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 256 }
+    VoiceAssetCacheRequest:
+      type: object
+      required: [voice_keys]
+      additionalProperties: false
+      properties:
+        voice_keys:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 200 }
+    VoiceAssetCacheResponse:
+      type: object
+      required: [status, cached]
+      additionalProperties: false
+      properties:
+        status: { type: string, const: ok }
+        cached:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: { type: boolean }
+    GenerationRequest:
+      type: object
+      required: [expected_state_version]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+    WorkflowCommandRequest:
+      type: object
+      required: [expected_state_version]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        reason: { type: string, maxLength: 1000 }
+    CommandTarget:
+      oneOf:
+        - type: object
+          required: [target_type, step_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: STEP }
+            step_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, step_id, item_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: ITEM }
+            step_id: { type: string, minLength: 1 }
+            item_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, work_unit_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: WORK_UNIT }
+            work_unit_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, work_unit_attempt_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: WORK_UNIT_ATTEMPT }
+            work_unit_attempt_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, provider_receipt_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: PROVIDER_RECEIPT }
+            provider_receipt_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, external_operation_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: EXTERNAL_OPERATION }
+            external_operation_id: { type: string, minLength: 1 }
+    ResolutionTarget:
+      description: Resolve is evidence-driven and cannot target an aggregate STEP or ITEM projection.
+      oneOf:
+        - type: object
+          required: [target_type, work_unit_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: WORK_UNIT }
+            work_unit_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, work_unit_attempt_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: WORK_UNIT_ATTEMPT }
+            work_unit_attempt_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, provider_receipt_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: PROVIDER_RECEIPT }
+            provider_receipt_id: { type: string, minLength: 1 }
+        - type: object
+          required: [target_type, external_operation_id]
+          additionalProperties: false
+          properties:
+            target_type: { const: EXTERNAL_OPERATION }
+            external_operation_id: { type: string, minLength: 1 }
+    TargetedCommandRequest:
+      type: object
+      required: [expected_state_version, expected_target_state_version, target]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        expected_target_state_version: { type: integer, minimum: 0 }
+        expected_attempt_id: { type: string, minLength: 1 }
+        reason: { type: string, maxLength: 1000 }
+        target:
+          $ref: '#/components/schemas/CommandTarget'
+    ControlCommandRequest:
+      $ref: '#/components/schemas/WorkflowCommandRequest'
+    ResolveRequest:
+      type: object
+      required: [expected_state_version, expected_target_state_version, target, decision, evidence]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        expected_target_state_version: { type: integer, minimum: 0 }
+        target:
+          $ref: '#/components/schemas/ResolutionTarget'
+        decision: { type: string, enum: [CONFIRMED, NOT_SUBMITTED, BLOCKED] }
+        evidence:
+          type: object
+          required: [source, evidence_hash]
+          additionalProperties: false
+          properties:
+            source: { type: string, maxLength: 256 }
+            evidence_hash: { type: string, minLength: 16, maxLength: 128 }
+            reference: { type: string, maxLength: 512 }
+            summary: { type: string, maxLength: 2000 }
+    RerunRequest:
+      type: object
+      required: [expected_group_state_version]
+      additionalProperties: false
+      properties:
+        expected_group_state_version: { type: integer, minimum: 0 }
+        source_workflow_id: { type: string }
+        reason: { type: string, maxLength: 1000 }
+    ExternalRecordRequest:
+      type: object
+      required: [external_system, account_scope, business_record_key, mapping_version]
+      additionalProperties: false
+      properties:
+        external_system: { type: string, minLength: 1, maxLength: 128 }
+        account_scope: { type: string, minLength: 1, maxLength: 256 }
+        business_record_key: { type: string, minLength: 1, maxLength: 512 }
+        mapping_version: { type: string, minLength: 1, maxLength: 128 }
+        item_id: { type: [string, 'null'] }
+    ExternalRecord:
+      type: object
+      required: [external_record_mapping_id, external_system, external_account_scope, business_record_key, mapping_version, external_status, created_at, updated_at]
+      additionalProperties: true
+      properties:
+        external_record_mapping_id: { type: string }
+        external_system: { type: string }
+        external_account_scope: { type: string }
+        business_record_key: { type: string }
+        external_record_id: { type: [string, 'null'] }
+        current_workflow_group_id: { type: [string, 'null'] }
+        local_workflow_id: { type: [string, 'null'] }
+        local_item_id: { type: [string, 'null'] }
+        current_operation_key: { type: [string, 'null'] }
+        mapping_version: { type: string }
+        external_status: { type: string, enum: [UNKNOWN, PENDING, EXISTS, CREATED, UPDATED, VERIFIED, NOT_FOUND, AMBIGUOUS, BLOCKED] }
+        last_verified_at: { type: [string, 'null'], format: date-time }
+        last_error: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ExternalLeaseRequest:
+      type: object
+      required: [owner_id]
+      additionalProperties: false
+      properties:
+        owner_id: { type: string, minLength: 1, maxLength: 256 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 300, default: 60 }
+    ExternalLease:
+      type: object
+      required: [lease_id, mapping_id, owner_id, fencing_token, lease_until]
+      additionalProperties: false
+      properties:
+        lease_id: { type: string }
+        mapping_id: { type: string }
+        owner_id: { type: string }
+        fencing_token: { type: integer, minimum: 1 }
+        lease_until: { type: string, format: date-time }
+    ExternalOperationRequest:
+      type: object
+      required: [mapping_id, operation_key, payload, mapping_version]
+      additionalProperties: false
+      properties:
+        mapping_id: { type: string, minLength: 1, maxLength: 128 }
+        operation_key: { type: string, minLength: 1, maxLength: 512 }
+        payload: { $ref: '#/components/schemas/JsonObject' }
+        mapping_version: { type: string, minLength: 1, maxLength: 128 }
+        item_id: { type: [string, 'null'] }
+    ExternalLeaseReference:
+      type: object
+      required: [lease_id, mapping_id, owner_id, fencing_token]
+      additionalProperties: false
+      properties:
+        lease_id: { type: string, minLength: 1, maxLength: 128 }
+        mapping_id: { type: string, minLength: 1, maxLength: 128 }
+        owner_id: { type: string, minLength: 1, maxLength: 256 }
+        fencing_token: { type: integer, minimum: 1 }
+    ExternalSubmissionRequest:
+      type: object
+      required: [lease, external_record_id, canonical_key]
+      additionalProperties: false
+      properties:
+        lease: { $ref: '#/components/schemas/ExternalLeaseReference' }
+        external_record_id: { type: string, minLength: 1, maxLength: 512 }
+        canonical_key: { type: string, minLength: 1, maxLength: 512 }
+        summary: { $ref: '#/components/schemas/JsonObject' }
+    ExternalOperation:
+      type: object
+      required: [external_operation_id, external_record_mapping_id, workflow_id, external_operation_key, target_payload_hash, mapping_version, state_version, side_effect_state, receipt]
+      additionalProperties: true
+      properties:
+        external_operation_id: { type: string }
+        external_record_mapping_id: { type: string }
+        workflow_id: { type: string }
+        item_id: { type: [string, 'null'] }
+        external_operation_key: { type: string }
+        target_payload_hash: { type: string, minLength: 64, maxLength: 64 }
+        mapping_version: { type: string }
+        state_version: { type: integer, minimum: 0 }
+        side_effect_state: { type: string, enum: [NOT_STARTED, INTENT_RECORDED, IN_FLIGHT, SUBMITTED, CONFIRMED, AMBIGUOUS, REJECTED] }
+        receipt: { $ref: '#/components/schemas/JsonObject' }
+    ExternalResolveRequest:
+      type: object
+      required: [decision, evidence]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [CONFIRMED, NOT_SUBMITTED, BLOCKED] }
+        resolved_by: { type: string, minLength: 1, maxLength: 256, default: desktop }
+        evidence:
+          type: object
+          required: [source, evidence_hash]
+          additionalProperties: false
+          properties:
+            source: { type: string, minLength: 1, maxLength: 256 }
+            evidence_hash: { type: string, minLength: 16, maxLength: 128 }
+            reference: { type: [string, 'null'], maxLength: 512 }
+            summary: { type: [string, 'null'], maxLength: 2000 }
+    RetryScope:
+      type: string
+      enum: [NONE, WORKFLOW, ITEMS]
+    WorkspaceAction:
+      type: object
+      required: [kind, type, enabled, reason, target, expected_state_version, expected_target_state_version, safe_to_retry, retry_scope]
+      additionalProperties: false
+      properties:
+        kind: { type: string, enum: [SERVICE, UI] }
+        type: { type: string, enum: [PARSE, SAVE_CONFIGURATION, GENERATE, PAUSE, RESUME, CANCEL, RETRY, RECONCILE, RESOLVE, ARCHIVE, ABANDON, RERUN, OPEN_VIEW, DOWNLOAD_ARTIFACT, DOWNLOAD_ZIP, RECONNECT] }
+        enabled: { type: boolean }
+        reason: { type: [string, 'null'], maxLength: 500 }
+        target:
+          anyOf:
+            - $ref: '#/components/schemas/JsonObject'
+            - type: 'null'
+        expected_state_version: { type: [integer, 'null'], minimum: 0 }
+        expected_target_state_version: { type: [integer, 'null'], minimum: 0 }
+        safe_to_retry: { type: boolean }
+        retry_scope: { $ref: '#/components/schemas/RetryScope' }
+    WorkspaceBlocker:
+      type: object
+      required: [code, title, message, severity, affected_item_ids, retryable, safe_to_retry, retry_scope, requires_reconcile, recovery_action]
+      additionalProperties: false
+      properties:
+        code: { type: string }
+        title: { type: string }
+        message: { type: string }
+        severity: { type: string, enum: [INFO, WARNING, ERROR, BLOCKING] }
+        affected_item_ids:
+          type: array
+          items: { type: string }
+        retryable: { type: boolean }
+        safe_to_retry: { type: boolean }
+        retry_scope: { $ref: '#/components/schemas/RetryScope' }
+        requires_reconcile: { type: boolean }
+        recovery_action:
+          anyOf:
+            - $ref: '#/components/schemas/WorkspaceAction'
+            - type: 'null'
+    WorkspaceItem:
+      type: object
+      required: [item_id, item_identity_key, sequence, content_hash, status, role, voice_key, attempt_count, error_code, user_message, retry_scope, requires_reconcile, artifact_ids, updated_at]
+      additionalProperties: false
+      properties:
+        item_id: { type: string }
+        item_identity_key: { type: string }
+        sequence: { type: integer, minimum: 0 }
+        content_hash: { type: string, minLength: 64, maxLength: 64 }
+        status: { type: string, enum: [PENDING, RUNNING, SUCCEEDED, FAILED, AMBIGUOUS, CANCELLED, SKIPPED, UNRESOLVED] }
+        role: { type: [string, 'null'] }
+        voice_key: { type: [string, 'null'] }
+        attempt_count: { type: integer, minimum: 0 }
+        error_code: { type: [string, 'null'] }
+        user_message: { type: [string, 'null'] }
+        retry_scope: { $ref: '#/components/schemas/RetryScope' }
+        requires_reconcile: { type: boolean }
+        artifact_ids:
+          type: array
+          items: { type: string }
+        updated_at: { type: string, format: date-time }
+    WorkspaceArtifact:
+      type: object
+      required: [artifact_id, workflow_id, item_id, step_id, work_unit_id, artifact_type, lifecycle_state, format, extension, mime_type, size_bytes, sha256, verified, filename, duration_ms, producer, producer_version, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        artifact_id: { type: string }
+        workflow_id: { type: string }
+        item_id: { type: [string, 'null'] }
+        step_id: { type: [string, 'null'] }
+        work_unit_id: { type: [string, 'null'] }
+        artifact_type: { type: string }
+        lifecycle_state: { type: string, enum: [TEMP, READY, INVALID, DELETED] }
+        format: { type: [string, 'null'] }
+        extension: { type: [string, 'null'] }
+        mime_type: { type: [string, 'null'] }
+        size_bytes: { type: [integer, 'null'], minimum: 0 }
+        sha256: { type: [string, 'null'], minLength: 64, maxLength: 64 }
+        verified: { type: boolean }
+        filename: { type: [string, 'null'] }
+        duration_ms: { type: [integer, 'null'], minimum: 0 }
+        producer: { type: string }
+        producer_version: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    EffectiveConfiguration:
+      type: object
+      required: [provider, generation_mode, format, quality, preview, preview_limit, rate, pitch, volume, default_female_voice, default_male_voice, role_voices, role_configs]
+      additionalProperties: false
+      properties:
+        provider: { type: string }
+        generation_mode: { type: string, enum: [composite_cut, single_segment] }
+        format: { type: string }
+        quality: { type: [string, 'null'] }
+        preview: { type: boolean }
+        preview_limit: { type: [integer, 'null'], minimum: 1 }
+        rate: { type: [number, 'null'] }
+        pitch: { type: [number, 'null'] }
+        volume: { type: [number, 'null'] }
+        default_female_voice: { type: [string, 'null'] }
+        default_male_voice: { type: [string, 'null'] }
+        role_voices:
+          type: object
+          additionalProperties: { type: [string, 'null'] }
+        role_configs:
+          type: object
+          additionalProperties:
+            type: object
+            required: [rate, pitch, volume]
+            additionalProperties: false
+            properties:
+              rate: { type: [number, 'null'] }
+              pitch: { type: [number, 'null'] }
+              volume: { type: [number, 'null'] }
+    ConfigurationProjection:
+      type: object
+      required: [configuration_revision, configuration_hash, effective, source_priority, frozen_fields]
+      additionalProperties: false
+      properties:
+        configuration_revision: { type: integer, minimum: 1 }
+        configuration_hash: { type: string, minLength: 64, maxLength: 64 }
+        effective: { $ref: '#/components/schemas/EffectiveConfiguration' }
+        source_priority:
+          type: object
+          additionalProperties: { type: string, enum: [GLOBAL, ROLE, ITEM] }
+        frozen_fields:
+          type: array
+          items: { type: string }
+    WorkspaceProgress:
+      type: object
+      required: [total, completed, failed, skipped, pending, percent]
+      additionalProperties: false
+      properties:
+        total: { type: integer, minimum: 0 }
+        completed: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        pending: { type: integer, minimum: 0 }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+    WorkspaceDelivery:
+      type: object
+      required: [zip_artifact_id, zip_available, included_item_ids, excluded_item_ids, exclusion_reasons]
+      additionalProperties: false
+      properties:
+        zip_artifact_id: { type: [string, 'null'] }
+        zip_available: { type: boolean }
+        included_item_ids:
+          type: array
+          items: { type: string }
+        excluded_item_ids:
+          type: array
+          items: { type: string }
+        exclusion_reasons:
+          type: object
+          additionalProperties: { type: string }
+    WorkspaceSync:
+      type: object
+      required: [state_version, last_event_id, requires_resync]
+      additionalProperties: false
+      properties:
+        state_version: { type: integer, minimum: 0 }
+        last_event_id: { type: [string, 'null'] }
+        requires_resync: { type: boolean }
+    WorkflowWorkspace:
+      type: object
+      required: [schema_version, snapshot, progress, blockers, available_actions, current_target, items, artifacts, configuration, delivery, sync]
+      additionalProperties: false
+      properties:
+        schema_version: { type: integer, minimum: 1 }
+        snapshot: { $ref: '#/components/schemas/WorkflowSnapshot' }
+        progress: { $ref: '#/components/schemas/WorkspaceProgress' }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceBlocker' }
+        available_actions:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceAction' }
+        current_target:
+          anyOf:
+            - type: object
+              required: [item_id, label, started_at]
+              additionalProperties: false
+              properties:
+                item_id: { type: string }
+                label: { type: string }
+                started_at: { type: string, format: date-time }
+            - type: 'null'
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceItem' }
+        artifacts:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceArtifact' }
+        configuration: { $ref: '#/components/schemas/ConfigurationProjection' }
+        delivery: { $ref: '#/components/schemas/WorkspaceDelivery' }
+        sync: { $ref: '#/components/schemas/WorkspaceSync' }
+    WorkflowWorkspaceEnvelope:
+      type: object
+      required: [request_id, workspace]
+      additionalProperties: false
+      properties:
+        request_id: { type: string }
+        workspace: { $ref: '#/components/schemas/WorkflowWorkspace' }
+    ActiveWorkflowCandidate:
+      type: object
+      required: [workflow, can_resume, can_takeover, resume_reason, requires_reconcile]
+      additionalProperties: false
+      properties:
+        workflow: { $ref: '#/components/schemas/WorkflowSnapshot' }
+        can_resume: { type: boolean }
+        can_takeover: { type: boolean }
+        resume_reason: { type: string }
+        requires_reconcile: { type: boolean }
+    ActiveWorkflowListResponse:
+      type: object
+      required: [workflows, limit]
+      additionalProperties: false
+      properties:
+        workflows:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/ActiveWorkflowCandidate' }
+        limit: { type: integer, minimum: 1, maximum: 200 }
+    WorkflowHistoryRecord:
+      type: object
+      required: [id, workflow_id, source_filename, available_files, completed, failed, total, format, generation_mode, preview, zip_available, zip_artifact_id, failed_items, status, result_status, execution_state, control_state, state_version, created_at, completed_at, updated_at]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        workflow_id: { type: string }
+        source_filename: { type: string, maxLength: 256 }
+        available_files: { type: integer, minimum: 0 }
+        completed: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+        format: { type: string }
+        generation_mode: { type: string }
+        preview: { type: boolean }
+        zip_available: { type: boolean }
+        zip_artifact_id: { type: [string, 'null'] }
+        failed_items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/JsonObject' }
+        status: { type: string, enum: [DRAFT, ACTIVE, ABANDONED, CLOSED] }
+        result_status: { type: string, enum: [IN_PROGRESS, SUCCEEDED, PARTIAL_SUCCESS, FAILED, CANCELLED] }
+        execution_state: { type: string, enum: [CREATED, PREPARING, RUNNING, WAITING_RETRY, WAITING_USER, RECOVERING, BLOCKED, TERMINAL] }
+        control_state: { type: string, enum: [RUNNING, PAUSE_REQUESTED, PAUSED, TERMINATING, TERMINATED] }
+        state_version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    WorkflowListResponse:
+      type: object
+      required: [workflows]
+      additionalProperties: false
+      properties:
+        workflows:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/WorkflowHistoryRecord' }
+    WorkItemInfo:
+      type: object
+      required: [item_id, workflow_id, item_identity_key, item_type, sequence, normalized_content, content_hash, status]
+      additionalProperties: true
+      properties:
+        item_id: { type: string }
+        workflow_id: { type: string }
+        item_identity_key: { type: string }
+        item_type: { type: string }
+        sequence: { type: integer, minimum: 0 }
+        normalized_content: { type: string }
+        content_hash: { type: string, minLength: 64, maxLength: 64 }
+        status: { type: string, enum: [PENDING, RUNNING, SUCCEEDED, FAILED, AMBIGUOUS, CANCELLED, SKIPPED, UNRESOLVED] }
+    WorkflowItemsResponse:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WorkItemInfo' }
+    ArtifactInfo:
+      type: object
+      required: [artifact_id, workflow_id, artifact_type, lifecycle_state, sha256, size_bytes, format, producer, producer_version, verified, created_at, updated_at]
+      additionalProperties: false
+      properties:
+        artifact_id: { type: string }
+        workflow_id: { type: string }
+        item_id: { type: [string, 'null'] }
+        step_id: { type: [string, 'null'] }
+        work_unit_id: { type: [string, 'null'] }
+        artifact_type: { type: string }
+        lifecycle_state: { type: string, enum: [TEMP, READY, INVALID, DELETED] }
+        sha256: { type: [string, 'null'], minLength: 64, maxLength: 64 }
+        size_bytes: { type: [integer, 'null'], minimum: 0 }
+        format: { type: [string, 'null'] }
+        producer: { type: string }
+        producer_version: { type: [string, 'null'] }
+        verified: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ArtifactListResponse:
+      type: object
+      required: [artifacts]
+      additionalProperties: false
+      properties:
+        artifacts:
+          type: array
+          maxItems: 2000
+          items: { $ref: '#/components/schemas/ArtifactInfo' }
+    ExportZipArtifact:
+      type: object
+      required: [artifact_id, workflow_id, artifact_type, lifecycle_state, sha256, size_bytes, format, producer, producer_version, verified, included_count, included_item_ids, excluded_item_ids, exclusion_reasons, filename, extension, mime_type, duration_ms]
+      additionalProperties: false
+      properties:
+        artifact_id: { type: string }
+        workflow_id: { type: string }
+        artifact_type: { type: string, const: export-zip }
+        lifecycle_state: { type: string, const: READY }
+        sha256: { type: string, minLength: 64, maxLength: 64 }
+        size_bytes: { type: integer, minimum: 0 }
+        format: { type: string, const: zip }
+        producer: { type: string }
+        producer_version: { type: string }
+        verified: { type: boolean, const: true }
+        included_count: { type: integer, minimum: 1 }
+        included_item_ids:
+          type: array
+          minItems: 1
+          items: { type: string }
+        excluded_item_ids:
+          type: array
+          items: { type: string }
+        exclusion_reasons:
+          type: object
+          additionalProperties: { type: string }
+        filename: { type: string }
+        extension: { type: string, const: .zip }
+        mime_type: { type: string, const: application/zip }
+        duration_ms: { type: [integer, 'null'], minimum: 0 }
+    ExportZipResponse:
+      type: object
+      required: [request_id, workflow_id, state_version, artifact]
+      additionalProperties: false
+      properties:
+        request_id: { type: string }
+        workflow_id: { type: string }
+        state_version: { type: integer, minimum: 0 }
+        artifact: { $ref: '#/components/schemas/ExportZipArtifact' }
+    WorkflowSnapshot:
+      type: object
+      required: [workflow_id, workflow_group_id, group_state_version, parent_workflow_id, result_status, execution_state, control_state, cleanup_state, status, state_version, draft_revision, current_step_id, source_artifact_id, item_count, artifact_count, latest_event_id, latest_seq, updated_at]
+      additionalProperties: false
+      properties:
+        workflow_id: { type: string }
+        workflow_group_id: { type: string }
+        group_state_version: { type: integer, minimum: 0 }
+        parent_workflow_id: { type: [string, 'null'] }
+        result_status: { type: string, enum: [IN_PROGRESS, SUCCEEDED, PARTIAL_SUCCESS, FAILED, CANCELLED] }
+        execution_state: { type: string, enum: [CREATED, PREPARING, RUNNING, WAITING_RETRY, WAITING_USER, RECOVERING, BLOCKED, TERMINAL] }
+        control_state: { type: string, enum: [RUNNING, PAUSE_REQUESTED, PAUSED, TERMINATING, TERMINATED] }
+        cleanup_state: { type: string, enum: [NONE, PENDING, RUNNING, SUCCEEDED, FAILED, DEFERRED] }
+        status: { type: string, enum: [DRAFT, ACTIVE, ABANDONED, CLOSED] }
+        state_version: { type: integer, minimum: 0 }
+        draft_revision: { type: integer, minimum: 0 }
+        current_step_id: { type: [string, 'null'] }
+        source_artifact_id: { type: [string, 'null'] }
+        item_count: { type: integer, minimum: 0 }
+        artifact_count: { type: integer, minimum: 0 }
+        latest_event_id: { type: [string, 'null'] }
+        latest_seq: { type: integer, minimum: 0 }
+        latest_event: { anyOf: [{ $ref: '#/components/schemas/WorkflowEvent' }, { type: 'null' }] }
+        updated_at: { type: string, format: date-time }
+    WorkflowEnvelope:
+      type: object
+      required: [request_id, workflow]
+      properties:
+        request_id: { type: string }
+        workflow: { $ref: '#/components/schemas/WorkflowSnapshot' }
+    CommandResponse:
+      type: object
+      required: [request_id, workflow_id, accepted_action, result_status, execution_state, control_state, cleanup_state, state_version, current_snapshot, target_attempt_id]
+      additionalProperties: false
+      properties:
+        request_id: { type: string }
+        workflow_id: { type: string }
+        accepted_action: { type: string }
+        result_status: { type: string, enum: [IN_PROGRESS, SUCCEEDED, PARTIAL_SUCCESS, FAILED, CANCELLED] }
+        execution_state: { type: string, enum: [CREATED, PREPARING, RUNNING, WAITING_RETRY, WAITING_USER, RECOVERING, BLOCKED, TERMINAL] }
+        control_state: { type: string, enum: [RUNNING, PAUSE_REQUESTED, PAUSED, TERMINATING, TERMINATED] }
+        cleanup_state: { type: string, enum: [NONE, PENDING, RUNNING, SUCCEEDED, FAILED, DEFERRED] }
+        state_version: { type: integer, minimum: 0 }
+        current_snapshot: { $ref: '#/components/schemas/WorkflowSnapshot' }
+        target_attempt_id: { type: [string, 'null'] }
+        parse_results:
+          type: array
+          items: { $ref: '#/components/schemas/JsonObject' }
+        source_filename: { type: string }
+        source_artifact_id: { type: [string, 'null'] }
+        parsed_artifact_id: { type: [string, 'null'] }
+    SourceImportCreateRequest:
+      type: object
+      required: [metadata]
+      additionalProperties: false
+      properties:
+        metadata: { $ref: '#/components/schemas/JsonObject' }
+        expected_size_bytes: { type: [integer, 'null'], minimum: 0 }
+        expected_sha256: { type: [string, 'null'], minLength: 64, maxLength: 64 }
+        content_type: { type: [string, 'null'], maxLength: 128 }
+    SourceImportStatus:
+      type: object
+      required: [source_import_id, workflow_id, staging_generation, status, state_version, received_size_bytes, source_artifact_id, expires_at, updated_at]
+      additionalProperties: false
+      properties:
+        source_import_id: { type: string }
+        workflow_id: { type: string }
+        staging_generation: { type: integer, minimum: 1 }
+        status: { type: string, enum: [CREATED, RECEIVING, READY, FAILED, EXPIRED, ABORTED] }
+        state_version: { type: integer, minimum: 0 }
+        received_size_bytes: { type: integer, minimum: 0 }
+        actual_size_bytes: { type: [integer, 'null'], minimum: 0 }
+        actual_sha256: { type: [string, 'null'], minLength: 64, maxLength: 64 }
+        source_artifact_id: { type: [string, 'null'] }
+        error_code: { type: [string, 'null'] }
+        expires_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SourceImportGenerationStatus:
+      type: object
+      required: [source_import_id, workflow_id, generation, status, state_version, received_size_bytes, source_artifact_id, expires_at, updated_at]
+      additionalProperties: false
+      properties:
+        source_import_id: { type: string }
+        workflow_id: { type: string }
+        generation: { type: integer, minimum: 1 }
+        status: { type: string, enum: [CREATED, RECEIVING, READY, FAILED, EXPIRED, ABORTED] }
+        state_version: { type: integer, minimum: 0 }
+        received_size_bytes: { type: integer, minimum: 0 }
+        actual_size_bytes: { type: [integer, 'null'], minimum: 0 }
+        actual_sha256: { type: [string, 'null'], minLength: 64, maxLength: 64 }
+        source_artifact_id: { type: [string, 'null'] }
+        error_code: { type: [string, 'null'] }
+        expires_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SourceImportCommandRequest:
+      type: object
+      required: [expected_state_version]
+      additionalProperties: false
+      properties:
+        expected_state_version: { type: integer, minimum: 0 }
+        reason: { type: string, maxLength: 1000 }
+    EventTicketRequest:
+      type: object
+      required: [last_event_id]
+      additionalProperties: false
+      properties:
+        last_event_id: { type: [string, 'null'], maxLength: 256 }
+    EventTicket:
+      type: object
+      required: [ticket, expires_at, workflow_id]
+      properties:
+        ticket: { type: string, readOnly: true }
+        workflow_id: { type: string }
+        expires_at: { type: string, format: date-time }
+    ArtifactTicket:
+      type: object
+      required: [ticket, expires_at, artifact_id]
+      properties:
+        ticket: { type: string, readOnly: true }
+        artifact_id: { type: string }
+        expires_at: { type: string, format: date-time }
+    SourceWriterTicket:
+      type: object
+      required: [grant, source_import_id, generation, expires_at]
+      additionalProperties: false
+      properties:
+        grant: { type: string, minLength: 32, maxLength: 512, writeOnly: true }
+        source_import_id: { type: string }
+        generation: { type: integer, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+    WorkflowEvent:
+      type: object
+      required: [event_id, seq, workflow_id, mutation_id, schema_version, correlation_id, causation_id, actor_type, event_type, payload, created_at]
+      additionalProperties: false
+      properties:
+        event_id: { type: string }
+        seq: { type: integer, minimum: 1 }
+        workflow_id: { type: string }
+        mutation_id: { type: string }
+        schema_version: { type: string }
+        step_id: { type: [string, 'null'] }
+        item_id: { type: [string, 'null'] }
+        attempt_id: { type: [string, 'null'] }
+        correlation_id: { type: string, minLength: 1 }
+        causation_id: { type: [string, 'null'] }
+        actor_type: { type: string, enum: [USER, WORKER, RECOVERY, SCHEDULER, SYSTEM] }
+        actor_id: { type: [string, 'null'] }
+        event_type: { type: string }
+        phase: { type: [string, 'null'] }
+        payload: { $ref: '#/components/schemas/JsonObject' }
+        created_at: { type: string, format: date-time }
+    ErrorResponse:
+      type: object
+      required: [request_id, error_code, message, retryable, side_effect_occurred]
+      additionalProperties: false
+      properties:
+        request_id: { type: string }
+        error_code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - IDEMPOTENCY_CONFLICT
+            - IDEMPOTENCY_IN_PROGRESS
+            - STATE_CONFLICT
+            - CONFIGURATION_CONFLICT
+            - CONFIG_FROZEN
+            - CONTROL_STATE_CONFLICT
+            - TARGET_REQUIRED
+            - CONTENT_CONFLICT
+            - ITEM_ALREADY_DELIVERED
+            - PARSE_ERROR
+            - AUTH_ERROR
+            - TRANSIENT_PROVIDER_ERROR
+            - PROVIDER_RATE_LIMITED
+            - PROVIDER_LOGIN_REQUIRED
+            - PROVIDER_QUOTA_EXCEEDED
+            - PROVIDER_RECEIPT_SCOPE
+            - SUBMISSION_AMBIGUOUS
+            - RECONCILIATION_REQUIRED
+            - EVIDENCE_REQUIRED
+            - SEGMENT_BOUNDARIES_UNVERIFIED
+            - DOWNLOAD_ERROR
+            - ARTIFACT_INVALID
+            - PERSISTENCE_ERROR
+            - PERSISTENCE_AMBIGUOUS
+            - CURSOR_EXPIRED
+            - CURSOR_INVALID
+            - API_VERSION_RETIRED
+            - SCHEMA_MISMATCH
+            - DEPENDENCY_NOT_READY
+            - EXTERNAL_CAPABILITY_REQUIRED
+            - EXTERNAL_RUNTIME_ERROR
+            - EXTERNAL_RECONCILIATION_REQUIRED
+            - EXTERNAL_MAPPING_VERSION_CONFLICT
+            - EXTERNAL_SCOPE_CONFLICT
+            - EXTERNAL_OPERATION_ACTIVE
+            - EXTERNAL_STATE_CONFLICT
+            - EXTERNAL_SUBMIT_UNKNOWN
+            - EXTERNAL_NOT_FOUND_REQUIRES_MANUAL
+            - USER_CANCELLED
+            - WORKFLOW_CANCELLED
+            - INTERNAL_ERROR
+            - STALE_ATTEMPT
+            - RESOURCE_EXHAUSTED
+            - SOURCE_NOT_AVAILABLE
+            - EXTERNAL_TARGET_AMBIGUOUS
+            - EXTERNAL_VERIFY_MISMATCH
+            - DRAFT_EXPIRED
+            - ARTIFACT_ORPHANED
+            - CLEANUP_ERROR
+            - MIGRATION_ERROR
+            - MIGRATION_REQUIRED
+            - GENERATION_ALREADY_RUNNING
+            - GENERATION_NOT_RUNNING
+            - PROVIDER_UNAVAILABLE
+            - UNSUPPORTED_MEDIA_TYPE
+            - CONTENT_TOO_LARGE
+            - INSUFFICIENT_STORAGE
+        message: { type: string, maxLength: 2000 }
+        retryable: { type: boolean }
+        side_effect_occurred: { type: boolean }
+        workflow_id: { type: [string, 'null'] }
+        step_id: { type: [string, 'null'] }
+        attempt_id: { type: [string, 'null'] }
+        details: { $ref: '#/components/schemas/JsonObject' }

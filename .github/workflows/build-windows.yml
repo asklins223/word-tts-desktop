@@ -56,7 +56,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          # Electron 43 的构建工具要求 Node >= 22.12。
+          # 项目 engines 固定要求 Node.js 24.x。
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
@@ -95,7 +95,7 @@ jobs:
           python -m pip install -r requirements_electron.txt
 
       # ======================================================================
-      # 5. 安装 Playwright Chromium 浏览器（讯飞配音浏览器自动化需要）
+      # 5. 安装 Playwright Chromium（仅作为打包资源；默认 smoke 不访问第三方页面）
       # ======================================================================
       - name: Install Playwright browsers
         run: python -m playwright install chromium
@@ -110,6 +110,13 @@ jobs:
       - name: Test Electron native file dialogs
         working-directory: electron
         run: npm test
+
+      - name: Check workflow contracts
+        working-directory: electron
+        run: npm run check:contracts
+
+      - name: Run logical workflow smoke (no page/network)
+        run: python tools/xunfei_smoke.py --logical-only --source "examples/documents/信息转述及询问信息 7上- U1.docx" --max-items 100
 
       - name: Audit packaged runtime dependencies
         working-directory: electron
@@ -142,7 +149,7 @@ jobs:
           Write-Host "后端打包成功"
           Get-ChildItem -Path "electron/server_backend_build/server_backend" | Select-Object Name, Length | Format-Table
 
-      - name: Smoke test packaged backend
+      - name: Smoke test packaged backend (local-only)
         shell: pwsh
         run: |
           $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -164,7 +171,7 @@ jobs:
                 exit 1
               }
               try {
-                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -Headers @{"X-WordTTS-Token" = $token} -TimeoutSec 2
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/v1/health" -Headers @{"X-Desktop-Capability" = $token} -TimeoutSec 2
                 if ($health.status -eq "ok" -and $health.app -eq "wordtts" -and $health.version -eq "${{ steps.version.outputs.version }}") {
                   $ready = $true
                   break
@@ -193,58 +200,33 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
 
-      - name: Smoke test unpacked desktop app
+      - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
         run: |
+          # 这里只验证打包文件存在；不启动页面，不登录讯飞，
+          # 不访问第三方页面，不执行真实 Provider smoke。
           $exe = Resolve-Path "electron/release/win-unpacked/小猪wordTTS.exe"
           $backend = Resolve-Path "electron/release/win-unpacked/resources/server_backend/server_backend.exe"
-          $previousNodePath = $env:PLAYWRIGHT_NODEJS_PATH
-          $previousElectronNodeMode = $env:ELECTRON_RUN_AS_NODE
-          try {
-            $env:PLAYWRIGHT_NODEJS_PATH = "$exe"
-            $env:ELECTRON_RUN_AS_NODE = "1"
-            & $backend --smoke-playwright
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Playwright/Chromium 打包冒烟测试失败，代码: $LASTEXITCODE"
-              exit 1
-            }
-          } finally {
-            if ($null -eq $previousNodePath) {
-              Remove-Item Env:PLAYWRIGHT_NODEJS_PATH -ErrorAction SilentlyContinue
-            } else {
-              $env:PLAYWRIGHT_NODEJS_PATH = $previousNodePath
-            }
-            if ($null -eq $previousElectronNodeMode) {
-              Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-            } else {
-              $env:ELECTRON_RUN_AS_NODE = $previousElectronNodeMode
-            }
+          if (-not (Test-Path $exe)) { Write-Error "未找到 Electron 可执行文件"; exit 1 }
+          if (-not (Test-Path $backend)) { Write-Error "未找到打包后端可执行文件"; exit 1 }
+          Write-Host "Electron 与后端打包文件校验通过"
+          & $backend --smoke-playwright
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "打包后端 Playwright/Chromium 冒烟失败"
+            exit 1
           }
-          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
-          if (-not $process.WaitForExit(120000)) {
-            Write-Warning "Electron 桌面端到端冒烟测试超时，输出应用诊断日志"
-            $smokeLog = Join-Path $env:TEMP "wordtts-electron-smoke.log"
-            if (Test-Path $smokeLog) {
-              Get-Content $smokeLog -Tail 120
-            } else {
-              Write-Warning "未找到 Electron 冒烟诊断日志: $smokeLog"
-            }
-            & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+          Write-Host "打包后端 Playwright/Chromium 冒烟测试通过"
+          $smoke = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
+          if (-not $smoke.WaitForExit(120000)) {
             Write-Error "Electron 桌面端到端冒烟测试超时"
+            & taskkill.exe /PID $smoke.Id /T /F 2>$null | Out-Null
             exit 1
           }
-          if ($process.ExitCode -ne 0) {
-            Write-Warning "Electron 桌面端到端冒烟测试失败，输出应用诊断日志"
-            $smokeLog = Join-Path $env:TEMP "wordtts-electron-smoke.log"
-            if (Test-Path $smokeLog) {
-              Get-Content $smokeLog -Tail 160
-            } else {
-              Write-Warning "未找到 Electron 冒烟诊断日志: $smokeLog"
-            }
-            Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($process.ExitCode)"
+          if ($smoke.ExitCode -ne 0) {
+            Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($smoke.ExitCode)"
             exit 1
           }
-          Write-Host "Electron 桌面界面端到端冒烟测试通过"
+          Write-Host "Electron 桌面端到端冒烟测试通过"
 
       # ======================================================================
       # 8. 上传构建产物

@@ -3081,6 +3081,22 @@ input[type="text"]::placeholder {
 .waveform-container > div { width: 100%; min-width: 0; }
 .waveform-container.has-error { color: var(--error); }
 
+.waveform-retry-btn {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    padding: 4px 8px;
+    color: var(--error);
+    background: var(--error-bg);
+    border: 1px solid #f0c5c0;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 10px;
+    transform: translate(-50%, -50%);
+}
+
+.waveform-retry-btn:hover { background: #fde5e2; }
+
 .waveform-time {
     position: absolute;
     right: 5px;
@@ -3895,6 +3911,17 @@ input[type="text"]::placeholder {
     animation: progress-shimmer 2.1s ease-in-out infinite;
 }
 
+.progress-bar-fill.is-indeterminate {
+    width: 100% !important;
+    background-size: 220% 100%;
+    animation: progress-indeterminate 1.35s linear infinite;
+}
+
+@keyframes progress-indeterminate {
+    from { background-position: 100% 0; }
+    to { background-position: -120% 0; }
+}
+
 @keyframes progress-shimmer { 65%, 100% { transform: translateX(180%); } }
 
 .generation-metrics {
@@ -3968,6 +3995,12 @@ input[type="text"]::placeholder {
 
 .generation-recovery > div {
     margin-top: 8px;
+}
+
+.generation-recovery > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 .log-panel {
@@ -6052,6 +6085,18 @@ select:disabled {
     border-color: #ecd4ad;
 }
 
+.history-status-badge.is-active {
+    color: var(--accent);
+    background: var(--accent-bg);
+    border-color: var(--accent-light);
+}
+
+.history-status-badge.is-danger {
+    color: var(--error);
+    background: var(--error-bg);
+    border-color: #f0c5c0;
+}
+
 .history-item-meta {
     flex-wrap: wrap;
     gap: 5px 8px;
@@ -7985,6 +8030,18 @@ select.app-select-source {
 .generation-console-footer .processing-tip svg {
     flex: 0 0 auto;
     color: var(--success);
+}
+
+.generation-cancel-btn {
+    flex: 0 0 auto;
+    color: var(--error);
+    border-color: rgba(177, 58, 58, 0.24);
+}
+
+.generation-cancel-btn:hover:not(:disabled) {
+    color: var(--error);
+    background: var(--error-bg);
+    border-color: rgba(177, 58, 58, 0.42);
 }
 
 .generation-card .generation-recovery {

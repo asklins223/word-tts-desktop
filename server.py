@@ -63,6 +63,31 @@ if getattr(sys, "frozen", False):
             "PLAYWRIGHT_BROWSERS_PATH", _bundled_playwright_browsers
         )
 
+    # The packaged backend intentionally does not carry a second ~106MB Node
+    # binary.  Electron normally supplies its own executable through the
+    # environment when it launches this process.  Keep the backend's direct
+    # packaging smoke (and manually launched paired backend) equally
+    # deterministic by deriving that sibling executable when the environment
+    # was not inherited from Electron.
+    if not os.environ.get("PLAYWRIGHT_NODEJS_PATH"):
+        _backend_executable = os.path.realpath(sys.executable)
+        _electron_executable = None
+        if sys.platform == "darwin":
+            _contents_dir = os.path.dirname(
+                os.path.dirname(os.path.dirname(_backend_executable))
+            )
+            _electron_executable = os.path.join(
+                _contents_dir, "MacOS", "小猪wordTTS"
+            )
+        elif sys.platform == "win32":
+            _app_dir = os.path.dirname(
+                os.path.dirname(os.path.dirname(_backend_executable))
+            )
+            _electron_executable = os.path.join(_app_dir, "小猪wordTTS.exe")
+        if _electron_executable and os.path.isfile(_electron_executable):
+            os.environ["PLAYWRIGHT_NODEJS_PATH"] = _electron_executable
+            os.environ.setdefault("ELECTRON_RUN_AS_NODE", "1")
+
 # ============================================================================
 # 导入核心模块（复用 word_tts_app 的全部逻辑）
 # ============================================================================
@@ -83,6 +108,7 @@ from typing import Optional
 import copy
 import uvicorn
 from uvicorn.config import LOGGING_CONFIG as _UVICORN_DEFAULT_LOG_CONFIG
+from api.workflow_routes import install_workflow_api
 
 # ============================================================================
 # 会话与进度管理
@@ -3035,13 +3061,109 @@ class ParseRequest(BaseModel):
 
 app = FastAPI(title="小猪wordTTS API")
 _API_TOKEN = os.environ.get("WORDTTS_API_TOKEN", "")
-APP_VERSION = os.environ.get("WORDTTS_VERSION", "2.0.0")
+_DEVELOPMENT_WORKFLOW_CAPABILITY = secrets.token_urlsafe(32)
+
+
+def _versioned_api_capability():
+    """Return the process-local capability required by /api/v1 routes."""
+    return _API_TOKEN or _DEVELOPMENT_WORKFLOW_CAPABILITY
+
+
+def _package_version() -> str | None:
+    try:
+        with open(os.path.join(RESOURCE_DIR, "electron", "package.json"), encoding="utf-8") as package_file:
+            value = json.load(package_file).get("version")
+            return str(value).strip() if value else None
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+APP_VERSION = os.environ.get("WORDTTS_VERSION") or _package_version() or "0.0.0-dev"
+
+
+def _legacy_api_enabled() -> bool:
+    # The legacy surface is never enabled implicitly.  The supported desktop
+    # entry point and imported ASGI app both default to the versioned API;
+    # compatibility tests/tools must opt in explicitly.
+    return os.environ.get("WORDTTS_LEGACY_API", "0") == "1"
+
+
+def _local_request_allowed(request) -> bool:
+    """Reject DNS-rebinding/browser-origin requests before route dispatch."""
+
+    host = str(request.headers.get("host") or "").lower().strip()
+    origin = request.headers.get("origin")
+    # Starlette's TestClient uses ``testserver``; keeping this narrow test-only
+    # exception allows unit probes without weakening a launched server.
+    if __name__ != "__main__" and host.split(":", 1)[0] in {"testserver", "localhost"}:
+        host_allowed = True
+    else:
+        host_name, separator, host_port = host.rpartition(":")
+        if host.startswith("[") and "]" in host:
+            host_name = host[1:host.index("]")]
+            host_port = host.split("]", 1)[1].lstrip(":")
+        elif not separator:
+            host_name, host_port = host, ""
+        host_allowed = host_name in {"127.0.0.1", "::1"}
+        expected_port = str(os.environ.get("WORDTTS_PORT") or "").strip()
+        if host_allowed and expected_port and host_port != expected_port:
+            host_allowed = False
+    if not host_allowed:
+        return False
+    return origin is None or origin == "null"
 
 
 @app.middleware("http")
 async def authenticate_local_api(request, call_next):
     """Electron 启动的后端只接受本次进程生成的随机令牌。"""
-    if _API_TOKEN and request.url.path.startswith("/api/"):
+    path = request.url.path
+    if path.startswith("/api/") and not _local_request_allowed(request):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=403,
+            content={
+                "request_id": f"request-{secrets.token_hex(8)}",
+                "error_code": "ORIGIN_NOT_ALLOWED",
+                "message": "local API request origin or host is not allowed",
+                "retryable": False,
+                "side_effect_occurred": False,
+            },
+        )
+    if path.startswith("/api/") and not path.startswith("/api/v1/") and not _legacy_api_enabled():
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=410,
+            headers={"X-API-Version": "v1"},
+            content={
+                "request_id": f"request-{secrets.token_hex(8)}",
+                "error_code": "API_VERSION_RETIRED",
+                "message": "legacy API has been retired; use /api/v1",
+                "retryable": False,
+                "side_effect_occurred": False,
+            },
+        )
+    if path.startswith("/api/v1/"):
+        # Versioned workflow routes are fail-closed even when server.py is
+        # imported without WORDTTS_API_TOKEN (for example by a bare ASGI
+        # runner).  The random process-local capability is never exposed to a
+        # browser, while formal Electron startup replaces it with its token.
+        supplied = request.headers.get("X-Desktop-Capability")
+        expected = _versioned_api_capability()
+        if not supplied or not secrets.compare_digest(supplied, expected):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "request_id": f"request-{secrets.token_hex(8)}",
+                    "error_code": "UNAUTHORIZED",
+                    "message": "missing or invalid desktop capability",
+                    "retryable": False,
+                    "side_effect_occurred": False,
+                },
+            )
+    elif _API_TOKEN and path.startswith("/api/"):
+        # The legacy branch remains temporarily available for the old UI while
+        # the renderer migrates to the Preload fetch proxy.
         supplied = request.headers.get("X-WordTTS-Token") or request.query_params.get("token")
         if not supplied or not secrets.compare_digest(supplied, _API_TOKEN):
             from fastapi.responses import JSONResponse
@@ -3054,14 +3176,31 @@ app.add_middleware(
     allow_origins=[
         "null",  # Electron file:// 协议的 origin 为 "null"
     ],
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=[
+        "Content-Type",
+        "Last-Event-ID",
+        "X-Artifact-Format",
+        "X-Artifact-Ticket",
+        "X-Desktop-Capability",
+        "X-Idempotency-Key",
+        "X-Source-Write-Grant",
+        "X-SSE-Ticket",
+        "X-Staging-Generation",
+        # Temporary legacy renderer compatibility; /api/v1 never reads it.
+        "X-WordTTS-Token",
+    ],
 )
 
 # 静态文件（如果存在 renderer 目录）
 _renderer_dir = os.path.join(RESOURCE_DIR, "electron", "renderer")
 if os.path.isdir(_renderer_dir):
     app.mount("/static", StaticFiles(directory=_renderer_dir), name="static")
+
+# The versioned workflow API is mounted independently from the legacy UI API.
+# Its database is initialized lazily on the first request so importing server.py
+# for the existing unit tests cannot mutate a user's runtime database.
+_workflow_runtime = install_workflow_api(app, capability=_versioned_api_capability())
 
 
 @app.get("/api/health")
@@ -3077,6 +3216,12 @@ async def health():
         "parser_version": core.PARSER_VERSION,
         "default_generation_mode": core.DEFAULT_GENERATION_MODE,
     }
+
+
+@app.get("/api/v1/health")
+async def versioned_health():
+    """Versioned startup probe; the legacy health path is not used in production."""
+    return await health()
 
 
 @app.get("/api/config")
@@ -3127,6 +3272,12 @@ async def get_config():
     }
 
 
+@app.get("/api/v1/config")
+async def get_versioned_config():
+    """Expose the same controlled configuration through the versioned API."""
+    return await get_config()
+
+
 @app.post("/api/voice-assets/cache")
 async def cache_voice_assets(payload: dict):
     """后台缓存用户刚选中的音色头像和示例音频。"""
@@ -3137,6 +3288,12 @@ async def cache_voice_assets(payload: dict):
     await asyncio.to_thread(_load_voice_catalog_sync, False)
     cached = await asyncio.to_thread(_cache_voice_assets_sync, voice_keys)
     return {"status": "ok", "cached": cached}
+
+
+@app.post("/api/v1/voice-assets/cache")
+async def cache_versioned_voice_assets(payload: dict):
+    """Versioned presentation-asset cache used by the migrated renderer."""
+    return await cache_voice_assets(payload)
 
 
 @app.get("/api/voice-assets/{voice_key}/{kind}")
@@ -3154,6 +3311,12 @@ async def get_voice_asset(voice_key: str, kind: str):
         media_type=media_type,
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
+
+
+@app.get("/api/v1/voice-assets/{voice_key}/{kind}")
+async def get_versioned_voice_asset(voice_key: str, kind: str):
+    """Serve one cached voice asset through the versioned API surface."""
+    return await get_voice_asset(voice_key, kind)
 
 
 @app.get("/api/diagnose")
@@ -3854,6 +4017,16 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=int(os.environ.get("WORDTTS_PORT", DEFAULT_PORT)))
     parser.add_argument("--token", default=os.environ.get("WORDTTS_API_TOKEN", ""))
     parser.add_argument(
+        "--enable-real-provider",
+        action="store_true",
+        help="兼容参数：显式启用真实 Provider；正式运行默认已启用",
+    )
+    parser.add_argument(
+        "--disable-real-provider",
+        action="store_true",
+        help="仅在离线诊断/逻辑测试时显式关闭真实 Provider",
+    )
+    parser.add_argument(
         "--smoke-playwright",
         action="store_true",
         help="启动后立即验证 Playwright driver 与 Chromium，然后退出",
@@ -3865,6 +4038,34 @@ if __name__ == "__main__":
     if not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")
     _API_TOKEN = args.token
+    if args.enable_real_provider and args.disable_real_provider:
+        parser.error("--enable-real-provider 与 --disable-real-provider 不能同时使用")
+    # Formal backend starts are real-provider-on by default.  Keep an explicit
+    # off switch for logical diagnostics and retain WORDTTS_ENABLE_REAL_PROVIDER
+    # as a backwards-compatible environment override for controlled launches.
+    if args.disable_real_provider:
+        real_provider_enabled = False
+    elif args.enable_real_provider:
+        real_provider_enabled = True
+    else:
+        real_provider_enabled = os.environ.get("WORDTTS_ENABLE_REAL_PROVIDER", "1") != "0"
+    try:
+        provider = _workflow_runtime.providers.get(
+            "xunfei",
+            os.environ.get("WORDTTS_XUNFEI_ACCOUNT_SCOPE", "xunfei-default"),
+        )
+        if hasattr(provider, "allow_real"):
+            provider.allow_real = real_provider_enabled
+    except Exception:
+        # Provider construction is validated on the first workflow request;
+        # do not make startup less diagnosable than the normal capability gate.
+        pass
+    # The formal desktop/server process owns the provider-aware retry loop.
+    # Explicit offline launches disable it together with the real Provider.
+    _workflow_runtime.auto_retry_enabled = real_provider_enabled
+    # Keep the capability only in the backend process.  The versioned API
+    # checks X-Desktop-Capability; query-string tokens are not accepted there.
+    _workflow_runtime.capability = _versioned_api_capability()
     print(f"[server] 启动 FastAPI 服务器: http://127.0.0.1:{args.port}")
     # 将 uvicorn 默认日志从 stderr 改为 stdout，
     # 避免 Electron 控制台中所有日志都显示为 [python:err]

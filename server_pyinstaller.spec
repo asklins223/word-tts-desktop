@@ -32,6 +32,12 @@ datas = [
     # word_parser 没有 __init__.py；运行时会把这个目录加入 sys.path。
     # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
     ('word_parser/word_parser.py', 'word_parser'),
+    # 迁移运行器通过 ``Path(__file__).parent / 'migrations'`` 在运行时
+    # 读取 SQL。db 本身不是一个带 package data 的第三方包，因此必须显式
+    # 将迁移目录放进 frozen backend；否则首个 /api/v1/workflows 请求会在
+    # 初始化数据库时抛出 ``MigrationError: no migration files found``，
+    # Electron 端只能看到没有诊断信息的 HTTP 500。
+    ('db/migrations', 'db/migrations'),
     # 首次启动在线刷新失败时使用的音色目录种子缓存。
     ('resources/voices.json', 'resources'),
 ]
@@ -67,7 +73,12 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    # The project package is also named ``workflow``.  pyinstaller-hooks-contrib
+    # ships a hook for an unrelated PyPI distribution with the same name and
+    # otherwise attempts to copy metadata that is not installed in the build
+    # environment.  The project-local hook keeps our package importable while
+    # shadowing that unrelated metadata hook.
+    hookspath=[os.path.join(globals().get('SPECPATH', os.getcwd()), 'pyinstaller_hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
@@ -132,7 +143,11 @@ if not any(
     for entry in _analysis_entries
 ):
     raise RuntimeError('imageio-ffmpeg 的 FFmpeg 二进制未被收集')
-
+if not any(
+    _normalized_target(entry) == 'db/migrations/0001_foundation.sql'
+    for entry in _analysis_entries
+):
+    raise RuntimeError('数据库迁移 SQL 未被收集，无法启动工作流 API')
 print(f"[spec] 已移除 Playwright 内置 Node: {len(_removed_playwright_node)} 个文件")
 
 pyz = PYZ(a.pure)

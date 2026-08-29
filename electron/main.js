@@ -6,7 +6,7 @@
  * 3. 提供原生文件对话框（选择文件、保存文件）
  */
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
@@ -16,9 +16,17 @@ const crypto = require('crypto');
 const net = require('net');
 const { pathToFileURL } = require('url');
 const { createNativeFileDialogs } = require('./file-dialogs');
+const {
+    newStreamId,
+    openWorkflowSse,
+    requestWorkflow,
+    requestWorkflowStream,
+    requestWorkflowUpload,
+} = require('./workflow-proxy');
 
 let mainWindow = null;
 let pythonProcess = null;
+let hasSingleInstanceLock = true;
 let isQuitting = false;
 let serverPort = null;
 let serverUrl = null;
@@ -30,9 +38,19 @@ let rendererReady = false;
 let rendererFatalShown = false;
 let pythonStopPromise = null;
 let quitCleanupStarted = false;
+let persistentUserDataPath = null;
+let persistentUserDataError = null;
 const pendingAppNotices = new Map();
+const workflowSseStreams = new Map();
+const workflowArtifactStreams = new Map();
+const workflowSourceFiles = new Map();
+const SOURCE_FILE_TOKEN_TTL_MS = 5 * 60 * 1000;
 const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
+// 正式 App 默认启用真实讯飞 Provider；只有打包/启动 smoke 明确使用
+// --smoke-test 时才强制离线。后端环境变量由这里统一写成 1，避免用户
+// 直接双击安装包时因为没有额外 shell 环境变量而落入“Provider 未启用”。
+const realProviderEnabled = !isSmokeTest;
 // 必须和 word_tts_app.py 保持一致。启动时拒绝混用旧 PyInstaller 后端，
 // 避免打包客户端表面启动成功、实际退回逐条生成的隐性性能问题。
 const EXPECTED_BACKEND_CONTRACT_VERSION = 5;
@@ -71,10 +89,24 @@ if (isSmokeTest) app.disableHardwareAcceleration();
 // using the original on-disk directory instead of appearing to disappear.
 try {
     const legacyUserDataPath = path.join(app.getPath('appData'), 'WordTTS');
+    persistentUserDataPath = legacyUserDataPath;
     fs.mkdirSync(legacyUserDataPath, { recursive: true });
     app.setPath('userData', legacyUserDataPath);
 } catch (error) {
-    console.warn(`[main] 无法沿用旧用户数据目录，将使用系统默认目录: ${error.message}`);
+    // Never silently fall back to Electron's app-id-derived directory here:
+    // that directory is normally empty and would make a path/permission
+    // problem look like a brand-new installation with lost data.
+    persistentUserDataError = error;
+    console.error(`[main] 无法打开固定用户数据目录，已阻止启动以避免创建新数据库: ${error.message}`);
+}
+
+// Request the instance lock only after userData has been pinned.  Electron
+// otherwise creates/uses the app-id-derived lock directory before the data
+// path override, leaving instance ownership and SQLite data in different
+// locations.
+hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+    app.quit();
 }
 
 function showRendererFatalError(title, detail) {
@@ -158,14 +190,15 @@ function findPython() {
  * - 开发模式: 使用系统 python + server.py
  */
 function getServerCommand() {
+    const providerArgs = realProviderEnabled ? ['--enable-real-provider'] : [];
     if (app.isPackaged) {
         const exeName = process.platform === 'win32' ? 'server_backend.exe' : 'server_backend';
         const serverExe = path.join(process.resourcesPath, 'server_backend', exeName);
-        return { cmd: serverExe, args: [], cwd: path.dirname(serverExe) };
+        return { cmd: serverExe, args: providerArgs, cwd: path.dirname(serverExe) };
     }
     const projectRoot = path.resolve(__dirname, '..');
     const pythonCmd = findPython();
-    return { cmd: pythonCmd, args: ['server.py'], cwd: projectRoot };
+    return { cmd: pythonCmd, args: ['server.py', ...providerArgs], cwd: projectRoot };
 }
 
 function allocateServerPort() {
@@ -226,6 +259,8 @@ function startPythonServer() {
             WORDTTS_API_TOKEN: serverToken,
             WORDTTS_VERSION: app.getVersion(),
             WORDTTS_DATA_DIR: app.getPath('userData'),
+            WORDTTS_ENABLE_REAL_PROVIDER: realProviderEnabled ? '1' : '0',
+            WORDTTS_AUTO_RETRY: realProviderEnabled ? '1' : '0',
             // 打包后复用 Electron 自带的 Node 启动 Playwright driver，
             // 避免在 Python 后端中再携带一份约 106MB 的 node/node.exe。
             ...(app.isPackaged ? {
@@ -391,8 +426,8 @@ function waitForServer(timeoutMs = 90000) {
                     retry();
                 }
             };
-            const req = http.get(`${serverUrl}/api/health`, {
-                headers: { 'X-WordTTS-Token': serverToken },
+            const req = http.get(`${serverUrl}/api/v1/health`, {
+                headers: { 'X-Desktop-Capability': serverToken },
             }, (res) => {
                 let body = '';
                 res.setEncoding('utf8');
@@ -469,6 +504,13 @@ function createWindow() {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
             nodeIntegration: false,
+            // Electron 20+ sandboxes CommonJS preload scripts by default. The
+            // preload is trusted, application-owned code and intentionally
+            // composes the local workflow-api module; without this explicit
+            // opt-out Electron rejects require('./workflow-api') before the
+            // contextBridge can expose window.electronAPI. Renderer code still
+            // has no Node integration and remains isolated from the preload.
+            sandbox: false,
         },
     };
 
@@ -508,6 +550,11 @@ function createWindow() {
         return { action: 'deny' };
     });
     win.loadFile(RENDERER_ENTRY_PATH);
+    if (process.env.WORDTTS_DEBUG_LOGS === '1' || process.argv.includes('--dev')) {
+        win.webContents.on('console-message', (details) => {
+            console.log(`[renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`);
+        });
+    }
     win.webContents.on('did-finish-load', () => {
         if (mainWindow !== win) return;
         smokeLog('renderer did-finish-load');
@@ -549,8 +596,7 @@ async function verifyRendererSmokeTest(win, timeoutMs = 15000) {
             const statePromise = win.webContents.executeJavaScript(`(() => ({
                 title: document.title,
                 nativeApi: Boolean(window.electronAPI),
-                backendUrl: window.electronAPI?.backend?.url || '',
-                backendToken: Boolean(window.electronAPI?.backend?.token),
+                workflowApi: Boolean(window.electronAPI?.workflow),
                 uiComponents: Boolean(window.WordTTSUI),
                 serviceState: document.getElementById('service-state')?.textContent?.trim() || ''
             }))()`);
@@ -567,8 +613,7 @@ async function verifyRendererSmokeTest(win, timeoutMs = 15000) {
             if (
                 lastState.title.includes(PRODUCT_NAME)
                 && lastState.nativeApi
-                && lastState.backendUrl === serverUrl
-                && lastState.backendToken
+                && lastState.workflowApi
                 && lastState.uiComponents
                 && lastState.serviceState === '服务已连接'
             ) {
@@ -647,6 +692,17 @@ function isTrustedRendererEvent(event) {
     return event.senderFrame.url === RENDERER_ENTRY_URL;
 }
 
+function closeWorkflowSourceFile(state) {
+    if (!state) return;
+    if (state.expiryTimer) clearTimeout(state.expiryTimer);
+    try { state.handle?.close?.().catch?.(() => {}); } catch (_) { /* best effort cleanup */ }
+}
+
+function closeWorkflowSourceFiles() {
+    workflowSourceFiles.forEach(closeWorkflowSourceFile);
+    workflowSourceFiles.clear();
+}
+
 function registerIpcHandlers() {
     const nativeFileDialogs = createNativeFileDialogs({
         app,
@@ -658,17 +714,351 @@ function registerIpcHandlers() {
         isTrustedSender: isTrustedRendererEvent,
     });
 
-    ipcMain.on('backend-config', (event) => {
-        event.returnValue = isTrustedRendererEvent(event)
-            ? { url: serverUrl, token: serverToken }
-            : null;
+    // New workflow API transport.  The renderer only receives structured
+    // responses; the long-lived capability stays in this main-process scope.
+    ipcMain.handle('workflow-request', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow request sender');
+        let response;
+        try {
+            response = await requestWorkflow({
+                http,
+                baseUrl: serverUrl,
+                capability: serverToken,
+                method: input.method,
+                pathname: input.pathname,
+                body: input.body,
+                headers: input.headers || {},
+            });
+        } catch (error) {
+            if (process.env.WORDTTS_DEBUG_LOGS === '1' || process.argv.includes('--dev')) {
+                console.error(`[main] workflow request failed ${input.method || 'GET'} ${input.pathname || ''}: ${error.stack || error.message}`);
+            }
+            throw error;
+        }
+        if (process.env.WORDTTS_DEBUG_LOGS === '1' || process.argv.includes('--dev')) {
+            const body = input.body;
+            const bodyShape = body == null
+                ? 'none'
+                : (body instanceof Uint8Array
+                    ? `bytes:${body.byteLength}`
+                    : `keys:${Object.keys(body).sort().join(',')}`);
+            const headerShape = Object.keys(input.headers || {}).sort().join(',') || 'none';
+            const responseBody = response.body;
+            const responseShape = responseBody == null
+                ? 'none'
+                : (responseBody instanceof Uint8Array
+                    ? `bytes:${responseBody.byteLength}`
+                    : (typeof responseBody === 'object'
+                        ? `keys:${Object.keys(responseBody).sort().join(',')}`
+                        : typeof responseBody));
+            console.log(
+                `[main] workflow request ${input.method || 'GET'} ${input.pathname || ''}`
+                + ` body=${bodyShape} headers=${headerShape}`
+                + ` response=${responseShape} -> ${response.status}`,
+            );
+        }
+        if (Buffer.isBuffer(response.body)) response.body = new Uint8Array(response.body);
+        return response;
     });
 
-    // 选择文件
-    ipcMain.handle('select-file', nativeFileDialogs.selectFile);
+    // Large native source documents stay behind the main-process boundary.
+    // The renderer receives only an opaque one-shot handle and metadata; the
+    // file descriptor is streamed directly into the loopback API.
+    ipcMain.handle('select-source-file-stream', async (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const selected = await nativeFileDialogs.selectFileSource(event);
+        if (!selected?.success || !selected.handle) return selected;
+        const sourceFileId = newStreamId();
+        const state = {
+            handle: selected.handle,
+            senderId: event.sender.id,
+            fileName: selected.fileName,
+            sizeBytes: Number(selected.sizeBytes),
+            expiryTimer: null,
+        };
+        state.expiryTimer = setTimeout(() => {
+            if (workflowSourceFiles.get(sourceFileId) !== state) return;
+            workflowSourceFiles.delete(sourceFileId);
+            closeWorkflowSourceFile(state);
+        }, SOURCE_FILE_TOKEN_TTL_MS);
+        state.expiryTimer.unref?.();
+        workflowSourceFiles.set(sourceFileId, state);
+        return {
+            success: true,
+            sourceFileId,
+            fileName: state.fileName,
+            sizeBytes: state.sizeBytes,
+        };
+    });
 
-    // 通过文件路径直接复制（校验源路径合法性）
-    ipcMain.handle('save-file-by-path', nativeFileDialogs.saveFileByPath);
+    ipcMain.handle('workflow-source-upload', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow source sender');
+        const sourceFileId = String(input.sourceFileId || '');
+        const state = workflowSourceFiles.get(sourceFileId);
+        if (!sourceFileId || !state || state.senderId !== event.sender.id) {
+            throw new Error('source file handle is missing or expired');
+        }
+        if (!Number.isSafeInteger(state.sizeBytes) || state.sizeBytes <= 0) {
+            workflowSourceFiles.delete(sourceFileId);
+            closeWorkflowSourceFile(state);
+            throw new Error('source file size is invalid');
+        }
+        const pathname = String(input.pathname || '');
+        if (!/^\/api\/v1\/source-imports\/[^/]+\/content$/.test(pathname)) {
+            throw new Error('workflow source upload path is not allowed');
+        }
+        const incomingHeaders = input.headers && typeof input.headers === 'object' ? input.headers : {};
+        const headers = {};
+        [
+            'X-Idempotency-Key',
+            'X-Staging-Generation',
+            'X-Source-Write-Grant',
+            'X-Artifact-Format',
+            'Content-Type',
+        ].forEach((name) => {
+            if (incomingHeaders[name] != null) headers[name] = String(incomingHeaders[name]);
+        });
+        if (!headers['X-Idempotency-Key'] || !headers['X-Staging-Generation'] || !headers['X-Source-Write-Grant']) {
+            throw new Error('source upload grant headers are incomplete');
+        }
+
+        // Consume the opaque handle before opening the request so a duplicate
+        // IPC call cannot reuse the same descriptor or submit the body twice.
+        workflowSourceFiles.delete(sourceFileId);
+        if (state.expiryTimer) clearTimeout(state.expiryTimer);
+        let stream = null;
+        try {
+            const handle = state.handle;
+            const streamOptions = {
+                autoClose: false,
+                start: 0,
+                end: state.sizeBytes - 1,
+            };
+            if (typeof handle.createReadStream === 'function') {
+                stream = handle.createReadStream(streamOptions);
+            } else if (handle && handle.fd != null) {
+                stream = fs.createReadStream(null, { ...streamOptions, fd: handle.fd });
+            } else {
+                throw new Error('source file stream is unavailable');
+            }
+            return await requestWorkflowUpload({
+                http,
+                baseUrl: serverUrl,
+                capability: serverToken,
+                method: 'PUT',
+                pathname,
+                headers,
+                bodyStream: stream,
+                contentLength: state.sizeBytes,
+            });
+        } finally {
+            stream?.destroy?.();
+            try { await state.handle?.close?.(); } catch (_) { /* best effort cleanup */ }
+        }
+    });
+
+    ipcMain.handle('workflow-events-open', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow stream sender');
+        const workflowId = String(input.workflowId || '');
+        if (!workflowId) throw new Error('workflow id is required');
+        const ticketResponse = await requestWorkflow({
+            http,
+            baseUrl: serverUrl,
+            capability: serverToken,
+            method: 'POST',
+            pathname: `/api/v1/workflows/${encodeURIComponent(workflowId)}/event-tickets`,
+            body: { last_event_id: input.lastEventId || null },
+        });
+        const ticket = ticketResponse.body?.ticket;
+        if (!ticket) throw new Error('workflow event ticket was not issued');
+        const streamId = newStreamId();
+        const pendingFrames = [];
+        const pendingErrors = [];
+        const streamState = {
+            stream: null,
+            senderId: event.sender.id,
+            ready: false,
+            pendingFrames,
+            pendingErrors,
+        };
+        workflowSseStreams.set(streamId, streamState);
+        try {
+            streamState.stream = openWorkflowSse({
+                http,
+                baseUrl: serverUrl,
+                capability: serverToken,
+                pathname: `/api/v1/workflows/${encodeURIComponent(workflowId)}/events`,
+                headers: {
+                    'X-SSE-Ticket': ticket,
+                    ...(input.lastEventId ? { 'Last-Event-ID': String(input.lastEventId) } : {}),
+                },
+                onFrame: (frame) => {
+                    if (event.sender.isDestroyed?.()) return;
+                    const item = workflowSseStreams.get(streamId);
+                    if (!item) return;
+                    if (!item.ready) {
+                        pendingFrames.push(frame);
+                        return;
+                    }
+                    event.sender.send('workflow-event', { streamId, frame });
+                },
+                onError: (error) => {
+                    if (event.sender.isDestroyed?.()) return;
+                    const payload = {
+                        streamId,
+                        error: {
+                            message: error?.message || 'workflow SSE failed',
+                            status: error?.status || null,
+                            closed: Boolean(error?.closed),
+                        },
+                    };
+                    const item = workflowSseStreams.get(streamId);
+                    if (!item) return;
+                    if (!item.ready) {
+                        pendingErrors.push(payload);
+                        return;
+                    }
+                    workflowSseStreams.delete(streamId);
+                    event.sender.send('workflow-event-error', payload);
+                },
+            });
+        } catch (error) {
+            workflowSseStreams.delete(streamId);
+            throw error;
+        }
+        return streamId;
+    });
+
+    ipcMain.handle('workflow-events-ready', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return false;
+        const streamId = String(input.streamId || '');
+        const item = workflowSseStreams.get(streamId);
+        if (!item || item.senderId !== event.sender.id) return false;
+        item.ready = true;
+        item.pendingFrames.splice(0).forEach((frame) => {
+            if (!event.sender.isDestroyed?.()) event.sender.send('workflow-event', { streamId, frame });
+        });
+        item.pendingErrors.splice(0).forEach((payload) => {
+            workflowSseStreams.delete(streamId);
+            item.stream?.close();
+            if (!event.sender.isDestroyed?.()) event.sender.send('workflow-event-error', payload);
+        });
+        return true;
+    });
+
+    ipcMain.handle('workflow-events-close', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return false;
+        const item = workflowSseStreams.get(String(input.streamId || ''));
+        if (!item || item.senderId !== event.sender.id) return false;
+        workflowSseStreams.delete(String(input.streamId));
+        item.stream?.close();
+        return true;
+    });
+
+    // Artifact playback uses the same one-time ticket policy as artifact
+    // saving, but streams chunks to the renderer instead of buffering the
+    // entire Blob through the 16 MiB structured-response limit.
+    ipcMain.handle('workflow-artifact-open', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow artifact sender');
+        const artifactId = String(input.artifactId || '');
+        const requestId = String(input.requestId || '');
+        if (!artifactId || !requestId) throw new Error('artifact id and request id are required');
+        const ticketResponse = await requestWorkflow({
+            http,
+            baseUrl: serverUrl,
+            capability: serverToken,
+            method: 'POST',
+            pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content-tickets`,
+        });
+        const ticket = ticketResponse.body?.ticket;
+        if (ticketResponse.status < 200 || ticketResponse.status >= 300 || !ticket) {
+            const error = new Error(ticketResponse.body?.message || `artifact ticket failed: HTTP ${ticketResponse.status}`);
+            error.status = ticketResponse.status;
+            throw error;
+        }
+        const streamId = newStreamId();
+        const stream = await requestWorkflowStream({
+            http,
+            baseUrl: serverUrl,
+            capability: serverToken,
+            method: 'GET',
+            pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`,
+            headers: { 'X-Artifact-Ticket': ticket },
+        });
+        const state = { stream, senderId: event.sender.id, requestId };
+        workflowArtifactStreams.set(streamId, state);
+        const remove = () => {
+            if (workflowArtifactStreams.get(streamId) === state) workflowArtifactStreams.delete(streamId);
+        };
+        stream.on('data', (chunk) => {
+            if (workflowArtifactStreams.get(streamId) !== state || event.sender.isDestroyed?.()) return;
+            event.sender.send('workflow-artifact-data', {
+                streamId,
+                requestId,
+                data: new Uint8Array(Buffer.from(chunk)),
+            });
+        });
+        stream.once('end', () => {
+            remove();
+            if (!event.sender.isDestroyed?.()) event.sender.send('workflow-artifact-end', { streamId, requestId });
+        });
+        stream.once('error', (error) => {
+            remove();
+            if (!event.sender.isDestroyed?.()) {
+                event.sender.send('workflow-artifact-error', {
+                    streamId,
+                    requestId,
+                    error: { message: error?.message || 'workflow artifact stream failed' },
+                });
+            }
+        });
+        return streamId;
+    });
+
+    ipcMain.handle('workflow-artifact-close', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return false;
+        const streamId = String(input.streamId || '');
+        const state = workflowArtifactStreams.get(streamId);
+        if (!state || state.senderId !== event.sender.id) return false;
+        workflowArtifactStreams.delete(streamId);
+        state.stream?.destroy();
+        return true;
+    });
+
+    // Renderer receives document/artifact bytes only. Absolute paths remain
+    // inside this process and never enter the preload surface.
+    ipcMain.handle('select-source-file', nativeFileDialogs.selectFileContent);
+    ipcMain.handle('save-artifact-file', (event, bytes, suggestedName) => (
+        nativeFileDialogs.saveFileContent(event, bytes, suggestedName)
+    ));
+    ipcMain.handle('save-artifact-stream', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const artifactId = String(input.artifactId || '');
+        if (!artifactId) return { success: false, reason: 'content-invalid', error: 'Artifact 标识缺失' };
+        return nativeFileDialogs.saveFileStream(event, async () => {
+            const ticketResponse = await requestWorkflow({
+                http,
+                baseUrl: serverUrl,
+                capability: serverToken,
+                method: 'POST',
+                pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content-tickets`,
+            });
+            const ticket = ticketResponse.body?.ticket;
+            if (ticketResponse.status < 200 || ticketResponse.status >= 300 || !ticket) {
+                const error = new Error(ticketResponse.body?.message || `artifact ticket failed: HTTP ${ticketResponse.status}`);
+                error.status = ticketResponse.status;
+                throw error;
+            }
+            return requestWorkflowStream({
+                http,
+                baseUrl: serverUrl,
+                capability: serverToken,
+                method: 'GET',
+                pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`,
+                headers: { 'X-Artifact-Ticket': ticket },
+            });
+        }, input.suggestedName);
+    });
 
     // 检查服务器是否就绪
     ipcMain.handle('server-ready', async (event) => {
@@ -689,16 +1079,6 @@ function registerIpcHandlers() {
         }
     });
 
-    // 在 Finder 中显示
-    ipcMain.handle('show-in-folder', async (event, filePath) => {
-        if (!isTrustedRendererEvent(event)) return false;
-        if (isAllowedFilePath(filePath)) {
-            shell.showItemInFolder(filePath);
-            return true;
-        }
-        return false;
-    });
-
     console.log('[main] IPC handlers registered');
 }
 
@@ -706,7 +1086,30 @@ function registerIpcHandlers() {
 // 应用生命周期
 // ============================================================================
 
+if (hasSingleInstanceLock) {
+    app.on('second-instance', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        if (!mainWindow.isVisible()) mainWindow.show();
+        mainWindow.focus();
+    });
+}
+
 app.whenReady().then(async () => {
+    if (!hasSingleInstanceLock) return;
+    if (persistentUserDataError) {
+        const detail = `无法访问固定数据目录 ${persistentUserDataPath || path.join(app.getPath('appData'), 'WordTTS')}\n\n${persistentUserDataError.message}`;
+        if (isSmokeTest) {
+            console.error(`[main] ${PRODUCT_NAME} 数据目录错误: ${detail}`);
+        } else {
+            dialog.showErrorBox(
+                `${PRODUCT_NAME} 无法启动`,
+                `${detail}\n\n请检查目录权限或磁盘空间；为避免覆盖/初始化新数据库，应用已停止。`,
+            );
+        }
+        app.exit(1);
+        return;
+    }
     console.log('[main] Electron app ready');
     smokeLog('app ready');
     backendReady = false;
@@ -780,6 +1183,11 @@ app.on('window-all-closed', () => {
 // 在应用退出前确保 Python 进程被终止，防止僵尸进程
 app.on('will-quit', (event) => {
     isQuitting = true;
+    workflowSseStreams.forEach(({ stream }) => stream.close());
+    workflowSseStreams.clear();
+    workflowArtifactStreams.forEach(({ stream }) => stream.destroy());
+    workflowArtifactStreams.clear();
+    closeWorkflowSourceFiles();
     if (!pythonProcess || quitCleanupStarted) return;
     quitCleanupStarted = true;
     event.preventDefault();

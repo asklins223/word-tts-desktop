@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -11,6 +12,23 @@ from unittest import mock
 from fastapi.testclient import TestClient
 
 import server
+
+
+_LEGACY_API_PREVIOUS = os.environ.get("WORDTTS_LEGACY_API")
+
+
+def setUpModule():
+    # These tests exercise the pre-v1 desktop routes.  Keep the compatibility
+    # surface opt-in in production, but enable it for the whole legacy test
+    # module so unittest class ordering cannot leak a disabled setting.
+    os.environ["WORDTTS_LEGACY_API"] = "1"
+
+
+def tearDownModule():
+    if _LEGACY_API_PREVIOUS is None:
+        os.environ.pop("WORDTTS_LEGACY_API", None)
+    else:
+        os.environ["WORDTTS_LEGACY_API"] = _LEGACY_API_PREVIOUS
 
 
 async def _anext(iterator):
@@ -42,9 +60,64 @@ class DesktopServerSecurityTests(unittest.TestCase):
         )
         self.assertNotIn("test-token", response.text)
 
+    def test_versioned_health_uses_desktop_capability_header(self):
+        response = self.client.get(
+            "/api/v1/health",
+            headers={"X-Desktop-Capability": "test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["app"], "wordtts")
+        self.assertEqual(
+            self.client.get(
+                "/api/v1/health",
+                headers={"X-WordTTS-Token": "test-token"},
+            ).status_code,
+            401,
+        )
+
     def test_query_token_supports_eventsource_and_media_urls(self):
         response = self.client.get("/api/health?token=test-token")
         self.assertEqual(response.status_code, 200)
+
+    def test_host_and_origin_are_restricted_to_local_desktop_requests(self):
+        wrong_host = self.client.get(
+            "/api/health",
+            headers={"Host": "attacker.example", "X-WordTTS-Token": "test-token"},
+        )
+        self.assertEqual(wrong_host.status_code, 403)
+        self.assertEqual(wrong_host.json()["error_code"], "ORIGIN_NOT_ALLOWED")
+
+        wrong_origin = self.client.get(
+            "/api/health",
+            headers={"Origin": "https://attacker.example", "X-WordTTS-Token": "test-token"},
+        )
+        self.assertEqual(wrong_origin.status_code, 403)
+        self.assertEqual(wrong_origin.json()["error_code"], "ORIGIN_NOT_ALLOWED")
+
+        electron_origin = self.client.get(
+            "/api/health",
+            headers={"Origin": "null", "X-WordTTS-Token": "test-token"},
+        )
+        self.assertEqual(electron_origin.status_code, 200)
+
+    def test_versioned_api_fails_closed_when_no_launch_token_exists(self):
+        original_token = server._API_TOKEN
+        original_capability = server._workflow_runtime.capability
+        server._API_TOKEN = ""
+        server._workflow_runtime.capability = server._DEVELOPMENT_WORKFLOW_CAPABILITY
+        try:
+            missing = self.client.get("/api/v1/not-a-route")
+            self.assertEqual(missing.status_code, 401)
+            self.assertEqual(missing.json()["error_code"], "UNAUTHORIZED")
+
+            valid = self.client.get(
+                "/api/v1/not-a-route",
+                headers={"X-Desktop-Capability": server._DEVELOPMENT_WORKFLOW_CAPABILITY},
+            )
+            self.assertEqual(valid.status_code, 404)
+        finally:
+            server._API_TOKEN = original_token
+            server._workflow_runtime.capability = original_capability
 
     def test_config_refreshes_multi_speaker_catalog_before_returning(self):
         calls = []

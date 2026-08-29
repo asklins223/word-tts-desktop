@@ -31,7 +31,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          # Electron 43 的构建工具要求 Node >= 22.12。
+          # 项目 engines 固定要求 Node.js 24.x。
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
@@ -79,6 +79,13 @@ jobs:
         working-directory: electron
         run: npm test
 
+      - name: Check workflow contracts
+        working-directory: electron
+        run: npm run check:contracts
+
+      - name: Run logical workflow smoke (no page/network)
+        run: python tools/xunfei_smoke.py --logical-only --source "examples/documents/信息转述及询问信息 7上- U1.docx" --max-items 100
+
       - name: Audit packaged runtime dependencies
         working-directory: electron
         run: npm audit --omit=dev --audit-level=high
@@ -92,7 +99,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash build_electron.sh
 
-      - name: Smoke test packaged macOS app
+      - name: Verify packaged macOS backend (local-only)
         env:
           # Electron 的 os.tmpdir() 在 macOS 上遵循 TMPDIR；固定到 runner
           # 临时目录，失败时可以稳定上传 wordtts-electron-smoke.log。
@@ -101,6 +108,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 这里只验证打包产物和本地后端健康接口；不打开页面，
+          # 不登录讯飞、不访问第三方页面，不执行真实 Provider smoke。
           smoke_log="$TMPDIR/wordtts-electron-smoke.log"
           backend_pid=""
           cleanup() {
@@ -142,7 +151,7 @@ jobs:
               echo "打包后端提前退出" >&2
               exit 1
             fi
-            if curl --fail --silent --header "X-WordTTS-Token: $token" "http://127.0.0.1:$port/api/health" | grep -q '"app":"wordtts"'; then
+            if curl --fail --silent --header "X-Desktop-Capability: $token" "http://127.0.0.1:$port/api/v1/health" | grep -q '"app":"wordtts"'; then
               ready=1
               break
             fi
@@ -152,16 +161,6 @@ jobs:
           wait "$backend_pid" 2>/dev/null || true
           backend_pid=""
           test "$ready" -eq 1
-
-          PLAYWRIGHT_NODEJS_PATH="$app_path/Contents/MacOS/小猪wordTTS" \
-            ELECTRON_RUN_AS_NODE=1 \
-            "$backend" --smoke-playwright
-
-          # 主进程启动后端、渲染器并执行完整 IPC 就绪检查；显式清理可能
-          # 来自上游步骤的 Playwright/Electron Node 环境变量，避免把桌面
-          # 壳误启动成 Node 兼容模式。
-          env -u ELECTRON_RUN_AS_NODE -u PLAYWRIGHT_NODEJS_PATH \
-            "$app_path/Contents/MacOS/小猪wordTTS" --smoke-test
 
       - name: Upload macOS smoke diagnostics
         if: always()

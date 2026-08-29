@@ -10,16 +10,11 @@
 
 const isElectron = typeof window.electronAPI !== 'undefined';
 const platform = isElectron ? window.electronAPI.platform : 'web';
-const backendConfig = isElectron ? window.electronAPI.backend : null;
-const API_BASE = backendConfig?.url || 'http://127.0.0.1:7863';
-const API_TOKEN = backendConfig?.token || '';
+const workflowApi = isElectron ? window.electronAPI.workflow : null;
+const workflowStore = isElectron && typeof window.createWorkflowStore === 'function'
+    ? window.createWorkflowStore({ storage: window.localStorage })
+    : null;
 const PRODUCT_NAME = '小猪wordTTS';
-
-function apiUrl(path) {
-    if (!API_TOKEN) return `${API_BASE}${path}`;
-    const separator = path.includes('?') ? '&' : '?';
-    return `${API_BASE}${path}${separator}token=${encodeURIComponent(API_TOKEN)}`;
-}
 
 let currentStep = 1;
 let currentView = 'workflow';    // 'workflow' | 'history' | 'history-result'
@@ -28,7 +23,7 @@ let historyRecords = [];
 let historyRequestToken = 0;     // 使较早的历史列表/详情请求失效
 let activeResultContext = null;  // 当前交付页对应当前任务或历史记录
 let latestCurrentResultEvent = null; // 从历史详情返回时恢复当前任务的交付页
-let currentSession = null;       // { session_id, source_filename, file_path, parse_results }
+let currentSession = null;       // { session_id, source_filename, source_artifact_id, parse_results }
 let currentConfig = null;        // API 返回的配置
 let clientConfigInitialized = false; // 防止连接重试时用服务端默认值覆盖用户当前设置
 let voiceCatalog = [
@@ -64,7 +59,9 @@ let voiceCardsRenderFrame = null;
 const VOICE_RECENT_STORAGE_KEY = 'wordtts_recent_xunfei_voices_v1';
 const voiceAssetCacheRequests = new Map();
 const voiceAssetCacheReady = new Set();
-let eventSource = null;          // SSE 连接
+const voiceAssetObjectUrls = new Map();
+const VOICE_ASSET_OBJECT_URL_LIMIT = 128;
+let workflowStream = null;       // 由 preload 持有一次性 SSE ticket 的连接
 let sseReconnectTimer = null;    // SSE 延迟重连计时器
 let sseStableTimer = null;       // 连接稳定后重置累计重试次数
 let sseConnectionToken = 0;      // 使旧连接回调失效
@@ -73,6 +70,10 @@ let parseAbortController = null; // 当前文档解析请求
 let parseAttemptId = 0;          // 使已取消的解析响应失效
 let generateAbortController = null; // 当前生成启动请求
 let generationAttemptId = 0;        // 使旧生成任务回调失效
+let generationStartInFlight = false; // 防止启动握手尚未结束时重复提交
+let generationStartAttemptId = 0;
+let cancelWorkflowPromise = null;    // 同一任务只允许一个取消请求链
+let generationCancelRequested = false;
 let resultNavigationTimer = null;   // 完成后跳转结果页的计时器
 let generatedFiles = [];         // 生成完成的文件列表
 let logEntryCount = 0;
@@ -91,8 +92,11 @@ let sseRetryCount = 0;            // SSE 重连次数计数
 const SSE_MAX_RETRIES = 5;        // SSE 最大重连次数
 let generationResult = null;      // 'done' | 'error' | null — 跟踪生成结果状态
 let lastGenerationConfig = null;  // 最近一次实际提交的配置（用于试听后继续生成全部）
+let lastAmbiguousRecoveryTarget = null; // 最近一次需要人工确认的外部提交目标
+let generationStartupTimer = null; // 让首次连接/浏览器启动阶段持续给出反馈
 let wavesurferInstances = [];    // 波形仅负责可视化与定位，播放由原生 Audio 优先处理
 let audioElements = [];          // 结果页原生音频元素（支持无需等待波形解码即可播放）
+const artifactObjectUrls = new Set();
 let currentPlayingAudio = null;  // 当前播放中的原生音频元素
 let audioPlayRequestToken = 0;   // 使较早的异步 play() 请求无法覆盖最后一次点击
 let waveformObserver = null;     // 结果页激活后，按可见范围加载真实波形
@@ -597,7 +601,58 @@ function getVoiceEntry(key) {
 function voiceAssetUrl(key, kind) {
     const normalizedKey = canonicalVoiceKey(key);
     if (!normalizedKey || !['avatar', 'sample'].includes(kind)) return '';
-    return apiUrl(`/api/voice-assets/${encodeURIComponent(normalizedKey)}/${kind}`);
+    const cacheKey = `${normalizedKey}:${kind}`;
+    if (voiceAssetObjectUrls.has(cacheKey)) return voiceAssetObjectUrls.get(cacheKey);
+    // Chromium loads file:// pages without the capability header.  In the
+    // packaged app the renderer therefore receives a Blob URL created from
+    // bytes fetched by the preload proxy; it must never address the backend
+    // directly.  Keep the versioned relative path for the browser preview
+    // and its configuration-only tests.
+    if (isElectron) return '';
+    // Keep the asset path versioned.  It is a presentation-only cache endpoint,
+    // but it still belongs to the same capability-protected local API.
+    return ['', 'api', 'v1', 'voice-assets', encodeURIComponent(normalizedKey), kind].join('/');
+}
+
+function clearVoiceAssetObjectUrls() {
+    voiceAssetObjectUrls.forEach(url => {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+    });
+    voiceAssetObjectUrls.clear();
+}
+
+function rememberVoiceAssetObjectUrl(key, kind, url) {
+    const cacheKey = `${key}:${kind}`;
+    const oldUrl = voiceAssetObjectUrls.get(cacheKey);
+    if (oldUrl && oldUrl !== url) {
+        try { URL.revokeObjectURL(oldUrl); } catch (_) { /* ignore */ }
+    }
+    while (voiceAssetObjectUrls.size >= VOICE_ASSET_OBJECT_URL_LIMIT && !voiceAssetObjectUrls.has(cacheKey)) {
+        const oldest = voiceAssetObjectUrls.keys().next().value;
+        if (!oldest) break;
+        const oldestUrl = voiceAssetObjectUrls.get(oldest);
+        try { URL.revokeObjectURL(oldestUrl); } catch (_) { /* ignore */ }
+        voiceAssetObjectUrls.delete(oldest);
+    }
+    voiceAssetObjectUrls.set(cacheKey, url);
+}
+
+async function loadCachedVoiceAsset(key, kind) {
+    const normalizedKey = canonicalVoiceKey(key);
+    if (!normalizedKey || !workflowApi?.readVoiceAsset) return false;
+    if (voiceAssetObjectUrls.has(`${normalizedKey}:${kind}`)) return true;
+    try {
+        const asset = await workflowApi.readVoiceAsset(normalizedKey, kind);
+        const bytes = asset?.bytes;
+        if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || typeof URL?.createObjectURL !== 'function') return false;
+        const contentType = asset.contentType || (kind === 'sample' ? 'audio/mpeg' : 'image/jpeg');
+        const url = URL.createObjectURL(new Blob([bytes], { type: contentType }));
+        rememberVoiceAssetObjectUrl(normalizedKey, kind, url);
+        return true;
+    } catch (error) {
+        console.warn(`音色${kind}资源读取失败:`, error);
+        return false;
+    }
 }
 
 function queueVoiceAssetCache(keys) {
@@ -612,34 +667,37 @@ function queueVoiceAssetCache(keys) {
     let cacheRequest = null;
 
     if (pendingKeys.length) {
-        const request = fetch(apiUrl('/api/voice-assets/cache'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ voice_keys: pendingKeys }),
-        })
-            .then(response => {
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                return response.json();
-            })
-            .then(data => {
-                const cached = data?.cached && typeof data.cached === 'object' ? data.cached : {};
-                pendingKeys.forEach(key => {
-                    if (cached[key] && typeof cached[key] === 'object') voiceAssetCacheReady.add(key);
+        if (workflowApi?.cacheVoiceAssets) {
+            const request = workflowApi.cacheVoiceAssets(pendingKeys)
+                .then(response => {
+                    const cached = response?.cached;
+                    return Promise.all(pendingKeys.map(async key => {
+                        const result = cached?.[key] || {};
+                        const kinds = ['avatar', 'sample'].filter(kind => Boolean(result[kind]));
+                        if (!isElectron) return { key, ready: false };
+                        const loaded = await Promise.all(kinds.map(kind => loadCachedVoiceAsset(key, kind)));
+                        const ready = loaded.some(Boolean);
+                        if (ready) voiceAssetCacheReady.add(key);
+                        return { key, ready };
+                    })).then(() => response);
+                })
+                .catch(error => {
+                    // Voice media is an enhancement; a catalog URL remains a
+                    // valid fallback when the local cache cannot be populated.
+                    console.warn('音色资源缓存失败:', error);
+                    return null;
                 });
-                return data;
-            })
-            .catch(error => {
-                // 头像/试听缓存是增强项，讯飞资源不可达时结果页仍会回退到原始 URL。
-                console.debug('音色资产缓存暂不可用:', error);
-                return null;
-            })
-            .finally(() => {
+            pendingKeys.forEach(key => voiceAssetCacheRequests.set(key, request));
+            cacheRequest = request.finally(() => {
                 pendingKeys.forEach(key => {
                     if (voiceAssetCacheRequests.get(key) === request) voiceAssetCacheRequests.delete(key);
                 });
             });
-        pendingKeys.forEach(key => voiceAssetCacheRequests.set(key, request));
-        cacheRequest = request;
+        } else {
+            // Configuration-only renderer tests and non-Electron preview pages
+            // do not have a cache transport.  Keep the remote catalog URL.
+            cacheRequest = Promise.resolve(null);
+        }
     }
 
     // 如果生成流程刚刚发起过同一批缓存请求，结果页必须等待它们完成，
@@ -1517,26 +1575,38 @@ async function handleDeletePreset() {
 /**
  * 启动生成。useDefaults=true 使用默认配置；presetConfig 不为空时直接使用该配置。
  */
-async function startProcessing(useDefaults, presetConfig) {
+async function startProcessing(useDefaults, presetConfig, itemIds = null) {
     if (isRestarting) return;
     if (!currentSession) {
         showToast('当前文档会话已失效，请重新导入文档');
         goToStep(1);
         return;
     }
-    if (isGenerating) return;
+    if (isGenerating || generationStartInFlight) return;
 
-    const session = currentSession;
+    // A completed preview (or a completed failed run) is immutable.  When
+    // the user changes its settings, this function may replace the session
+    // with a durable rerun before patching the new configuration.
+    let session = currentSession;
     const config = normalizeClientConfig(presetConfig || collectConfig(useDefaults));
+    let requestedItemIds = Array.isArray(itemIds)
+        ? [...new Set(itemIds.map((itemId) => String(itemId || '').trim()).filter(Boolean))]
+        : null;
+    if (requestedItemIds && requestedItemIds.length === 0) requestedItemIds = null;
     updateGenerationModeUI(config.generation_mode);
     const sourceTotal = summarizeParseResults(session.parse_results).total;
-    const isPreviewScope = Boolean(config.preview && sourceTotal > 3);
-    const generationTotal = isPreviewScope ? Math.min(sourceTotal, 3) : sourceTotal;
+    let isPreviewScope = !requestedItemIds && Boolean(config.preview && sourceTotal > 3);
+    let generationTotal = requestedItemIds
+        ? requestedItemIds.length
+        : (isPreviewScope ? Math.min(sourceTotal, 3) : sourceTotal);
     const attemptId = ++generationAttemptId;
+    generationStartInFlight = true;
+    generationStartAttemptId = attemptId;
     const controller = new AbortController();
     generateAbortController = controller;
     destroyWaveSurfers();
     clearSSEReconnectTimer();
+    clearGenerationStartupTimer();
     isGenerating = true;
     if ($('history-nav-btn')) $('history-nav-btn').disabled = true;
     generatedFiles = [];
@@ -1545,6 +1615,7 @@ async function startProcessing(useDefaults, presetConfig) {
     lastDownloadEvent = null;
     sseRetryCount = 0;
     generationResult = null;
+    lastAmbiguousRecoveryTarget = null;
     updateSessionLabels(session.source_filename, session.parse_results, {
         preview: isPreviewScope,
         total: generationTotal,
@@ -1555,16 +1626,28 @@ async function startProcessing(useDefaults, presetConfig) {
     // 重置生成页面 UI
     $('progress-bar').style.width = '0%';
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', '0');
-    $('progress-stats').textContent = '准备中...';
+    setProgressIndeterminate(true);
+    $('progress-stats').textContent = `正在准备生成计划 · 0 / ${generationTotal || '—'}`;
     $('progress-percent').textContent = '0';
     $('progress-completed-label').textContent = '已完成';
     $('progress-completed').textContent = '0';
     $('progress-remaining').textContent = generationTotal || '—';
     $('progress-failed').textContent = '0';
-    $('generation-live-status').textContent = '正在启动音频引擎';
+    $('generation-live-status').textContent = '正在准备生成计划…';
     $('gen-title').textContent = '正在生成音频';
     $('gen-animation').classList.remove('done');
     resetLogTimeline('生成任务即将开始，正在等待第一条处理记录…');
+    generationStartupTimer = setTimeout(() => {
+        generationStartupTimer = null;
+        if (!isGenerating || currentSession?.session_id !== session.session_id || lastStats) return;
+        $('progress-stats').textContent = `正在连接讯飞浏览器 · 0 / ${generationTotal || '—'}`;
+        $('generation-live-status').textContent = '正在连接讯飞浏览器…';
+        $('status-text').textContent = '生成中：正在连接讯飞浏览器…';
+        addLogEntry({
+            level: 'progress', stage: 'synthesize', kind: 'stage', status: 'running',
+            key: 'tts:startup', title: '正在启动音频引擎', detail: '首次启动或浏览器刚被中断后，正在重新建立讯飞会话，请保持应用开启。',
+        });
+    }, 700);
     $('type-stats').innerHTML = '';
 
     lastGenerationConfig = { ...config };
@@ -1575,42 +1658,143 @@ async function startProcessing(useDefaults, presetConfig) {
     ]);
 
     try {
-        const resp = await fetch(apiUrl('/api/generate'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session_id: session.session_id,
-                source_filename: session.source_filename,
-                file_path: session.file_path,
-                config: config,
-            }),
-            signal: controller.signal,
-        });
-
-        if (!resp.ok) {
-            let detail = '启动失败';
-            try {
-                const err = await resp.json();
-                detail = err.detail || detail;
-            } catch (_) {
-                // 服务端返回非 JSON 响应
-            }
-            throw new Error(detail);
+        if (!workflowApi) throw new Error('工作流服务未初始化');
+        // 用户可能刚从中断/失败页面返回；先同步后端版本，避免把旧的
+        // expected_state_version 重新提交而触发 STATE_CONFLICT。
+        const snapshot = await refreshCurrentWorkflowSnapshot(session);
+        if (controller.signal.aborted || attemptId !== generationAttemptId || currentSession?.session_id !== session.session_id) return;
+        // 另一个窗口、自动重试调度器或本页面较早的请求可能已经接受了
+        // 这个工作流。此时不能再 PATCH 草稿；直接接管权威任务进度，
+        // 否则用户会看到“配置已冻结”，而真正的浏览器任务仍在后台运行。
+        if (isAcceptedGenerationSnapshot(snapshot)) {
+            adoptAcceptedGeneration(session, snapshot, {
+                reason: '检测到已有生成任务，已接管当前进度',
+            });
+            return;
         }
+        if (snapshot?.execution_state === 'TERMINAL') {
+            const expectedGroupStateVersion = Number(snapshot.group_state_version);
+            if (!Number.isInteger(expectedGroupStateVersion)) {
+                throw new Error('任务组版本缺失，无法安全创建新的生成任务');
+            }
+            const rerun = await workflowApi.rerun(session.session_id, {
+                expected_group_state_version: expectedGroupStateVersion,
+                source_workflow_id: session.session_id,
+                reason: 'desktop-renderer-rerun',
+            });
+            if (!rerun?.workflow_id) throw new Error('服务端未返回新的生成任务');
+            const nextSession = {
+                ...session,
+                session_id: String(rerun.workflow_id),
+                source_artifact_id: rerun.source_artifact_id || session.source_artifact_id || null,
+                state_version: Number(rerun.state_version || 0),
+                group_state_version: Number(rerun.group_state_version || expectedGroupStateVersion + 1),
+                execution_state: rerun.execution_state || 'CREATED',
+                control_state: rerun.control_state || 'RUNNING',
+                result_status: rerun.result_status || 'IN_PROGRESS',
+                cleanup_state: rerun.cleanup_state || 'NONE',
+                latest_event_id: null,
+                latest_seq: 0,
+                last_event_id: null,
+            };
+            currentSession = nextSession;
+            session = nextSession;
+            // A terminal run is immutable and its item IDs belong to the old
+            // workflow.  Rerun the complete document; targeted retry is only
+            // valid on the still-open original run.
+            requestedItemIds = null;
+            isPreviewScope = Boolean(config.preview && sourceTotal > 3);
+            generationTotal = isPreviewScope ? Math.min(sourceTotal, 3) : sourceTotal;
+            workflowStore?.resetCursor?.(session.session_id);
+            updateSessionLabels(session.source_filename, session.parse_results, {
+                preview: isPreviewScope,
+                total: generationTotal,
+            });
+        }
+        // 解析步骤会让 run 进入 ACTIVE，但在第一个执行 attempt 之前仍
+        // 是可编辑的。把配置页当前选择写进 SQLite 后再接受 generate，
+        // 确保后端不会继续使用创建草稿时的默认音色。已有 attempt 的
+        // run 则由后端拒绝改变配置，避免修改已产生外部副作用的事实。
+        const persistedConfiguration = buildWorkflowConfiguration(
+            config,
+            session.source_filename,
+            currentConfig?.account_scope,
+        );
+        const workspaceBeforePatch = await workflowApi.getWorkspace(session.session_id);
+        const configurationRevisionBeforePatch = Number(
+            workspaceBeforePatch?.configuration?.configuration_revision,
+        );
+        if (!Number.isInteger(configurationRevisionBeforePatch) || configurationRevisionBeforePatch < 1) {
+            throw new Error('工作区配置版本缺失，无法安全提交生成任务');
+        }
+        const patched = await workflowApi.patchDraft(session.session_id, {
+            expected_state_version: session.state_version,
+            configuration_revision: configurationRevisionBeforePatch,
+            configuration: persistedConfiguration,
+        });
+        mergeWorkflowSnapshotIntoSession(patched, session);
+        const workspaceAfterPatch = await workflowApi.getWorkspace(session.session_id);
+        const configurationRevision = Number(
+            workspaceAfterPatch?.configuration?.configuration_revision,
+        );
+        if (!Number.isInteger(configurationRevision) || configurationRevision < 1) {
+            throw new Error('工作区配置版本缺失，无法安全提交生成任务');
+        }
+        const response = await submitGenerationCommand(
+            session,
+            config,
+            controller,
+            attemptId,
+            requestedItemIds,
+            configurationRevision,
+        );
 
         if (controller.signal.aborted || attemptId !== generationAttemptId || currentSession?.session_id !== session.session_id) return;
+        mergeWorkflowSnapshotIntoSession(response?.current_snapshot, currentSession);
+        const acceptedVersion = Number(response?.state_version);
+        if (Number.isInteger(acceptedVersion) && acceptedVersion >= Number(currentSession.state_version || 0)) {
+            currentSession.state_version = acceptedVersion;
+        }
         generateAbortController = null;
+        clearGenerationStartupTimer();
         connectSSE(session.session_id);
-        $('status-text').textContent = '生成中...';
+        setProgressIndeterminate(true);
+        $('progress-stats').textContent = `已提交任务，正在连接讯飞浏览器 · 0 / ${generationTotal || '—'}`;
+        $('generation-live-status').textContent = '正在连接讯飞浏览器并提交作品…';
+        $('status-text').textContent = '生成中：正在连接讯飞浏览器…';
 
     } catch (err) {
         if (err.name === 'AbortError' || attemptId !== generationAttemptId) return;
+
+        // PATCH 与后台调度之间存在竞态：PATCH 读取时仍可编辑，真正提交
+        // 前自动化任务已经先被接受。CONFIG_FROZEN 在这里不是“重新报错”
+        // 的终点，而是重新读取并接管那个已经在跑的任务。
+        if (['CONFIG_FROZEN', 'GENERATION_ALREADY_RUNNING'].includes(err?.code) && workflowApi) {
+            try {
+                const authoritative = await workflowApi.getWorkflow(session.session_id);
+                if (
+                    currentSession?.session_id === session.session_id
+                    && isAcceptedGenerationSnapshot(authoritative)
+                ) {
+                    adoptAcceptedGeneration(session, authoritative, {
+                        reason: '任务已由后台接受，已接管当前进度',
+                    });
+                    showToast('任务已经在运行，已接管后台进度', 'warning');
+                    return;
+                }
+            } catch (syncError) {
+                console.warn('配置冻结后同步已接受任务失败:', syncError);
+            }
+        }
+        clearGenerationStartupTimer();
         generateAbortController = null;
         generationResult = 'error';
         const serviceUnavailable = err instanceof TypeError || /failed to fetch/i.test(err.message || '');
         const failureMessage = serviceUnavailable
             ? '无法连接生成服务，请重试连接后再次生成。'
-            : `启动失败：${err.message}`;
+            : err?.code === 'CONFIG_FROZEN'
+                ? '本次任务已经开始过外部提交，不能在原任务中修改音色或参数；请点击“重新开始”新建任务后再生成。'
+                : `启动失败：${err.message}`;
         $('gen-title').textContent = '任务未能启动';
         $('generation-file-name').textContent = `未能启动「${session.source_filename || '当前文档'}」；设置与解析结果仍会保留。`;
         $('status-text').textContent = failureMessage;
@@ -1619,6 +1803,7 @@ async function startProcessing(useDefaults, presetConfig) {
             $('retry-service-btn').hidden = false;
         }
         setGenerationVisualState('error');
+        setProgressIndeterminate(false);
         addLogEntry({
             level: 'error',
             stage: 'complete',
@@ -1631,6 +1816,12 @@ async function startProcessing(useDefaults, presetConfig) {
         showGenerationRecovery(failureMessage);
         showToast(failureMessage, 'error');
         resetGenerateState();
+    } finally {
+        if (generationStartAttemptId === attemptId) {
+            generationStartInFlight = false;
+            generationStartAttemptId = 0;
+            updateGenerationCancelUI();
+        }
     }
 }
 
@@ -1788,16 +1979,57 @@ function enforceOutputCompatibility() {
     updateConfigSummary();
 }
 
-function showGenerationRecovery(message) {
+function showGenerationRecovery(message, { ambiguous = false, target = null } = {}) {
     const panel = $('generation-recovery');
     const messageEl = $('generation-error-message');
-    if (messageEl) messageEl.textContent = message || '生成任务未能继续，请重试或返回调整设置。';
+    if (messageEl) {
+        messageEl.textContent = ambiguous
+            ? `${message || '外部生成结果待核验。'} 已暂停自动重试；请先核验提交结果，确认未提交后再重试。`
+            : (message || '生成任务未能继续，请重试或返回调整设置。');
+    }
     if (panel) panel.hidden = false;
+    if (
+        target && ambiguous && target.attempt_id && target.work_unit_id
+        && Number.isInteger(Number(target.target_state_version))
+    ) {
+        lastAmbiguousRecoveryTarget = { ...target, target_state_version: Number(target.target_state_version) };
+    }
+    const resolveButton = $('resolve-not-submitted-btn');
+    if (resolveButton) resolveButton.hidden = !ambiguous || !lastAmbiguousRecoveryTarget;
+    const retryButton = $('retry-generation-btn');
+    if (retryButton) {
+        // An ambiguous retry is reconciliation-only. It must not look like a
+        // normal new submission: opening the browser and waiting on the works
+        // list is expected, but it is not a generation action.
+        retryButton.hidden = Boolean(ambiguous);
+        retryButton.disabled = Boolean(ambiguous);
+    }
 }
 
 function hideGenerationRecovery() {
     const panel = $('generation-recovery');
     if (panel) panel.hidden = true;
+    const resolveButton = $('resolve-not-submitted-btn');
+    if (resolveButton) resolveButton.hidden = true;
+    const retryButton = $('retry-generation-btn');
+    if (retryButton) {
+        retryButton.hidden = false;
+        retryButton.disabled = false;
+    }
+}
+
+function clearGenerationStartupTimer() {
+    if (generationStartupTimer) {
+        clearTimeout(generationStartupTimer);
+        generationStartupTimer = null;
+    }
+}
+
+function setProgressIndeterminate(enabled) {
+    const bar = $('progress-bar');
+    const track = bar?.parentElement;
+    bar?.classList.toggle('is-indeterminate', Boolean(enabled));
+    if (track) track.setAttribute('aria-busy', enabled ? 'true' : 'false');
 }
 
 function clearSSEReconnectTimer() {
@@ -1833,6 +2065,12 @@ function destroyWaveSurfers() {
         } catch (e) { /* ignore */ }
     });
     audioElements = [];
+    artifactObjectUrls.forEach(url => {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+    });
+    artifactObjectUrls.clear();
+    clearVoiceAssetObjectUrls();
+    voiceAssetCacheReady.clear();
     currentPlayingAudio = null;
 }
 
@@ -1940,6 +2178,7 @@ function setGenerationVisualState(state) {
         badge?.classList.add('is-stopped');
         logDot?.classList.add('is-stopped');
     }
+    updateGenerationCancelUI();
 }
 
 function setAppInteractive(enabled) {
@@ -1956,25 +2195,678 @@ function setAppInteractive(enabled) {
     });
 }
 
-async function confirmPendingCleanup(timeoutMs = 12000) {
+/**
+ * 将服务端工作流快照合并到当前会话。
+ *
+ * 生成期间事件流可能先送达一个较早的快照；状态版本只能向前推进，
+ * 不能让旧快照把已经拿到的版本回退，否则用户返回配置后重试会把
+ * stale expected_state_version 提交给后端。
+ */
+function mergeWorkflowSnapshotIntoSession(snapshot, session = currentSession) {
+    if (!snapshot || !session) return session;
+    const snapshotVersion = Number(snapshot.state_version);
+    const sessionVersion = Number(session.state_version);
+    const snapshotSeq = Number(snapshot.latest_seq);
+    const sessionSeq = Number(session.latest_seq);
+    if (
+        Number.isInteger(snapshotSeq) && snapshotSeq >= 0
+        && Number.isInteger(sessionSeq) && sessionSeq >= 0
+        && snapshotSeq < sessionSeq
+    ) return session;
+    if (Number.isInteger(snapshotVersion) && snapshotVersion >= 0) {
+        // 旧快照的其它字段也不能覆盖当前会话，否则除了版本号外，
+        // execution_state/游标也会被回退到中断前的状态。
+        if (Number.isInteger(sessionVersion) && snapshotVersion < sessionVersion) return session;
+        session.state_version = snapshotVersion;
+    }
+    ['execution_state', 'control_state', 'result_status', 'cleanup_state', 'source_artifact_id', 'latest_event_id', 'latest_seq'].forEach((key) => {
+        if (snapshot[key] !== undefined && snapshot[key] !== null) session[key] = snapshot[key];
+    });
+    const snapshotGroupVersion = Number(snapshot.group_state_version);
+    const sessionGroupVersion = Number(session.group_state_version);
+    if (Number.isInteger(snapshotGroupVersion) && snapshotGroupVersion >= 0
+        && (!Number.isInteger(sessionGroupVersion) || snapshotGroupVersion >= sessionGroupVersion)) {
+        session.group_state_version = snapshotGroupVersion;
+    }
+    return session;
+}
+
+/**
+ * 在会话恢复/重新生成前读取一次权威工作流快照。
+ * 这个请求不替代后端的乐观锁，只负责避免渲染器继续使用中断前缓存的
+ * state_version；真正的命令仍然必须带 expected_state_version 到后端校验。
+ */
+async function refreshCurrentWorkflowSnapshot(session = currentSession) {
+    if (!workflowApi || !session?.session_id) return null;
+    const snapshot = await workflowApi.getWorkflow(session.session_id);
+    if (currentSession?.session_id !== session.session_id) return null;
+    mergeWorkflowSnapshotIntoSession(snapshot, session);
+    return snapshot;
+}
+
+const ACCEPTED_GENERATION_EXECUTION_STATES = new Set([
+    'RUNNING',
+    'RECOVERING',
+    'BLOCKED',
+]);
+const TERMINAL_WORKFLOW_RESULT_STATES = new Set([
+    'SUCCEEDED',
+    'PARTIAL_SUCCESS',
+    'FAILED',
+    'CANCELLED',
+]);
+
+function isTerminalWorkflowSnapshot(snapshot) {
+    return Boolean(
+        snapshot
+        && (
+            String(snapshot.execution_state || '') === 'TERMINAL'
+            || TERMINAL_WORKFLOW_RESULT_STATES.has(String(snapshot.result_status || ''))
+        )
+    );
+}
+
+function isAcceptedGenerationSnapshot(snapshot) {
+    if (!snapshot || isTerminalWorkflowSnapshot(snapshot)) return false;
+    return ACCEPTED_GENERATION_EXECUTION_STATES.has(String(snapshot.execution_state || ''))
+        || String(snapshot.control_state || '') === 'TERMINATING';
+}
+
+function isWaitingForGenerationCleanup(snapshot) {
+    if (!snapshot || isTerminalWorkflowSnapshot(snapshot)) return false;
+    return String(snapshot.cleanup_state || '') !== 'SUCCEEDED'
+        && ['WAITING_RETRY', 'WAITING_USER'].includes(String(snapshot.execution_state || ''));
+}
+
+function isCancellationSettledSnapshot(snapshot) {
+    return Boolean(
+        snapshot
+        && (
+            isTerminalWorkflowSnapshot(snapshot)
+            || (
+                String(snapshot.cleanup_state || '') === 'SUCCEEDED'
+                && String(snapshot.control_state || '') === 'TERMINATING'
+            )
+        )
+    );
+}
+
+/**
+ * The ZIP Artifact is created on demand.  A terminal result with at least one
+ * verified audio file must therefore keep the ZIP action visible even before
+ * the first export has been materialized.
+ */
+function resultZipState(context, resultCount) {
+    const hasArtifact = Boolean(context?.zipAvailable && context?.zipArtifactId);
+    const count = Number(resultCount);
+    const hasDeliverableAudio = Number.isFinite(count) && count > 0;
+    const terminal = String(context?.executionState || '') === 'TERMINAL'
+        || TERMINAL_WORKFLOW_RESULT_STATES.has(String(context?.resultStatus || ''));
+    return {
+        visible: hasArtifact || (hasDeliverableAudio && terminal),
+        ready: hasArtifact,
+    };
+}
+
+function updateGenerationCancelUI() {
+    const button = $('cancel-generation-btn');
+    if (!button) return;
+    const sessionActive = Boolean(
+        currentSession?.session_id
+        && !isTerminalWorkflowSnapshot(currentSession)
+        && (
+            isGenerating
+            || generationStartInFlight
+            || cancelWorkflowPromise
+            || isAcceptedGenerationSnapshot(currentSession)
+            || isWaitingForGenerationCleanup(currentSession)
+        )
+    );
+    button.hidden = !sessionActive;
+    button.disabled = Boolean(cancelWorkflowPromise) || isRestarting;
+    button.textContent = cancelWorkflowPromise
+        ? '正在停止…'
+        : (String(currentSession?.control_state || '') === 'TERMINATING' ? '确认停止' : '停止生成');
+    if (cancelWorkflowPromise) button.setAttribute('aria-busy', 'true');
+    else button.removeAttribute('aria-busy');
+}
+
+/**
+ * 接管已经被接受的工作流，而不是把它误当成仍可编辑的草稿。
+ * 这是启动竞态和自动重试抢先启动两条路径共用的收敛点。
+ */
+function adoptAcceptedGeneration(session, snapshot, { reason = '任务已在后台运行' } = {}) {
+    if (
+        !session?.session_id
+        || currentSession?.session_id !== session.session_id
+        || !isAcceptedGenerationSnapshot(snapshot)
+    ) return false;
+
+    mergeWorkflowSnapshotIntoSession(snapshot, session);
+    clearGenerationStartupTimer();
+    generateAbortController = null;
+    generationResult = null;
+    isGenerating = true;
+    hideGenerationRecovery();
+
+    const stopping = String(snapshot.control_state || '') === 'TERMINATING'
+        || String(snapshot.execution_state || '') === 'BLOCKED';
+    setGenerationVisualState(stopping ? 'stopped' : 'running');
+    setProgressIndeterminate(true);
+    $('gen-title').textContent = stopping ? '正在停止生成' : '正在生成音频';
+    $('generation-live-status').textContent = stopping ? '正在确认任务停止状态…' : reason;
+    $('status-text').textContent = stopping ? '正在停止生成任务…' : reason;
+    const total = summarizeParseResults(session.parse_results).total;
+    if (!lastStats) {
+        $('progress-stats').textContent = `${reason} · 0 / ${total || '—'}`;
+    }
+    updateGenerationCancelUI();
+    void connectSSE(session.session_id);
+    return true;
+}
+
+function workflowProgressCounts(snapshot, session = currentSession) {
+    const progress = snapshot?.progress || session?.progress || {};
+    const total = Number(progress.total) || summarizeParseResults(session?.parse_results).total || 0;
+    const completed = Number(progress.completed) || generatedFiles.length || 0;
+    const failed = Number(progress.failed) || 0;
+    return {
+        total: Math.max(0, total),
+        completed: Math.max(0, Math.min(completed, total || completed)),
+        failed: Math.max(0, failed),
+    };
+}
+
+function cancellationDelay(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * 发出一次幂等取消命令，并等待后端完成本地清理。取消是协作式的：
+ * 讯飞提交已经跨过外部边界时，后端会保留 WAITING_USER/BLOCKED，不能
+ * 把它伪装成普通 CANCELLED，也不能因此放开配置修改。
+ */
+async function cancelCurrentWorkflow(session = currentSession, {
+    reason = 'desktop-user-cancel',
+    timeoutMs = 30000,
+} = {}) {
+    if (!workflowApi || !session?.session_id) return null;
+    if (cancelWorkflowPromise) return cancelWorkflowPromise;
+
+    const sessionId = session.session_id;
+    const idempotencyKey = `renderer-cancel-${sessionId}-${generationAttemptId}`;
+    generationCancelRequested = true;
+    clearGenerationStartupTimer();
+    if (generateAbortController) {
+        generateAbortController.abort();
+        generateAbortController = null;
+        // 使尚未返回的 generate/patch 请求不能在取消命令之后继续接管页面。
+        generationAttemptId++;
+    }
+    updateGenerationCancelUI();
+
+    const operation = (async () => {
+        let snapshot = await workflowApi.getWorkflow(sessionId);
+        if (currentSession?.session_id === sessionId) {
+            mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+        }
+        if (isTerminalWorkflowSnapshot(snapshot)) return snapshot;
+
+        let commandAttempts = 0;
+        while (!isTerminalWorkflowSnapshot(snapshot) && commandAttempts < 2) {
+            try {
+                const response = await workflowApi.sendCommand(
+                    sessionId,
+                    'cancel',
+                    {
+                        expected_state_version: Number(snapshot.state_version || session.state_version || 0),
+                        reason,
+                    },
+                    { idempotencyKey },
+                );
+                snapshot = response?.current_snapshot || response || snapshot;
+                if (currentSession?.session_id === sessionId) {
+                    mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+                }
+                break;
+            } catch (error) {
+                if (error?.code !== 'STATE_CONFLICT' || commandAttempts >= 1) throw error;
+                snapshot = await workflowApi.getWorkflow(sessionId);
+                if (currentSession?.session_id === sessionId) {
+                    mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+                }
+            }
+            commandAttempts++;
+        }
+
+        const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 30000);
+        while (!isCancellationSettledSnapshot(snapshot) && Date.now() < deadline) {
+            await cancellationDelay(250);
+            snapshot = await workflowApi.getWorkflow(sessionId);
+            if (currentSession?.session_id === sessionId) {
+                mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+            }
+        }
+        return snapshot;
+    })();
+    cancelWorkflowPromise = operation;
+    try {
+        return await operation;
+    } finally {
+        if (cancelWorkflowPromise === operation) cancelWorkflowPromise = null;
+        generationCancelRequested = false;
+        updateGenerationCancelUI();
+    }
+}
+
+function applyCancellationOutcome(session, snapshot) {
+    if (!snapshot || currentSession?.session_id !== session?.session_id) return;
+    mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+    if (isTerminalWorkflowSnapshot(snapshot)) {
+        const counts = workflowProgressCounts(snapshot, currentSession);
+        if (['CANCELLED', 'PARTIAL_SUCCESS'].includes(String(snapshot.result_status || ''))) {
+            handleSSEEvent({ type: 'cancelled', ...counts });
+        } else if (snapshot.result_status === 'SUCCEEDED') {
+            // 取消请求可能正好与最后一个完成事件并发；重新读取 Artifact，
+            // 让用户得到正常结果页而不是一个假“已取消”。
+            void refreshGeneratedArtifacts(session.session_id).then(() => {
+                if (currentSession?.session_id !== session.session_id) return;
+                handleDone({
+                    type: 'done',
+                    ...workflowProgressCounts(snapshot, currentSession),
+                    file_list: generatedFiles,
+                });
+            }).catch(() => {});
+        }
+        return;
+    }
+    if (isCancellationSettledSnapshot(snapshot)) {
+        resetGenerateState();
+        generationResult = 'error';
+        setProgressIndeterminate(false);
+        setGenerationVisualState('warning');
+        $('gen-title').textContent = '任务待核验';
+        $('status-text').textContent = '本地任务已停止，但讯飞提交结果仍待核验';
+        showGenerationRecovery(
+            '本地浏览器任务已经停止，但讯飞作品结果尚未确认。请先在讯飞作品列表核验，确认未提交后再重试；配置暂不可修改。',
+            { ambiguous: true },
+        );
+    } else {
+        // 超时不表示取消失败：保留 RUNNING/TERMINATING 的权威状态，
+        // 让按钮和 SSE 继续可用，避免又创建第二个任务。
+        isGenerating = true;
+        updateGenerationCancelUI();
+        $('status-text').textContent = '停止请求已发出，讯飞浏览器仍在收尾，请稍候…';
+        $('generation-live-status').textContent = '正在等待讯飞浏览器结束当前操作…';
+    }
+}
+
+async function returnToConfigSafely({ buttonId = 'return-config-btn' } = {}) {
+    const button = $(buttonId);
+    if (button?.dataset.busy === 'true') return false;
+    if (button) {
+        button.dataset.busy = 'true';
+        button.disabled = true;
+    }
+    const session = currentSession;
+    try {
+        if (!session || !workflowApi) {
+            goToStep(2);
+            return true;
+        }
+        let snapshot = await refreshCurrentWorkflowSnapshot(session);
+        const mustStop = generationStartInFlight
+            || isGenerating
+            || isAcceptedGenerationSnapshot(snapshot)
+            || isWaitingForGenerationCleanup(snapshot);
+        if (mustStop && !isTerminalWorkflowSnapshot(snapshot)) {
+            snapshot = await cancelCurrentWorkflow(session, {
+                reason: 'desktop-return-to-configuration',
+            });
+            applyCancellationOutcome(session, snapshot);
+            if (!isTerminalWorkflowSnapshot(snapshot)) {
+                showToast('任务仍在停止或等待讯飞结果核验，暂不能返回可编辑配置', 'warning');
+                return false;
+            }
+        }
+        snapshot = await holdAutomaticRetry(session) || snapshot;
+        // hold 与调度器之间仍可能发生一次竞态：如果调度器已经把任务
+        // 推进到 RUNNING，不能继续打开配置页，而要立即走同一取消路径。
+        if (isAcceptedGenerationSnapshot(snapshot) || isWaitingForGenerationCleanup(snapshot)) {
+            snapshot = await cancelCurrentWorkflow(session, {
+                reason: 'desktop-return-to-configuration-race',
+            });
+            applyCancellationOutcome(session, snapshot);
+            if (!isTerminalWorkflowSnapshot(snapshot)) {
+                showToast('任务在返回配置时被自动化重新接管，暂不能编辑配置', 'warning');
+                return false;
+            }
+        }
+        if (currentSession?.session_id !== session.session_id) return false;
+        hideGenerationRecovery();
+        goToStep(2);
+        return true;
+    } catch (error) {
+        console.error('返回配置前停止任务失败:', error);
+        showToast(`无法停止当前任务：${error.message || '请稍后重试'}`, 'error');
+        return false;
+    } finally {
+        if (button) {
+            button.dataset.busy = 'false';
+            button.disabled = isRestarting;
+        }
+        updateGenerationCancelUI();
+    }
+}
+
+/**
+ * Return control of a safe, pre-submission retry to the configuration editor.
+ * The scheduler remains enabled for unattended recovery, but it must not race
+ * a user who is changing the voice after closing the browser deliberately.
+ */
+async function holdAutomaticRetry(session = currentSession) {
+    if (!workflowApi || !session?.session_id) return null;
+    const snapshot = await refreshCurrentWorkflowSnapshot(session);
+    if (!snapshot || !['WAITING_RETRY', 'WAITING_USER'].includes(String(snapshot.execution_state))) {
+        return snapshot;
+    }
+    const expectedStateVersion = Number(session.state_version);
+    if (!Number.isInteger(expectedStateVersion) || expectedStateVersion < 0) return snapshot;
+    try {
+        const response = await workflowApi.holdRetry(session.session_id, {
+            expected_state_version: expectedStateVersion,
+            reason: 'desktop-return-to-configuration',
+        });
+        const current = response?.current_snapshot;
+        if (current) mergeWorkflowSnapshotIntoSession(current, session);
+        return current || snapshot;
+    } catch (error) {
+        // A scheduler tick may have advanced the version between the GET and
+        // hold command. Re-read once; navigation remains available even if
+        // the service is momentarily unavailable.
+        if (error?.code === 'STATE_CONFLICT') {
+            try {
+                return await refreshCurrentWorkflowSnapshot(session);
+            } catch (_) {
+                // Keep the original snapshot for the caller's best-effort UI.
+            }
+        }
+        console.warn('暂停后台自动重试失败:', error);
+        return snapshot;
+    }
+}
+
+function verifiedItemIdsFromArtifacts(artifacts) {
+    return new Set((Array.isArray(artifacts) ? artifacts : [])
+        .filter(artifact => (
+            artifact?.item_id
+            && artifact.lifecycle_state === 'READY'
+            && artifact.verified === true
+            && ['tts-segment', 'tts-output'].includes(String(artifact.artifact_type || ''))
+        ))
+        .map(artifact => String(artifact.item_id)));
+}
+
+/**
+ * Retry only durable FAILED items from the still-open run. AMBIGUOUS items
+ * intentionally stay on the reconciliation path and are never mass-retried.
+ */
+async function retryFailedItems() {
+    const button = $('retry-failed-btn');
+    if (!workflowApi || !currentSession || !lastGenerationConfig || isGenerating || isRestarting) return;
+    if (button) {
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+    }
+    const session = currentSession;
+    try {
+        let snapshot = await holdAutomaticRetry(session);
+        if (!snapshot) throw new Error('当前任务状态不可用');
+        if (snapshot.execution_state === 'TERMINAL') {
+            showToast('当前任务已封存，请返回配置后重新开始生成');
+            return;
+        }
+        if (!['WAITING_RETRY', 'WAITING_USER'].includes(String(snapshot.execution_state))) {
+            showToast('旧任务仍在处理，请等待它停止后再重试');
+            return;
+        }
+
+        const [items, artifacts] = await Promise.all([
+            workflowApi.listItems(session.session_id),
+            workflowApi.listArtifacts(session.session_id),
+        ]);
+        const verifiedItemIds = verifiedItemIdsFromArtifacts(artifacts);
+        const failedItems = (Array.isArray(items) ? items : [])
+            .filter(item => (
+                item?.status === 'FAILED'
+                && item.item_id
+                && !verifiedItemIds.has(String(item.item_id))
+            ))
+            .sort((left, right) => (
+                Number(left.sequence || 0) - Number(right.sequence || 0)
+                || String(left.item_id).localeCompare(String(right.item_id))
+            ));
+        const ambiguousCount = (Array.isArray(items) ? items : [])
+            .filter(item => item?.status === 'AMBIGUOUS').length;
+        if (failedItems.length === 0) {
+            showToast(ambiguousCount > 0
+                ? '有提交结果待核验，请先在任务详情中处理，不会自动重试'
+                : '当前没有可安全重试的失败项');
+            return;
+        }
+        const stepId = String(snapshot.current_step_id || '');
+        if (!stepId) throw new Error('当前任务缺少可重试的生成步骤');
+
+        const retryableIds = [];
+        for (const item of failedItems) {
+            const response = await workflowApi.retry(session.session_id, {
+                expected_state_version: Number(snapshot.state_version),
+                expected_target_state_version: Number(item.state_version),
+                target: {
+                    target_type: 'ITEM',
+                    step_id: stepId,
+                    item_id: String(item.item_id),
+                },
+                reason: 'desktop-retry-failed-items',
+            });
+            const nextSnapshot = response?.current_snapshot;
+            if (nextSnapshot) {
+                mergeWorkflowSnapshotIntoSession(nextSnapshot, session);
+                snapshot = nextSnapshot;
+            }
+            retryableIds.push(String(item.item_id));
+        }
+        if (retryableIds.length === 0) return;
+
+        destroyWaveSurfers();
+        goToStep(3);
+        showToast(`正在仅重试 ${retryableIds.length} 个失败项`);
+        await startProcessing(false, { ...lastGenerationConfig }, retryableIds);
+    } catch (error) {
+        console.error('失败项重试失败:', error);
+        showToast(`失败项重试失败：${error.message || '请检查任务记录'}`, 'error');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.removeAttribute('aria-busy');
+        }
+    }
+}
+
+async function submitGenerationCommand(
+    session,
+    config,
+    controller,
+    attemptId,
+    itemIds = null,
+    configurationRevision = null,
+) {
+    let expectedConfigurationRevision = Number(configurationRevision);
+    // A STATE_CONFLICT retry is still one logical generate command. Keep its
+    // idempotency key stable so a response that arrived after the conflict
+    // cannot result in a second server-side command.
+    const commandIdempotencyKey = `renderer-generate-${session.session_id}-${attemptId}`;
+    const refreshConfigurationRevision = async () => {
+        const workspace = await workflowApi.getWorkspace(session.session_id);
+        const revision = Number(workspace?.configuration?.configuration_revision);
+        if (!Number.isInteger(revision) || revision < 1) {
+            throw new Error('工作区配置版本缺失，无法安全提交生成任务');
+        }
+        expectedConfigurationRevision = revision;
+    };
+    if (!Number.isInteger(expectedConfigurationRevision) || expectedConfigurationRevision < 1) {
+        await refreshConfigurationRevision();
+    }
+    const submit = () => workflowApi.generateWorkflow(session.session_id, {
+        expected_state_version: session.state_version,
+        configuration_revision: expectedConfigurationRevision,
+        reason: 'desktop-renderer',
+        generation_mode: config.generation_mode,
+        provider: 'xunfei',
+        account_scope: currentConfig?.account_scope || 'xunfei-default',
+        ...(Array.isArray(itemIds) && itemIds.length > 0 ? { item_ids: itemIds } : {}),
+    }, { idempotencyKey: commandIdempotencyKey });
+
+    try {
+        return await submit();
+    } catch (error) {
+        // GET 与 POST 之间仍可能有后台事件/其它窗口推进版本；只对明确的
+        // 乐观锁冲突重新读取一次并重试，绝不对未知网络错误盲目重发。
+        if (error?.code !== 'STATE_CONFLICT') throw error;
+        await refreshCurrentWorkflowSnapshot(session);
+        await refreshConfigurationRevision();
+        if (controller.signal.aborted || attemptId !== generationAttemptId || currentSession?.session_id !== session.session_id) {
+            const aborted = new Error('generation attempt was superseded');
+            aborted.name = 'AbortError';
+            throw aborted;
+        }
+        return submit();
+    }
+}
+
+async function recoveryEvidenceHash(target) {
+    const source = [
+        'desktop-user-confirmed-not-submitted',
+        currentSession?.session_id || '',
+        target?.attempt_id || '',
+        target?.work_unit_id || '',
+    ].join(':');
+    const subtle = globalThis.crypto?.subtle;
+    if (subtle && typeof TextEncoder === 'function') {
+        const digest = await subtle.digest('SHA-256', new TextEncoder().encode(source));
+        return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    // The API only needs a traceable evidence token on runtimes without Web
+    // Crypto; the normal Electron renderer uses the SHA-256 branch above.
+    return `manual-${source}`.slice(0, 128);
+}
+
+async function resolveAmbiguousSubmission() {
+    if (isGenerating || !lastAmbiguousRecoveryTarget || !currentSession || !workflowApi) return;
+    const target = { ...lastAmbiguousRecoveryTarget };
+    const expectedTargetVersion = Number(target.target_state_version);
+    if (!target.attempt_id || !target.work_unit_id || !Number.isInteger(expectedTargetVersion)) {
+        showToast('缺少可核验的提交目标，请先重试以刷新任务记录', 'error');
+        return;
+    }
+    const confirmed = await showConfirmDialog({
+        kicker: '外部提交核验',
+        title: '确认讯飞没有生成作品？',
+        message: '只有在讯飞作品列表中确认没有本次作品后，才能继续重试。',
+        detail: '确认后本次提交会被标记为“未提交”，允许再次生成；如果作品实际已经存在，可能造成重复扣费。',
+        tone: 'danger',
+        confirmLabel: '确认未提交并重试',
+    });
+    if (!confirmed) return;
+    const button = $('resolve-not-submitted-btn');
+    if (button) {
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+    }
+    try {
+        await refreshCurrentWorkflowSnapshot();
+        const evidenceHash = await recoveryEvidenceHash(target);
+        const response = await workflowApi.resolve({
+            attempt_id: target.attempt_id,
+            expected_state_version: Number(currentSession.state_version || 0),
+            expected_target_state_version: expectedTargetVersion,
+            target: { target_type: 'WORK_UNIT', work_unit_id: target.work_unit_id },
+            decision: 'NOT_SUBMITTED',
+            evidence: {
+                source: 'desktop-user-confirmed-not-submitted',
+                evidence_hash: evidenceHash,
+                summary: '用户确认讯飞作品列表中没有本次作品',
+            },
+        });
+        mergeWorkflowSnapshotIntoSession(response?.current_snapshot, currentSession);
+        lastAmbiguousRecoveryTarget = null;
+        hideGenerationRecovery();
+        showToast('已记录未提交核验，正在安全重试');
+        goToStep(3);
+        await startProcessing(false, lastGenerationConfig || undefined);
+    } catch (error) {
+        console.error('核验讯飞未提交失败:', error);
+        try {
+            await refreshCurrentWorkflowSnapshot();
+        } catch (_) {
+            // The original conflict/error remains the actionable message.
+        }
+        showToast(`核验失败：${error.message || '任务状态已变化，请刷新后重试'}`, 'error');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.removeAttribute('aria-busy');
+        }
+    }
+}
+
+async function confirmPendingCleanup(session = null) {
     const sessionId = pendingCleanupSessionId;
     if (!sessionId) return true;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const cleanupFinished = (snapshot) => Boolean(
+        snapshot
+        && (
+            snapshot.cleanup_state === 'SUCCEEDED'
+            || snapshot.execution_state === 'TERMINAL'
+            || snapshot.control_state === 'TERMINATED'
+        )
+    );
     try {
-        const response = await fetch(apiUrl(`/api/cleanup/${sessionId}`), {
-            method: 'POST',
-            signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (workflowApi) {
+            let snapshot = await workflowApi.getWorkflow(sessionId);
+            if (!cleanupFinished(snapshot)) {
+                for (let attempt = 0; attempt < 2; attempt += 1) {
+                    try {
+                        snapshot = await workflowApi.sendCommand(sessionId, 'cancel', {
+                            expected_state_version: Number(snapshot.state_version || session?.state_version || 0),
+                            reason: 'desktop-restart',
+                        });
+                        break;
+                    } catch (error) {
+                        if (error?.code !== 'STATE_CONFLICT' || attempt === 1) throw error;
+                        snapshot = await workflowApi.getWorkflow(sessionId);
+                        if (cleanupFinished(snapshot)) break;
+                    }
+                }
+            }
+            // The backend closes the generation slot asynchronously.  Wait
+            // for that durable cleanup marker before allowing a new document
+            // to start; otherwise a new task can sit behind an interrupted
+            // browser call and look frozen at 0%.
+            // 讯飞页面可能正在结束一次 Playwright 操作；五秒不足以让
+            // 协作式取消释放浏览器线程，随后新任务就会像卡在 0% 一样。
+            const deadline = Date.now() + 30000;
+            while (!cleanupFinished(snapshot) && Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 250));
+                snapshot = await workflowApi.getWorkflow(sessionId);
+            }
+            if (!cleanupFinished(snapshot)) return false;
+        }
         if (pendingCleanupSessionId === sessionId) pendingCleanupSessionId = null;
         return true;
     } catch (error) {
-        console.error('任务清理未确认:', error);
+        console.error('任务取消未确认:', error);
         return false;
-    } finally {
-        clearTimeout(timeout);
     }
 }
 
@@ -1991,7 +2883,9 @@ function setRestartingUI(restarting) {
         'download-zip-btn',
         'retry-service-btn',
         'retry-generation-btn',
+        'resolve-not-submitted-btn',
         'return-config-btn',
+        'cancel-generation-btn',
         'history-nav-btn',
         'history-start-btn',
         'history-back-btn',
@@ -2218,12 +3112,35 @@ function bindEvents() {
     $('change-file-btn').addEventListener('click', requestRestart);
     $('back-to-upload-btn').addEventListener('click', requestRestart);
     $('retry-generation-btn').addEventListener('click', () => {
-        if (!isGenerating) startProcessing(false, lastGenerationConfig || undefined);
+        if (!isGenerating && !lastAmbiguousRecoveryTarget) {
+            startProcessing(false, lastGenerationConfig || undefined);
+        } else if (!isGenerating && lastAmbiguousRecoveryTarget) {
+            showToast('当前提交结果待核验，请先确认未提交后再重试', 'error');
+        }
     });
+    $('resolve-not-submitted-btn')?.addEventListener('click', resolveAmbiguousSubmission);
     $('return-config-btn').addEventListener('click', () => {
-        if (!isGenerating) {
-            hideGenerationRecovery();
-            goToStep(2);
+        void returnToConfigSafely();
+    });
+    $('cancel-generation-btn')?.addEventListener('click', async () => {
+        if (!currentSession || cancelWorkflowPromise) return;
+        const session = currentSession;
+        const button = $('cancel-generation-btn');
+        if (button) button.disabled = true;
+        try {
+            const snapshot = await cancelCurrentWorkflow(session, {
+                reason: 'desktop-user-cancel',
+            });
+            applyCancellationOutcome(session, snapshot);
+            if (!isTerminalWorkflowSnapshot(snapshot) && !isCancellationSettledSnapshot(snapshot)) {
+                showToast('停止请求已发出，任务仍在收尾', 'warning');
+            }
+        } catch (error) {
+            console.error('停止生成失败:', error);
+            showToast(`停止生成失败：${error.message || '请稍后重试'}`, 'error');
+            $('status-text').textContent = '停止请求未完成，请再次点击“停止生成”';
+        } finally {
+            updateGenerationCancelUI();
         }
     });
     $('skip-config-btn').addEventListener('click', () => {
@@ -2258,19 +3175,13 @@ function bindEvents() {
         goToStep(2);
         showToast('已保留试听设置，确认后可生成完整文档');
     });
-    $('result-return-config-btn').addEventListener('click', () => {
+    $('result-return-config-btn').addEventListener('click', async () => {
         destroyWaveSurfers();
         if (lastGenerationConfig) applyConfigToForm(lastGenerationConfig, { includeRoles: true });
-        goToStep(2);
-        showToast('已返回配置；修改参数后会重新生成全部内容');
+        const moved = await returnToConfigSafely({ buttonId: 'result-return-config-btn' });
+        if (moved) showToast('已返回配置；修改参数后会重新生成全部内容');
     });
-    $('retry-failed-btn').addEventListener('click', () => {
-        if (!lastGenerationConfig || isGenerating || isRestarting) return;
-        destroyWaveSurfers();
-        goToStep(3);
-        startProcessing(false, { ...lastGenerationConfig });
-        showToast('正在沿用当前设置重试失败项');
-    });
+    $('retry-failed-btn').addEventListener('click', () => { void retryFailedItems(); });
     $('new-file-btn').addEventListener('click', requestRestart);
 }
 
@@ -2282,9 +3193,8 @@ async function loadConfig() {
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const resp = await fetch(apiUrl('/api/config'));
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            currentConfig = await resp.json();
+            if (!workflowApi) throw new Error('工作流服务未初始化');
+            currentConfig = await workflowApi.getConfig();
 
             setVoiceCatalog(
                 currentConfig.voices,
@@ -2462,7 +3372,7 @@ function historyDateLabel(value) {
 }
 
 function historyFormatLabel(record) {
-    return String(record?.format || 'mp3').toUpperCase();
+    return String(record?.format || '未知').toUpperCase();
 }
 
 function historyGenerationModeLabel(record) {
@@ -2471,6 +3381,117 @@ function historyGenerationModeLabel(record) {
     return record?.generation_mode
         ? generationModeLabel(record.generation_mode)
         : GENERATION_MODE_LABELS[GENERATION_MODE_SINGLE];
+}
+
+function historyStatusPresentation(record) {
+    const executionState = String(record?.execution_state || '');
+    const controlState = String(record?.control_state || '');
+    const resultStatus = String(record?.result_status || '');
+    const requiresReconcile = Boolean(record?.active_candidate?.requires_reconcile)
+        || executionState === 'WAITING_USER'
+        || resultStatus === 'AMBIGUOUS';
+    if (requiresReconcile) return { label: '待处理/对账', className: 'is-partial' };
+    if (executionState === 'TERMINAL') {
+        if (resultStatus === 'SUCCEEDED') {
+            const completed = Number(record?.completed) || 0;
+            const total = Number(record?.total) || 0;
+            if (total > 0 && completed < total) return { label: '交付待同步', className: 'is-partial' };
+            return { label: '已完成', className: '' };
+        }
+        if (resultStatus === 'PARTIAL_SUCCESS') return { label: '部分完成', className: 'is-partial' };
+        if (resultStatus === 'CANCELLED') return { label: '已取消', className: 'is-partial' };
+        return { label: '生成失败', className: 'is-danger' };
+    }
+    if (controlState === 'PAUSED' || controlState === 'PAUSE_REQUESTED') {
+        return { label: '已暂停', className: 'is-active' };
+    }
+    if (executionState === 'WAITING_RETRY') return { label: '等待重试', className: 'is-active' };
+    if (executionState === 'RECOVERING') return { label: '恢复中', className: 'is-active' };
+    if (executionState === 'CREATED' || String(record?.status || '') === 'DRAFT') {
+        return { label: '待配置', className: 'is-active' };
+    }
+    return { label: '生成中', className: 'is-active' };
+}
+
+function resultFilesFromArtifacts(items, artifacts, workspace = null) {
+    const itemById = new Map((Array.isArray(items) ? items : []).map(item => [String(item.item_id), item]));
+    const workspaceItems = new Map((Array.isArray(workspace?.items) ? workspace.items : [])
+        .map(item => [String(item.item_id), item]));
+    const workspaceArtifacts = new Map((Array.isArray(workspace?.artifacts) ? workspace.artifacts : [])
+        .map(artifact => [String(artifact.artifact_id), artifact]));
+    const latestByItem = new Map();
+    const seenItemIds = new Set();
+
+    // A READY Artifact is deliverable only when the authoritative item state
+    // is SUCCEEDED and its server-owned filename/format/MIME metadata passes
+    // validation. Never synthesize a filename or default a missing format to
+    // MP3: doing so turns stale/conflicting facts into a false download.
+    (Array.isArray(artifacts) ? artifacts : [])
+        .slice()
+        .sort((left, right) => (
+            String(right.created_at || '').localeCompare(String(left.created_at || ''))
+            || String(right.artifact_id || '').localeCompare(String(left.artifact_id || ''))
+        ))
+        .forEach(artifact => {
+            const itemId = String(artifact?.item_id || '');
+            if (!itemId || seenItemIds.has(itemId)) return;
+            if (!['tts-segment', 'tts-output'].includes(String(artifact.artifact_type || ''))) return;
+            // The newest TTS artifact is authoritative for this item. If it is
+            // not deliverable, do not fall back to an older attempt's audio.
+            seenItemIds.add(itemId);
+
+            const item = itemById.get(itemId) || {};
+            const workspaceItem = workspaceItems.get(itemId);
+            const metadata = workspaceArtifacts.get(String(artifact.artifact_id)) || artifact;
+            const itemStatus = String(workspaceItem?.status || item.status || '');
+            const lifecycleState = String(metadata.lifecycle_state || artifact.lifecycle_state || '');
+            const verified = metadata.verified === true && artifact.verified !== false;
+            const format = String(metadata.format || artifact.format || '').trim().toLowerCase().replace(/^\./, '');
+            const filename = String(metadata.filename || artifact.filename || '').trim();
+            const mimeType = String(metadata.mime_type || artifact.mime_type || '').trim().toLowerCase();
+            const extension = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+            const sizeBytes = Number(metadata.size_bytes ?? artifact.size_bytes);
+            const expectedMime = artifactMime(format);
+            if (
+                itemStatus !== 'SUCCEEDED'
+                || lifecycleState !== 'READY'
+                || !verified
+                || !filename
+                || filename.includes('/')
+                || filename.includes('\\')
+                || /[\x00-\x1f\x7f]/.test(filename)
+                || !format
+                || !mimeType
+                || extension !== format
+                || expectedMime === 'application/octet-stream'
+                || mimeType !== expectedMime
+                || !Number.isSafeInteger(sizeBytes)
+                || sizeBytes <= 0
+            ) return;
+
+            latestByItem.set(itemId, {
+                filename,
+                artifact_id: String(artifact.artifact_id),
+                available: true,
+                doc_type: item.item_type || '音频',
+                category: item.item_type || '',
+                item_id: itemId,
+                text: item.normalized_content || '',
+                text_preview: String(item.normalized_content || '').slice(0, 160),
+                role: item.role || null,
+                voice_key: item.voice_key || null,
+                size_bytes: sizeBytes,
+                format,
+                mime_type: mimeType,
+                duration_ms: Number.isFinite(Number(metadata.duration_ms)) ? Number(metadata.duration_ms) : null,
+            });
+        });
+
+    return [...latestByItem.values()].sort((left, right) => {
+        const leftSequence = Number(itemById.get(left.item_id)?.sequence ?? Number.MAX_SAFE_INTEGER);
+        const rightSequence = Number(itemById.get(right.item_id)?.sequence ?? Number.MAX_SAFE_INTEGER);
+        return leftSequence - rightSequence || left.filename.localeCompare(right.filename);
+    });
 }
 
 function createHistoryAction(label, className, handler) {
@@ -2494,7 +3515,10 @@ function renderHistoryRecords(records) {
         const availableCount = Math.max(0, Number(record.available_files) || 0);
         const completed = Math.max(0, Number(record.completed) || availableCount);
         const failed = Math.max(0, Number(record.failed) || 0);
-        const missingCount = Math.max(0, completed - availableCount);
+        const total = Math.max(completed, Number(record.total) || 0);
+        const pending = Math.max(0, total - completed - failed);
+        const presentation = historyStatusPresentation(record);
+        const terminal = String(record.execution_state || '') === 'TERMINAL';
         const item = document.createElement('article');
         item.className = 'history-item surface-card';
 
@@ -2512,16 +3536,17 @@ function renderHistoryRecords(records) {
         title.textContent = record.source_filename || '未命名文档.docx';
         title.title = title.textContent;
         const status = document.createElement('span');
-        status.className = `history-status-badge${failed > 0 || missingCount > 0 ? ' is-partial' : ''}`;
-        status.textContent = availableCount === 0
-            ? '文件缺失'
-            : (missingCount > 0 ? '部分缺失' : (failed > 0 ? '部分完成' : '已完成'));
+        status.className = `history-status-badge ${presentation.className}`.trim();
+        status.textContent = presentation.label;
+        status.title = [record.execution_state, record.result_status, record.control_state]
+            .filter(Boolean)
+            .join(' · ');
         titleRow.append(title, status);
 
         const meta = document.createElement('div');
         meta.className = 'history-item-meta';
         const completedAt = document.createElement('span');
-        completedAt.textContent = historyDateLabel(record.completed_at);
+        completedAt.textContent = `${terminal ? '完成' : '更新'} ${historyDateLabel(terminal ? record.completed_at : record.updated_at)}`;
         const scope = document.createElement('span');
         scope.textContent = record.preview ? '试听任务' : '完整任务';
         const mode = document.createElement('span');
@@ -2533,8 +3558,8 @@ function renderHistoryRecords(records) {
         const audioStat = document.createElement('span');
         audioStat.className = 'history-stat';
         const audioStrong = document.createElement('strong');
-        audioStrong.textContent = String(availableCount);
-        audioStat.append(audioStrong, document.createTextNode(' 个音频'));
+        audioStrong.textContent = `${availableCount}/${total}`;
+        audioStat.append(audioStrong, document.createTextNode(' 个可交付'));
         const formatStat = document.createElement('span');
         formatStat.className = 'history-stat';
         const formatStrong = document.createElement('strong');
@@ -2549,21 +3574,32 @@ function renderHistoryRecords(records) {
             failedStat.append(failedStrong, document.createTextNode(' 条失败'));
             stats.appendChild(failedStat);
         }
+        if (pending > 0) {
+            const pendingStat = document.createElement('span');
+            pendingStat.className = 'history-stat';
+            const pendingStrong = document.createElement('strong');
+            pendingStrong.textContent = String(pending);
+            pendingStat.append(pendingStrong, document.createTextNode(' 条待处理'));
+            stats.appendChild(pendingStat);
+        }
 
         main.append(titleRow, meta, stats);
 
         const actions = document.createElement('div');
         actions.className = 'history-item-actions';
-        const viewBtn = createHistoryAction('查看结果', 'btn-primary', () => viewHistoryRecord(record.id));
-        viewBtn.disabled = availableCount === 0;
-        if (record.zip_available) {
+        const viewBtn = createHistoryAction(terminal ? '查看结果' : '查看状态', 'btn-primary', () => viewHistoryRecord(record.id));
+        viewBtn.disabled = terminal && availableCount === 0;
+        if (viewBtn.disabled) viewBtn.title = '当前没有可交付的已验证音频';
+        if (record.zip_available && record.zip_artifact_id) {
             const zipBtn = createHistoryAction('下载 ZIP', 'btn-ghost', async () => {
                 zipBtn.disabled = true;
                 try {
                     await downloadZip({
                         mode: 'history',
                         recordId: record.id,
+                        workflowId: record.workflow_id || record.id,
                         sourceFilename: record.source_filename,
+                        zipArtifactId: record.zip_artifact_id || null,
                     });
                 } finally {
                     zipBtn.disabled = false;
@@ -2571,7 +3607,9 @@ function renderHistoryRecords(records) {
             });
             actions.appendChild(zipBtn);
         }
-        const deleteBtn = createHistoryAction('删除', 'btn-ghost history-delete-btn', () => deleteHistoryRecord(record, deleteBtn));
+        const deleteBtn = createHistoryAction('归档', 'btn-ghost history-delete-btn', () => deleteHistoryRecord(record, deleteBtn));
+        deleteBtn.disabled = !terminal;
+        if (!terminal) deleteBtn.title = '任务结束后才可归档';
         actions.prepend(viewBtn);
         actions.appendChild(deleteBtn);
         item.append(icon, main, actions);
@@ -2595,11 +3633,25 @@ async function refreshHistoryRecords({ showLoading = true } = {}) {
     const requestToken = ++historyRequestToken;
     if (showLoading && currentView === 'history') renderHistoryMessage('正在读取本机历史记录…');
     try {
-        const response = await fetch(apiUrl('/api/history'));
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
+        if (!workflowApi) throw new Error('工作流服务未初始化');
+        const [data, activeCandidates] = await Promise.all([
+            workflowApi.listWorkflows(100),
+            typeof workflowApi.listActiveWorkflows === 'function'
+                ? workflowApi.listActiveWorkflows(100).catch(() => [])
+                : Promise.resolve([]),
+        ]);
         if (requestToken !== historyRequestToken) return historyRecords;
-        historyRecords = Array.isArray(data.records) ? data.records.slice(0, 20) : [];
+        const activeByWorkflowId = new Map(
+            (Array.isArray(activeCandidates) ? activeCandidates : [])
+                .map(candidate => [String(candidate?.workflow?.workflow_id || ''), candidate])
+                .filter(([workflowId]) => workflowId),
+        );
+        historyRecords = (Array.isArray(data) ? data : [])
+            .slice(0, 20)
+            .map(record => ({
+                ...record,
+                active_candidate: activeByWorkflowId.get(String(record.workflow_id || record.id || '')) || null,
+            }));
         setHistoryCounts(historyRecords.length);
         if (currentView === 'history') renderHistoryRecords(historyRecords);
         return historyRecords;
@@ -2615,30 +3667,102 @@ async function viewHistoryRecord(historyId) {
     if (!historyId || isRestarting) return;
     const requestToken = ++historyRequestToken;
     try {
-        const response = await fetch(apiUrl(`/api/history/${encodeURIComponent(historyId)}`));
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const record = await response.json();
+        if (!workflowApi) throw new Error('工作流服务未初始化');
+        const record = historyRecords.find(item => item.id === historyId || item.workflow_id === historyId) || {};
+        const [workflow, items, artifacts, workspace] = await Promise.all([
+            workflowApi.getWorkflow(historyId),
+            workflowApi.listItems(historyId),
+            workflowApi.listArtifacts(historyId),
+            workflowApi.getWorkspace(historyId),
+        ]);
         if (requestToken !== historyRequestToken) return;
+        const authoritativeSnapshot = workspace?.snapshot || workflow;
+        const files = resultFilesFromArtifacts(items, artifacts, workspace);
+        if (authoritativeSnapshot?.execution_state !== 'TERMINAL') {
+            const progress = workspace?.progress || {};
+            const candidate = record.active_candidate || {};
+            const completed = Number(progress.completed) || files.length;
+            const total = Number(progress.total) || Number(record.total) || completed;
+            if (candidate.can_resume === true && !candidate.requires_reconcile) {
+                const confirmed = await showConfirmDialog({
+                    kicker: '活动任务',
+                    title: '恢复这条暂停任务？',
+                    message: `当前进度：${completed} / ${total}。恢复后服务会从持久化状态继续执行。`,
+                    detail: '只会发送带状态版本保护的恢复命令，不会重复提交已有未决的外部调用。',
+                    tone: 'info',
+                    confirmLabel: '恢复任务',
+                });
+                if (confirmed) {
+                    try {
+                        await workflowApi.sendCommand(historyId, 'resume', {
+                            expected_state_version: Number(authoritativeSnapshot.state_version || record.state_version || 0),
+                            reason: 'desktop-history-resume',
+                        });
+                        showToast('已发送恢复命令，任务会在后台继续处理');
+                        await refreshHistoryRecords({ showLoading: false });
+                    } catch (resumeError) {
+                        console.error('恢复历史任务失败:', resumeError);
+                        showToast(`恢复失败：${resumeError.message || '任务状态已变化，请刷新后重试'}`, 'error');
+                    }
+                }
+                return;
+            }
+            const reason = candidate.requires_reconcile
+                ? '存在未决外部副作用，必须先完成对账；应用不会自动重复提交。'
+                : candidate.can_resume
+                    ? '任务处于暂停状态，可从当前任务页恢复。'
+                    : candidate.can_takeover
+                        ? '任务没有未决外部副作用，服务启动后可安全接管。'
+                        : '当前任务仍在处理或等待用户决策，请等待服务状态同步。';
+            await showAlertDialog({
+                kicker: '活动任务',
+                title: record.source_filename || '未命名文档',
+                message: `当前进度：${completed} / ${total}；任务尚未结束。`,
+                detail: reason,
+                tone: candidate.requires_reconcile ? 'warning' : 'info',
+                confirmLabel: '知道了',
+            });
+            return;
+        }
+        const progress = workspace?.progress || {};
+        const delivery = workspace?.delivery || {};
+        const completed = Number.isInteger(Number(progress.completed))
+            ? Number(progress.completed)
+            : (Number(record.completed) || files.length);
+        const total = Number.isInteger(Number(progress.total))
+            ? Number(progress.total)
+            : (Number(record.total) || files.length);
+        const failed = Math.max(
+            Number(progress.failed) || 0,
+            total - completed,
+            Number(record.failed) || 0,
+        );
         const context = {
             mode: 'history',
-            recordId: record.id,
-            sourceFilename: record.source_filename,
-            files: Array.isArray(record.files) ? record.files.filter(file => file.available !== false) : [],
-            completed: Number(record.completed) || 0,
-            failed: Number(record.failed) || 0,
-            total: Number(record.total) || 0,
-            format: record.format || 'mp3',
+            recordId: historyId,
+            workflowId: historyId,
+            sourceFilename: record.source_filename || '未命名文档.docx',
+            files,
+            artifacts: Array.isArray(workspace?.artifacts) ? workspace.artifacts : artifacts,
+            completed,
+            failed,
+            total: total || Number(authoritativeSnapshot.item_count) || files.length,
+            format: files[0]?.format || record.format || null,
             generationMode: record.generation_mode || GENERATION_MODE_SINGLE,
             preview: Boolean(record.preview),
-            zipAvailable: Boolean(record.zip_available),
+            zipAvailable: Boolean(delivery.zip_available),
+            zipArtifactId: delivery.zip_artifact_id || null,
             failedItems: Array.isArray(record.failed_items) ? record.failed_items : [],
+            stateVersion: Number(authoritativeSnapshot.state_version || record.state_version || 0),
+            executionState: authoritativeSnapshot.execution_state || record.execution_state || null,
+            resultStatus: authoritativeSnapshot.result_status || record.result_status || null,
         };
         buildResultPage({
+            workflow_id: historyId,
             completed: context.completed,
             failed: context.failed,
             total: context.total,
             failed_items: context.failedItems,
-            zip_path: context.zipAvailable ? 'history' : null,
         }, context);
         activateStandalonePage('page-4', 'history-result');
         const backToHistoryBtn = $('back-to-history-btn');
@@ -2653,29 +3777,31 @@ async function viewHistoryRecord(historyId) {
 }
 
 async function deleteHistoryRecord(record, button) {
-    if (!record?.id || isRestarting) return;
+    const workflowId = record?.workflow_id || record?.id;
+    if (!workflowId || isRestarting) return;
     const filename = record.source_filename || '未命名文档';
     const fileCount = Math.max(0, Number(record.available_files) || 0);
     const confirmed = await showConfirmDialog({
         kicker: '历史记录',
-        title: '删除这条生成记录？',
-        message: `将删除「${filename}」及其 ${fileCount} 个音频文件。`,
-        detail: '文件会从本机历史记录与输出目录中移除，删除后无法恢复。',
+        title: '归档这条生成记录？',
+        message: `将从历史列表隐藏「${filename}」及其 ${fileCount} 个音频文件。`,
+        detail: '审计事件和 Artifact 会保留，不会物理删除文件；归档后可由受控恢复工具处理。',
         tone: 'danger',
-        confirmLabel: '删除记录',
+        confirmLabel: '归档记录',
     });
     if (!confirmed) return;
     historyRequestToken++;
     if (button) button.disabled = true;
     try {
-        const response = await fetch(apiUrl(`/api/history/${encodeURIComponent(record.id)}`), { method: 'DELETE' });
-        if (!response.ok) {
-            const data = await response.json().catch(() => ({}));
-            throw new Error(data.detail || `HTTP ${response.status}`);
-        }
-        const deletedCurrentResult = latestCurrentResultEvent?.history_id === record.id;
-        historyRecords = historyRecords.filter(item => item.id !== record.id);
-        if (deletedCurrentResult) {
+        if (!workflowApi) throw new Error('工作流服务未初始化');
+        await workflowApi.archiveWorkflow(workflowId, {
+            expected_state_version: Number(record.state_version || 0),
+            reason: 'desktop-history-archive',
+        });
+        const archivedCurrentResult = latestCurrentResultEvent?.workflow_id === workflowId
+            || currentSession?.session_id === workflowId;
+        historyRecords = historyRecords.filter(item => item.id !== workflowId && item.workflow_id !== workflowId);
+        if (archivedCurrentResult) {
             currentSession = null;
             generatedFiles = [];
             activeResultContext = null;
@@ -2695,10 +3821,10 @@ async function deleteHistoryRecord(record, button) {
         }
         setHistoryCounts(historyRecords.length);
         if (currentView === 'history') renderHistoryRecords(historyRecords);
-        showToast(deletedCurrentResult ? '当前任务结果及历史记录已删除' : '历史记录已删除');
+        showToast(archivedCurrentResult ? '当前任务已归档，Artifact 仍保留' : '历史记录已归档');
     } catch (error) {
-        console.error('删除历史记录失败:', error);
-        showToast(`删除失败：${error.message || '请稍后重试'}`);
+        console.error('归档历史记录失败:', error);
+        showToast(`归档失败：${error.message || '请稍后重试'}`);
         if (button) button.disabled = false;
     }
 }
@@ -2711,19 +3837,19 @@ async function selectFile() {
     if (isParsing || isRestarting || $('upload-zone')?.getAttribute('aria-disabled') === 'true') return;
     if (isElectron) {
         try {
-            const result = await window.electronAPI.selectFile();
-            // 兼容旧主进程直接返回字符串的格式，避免开发热重载时前后端版本错位。
-            const filePath = typeof result === 'string'
-                ? result
-                : result?.success === true && typeof result.filePath === 'string'
-                    ? result.filePath
-                    : '';
-            if (filePath) {
-                handleFilePath(filePath);
+            const result = typeof window.electronAPI.selectFileStream === 'function'
+                ? await window.electronAPI.selectFileStream()
+                : await window.electronAPI.selectFile();
+            if (result?.success && result.sourceFileId && result.fileName) {
+                processSourceFileReference(result.sourceFileId, result.fileName, result.sizeBytes);
+            } else if (result?.success && result.bytes && result.fileName) {
+                // Compatibility fallback for an older preload that does not
+                // expose the opaque native file stream handle.
+                processSourceBytes(result.bytes, result.fileName);
             } else if (result != null && result?.reason !== 'user-cancelled') {
-await showNativeFileDialogError('选择文档失败', result?.reason ? result : {
+                await showNativeFileDialogError('选择文档失败', result?.reason ? result : {
                 reason: result?.success === true ? 'dialog-error' : 'ipc-error',
-                error: '主进程未返回有效的文件路径',
+                error: '主进程未返回有效的文档流',
                 });
             }
         } catch (error) {
@@ -2740,67 +3866,96 @@ await showNativeFileDialogError('选择文档失败', result?.reason ? result : 
 
 function handleFileSelected(file) {
     if (isRestarting || $('upload-zone')?.getAttribute('aria-disabled') === 'true') return;
-    if (file.path) {
-        handleFilePath(file.path);
-    } else {
-        uploadFile(file);
-    }
+    if (!file || typeof file.arrayBuffer !== 'function') return;
+    void file.arrayBuffer().then((buffer) => processSourceBytes(new Uint8Array(buffer), file.name));
 }
 
 let isParsing = false;  // 防止解析重入
 
-async function handleFilePath(filePath) {
+async function processSourceBytes(bytes, filename) {
+    return processSourceContent(bytes, filename, bytes?.byteLength);
+}
+
+async function processSourceFileReference(sourceFileId, filename, sizeBytes) {
+    const size = Number(sizeBytes);
+    if (!sourceFileId || !Number.isSafeInteger(size) || size <= 0) {
+        showToast('文档大小无效，请重新选择', 'error');
+        return;
+    }
+    return processSourceContent({ sourceFileId: String(sourceFileId) }, filename, size);
+}
+
+async function processSourceContent(content, filename, expectedSizeBytes) {
     if (isParsing || isRestarting) return;  // 防止重入
+    const isBytes = content instanceof Uint8Array;
+    const hasSourceFileReference = Boolean(content && typeof content === 'object' && content.sourceFileId);
+    const expectedSize = Number(expectedSizeBytes);
+    if ((!isBytes && !hasSourceFileReference) || !Number.isSafeInteger(expectedSize) || expectedSize <= 0) {
+        showToast('文档内容为空，请重新选择', 'error');
+        return;
+    }
     isParsing = true;
     const attemptId = ++parseAttemptId;
     const controller = new AbortController();
     parseAbortController = controller;
 
-    const filename = filePath.split(/[\\/]/).pop();
+    const safeFilename = String(filename || 'source.docx').split(/[\\/]/).pop() || 'source.docx';
     const uploadZone = $('upload-zone');
     uploadZone.classList.add('has-file');
     setUploadParsing(true);
     setUploadFeedback('info', '正在读取并核对文档结构，请稍候…');
-    uploadZone.querySelector('.upload-text-large').textContent = filename;
+    uploadZone.querySelector('.upload-text-large').textContent = safeFilename;
     uploadZone.querySelector('.upload-hint').textContent = '正在解析文档结构...';
-    $('status-text').textContent = `正在解析: ${filename}`;
+    $('status-text').textContent = `正在解析: ${safeFilename}`;
 
     try {
-        const resp = await fetch(apiUrl('/api/parse'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file_path: filePath }),
-            signal: controller.signal,
+        if (!workflowApi) throw new Error('工作流服务未初始化');
+        const initialConfiguration = buildWorkflowConfiguration(
+            collectConfig(false),
+            safeFilename,
+            currentConfig?.account_scope,
+        );
+        const draft = await workflowApi.createWorkflow({
+            workflow_type: 'tts',
+            configuration: initialConfiguration,
         });
-
-        if (!resp.ok) {
-            let detail = '解析失败';
-            try {
-                const err = await resp.json();
-                detail = err.detail || detail;
-            } catch (_) {
-                // 服务端返回非 JSON 响应（如 502 HTML 页面）
-            }
-            throw new Error(detail);
-        }
-
-        const data = await resp.json();
+        const imported = await workflowApi.createSourceImport(draft.workflow_id, {
+            metadata: { filename: safeFilename },
+            expected_size_bytes: expectedSize,
+            content_type: safeFilename.toLowerCase().endsWith('.xlsx')
+                ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        });
+        await workflowApi.writeSourceImport(imported.source_import_id, imported.staging_generation, content);
+        const ready = await workflowApi.getSourceImport(imported.source_import_id);
+        if (!ready.source_artifact_id) throw new Error('文档内容未能写入受控存储');
+        // Committing the source artifact advances the workflow aggregate's
+        // state_version. Re-read it before publishing parse output instead of
+        // reusing the draft version captured before the upload.
+        const sourceWorkflow = await workflowApi.getWorkflow(draft.workflow_id);
+        const data = await workflowApi.parseWorkflow(draft.workflow_id, {
+            expected_state_version: Number(sourceWorkflow?.state_version ?? draft.state_version),
+            source_artifact_id: ready.source_artifact_id,
+        });
         if (controller.signal.aborted || attemptId !== parseAttemptId) return;
-        if (!Array.isArray(data.parse_results) || data.parse_results.length === 0) {
+        const parseResults = Array.isArray(data.parse_results) ? data.parse_results : [];
+        if (parseResults.length === 0) {
             throw new Error('未识别到支持的题型内容，请检查文档结构后重试');
         }
         resetTaskVoiceConfiguration();
         currentSession = {
-            session_id: data.session_id,
-            source_filename: data.source_filename,
-            file_path: data.file_path,
-            parse_results: data.parse_results || [],
+            session_id: draft.workflow_id,
+            source_filename: data.source_filename || safeFilename,
+            source_artifact_id: data.source_artifact_id || ready.source_artifact_id,
+            import_id: imported.source_import_id,
+            state_version: Number(data.state_version || data.current_snapshot?.state_version || draft.state_version),
+            parse_results: parseResults,
         };
 
-        updateSessionLabels(data.source_filename || filename, currentSession.parse_results);
+        updateSessionLabels(currentSession.source_filename, currentSession.parse_results);
         uploadZone.querySelector('.upload-hint').textContent = '解析完成，正在打开声音配置';
         setUploadFeedback('success', `解析完成：已识别 ${summarizeParseResults(currentSession.parse_results).total} 条内容。`);
-        $('status-text').textContent = `解析成功 — ${data.source_filename}`;
+        $('status-text').textContent = `解析成功 — ${currentSession.source_filename}`;
         showToast('文档解析成功，进入配置步骤');
 
         // 解析完成后进入配置步骤
@@ -2825,74 +3980,9 @@ async function handleFilePath(filePath) {
 }
 
 async function uploadFile(file) {
-    if (isParsing || isRestarting) return;
-    isParsing = true;
-    const attemptId = ++parseAttemptId;
-    const controller = new AbortController();
-    parseAbortController = controller;
-
-    const formData = new FormData();
-    formData.append('file', file);
-    const uploadZone = $('upload-zone');
-
-    // 立即更新上传区域，给用户即时反馈
-    uploadZone.classList.add('has-file');
-    setUploadParsing(true);
-    setUploadFeedback('info', '正在上传并核对文档结构，请稍候…');
-    uploadZone.querySelector('.upload-text-large').textContent = file.name;
-    uploadZone.querySelector('.upload-hint').textContent = '正在上传并解析文档...';
-    $('status-text').textContent = `正在上传: ${file.name}`;
-
-    try {
-        const resp = await fetch(apiUrl('/api/parse/upload'), {
-            method: 'POST',
-            body: formData,
-            signal: controller.signal,
-        });
-        if (!resp.ok) {
-            let detail = '上传失败';
-            try {
-                const err = await resp.json();
-                detail = err.detail || detail;
-            } catch (_) {
-                // 服务端返回非 JSON 响应
-            }
-            throw new Error(detail);
-        }
-        const data = await resp.json();
-        if (controller.signal.aborted || attemptId !== parseAttemptId) return;
-        if (!Array.isArray(data.parse_results) || data.parse_results.length === 0) {
-            throw new Error('未识别到支持的题型内容，请检查文档结构后重试');
-        }
-        resetTaskVoiceConfiguration();
-        currentSession = {
-            session_id: data.session_id,
-            source_filename: data.source_filename,
-            file_path: data.file_path,
-            parse_results: data.parse_results || [],
-        };
-        updateSessionLabels(data.source_filename || file.name, currentSession.parse_results);
-        uploadZone.querySelector('.upload-hint').textContent = '解析完成，正在打开声音配置';
-        setUploadFeedback('success', `解析完成：已识别 ${summarizeParseResults(currentSession.parse_results).total} 条内容。`);
-        $('status-text').textContent = `解析成功 — ${data.source_filename || file.name}`;
-        showToast('文档解析成功，进入配置步骤');
-        goToStep(2);
-    } catch (err) {
-        if (err.name === 'AbortError' || attemptId !== parseAttemptId) return;
-        showToast(`上传失败: ${err.message}`, 'error');
-        // 重置上传区域
-        uploadZone.classList.remove('has-file');
-        uploadZone.querySelector('.upload-text-large').textContent = '拖拽文档到这里，或点击选择';
-        uploadZone.querySelector('.upload-hint').textContent = '请检查网络或文档后重新选择';
-        setUploadFeedback('error', `文档上传失败：${err.message}`);
-        $('status-text').textContent = '文档上传失败，请重新选择';
-    } finally {
-        if (attemptId === parseAttemptId) {
-            parseAbortController = null;
-            setUploadParsing(false);
-            isParsing = false;
-        }
-    }
+    if (!file || typeof file.arrayBuffer !== 'function') return;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return processSourceBytes(bytes, file.name);
 }
 
 // ============================================================================
@@ -2935,6 +4025,16 @@ function collectConfig(useDefaults) {
     });
 }
 
+function buildWorkflowConfiguration(config, sourceFilename = '', accountScope = '') {
+    const normalized = normalizeClientConfig(config);
+    return {
+        ...normalized,
+        source_filename: String(sourceFilename || config?.source_filename || '').trim().slice(0, 256),
+        provider: 'xunfei',
+        account_scope: String(accountScope || config?.account_scope || 'xunfei-default').trim() || 'xunfei-default',
+    };
+}
+
 function collectPersistedConfig() {
     return normalizePersistedConfig(collectConfig(false));
 }
@@ -2943,115 +4043,290 @@ function collectPersistedConfig() {
 // SSE 进度流
 // ============================================================================
 
-function connectSSE(sessionId) {
+async function connectSSE(sessionId) {
     clearSSEReconnectTimer();
     const connectionToken = ++sseConnectionToken;
-    if (eventSource) {
-        eventSource.close();
+    if (workflowStream) {
+        await workflowStream.close().catch(() => {});
+        workflowStream = null;
     }
-
-    let sseClosed = false;
-    let recoveryNoticePending = sseRetryCount > 0;
-
-    const source = new EventSource(apiUrl(`/api/progress/${sessionId}`));
-    eventSource = source;
-
-    source.onopen = () => {
-        if (connectionToken !== sseConnectionToken) {
-            source.close();
-            return;
-        }
-        // 连续稳定一段时间后视为一次成功连接，避免长任务把互不相关的
-        // 短暂断线累计到最大重试次数。
-        sseStableTimer = setTimeout(() => {
-            sseStableTimer = null;
-            if (connectionToken === sseConnectionToken && eventSource === source) {
-                sseRetryCount = 0;
-            }
-        }, 10000);
-    };
-
-    source.onmessage = (e) => {
-        if (connectionToken !== sseConnectionToken || currentSession?.session_id !== sessionId) return;
-        try {
-            const data = JSON.parse(e.data);
-            handleSSEEvent(data);
-            if (recoveryNoticePending) {
-                recoveryNoticePending = false;
-                addLogEntry({
-                    level: 'success',
-                    stage: 'system',
-                    kind: 'notice',
-                    status: 'success',
-                    key: 'connection:status',
-                    title: '生成服务连接已恢复',
-                    detail: '任务记录与进度已重新同步',
-                });
-            }
-        } catch (err) {
-            console.error('SSE 解析错误:', err);
-        }
-    };
-
-    source.onerror = () => {
+    if (!workflowApi) return;
+    const preparedStore = workflowStore?.prepare?.(sessionId, {
+        workflow: currentSession?.session_id === sessionId
+            ? { workflow_id: sessionId, ...currentSession }
+            : null,
+        lastEventId: currentSession?.session_id === sessionId
+            ? (currentSession.last_event_id || currentSession.latest_event_id || null)
+            : null,
+        lastSeq: currentSession?.session_id === sessionId
+            ? Number(currentSession.latest_seq || 0)
+            : 0,
+    });
+    const recoveryNoticePending = sseRetryCount > 0;
+    try {
+        const persistedCursor = preparedStore?.lastEventId || workflowStore?.lastEventIdFor?.(sessionId) || null;
+        const stream = await workflowApi.openWorkflowEvents(
+            sessionId,
+            persistedCursor || currentSession?.last_event_id || currentSession?.latest_event_id || null,
+        );
         if (connectionToken !== sseConnectionToken || currentSession?.session_id !== sessionId) {
-            source.close();
+            await stream.close().catch(() => {});
             return;
         }
-        console.error('SSE 连接错误');
-        if (!sseClosed && isGenerating) {
-            sseClosed = true;
-            if (sseStableTimer) {
-                clearTimeout(sseStableTimer);
-                sseStableTimer = null;
-            }
-            source.close();
-            if (eventSource === source) eventSource = null;
-
-            // 超过最大重试次数，判定后端不可用
-            sseRetryCount++;
-            if (sseRetryCount >= SSE_MAX_RETRIES) {
-                resetGenerateState();
-                generationResult = 'error';
-                $('gen-title').textContent = '连接中断';
-                $('generation-file-name').textContent = `「${currentSession?.source_filename || '当前文档'}」的生成连接已中断；已完成的记录会继续保留。`;
-                $('status-text').textContent = '与服务器连接中断，请检查后端服务';
-                setServiceState('error', '服务连接中断');
-                $('retry-service-btn').hidden = false;
-                setGenerationVisualState('error');
-                showGenerationRecovery('与生成服务的连接已中断。请确认服务正常后重试，或返回配置页。');
-                addLogEntry({
-                    level: 'error',
-                    stage: 'complete',
-                    kind: 'summary',
-                    status: 'error',
-                    key: 'connection:status',
-                    title: '生成服务连接中断',
-                    detail: '多次尝试仍无法恢复连接，请检查服务状态后重试',
-                });
-                showToast('与服务器连接中断，请重试');
+        workflowStream = stream;
+        stream.onFrame((frame) => {
+            if (connectionToken !== sseConnectionToken || currentSession?.session_id !== sessionId) return;
+            const reduced = workflowStore ? workflowStore.consume(frame) : { accepted: true };
+            if (!reduced.accepted) {
+                if (reduced.reason === 'gap') {
+                    resetWorkflowEventCursor(sessionId);
+                    handleWorkflowStreamError(
+                        Object.assign(
+                            new Error('workflow event gap: expected ' + reduced.expectedSeq + ', got ' + reduced.actualSeq),
+                            { code: 'EVENT_GAP' },
+                        ),
+                        sessionId,
+                        connectionToken,
+                    );
+                }
                 return;
             }
+            const event = frame?.event;
+            if (frame?.kind === 'snapshot') {
+                const snapshot = frame.snapshot?.state || {};
+                mergeWorkflowSnapshotIntoSession({
+                    ...snapshot,
+                    latest_event_id: frame.snapshot?.snapshot_event_id || snapshot.latest_event_id,
+                    latest_seq: frame.snapshot?.snapshot_seq ?? snapshot.latest_seq,
+                }, currentSession);
+                currentSession.last_event_id = frame.snapshot?.snapshot_event_id
+                    || currentSession.last_event_id
+                    || currentSession.latest_event_id
+                    || null;
+                $('status-text').textContent = snapshot.execution_state === 'TERMINAL' ? '任务已结束' : '生成记录已同步';
+                return;
+            }
+            if (!event) return;
+            currentSession.last_event_id = event.event_id || currentSession.last_event_id || null;
+            currentSession.latest_event_id = event.event_id || currentSession.latest_event_id || null;
+            currentSession.latest_seq = Math.max(Number(currentSession.latest_seq || 0), Number(event.seq || 0));
+            handleWorkflowEvent(event, sessionId);
+            if (recoveryNoticePending) {
+                addLogEntry({
+                    level: 'success', stage: 'system', kind: 'notice', status: 'success',
+                    key: 'connection:status', title: '生成服务连接已恢复', detail: '任务记录与进度已重新同步',
+                });
+            }
+        });
+        stream.onError((error) => handleWorkflowStreamError(error, sessionId, connectionToken));
+        sseRetryCount = 0;
+    } catch (error) {
+        handleWorkflowStreamError(error, sessionId, connectionToken);
+    }
+}
 
-            // 指数退避重连
-            const delay = Math.min(2000 * Math.pow(1.5, sseRetryCount - 1), 10000);
-            sseReconnectTimer = setTimeout(() => {
-                sseReconnectTimer = null;
-                if (connectionToken === sseConnectionToken && isGenerating && currentSession?.session_id === sessionId) {
-                    addLogEntry({
-                        level: 'warn',
-                        stage: 'system',
-                        kind: 'notice',
-                        status: 'warning',
-                        key: 'connection:status',
-                        title: '正在恢复生成服务连接',
-                        detail: `第 ${sseRetryCount} / ${SSE_MAX_RETRIES} 次尝试，现有任务记录会继续保留`,
-                    });
-                    connectSSE(sessionId);
-                }
-            }, delay);
+function handleWorkflowEvent(event, sessionId) {
+    const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+    const attemptKey = String(payload.attempt_id || event.attempt_id || payload.submission_id || event.seq || 'current');
+    const eventMessage = String(payload.message || payload.error || payload.error_code || '生成任务未能完成');
+    const recoveryTarget = payload.target && typeof payload.target === 'object'
+        ? {
+            attempt_id: payload.attempt_id || event.attempt_id || null,
+            work_unit_id: payload.target.work_unit_id || payload.work_unit_id || null,
+            target_state_version: Number(payload.target_state_version),
+            workflow_state_version: Number(payload.workflow_state_version || currentSession?.state_version || 0),
+            submission_id: payload.submission_id || null,
         }
-    };
+        : null;
+    if (event.event_type === 'TTS_PLAN_PREPARED') {
+        $('status-text').textContent = '已准备生成计划，正在连接讯飞浏览器…';
+        $('generation-live-status').textContent = '已准备生成计划，正在连接讯飞浏览器…';
+        $('progress-stats').textContent = `正在连接讯飞浏览器 · 0 / ${payload.item_count || summarizeParseResults(currentSession?.parse_results).total || '—'}`;
+        addLogEntry({ level: 'info', stage: 'prepare', kind: 'stage', status: 'running', seq: event.seq, key: `tts:plan:${attemptKey}`, title: '已准备生成计划', detail: `共 ${payload.item_count || 0} 条内容` });
+    } else if (event.event_type === 'TTS_RUNTIME_STATUS') {
+        const elapsed = Number(payload.elapsed_seconds);
+        const elapsedText = Number.isFinite(elapsed) && elapsed >= 1 ? `（已等待 ${Math.round(elapsed)} 秒）` : '';
+        const waiting = payload.status === 'waiting';
+        const message = String(payload.message || (waiting ? '讯飞浏览器正在处理，任务仍在运行' : '正在启动讯飞浏览器会话'));
+        $('status-text').textContent = message;
+        $('generation-live-status').textContent = message;
+        $('progress-stats').textContent = `${message}${elapsedText} · 0 / ${summarizeParseResults(currentSession?.parse_results).total || '—'}`;
+        setProgressIndeterminate(true);
+        addLogEntry({
+            level: 'progress', stage: 'synthesize', kind: 'stage', status: 'running', seq: event.seq,
+            key: `tts:runtime:${attemptKey}`,
+            title: waiting ? '讯飞浏览器仍在处理' : '正在启动讯飞浏览器',
+            detail: `${message}${elapsedText}；如果浏览器窗口被关闭，任务会进入可恢复状态。`,
+        });
+    } else if (event.event_type === 'TTS_RUNTIME_PROGRESS') {
+        const completed = Number(payload.completed_segments);
+        const total = Number(payload.total_segments);
+        const progress = Number.isFinite(completed) && Number.isFinite(total)
+            ? { completed, total }
+            : null;
+        const itemLabel = payload.item_id ? `条目 ${payload.item_id}` : '当前作品';
+        const message = String(payload.message || `讯飞浏览器正在处理${itemLabel}`);
+        $('status-text').textContent = message;
+        $('generation-live-status').textContent = message;
+        if (progress && total > 0) {
+            $('progress-stats').textContent = `${message} · ${Math.max(0, completed)} / ${Math.max(0, total)}`;
+        }
+        addLogEntry({
+            level: payload.error ? 'warn' : 'progress', stage: 'synthesize', kind: 'stage',
+            status: payload.error ? 'warning' : 'running', seq: event.seq,
+            key: `tts:runtime:${attemptKey}`,
+            title: payload.error ? '讯飞条目处理需要检查' : '讯飞条目处理进度',
+            detail: message,
+            progress,
+        });
+    } else if (event.event_type === 'TTS_SUBMISSION_IN_FLIGHT') {
+        setProgressIndeterminate(true);
+        $('status-text').textContent = '正在连接讯飞浏览器并提交作品…';
+        $('generation-live-status').textContent = '正在连接讯飞浏览器并提交作品…';
+        $('progress-stats').textContent = `正在提交讯飞作品 · 0 / ${summarizeParseResults(currentSession?.parse_results).total || '—'}`;
+        addLogEntry({ level: 'progress', stage: 'synthesize', kind: 'stage', status: 'running', seq: event.seq, key: `tts:in-flight:${attemptKey}`, title: '正在提交讯飞作品', detail: '已进入外部提交阶段；浏览器启动或恢复期间请保持应用开启。' });
+    } else if (event.event_type === 'PROVIDER_RECEIPT_OBSERVED') {
+        setProgressIndeterminate(true);
+        $('status-text').textContent = '作品已提交，正在下载并核验音频…';
+        $('generation-live-status').textContent = '作品已提交，正在下载并核验音频…';
+        addLogEntry({ level: 'progress', stage: 'synthesize', kind: 'stage', status: 'running', seq: event.seq, key: `tts:receipt:${attemptKey}`, title: '已找到讯飞作品', detail: payload.receipt_id ? `正在下载作品并核验音频（Receipt ${payload.receipt_id}）` : '正在下载作品并核验音频' });
+    } else if (event.event_type === 'TTS_SUBMISSION_AMBIGUOUS') {
+        const target = recoveryTarget || {
+            attempt_id: payload.attempt_id || event.attempt_id || null,
+            work_unit_id: payload.work_unit_id || null,
+            target_state_version: Number(payload.target_state_version),
+            workflow_state_version: Number(payload.workflow_state_version || currentSession?.state_version || 0),
+            submission_id: payload.submission_id || null,
+        };
+        addLogEntry({ level: 'warn', stage: 'synthesize', kind: 'summary', status: 'warning', seq: event.seq, key: `tts:ambiguous:${attemptKey}`, title: '讯飞提交结果待核验', detail: eventMessage });
+        handleSSEEvent({ type: 'error', msg: eventMessage, ambiguous: true, recoveryTarget: target });
+    } else if (event.event_type === 'TTS_SUBMISSION_REJECTED') {
+        addLogEntry({ level: 'error', stage: 'synthesize', kind: 'summary', status: 'error', seq: event.seq, key: `tts:rejected:${attemptKey}`, title: '讯飞提交未被接受', detail: eventMessage });
+        handleSSEEvent({ type: 'error', msg: eventMessage, ambiguous: false });
+    } else if (event.event_type === 'TTS_OUTPUT_VERIFIED') {
+        // The event is evidence of the worker's write, not itself the final
+        // UI state.  Read the authoritative snapshot and verified artifact
+        // projection before moving to the result page.
+        setProgressIndeterminate(true);
+        $('status-text').textContent = '音频已写入，正在确认最终任务状态…';
+        void Promise.all([
+            workflowApi?.getWorkflow(sessionId),
+            refreshGeneratedArtifacts(sessionId),
+        ]).then(([snapshot]) => {
+            if (currentSession?.session_id !== sessionId) return;
+            mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+            if (snapshot?.execution_state !== 'TERMINAL'
+                || !['SUCCEEDED', 'PARTIAL_SUCCESS'].includes(snapshot?.result_status)) {
+                $('status-text').textContent = '音频已写入，任务状态仍在确认中…';
+                return;
+            }
+            const total = summarizeParseResults(currentSession?.parse_results).total;
+            const completed = generatedFiles.length;
+            const failed = Math.max(0, total - completed);
+            addLogEntry({ level: 'success', stage: 'complete', kind: 'summary', status: 'success', seq: event.seq, key: `tts:verified:${attemptKey}`, title: '音频已完成核验', detail: '生成文件已写入本地任务空间。' });
+            handleDone({ type: 'done', completed, failed, total, artifact_ids: payload.artifact_ids || [], file_list: generatedFiles });
+        }).catch((error) => {
+            console.warn('核验生成终态失败，保留任务页等待重连:', error);
+            $('status-text').textContent = '正在确认最终任务状态，请稍候…';
+        });
+    } else if (event.event_type === 'GENERATION_TASK_FAILED') {
+        void workflowApi?.getWorkflow(sessionId).then((snapshot) => {
+            if (currentSession?.session_id !== sessionId) return;
+            mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+            const settled = snapshot?.execution_state === 'TERMINAL'
+                || ['WAITING_RETRY', 'WAITING_USER', 'BLOCKED'].includes(snapshot?.execution_state);
+            if (!settled) {
+                $('status-text').textContent = '生成服务正在恢复任务状态…';
+                return;
+            }
+            addLogEntry({ level: 'error', stage: 'complete', kind: 'summary', status: 'error', seq: event.seq, key: `task:failed:${attemptKey}`, title: '生成任务未能完成', detail: eventMessage });
+            handleSSEEvent({ type: 'error', msg: eventMessage, ambiguous: payload.error_code === 'SUBMISSION_AMBIGUOUS' || snapshot.execution_state === 'WAITING_USER', recoveryTarget });
+        }).catch((error) => {
+            console.warn('生成失败后同步工作流状态失败，保留任务页:', error);
+            $('status-text').textContent = '生成失败，正在等待任务状态同步…';
+        });
+    } else if (event.event_type === 'WORKFLOW_CANCEL') {
+        setProgressIndeterminate(true);
+        $('status-text').textContent = '正在停止生成任务…';
+    } else if (event.event_type === 'WORKFLOW_CANCELLED') {
+        void Promise.all([
+            workflowApi?.getWorkflow(sessionId),
+            refreshGeneratedArtifacts(sessionId),
+        ]).then(([snapshot]) => {
+            if (currentSession?.session_id !== sessionId) return;
+            mergeWorkflowSnapshotIntoSession(snapshot, currentSession);
+            if (snapshot?.execution_state !== 'TERMINAL') {
+                $('status-text').textContent = '正在确认取消结果…';
+                return;
+            }
+            const total = summarizeParseResults(currentSession?.parse_results).total;
+            handleSSEEvent({ type: 'cancelled', completed: generatedFiles.length, total });
+        }).catch((error) => {
+            console.warn('取消后同步工作流状态失败:', error);
+            $('status-text').textContent = '正在确认取消结果…';
+        });
+    }
+}
+
+async function refreshGeneratedArtifacts(sessionId) {
+    if (!workflowApi) return [];
+    const [items, artifacts, workspace] = await Promise.all([
+        workflowApi.listItems(sessionId),
+        workflowApi.listArtifacts(sessionId),
+        workflowApi.getWorkspace(sessionId),
+    ]);
+    // The request can outlive a restart/new task.  Never let a late response
+    // from the old workflow overwrite the result list of the current task.
+    if (currentSession?.session_id !== sessionId) return [];
+    generatedFiles = resultFilesFromArtifacts(items, artifacts, workspace);
+    if (workspace) {
+        currentSession.delivery = workspace.delivery ? {
+            zip_available: Boolean(workspace.delivery.zip_available),
+            zip_artifact_id: workspace.delivery.zip_artifact_id || null,
+        } : null;
+        currentSession.progress = workspace.progress ? {
+            total: Number(workspace.progress.total) || 0,
+            completed: Number(workspace.progress.completed) || 0,
+            failed: Number(workspace.progress.failed) || 0,
+            skipped: Number(workspace.progress.skipped) || 0,
+            pending: Number(workspace.progress.pending) || 0,
+        } : null;
+        mergeWorkflowSnapshotIntoSession(workspace.snapshot, currentSession);
+    }
+    return generatedFiles;
+}
+
+function resetWorkflowEventCursor(sessionId) {
+    workflowStore?.resetCursor?.(sessionId);
+    if (currentSession?.session_id !== sessionId) return;
+    // The next connection must request the server snapshot. Keeping the old
+    // cursor in currentSession would make Store.prepare resurrect it as its
+    // initial cursor even after localStorage has been cleared.
+    currentSession.last_event_id = null;
+    currentSession.latest_event_id = null;
+    currentSession.latest_seq = 0;
+}
+
+function handleWorkflowStreamError(error, sessionId, connectionToken) {
+    if (connectionToken !== sseConnectionToken || currentSession?.session_id !== sessionId || !isGenerating) return;
+    const requiresSnapshotResync = error?.code === 'CURSOR_EXPIRED'
+        || error?.code === 'EVENT_GAP'
+        || Number(error?.status) === 410;
+    if (requiresSnapshotResync) resetWorkflowEventCursor(sessionId);
+    if (workflowStream) {
+        workflowStream.close().catch(() => {});
+        workflowStream = null;
+    }
+    sseRetryCount += 1;
+    if (sseRetryCount >= SSE_MAX_RETRIES) {
+        handleSSEEvent({ type: 'error', msg: '与生成服务的连接已中断；已写入的任务记录仍然保留' });
+        return;
+    }
+    const delay = Math.min(1000 * (2 ** (sseRetryCount - 1)), 10000);
+    sseReconnectTimer = setTimeout(() => {
+        sseReconnectTimer = null;
+        if (connectionToken === sseConnectionToken && isGenerating) void connectSSE(sessionId);
+    }, delay);
 }
 
 function handleSSEEvent(event) {
@@ -3101,6 +4376,7 @@ function handleSSEEvent(event) {
             }
             generationResult = 'cancelled';
             resetGenerateState();
+            setProgressIndeterminate(false);
             $('gen-title').textContent = '任务已取消';
             $('generation-file-name').textContent = `已取消「${currentSession?.source_filename || '当前文档'}」的生成任务。`;
             $('status-text').textContent = '生成任务已取消';
@@ -3124,9 +4400,10 @@ function handleSSEEvent(event) {
             showToast(`错误: ${event.msg}`);
             generationResult = 'error';
             resetGenerateState();
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
+            setProgressIndeterminate(false);
+            if (workflowStream) {
+                workflowStream.close().catch(() => {});
+                workflowStream = null;
             }
             clearSSEReconnectTimer();
             sseConnectionToken++;
@@ -3134,14 +4411,18 @@ function handleSSEEvent(event) {
             $('generation-file-name').textContent = `「${currentSession?.source_filename || '当前文档'}」生成遇到问题；可查看任务详情后重试。`;
             $('status-text').textContent = `错误: ${event.msg}`;
             setGenerationVisualState('error');
-            showGenerationRecovery(`生成出错：${event.msg}`);
+            showGenerationRecovery(`生成出错：${event.msg}`, {
+                ambiguous: Boolean(event.ambiguous),
+                target: event.recoveryTarget || null,
+            });
             break;
 
         case 'end':
             resetGenerateState();
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
+            setProgressIndeterminate(false);
+            if (workflowStream) {
+                workflowStream.close().catch(() => {});
+                workflowStream = null;
             }
             clearSSEReconnectTimer();
             sseConnectionToken++;
@@ -3619,6 +4900,7 @@ function visualProgressPercent(value) {
 }
 
 function updateProgress(event) {
+    setProgressIndeterminate(false);
     const total = integerProgressCount(event.total);
     const completed = integerProgressCount(event.completed, total);
     const failed = integerProgressCount(event.failed, total);
@@ -3809,14 +5091,15 @@ function updateFileList(event) {
 
 function handleDone(event) {
     resetGenerateState();
+    setProgressIndeterminate(false);
     generationResult = 'done';
     hideGenerationRecovery();
 
     clearSSEReconnectTimer();
     sseConnectionToken++;
-    if (eventSource) {
-        eventSource.close();
-        eventSource = null;
+    if (workflowStream) {
+        workflowStream.close().catch(() => {});
+        workflowStream = null;
     }
 
     // 合并最后的统计数据（done 事件本身不携带 completed/failed）
@@ -3827,7 +5110,10 @@ function handleDone(event) {
         total: lastStats ? lastStats.total : (event.total || 0),
         failed_items: lastStats?.failed_items || event.failed_items || [],
     };
-    latestCurrentResultEvent = doneData;
+    latestCurrentResultEvent = {
+        ...doneData,
+        workflow_id: doneData.workflow_id || currentSession?.session_id || null,
+    };
 
     // 更新生成页面状态
     const allFailed = doneData.total > 0 && doneData.failed >= doneData.total;
@@ -3860,11 +5146,7 @@ function handleDone(event) {
         }
     }, 950);
 
-    if (generatedFiles.length > 0 && !doneData.history_id) {
-        showToast('音频已完成，但历史记录保存失败，请先下载结果');
-    } else {
-        showToast(doneData.failed > 0 ? `任务结束，${doneData.failed} 条生成失败` : '处理完成');
-    }
+    showToast(doneData.failed > 0 ? `任务结束，${doneData.failed} 条生成失败` : '处理完成');
 }
 
 function prepareAudioFilters(files) {
@@ -4037,13 +5319,48 @@ async function refreshResultVoiceAssets(files) {
     });
 }
 
+async function readArtifactBytes(artifactId) {
+    if (!workflowApi || !artifactId) throw new Error('Artifact 标识缺失');
+    const stream = await workflowApi.openArtifact(artifactId);
+    const reader = stream.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+        while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            const chunk = part.value instanceof Uint8Array ? part.value : new Uint8Array(part.value || []);
+            chunks.push(chunk);
+            total += chunk.byteLength;
+        }
+    } finally {
+        reader.releaseLock?.();
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    chunks.forEach(chunk => {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    });
+    return bytes;
+}
+
+function artifactMime(format) {
+    return {
+        mp3: 'audio/mpeg',
+        wav: 'audio/wav',
+        zip: 'application/zip',
+        json: 'application/json',
+    }[String(format || '').toLowerCase()] || 'application/octet-stream';
+}
+
 function buildResultPage(event, suppliedContext = null) {
     destroyWaveSurfers();
     const workflowSourceTotal = summarizeParseResults(currentSession?.parse_results).total;
     const context = suppliedContext || {
         mode: 'current',
         sessionId: currentSession?.session_id,
-        historyId: event.history_id || null,
+        workflowId: currentSession?.session_id || event.workflow_id || null,
         sourceFilename: currentSession?.source_filename,
         files: generatedFiles,
         completed: event.completed || generatedFiles.length || 0,
@@ -4051,16 +5368,19 @@ function buildResultPage(event, suppliedContext = null) {
         total: workflowSourceTotal || event.total || 0,
         format: lastGenerationConfig?.format || currentConfig?.format || 'mp3',
         preview: Boolean(lastGenerationConfig?.preview && workflowSourceTotal > 3),
-        zipAvailable: Boolean(event.zip_path),
+        zipAvailable: Boolean(currentSession?.delivery?.zip_available || event.zip_artifact_id),
+        zipArtifactId: currentSession?.delivery?.zip_artifact_id || event.zip_artifact_id || null,
         failedItems: Array.isArray(event.failed_items) ? event.failed_items : [],
+        stateVersion: Number(currentSession?.state_version || 0),
+        executionState: currentSession?.execution_state || event.execution_state || null,
+        resultStatus: currentSession?.result_status || event.result_status || null,
     };
     activeResultContext = context;
     const isHistory = context.mode === 'history';
     const resultFiles = Array.isArray(context.files) ? context.files : [];
-    const success = isHistory
-        ? resultFiles.length
-        : (resultFiles.length || Number(context.completed) || 0);
-    const missingFiles = isHistory ? Math.max(0, (Number(context.completed) || 0) - resultFiles.length) : 0;
+    const reportedCompleted = Math.max(0, Number(context.completed) || 0);
+    const success = resultFiles.length;
+    const missingFiles = Math.max(0, reportedCompleted - success);
     const failed = Math.max(0, Number(context.failed) || 0) + missingFiles;
     const resultTitle = $('result-title');
     const resultEyebrow = $('result-eyebrow');
@@ -4140,9 +5460,6 @@ function buildResultPage(event, suppliedContext = null) {
         : (isPreviewResult
             ? `本次试听生成 ${success} 个音频${failed > 0 ? `，失败 ${failed} 个` : ''}；确认效果后可继续生成完整文档`
             : `成功生成 ${success} 个音频文件${failed > 0 ? `，失败 ${failed} 个` : ''}`);
-    if (!isHistory && success > 0 && !context.historyId) {
-        summaryText += '；本次未能写入历史记录，请先下载后再新建任务';
-    }
     $('result-summary').textContent = summaryText;
     $('result-success-label').textContent = isPreviewResult ? '试听文件' : '已生成';
     $('result-success-count').textContent = String(success);
@@ -4152,15 +5469,21 @@ function buildResultPage(event, suppliedContext = null) {
     $('result-secondary-label').textContent = isPreviewResult && !isHistory ? '文档总量' : '未完成';
     $('result-failed-count').textContent = String(isPreviewResult && !isHistory ? sourceTotal : failed);
     $('result-secondary-caption').textContent = isPreviewResult && !isHistory ? '完整文档内容' : '待处理内容';
-    $('result-format-value').textContent = String(context.format || 'MP3').toUpperCase();
+    $('result-format-value').textContent = String(resultFiles[0]?.format || context.format || '待同步').toUpperCase();
 
     // ZIP 卡片
     const zipCard = $('zip-card');
     const resultHero = $('result-hero');
-    if (context.zipAvailable) {
+    // The delivery projection is authoritative for an already-created ZIP.
+    // A terminal result with verified audio still exposes the on-demand
+    // action; the server creates and verifies the ZIP when it is clicked.
+    const zipState = resultZipState(context, success);
+    if (zipState.visible) {
         zipCard.style.display = 'flex';
         resultHero?.classList.remove('has-no-package');
-        $('zip-desc').textContent = `ZIP 压缩包包含 ${success} 个已生成的音频文件`;
+        $('zip-desc').textContent = zipState.ready
+            ? `ZIP 压缩包包含 ${success} 个已生成的音频文件`
+            : `点击下载时自动整理 ${success} 个已生成的音频文件`;
     } else {
         zipCard.style.display = 'none';
         resultHero?.classList.add('has-no-package');
@@ -4186,9 +5509,6 @@ function buildResultPage(event, suppliedContext = null) {
 
     resultFiles.forEach((f, index) => {
         const color = (currentConfig && currentConfig.type_colors && currentConfig.type_colors[f.doc_type]) || '#a8a29e';
-        const audioUrl = isHistory
-            ? apiUrl(`/api/history/${encodeURIComponent(context.recordId)}/file/${encodeURIComponent(f.filename)}`)
-            : apiUrl(`/api/download/file/${encodeURIComponent(context.sessionId)}/${encodeURIComponent(f.filename)}`);
 
         // 使用 DOM API 安全构建，避免 innerHTML 注入风险
         const item = document.createElement('article');
@@ -4261,8 +5581,47 @@ function buildResultPage(event, suppliedContext = null) {
         // 原生 Audio 负责流式播放；WaveSurfer 只在后台解码并绘制波形。
         const audio = new Audio();
         audio.preload = index < 2 ? 'auto' : 'none';
-        audio.src = audioUrl;
         item._audioElement = audio;
+        item._artifactId = f.artifact_id || null;
+        let audioReadyPromise = null;
+        let audioObjectUrl = null;
+        const resetAudioSource = () => {
+            if (audioObjectUrl) {
+                try { URL.revokeObjectURL(audioObjectUrl); } catch (_) { /* ignore */ }
+                artifactObjectUrls.delete(audioObjectUrl);
+                audioObjectUrl = null;
+            }
+            try {
+                audio.pause();
+                audio.removeAttribute('src');
+                audio.load();
+            } catch (_) { /* ignore */ }
+            audioReadyPromise = null;
+        };
+        item.resetAudioSource = resetAudioSource;
+        item.ensureAudioReady = async () => {
+            if (audio.src) return audio;
+            if (!item._artifactId) throw new Error('音频 Artifact 不可用');
+            if (!audioReadyPromise) {
+                const pending = (async () => {
+                    const bytes = await readArtifactBytes(item._artifactId);
+                    if (renderToken !== waveformRenderToken) throw new Error('结果页已切换');
+                    const url = URL.createObjectURL(new Blob([bytes], { type: artifactMime(f.format) }));
+                    audioObjectUrl = url;
+                    artifactObjectUrls.add(url);
+                    audio.src = url;
+                    audio.load();
+                    return audio;
+                })();
+                audioReadyPromise = pending.catch(error => {
+                    // A transient ticket/network failure must not poison the
+                    // item forever; the next play/retry requests fresh bytes.
+                    audioReadyPromise = null;
+                    throw error;
+                });
+            }
+            return audioReadyPromise;
+        };
         audioElements.push(audio);
 
         const waveformWrap = document.createElement('div');
@@ -4286,6 +5645,14 @@ function buildResultPage(event, suppliedContext = null) {
         canvasWrap.setAttribute('aria-valuemax', '0');
         canvasWrap.setAttribute('aria-valuenow', '0');
         canvasWrap.setAttribute('aria-busy', 'true');
+
+        const retryWaveformButton = document.createElement('button');
+        retryWaveformButton.type = 'button';
+        retryWaveformButton.className = 'waveform-retry-btn';
+        retryWaveformButton.textContent = '重试波形';
+        retryWaveformButton.setAttribute('aria-label', `重试加载 ${f.filename} 的波形`);
+        retryWaveformButton.hidden = true;
+        canvasWrap.appendChild(retryWaveformButton);
 
         const placeholder = document.createElement('div');
         placeholder.className = 'waveform-placeholder';
@@ -4400,6 +5767,7 @@ function buildResultPage(event, suppliedContext = null) {
                 item._waveformFailed = true;
                 canvasWrap.classList.remove('is-wave-ready');
                 canvasWrap.classList.add('is-wave-error');
+                retryWaveformButton.hidden = false;
             }
             const activeWaveSurfer = waveSurfer;
             waveSurfer = null;
@@ -4421,38 +5789,61 @@ function buildResultPage(event, suppliedContext = null) {
             item._waveformInitialized = true;
             waveLoadRelease = onSettled;
             waveLoadTimeout = setTimeout(() => item.cancelWaveformLoad(true), 30000);
-            if (audio.preload === 'none') audio.preload = 'metadata';
-            if (audio.readyState === 0) {
-                try { audio.load(); } catch (_) { /* ignore */ }
-            }
             waveformObserver?.unobserve(item);
-            waveSurfer = createWaveSurfer(
-                wsContainer,
-                audio,
-                color,
-                canvasWrap,
-                readyWs => {
-                    const duration = readyWs?.getDuration?.() || 0;
-                    if (duration > 0) {
-                        if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
-                            timeLabel.textContent = `00:00 / ${formatTime(duration)}`;
+            void item.ensureAudioReady().then(() => {
+                if (renderToken !== waveformRenderToken || !item.isConnected || !item._waveformInitialized) return;
+                waveSurfer = createWaveSurfer(
+                    wsContainer,
+                    audio,
+                    color,
+                    canvasWrap,
+                    readyWs => {
+                        retryWaveformButton.hidden = true;
+                        const duration = readyWs?.getDuration?.() || 0;
+                        if (duration > 0) {
+                            if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
+                                timeLabel.textContent = `00:00 / ${formatTime(duration)}`;
+                            }
+                            canvasWrap.setAttribute('aria-valuemax', String(Math.round(duration)));
+                            canvasWrap.setAttribute('aria-busy', 'false');
                         }
-                        canvasWrap.setAttribute('aria-valuemax', String(Math.round(duration)));
-                        canvasWrap.setAttribute('aria-busy', 'false');
-                    }
-                    finishWaveformLoad();
-                },
-                () => {
-                    item._waveformFailed = true;
-                    item._waveformInitialized = false;
-                    waveSurfer = null;
-                    finishWaveformLoad();
-                },
-            );
-            return waveSurfer;
+                        finishWaveformLoad();
+                    },
+                    () => {
+                        item._waveformFailed = true;
+                        item._waveformInitialized = false;
+                        waveSurfer = null;
+                        retryWaveformButton.hidden = false;
+                        finishWaveformLoad();
+                    },
+                );
+                if (!waveSurfer) finishWaveformLoad();
+            }).catch(() => {
+                if (renderToken !== waveformRenderToken) return;
+                item._waveformFailed = true;
+                item._waveformInitialized = false;
+                retryWaveformButton.hidden = false;
+                finishWaveformLoad();
+            });
+            return item;
         };
 
+        retryWaveformButton.addEventListener('click', event => {
+            event.stopPropagation();
+            if (renderToken !== waveformRenderToken || !item.isConnected) return;
+            item._waveformFailed = false;
+            item._waveformInitialized = false;
+            canvasWrap.classList.remove('is-wave-error');
+            retryWaveformButton.hidden = true;
+            queueWaveformInitialization(item, true);
+        });
+
         audio.addEventListener('error', () => {
+            // A successful ticket read can still produce an unsupported or
+            // truncated media resource.  Do not let the broken Blob URL make
+            // every later click reuse the same failed source; the next click
+            // must obtain a fresh Artifact ticket and bytes.
+            resetAudioSource();
             item.cancelWaveformLoad(true);
             if (currentPlayingAudio === audio) currentPlayingAudio = null;
             playBtn.classList.remove('is-buffering');
@@ -4482,6 +5873,8 @@ function buildResultPage(event, suppliedContext = null) {
             currentPlayingAudio = audio;
             playBtn.classList.add('is-buffering');
             try {
+                await item.ensureAudioReady();
+                if (requestId !== audioPlayRequestToken || renderToken !== waveformRenderToken) return;
                 await audio.play();
             } catch (error) {
                 if (requestId !== audioPlayRequestToken) return;
@@ -4517,6 +5910,9 @@ function buildResultPage(event, suppliedContext = null) {
         waveformItems.push(item);
     });
     audioList.appendChild(itemFragment);
+    waveformItems.slice(0, 2).forEach(item => {
+        void item.ensureAudioReady?.().catch(error => console.warn('预加载 Artifact 失败:', error));
+    });
     void refreshResultVoiceAssets(resultFiles);
 }
 
@@ -4648,8 +6044,13 @@ function nativeFileFailureMessage(reason) {
         'path-check-failed': '待保存文件不在应用的安全目录中。',
         'file-not-found': '待保存文件已经不存在，可能已被清理。',
         'file-check-error': '无法检查待保存文件。',
+        'file-too-large': '文件超过本机允许的大小上限。',
+        'file-read-error': '无法读取所选文档内容。',
+        'content-invalid': '待保存内容无效。',
+        'write-error': '无法把文件写入所选位置。',
         'dialog-error': '系统文件对话框未能打开。',
         'copy-error': '无法把文件复制到所选位置。',
+        'download-error': '生成文件下载失败，任务中的 Artifact 仍会保留。',
         'ipc-error': '桌面文件服务暂时没有响应。',
     };
     return messages[reason] || '文件操作没有完成。';
@@ -4668,9 +6069,9 @@ async function showNativeFileDialogError(title, result = {}) {
     });
 }
 
-async function saveNativeFile(sourcePath, suggestedName) {
+async function saveNativeFile(sourceBytes, suggestedName) {
     try {
-        const result = await window.electronAPI.saveFileByPath(sourcePath, suggestedName);
+        const result = await window.electronAPI.saveFile(sourceBytes, suggestedName);
         if (result?.success) {
             showToast('下载成功');
             return true;
@@ -4694,42 +6095,101 @@ async function saveNativeFile(sourcePath, suggestedName) {
     }
 }
 
+async function saveNativeArtifactStream(artifactId, suggestedName) {
+    try {
+        const result = await window.electronAPI.saveArtifactStream(artifactId, suggestedName);
+        if (result?.success) {
+            showToast('下载成功');
+            return true;
+        }
+        if (result?.reason === 'user-cancelled') {
+            showToast('已取消');
+            return false;
+        }
+        await showNativeFileDialogError('下载文件失败', result || {
+            reason: 'ipc-error',
+            error: '主进程未返回流式文件操作结果',
+        });
+        return false;
+    } catch (error) {
+        console.error('调用流式保存服务失败:', error);
+        await showNativeFileDialogError('下载文件失败', {
+            reason: 'ipc-error',
+            error: error?.message,
+        });
+        return false;
+    }
+}
+
+async function saveArtifactBytes(bytes, suggestedName, format = '') {
+    if (!(bytes instanceof Uint8Array)) throw new TypeError('Artifact 内容不是字节流');
+    if (isElectron) return saveNativeFile(bytes, suggestedName);
+    const url = URL.createObjectURL(new Blob([bytes], { type: artifactMime(format) }));
+    try {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = suggestedName;
+        link.click();
+        showToast('下载成功');
+        return true;
+    } finally {
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+}
+
 async function downloadZip(context = activeResultContext) {
     const target = context || (currentSession ? {
         mode: 'current',
         sessionId: currentSession.session_id,
+        workflowId: currentSession.session_id,
         sourceFilename: currentSession.source_filename,
     } : null);
     if (!target) return;
-    const isHistoryDownload = target.mode === 'history';
-    const pathEndpoint = isHistoryDownload
-        ? `/api/history/${encodeURIComponent(target.recordId)}/file-path?filename=output.zip`
-        : `/api/file-path?session_id=${encodeURIComponent(target.sessionId)}&filename=output.zip`;
-    const browserEndpoint = isHistoryDownload
-        ? `/api/history/${encodeURIComponent(target.recordId)}/zip`
-        : `/api/download/zip/${encodeURIComponent(target.sessionId)}`;
-
-    if (isElectron) {
-        try {
-            const resp = await fetch(apiUrl(pathEndpoint));
-            if (resp.ok) {
-                const data = await resp.json();
-                if (data.path) {
-                    // 使用源文件名作为 ZIP 下载文件名
-                    const sourceName = String(target.sourceFilename || PRODUCT_NAME).replace(/\.(docx|xlsx)$/i, '');
-                    await saveNativeFile(data.path, `${sourceName}_tts.zip`);
-                } else {
-                    showToast('ZIP 文件不存在');
-                }
-            } else {
-                showToast(isHistoryDownload ? '下载失败：历史 ZIP 已不存在' : '下载失败：文件不存在或会话已过期');
-            }
-        } catch (err) {
-            console.error('下载异常:', err);
-            showToast('下载失败');
+    try {
+        const workflowId = target.workflowId || target.sessionId || target.recordId;
+        if (!workflowApi || !workflowId) throw new Error('工作流标识缺失');
+        let artifactId = target.zipArtifactId;
+        if (!artifactId) {
+            const artifacts = target.artifacts || await workflowApi.listArtifacts(workflowId);
+            artifactId = artifacts.find(artifact => (
+                artifact.lifecycle_state === 'READY'
+                && artifact.verified === true
+                && artifact.artifact_type === 'export-zip'
+            ))?.artifact_id;
         }
-    } else {
-        window.open(apiUrl(browserEndpoint), '_blank');
+        if (!artifactId) {
+            const currentSnapshot = target.mode === 'current'
+                ? await refreshCurrentWorkflowSnapshot(currentSession)
+                : await workflowApi.getWorkflow(workflowId);
+            const expectedStateVersion = Number(
+                currentSnapshot?.state_version
+                ?? target.stateVersion
+                ?? currentSession?.state_version
+                ?? 0,
+            );
+            const artifact = await workflowApi.createExportZip(workflowId, {
+                expected_state_version: expectedStateVersion,
+            });
+            artifactId = artifact?.artifact_id || null;
+            if (artifactId) {
+                target.zipArtifactId = artifactId;
+                target.zipAvailable = true;
+            }
+        }
+        if (!artifactId) {
+            showToast('当前工作流没有可下载的 ZIP Artifact');
+            return false;
+        }
+        const sourceName = String(target.sourceFilename || PRODUCT_NAME).replace(/\.(docx|xlsx)$/i, '');
+        if (isElectron && typeof window.electronAPI?.saveArtifactStream === 'function') {
+            return saveNativeArtifactStream(artifactId, `${sourceName}_tts.zip`);
+        }
+        const bytes = await readArtifactBytes(artifactId);
+        return saveArtifactBytes(bytes, `${sourceName}_tts.zip`, 'zip');
+    } catch (err) {
+        console.error('下载 ZIP 异常:', err);
+        showToast('下载失败：Artifact 暂时不可用');
+        return false;
     }
 }
 
@@ -4737,35 +6197,26 @@ async function downloadFile(filename, context = activeResultContext) {
     const target = context || (currentSession ? {
         mode: 'current',
         sessionId: currentSession.session_id,
+        workflowId: currentSession.session_id,
+        files: generatedFiles,
     } : null);
     if (!target || !filename) return;
-    const isHistoryDownload = target.mode === 'history';
-    const pathEndpoint = isHistoryDownload
-        ? `/api/history/${encodeURIComponent(target.recordId)}/file-path?filename=${encodeURIComponent(filename)}`
-        : `/api/file-path?session_id=${encodeURIComponent(target.sessionId)}&filename=${encodeURIComponent(filename)}`;
-    const browserEndpoint = isHistoryDownload
-        ? `/api/history/${encodeURIComponent(target.recordId)}/file/${encodeURIComponent(filename)}`
-        : `/api/download/file/${encodeURIComponent(target.sessionId)}/${encodeURIComponent(filename)}`;
-
-    if (isElectron) {
-        try {
-            const resp = await fetch(apiUrl(pathEndpoint));
-            if (resp.ok) {
-                const data = await resp.json();
-                if (data.path) {
-                    await saveNativeFile(data.path, filename);
-                } else {
-                    showToast('文件不存在');
-                }
-            } else {
-                showToast(isHistoryDownload ? '下载失败：历史音频已不存在' : '下载失败：文件不存在或会话已过期');
-            }
-        } catch (err) {
-            console.error('下载异常:', err);
-            showToast('下载失败');
+    try {
+        if (!workflowApi) throw new Error('工作流服务未初始化');
+        const file = (Array.isArray(target.files) ? target.files : []).find(item => item.filename === filename);
+        if (!file?.artifact_id) {
+            showToast('音频 Artifact 不存在');
+            return false;
         }
-    } else {
-        window.open(apiUrl(browserEndpoint), '_blank');
+        if (isElectron && typeof window.electronAPI?.saveArtifactStream === 'function') {
+            return saveNativeArtifactStream(file.artifact_id, filename);
+        }
+        const bytes = await readArtifactBytes(file.artifact_id);
+        return saveArtifactBytes(bytes, filename, file.format || String(filename).split('.').pop());
+    } catch (err) {
+        console.error('下载音频异常:', err);
+        showToast('下载失败：Artifact 暂时不可用');
+        return false;
     }
 }
 
@@ -4774,9 +6225,13 @@ async function downloadFile(filename, context = activeResultContext) {
 // ============================================================================
 
 function resetGenerateState() {
+    clearGenerationStartupTimer();
+    setProgressIndeterminate(false);
     isGenerating = false;
+    if (!cancelWorkflowPromise) generationCancelRequested = false;
     const historyNav = $('history-nav-btn');
     if (historyNav) historyNav.disabled = isRestarting || isParsing;
+    updateGenerationCancelUI();
 }
 
 async function requestRestart() {
@@ -4800,7 +6255,7 @@ async function requestRestart() {
                 confirmLabel: '中止并新建',
             };
         } else if (generatedFiles.length > 0 || currentStep === 4) {
-            confirmation = latestCurrentResultEvent?.history_id
+            confirmation = latestCurrentResultEvent?.workflow_id
                 ? {
                     kicker: '结果已保存',
                     title: '开始一个新任务？',
@@ -4849,6 +6304,7 @@ async function restart() {
         resultNavigationTimer = null;
     }
     clearSSEReconnectTimer();
+    clearGenerationStartupTimer();
     sseConnectionToken++;
 
     const sessionToCleanup = currentSession;
@@ -4856,15 +6312,15 @@ async function restart() {
     isGenerating = false;
 
     // 断开 SSE
-    if (eventSource) {
-        eventSource.close();
-        eventSource = null;
+    if (workflowStream) {
+        workflowStream.close().catch(() => {});
+        workflowStream = null;
     }
 
     // 如果有会话，通知后端清理
     if (sessionToCleanup) {
         pendingCleanupSessionId = sessionToCleanup.session_id;
-        cleanupConfirmed = await confirmPendingCleanup();
+        cleanupConfirmed = await confirmPendingCleanup(sessionToCleanup);
         if (!cleanupConfirmed) {
             cleanupConfirmed = false;
             setServiceState('warning', '任务清理待确认');
@@ -4883,6 +6339,7 @@ async function restart() {
     sseRetryCount = 0;
     generationResult = null;
     lastGenerationConfig = null;
+    lastAmbiguousRecoveryTarget = null;
     resetTaskVoiceConfiguration();
 
     // 重置 Step 1
@@ -4900,6 +6357,7 @@ async function restart() {
     // 重置 Step 3
     $('progress-bar').style.width = '0%';
     $('progress-bar').parentElement?.setAttribute('aria-valuenow', '0');
+    setProgressIndeterminate(false);
     $('progress-stats').textContent = '准备中...';
     $('progress-percent').textContent = '0';
     $('progress-completed-label').textContent = '已完成';

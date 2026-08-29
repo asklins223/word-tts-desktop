@@ -24,6 +24,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ELECTRON_DIR="$SCRIPT_DIR/electron"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements_electron.txt"
 PRODUCT_NAME="小猪wordTTS"
+BUILD_PYTHON_CMD=""
+BUILD_VENV_DIR=""
+
+cleanup_build_environment() {
+    # Only remove the venv created by this invocation at the exact mktemp path.
+    if [ -n "$BUILD_VENV_DIR" ] && [ -d "$BUILD_VENV_DIR" ]; then
+        rm -rf "$BUILD_VENV_DIR"
+    fi
+}
+
+trap cleanup_build_environment EXIT
 
 case "$(uname -m)" in
     arm64)
@@ -78,32 +89,31 @@ check_environment() {
         err "未找到 python3，请先安装 Python 3.10+"
         exit 1
     fi
-    echo "  Python: $(python3 --version)"
+    local python_cmd
+    python_cmd="$(command -v python3)"
+    echo "  Python: $("$python_cmd" --version)"
 
-    # electron-builder 的 DMG 打包工具需要 `python` 命令（非 python3）
-    # macOS Homebrew 默认只安装 python3，需要创建符号链接
-    if ! command -v python &> /dev/null; then
-        PYTHON3_PATH="$(command -v python3)"
-        if [ -n "$PYTHON3_PATH" ]; then
-            # 优先尝试 /usr/local/bin（需要权限）
-            if [ -w /usr/local/bin ] || [ -w "$(dirname /usr/local/bin)" ]; then
-                ln -sf "$PYTHON3_PATH" /usr/local/bin/python 2>/dev/null && echo "  已创建 /usr/local/bin/python 链接"
-            fi
-            # 如果仍不可用，创建临时 bin 目录并加入 PATH
-            if ! command -v python &> /dev/null; then
-                TMP_BIN="$SCRIPT_DIR/.build_bin"
-                mkdir -p "$TMP_BIN"
-                ln -sf "$PYTHON3_PATH" "$TMP_BIN/python"
-                export PATH="$TMP_BIN:$PATH"
-                echo "  已创建临时 python 链接: $TMP_BIN/python"
-            fi
-        fi
+    # Homebrew Python 遵循 PEP 668，不能直接向系统环境 pip install。
+    # 未处于 venv 时自动创建一次性、精确路径的构建 venv，避免构建依赖
+    # 污染用户环境；CI 的 setup-python/venv 则直接复用已有隔离环境。
+    if ! "$python_cmd" -c 'import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+        warn "当前未使用 Python 虚拟环境；为本次构建创建一次性隔离环境"
+        BUILD_VENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wordtts-build-venv.XXXXXX")"
+        "$python_cmd" -m venv "$BUILD_VENV_DIR"
+        python_cmd="$BUILD_VENV_DIR/bin/python"
+        export PATH="$BUILD_VENV_DIR/bin:$PATH"
+        echo "  已创建构建 venv: $BUILD_VENV_DIR"
     fi
+    BUILD_PYTHON_CMD="$python_cmd"
 
-    local isolated_python=1
-    if ! python3 -c 'import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
-        isolated_python=0
-        warn "当前未使用 Python 虚拟环境；建议在独立 venv 中构建，避免全局可选依赖影响分析结果"
+    # electron-builder 的 DMG 工具需要 `python` 命令；激活 venv 时已由
+    # PATH 提供，否则只在仓库忽略的临时目录创建精确链接。
+    if ! command -v python &> /dev/null; then
+        local tmp_bin="$SCRIPT_DIR/.build_bin"
+        mkdir -p "$tmp_bin"
+        ln -sf "$BUILD_PYTHON_CMD" "$tmp_bin/python"
+        export PATH="$tmp_bin:$PATH"
+        echo "  已创建临时 python 链接: $tmp_bin/python"
     fi
 
     # 只从 Electron 专用依赖清单同步当前解释器，避免零散安装导致版本漂移。
@@ -112,11 +122,9 @@ check_environment() {
         exit 1
     fi
     log "同步 Electron Python 构建依赖..."
-    python3 -m pip install --disable-pip-version-check -r "$REQUIREMENTS_FILE"
-    if [ "$isolated_python" -eq 1 ]; then
-        python3 -m pip check
-    fi
-    python3 -c "from importlib.metadata import version; raise SystemExit(0 if version('playwright') == '1.56.0' else 1)" || {
+    "$BUILD_PYTHON_CMD" -m pip install --disable-pip-version-check -r "$REQUIREMENTS_FILE"
+    "$BUILD_PYTHON_CMD" -m pip check
+    "$BUILD_PYTHON_CMD" -c "from importlib.metadata import version; raise SystemExit(0 if version('playwright') == '1.56.0' else 1)" || {
         err "Playwright 版本必须为 1.56.0"
         exit 1
     }
@@ -127,6 +135,12 @@ check_environment() {
         exit 1
     fi
     echo "  Node.js: $(node --version)"
+    local node_major
+    node_major="$(node -p 'process.versions.node.split(".")[0]')"
+    if [ "$node_major" != "24" ]; then
+        err "项目构建要求 Node.js 24.x，当前为 $(node --version)；请使用 Node 24 后重试"
+        exit 1
+    fi
 
     # electron-builder
     if [ ! -d "$ELECTRON_DIR/node_modules/electron-builder" ]; then
@@ -138,7 +152,7 @@ check_environment() {
 
     # 此命令幂等，只会补齐 Playwright 1.56.0 所要求的准确 Chromium revision。
     log "检查 Playwright Chromium..."
-    python3 -m playwright install chromium
+    "$BUILD_PYTHON_CMD" -m playwright install chromium
 
     echo "  环境检查通过 ✓"
 }
@@ -157,7 +171,7 @@ build_python_backend() {
     rm -rf "$PYINSTALLER_DIST" "$PYINSTALLER_WORK"
 
     cd "$SCRIPT_DIR"
-    python3 -m PyInstaller server_pyinstaller.spec \
+    "$BUILD_PYTHON_CMD" -m PyInstaller server_pyinstaller.spec \
         --noconfirm \
         --distpath "$PYINSTALLER_DIST" \
         --workpath "$PYINSTALLER_WORK"
@@ -211,7 +225,7 @@ build_electron_app() {
     log "=== 步骤 2/2: electron-builder 打包应用 ==="
 
     log "生成 macOS / Windows 应用图标..."
-    python3 "$SCRIPT_DIR/scripts/build_app_icons.py"
+    "$BUILD_PYTHON_CMD" "$SCRIPT_DIR/scripts/build_app_icons.py"
 
     # 确认后端产物存在
     if [ ! -d "$ELECTRON_DIR/server_backend_build/server_backend" ]; then
@@ -364,6 +378,18 @@ build_electron_app() {
     else
         warn "签名验证未通过（ad-hoc 签名可能被 Gatekeeper 拦截）"
     fi
+
+    # 在创建 DMG 前验证最终 .app 内的 Playwright driver、Chromium 和
+    # Electron Node 回退路径，避免只验证源码或 PyInstaller 目录而漏掉
+    # 实际分发包中的运行时缺件。
+    log "验证打包 Playwright/Chromium..."
+    "$app_path/Contents/Resources/server_backend/server_backend" --smoke-playwright
+
+    # 再验证最终 Electron 壳、主进程、Preload、Renderer 和后端启动协议；
+    # --smoke-test 会强制离线，不登录讯飞、不产生第三方副作用。
+    log "验证打包 Electron 桌面端..."
+    env -u ELECTRON_RUN_AS_NODE -u PLAYWRIGHT_NODEJS_PATH \
+        "$app_path/Contents/MacOS/$PRODUCT_NAME" --smoke-test
 
     # ---- 手动创建 DMG（绕过 electron-builder 的 dmgbuild bug） ----
     log "创建 DMG 安装包..."

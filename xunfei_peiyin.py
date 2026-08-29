@@ -26,11 +26,13 @@ import sys
 import time
 import json
 import hashlib
+import atexit
+import queue
 import threading
 import uuid
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from functools import partial
 
 from playwright.sync_api import sync_playwright
@@ -256,6 +258,65 @@ def _check_cancel_requested(cancel_check):
         raise XunfeiCancelled("讯飞批量任务已取消，已停止后续提交")
 
 
+def _check_page_open(page):
+    """Raise a typed cancellation when Playwright reports a closed page."""
+
+    if page is None:
+        return
+    try:
+        is_closed = getattr(page, "is_closed", None)
+        # ``MagicMock``/旧测试桩返回的对象不能按 truthiness 判断，否则会
+        # 被误认为已关闭；真实 Playwright API 返回精确 bool。
+        if callable(is_closed) and is_closed() is True:
+            raise XunfeiCancelled("讯飞浏览器页面已关闭，已停止当前操作")
+    except XunfeiCancelled:
+        raise
+    except Exception:
+        # 页面状态探针本身失败时，让后续 Playwright 调用给出原始错误；
+        # 这里不能把短暂的探针异常误判成用户关闭浏览器。
+        return
+
+
+def _wait_with_cancel(page, seconds, cancel_check=None):
+    """Wait in short Playwright slices so close/cancel becomes responsive."""
+
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        _check_cancel_requested(cancel_check)
+        _check_page_open(page)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        delay_ms = max(1, min(250, int(remaining * 1000)))
+        try:
+            if page is not None:
+                page.wait_for_timeout(delay_ms)
+            else:
+                time.sleep(delay_ms / 1000)
+        except Exception:
+            _check_page_open(page)
+            raise
+
+
+def _notify_runtime_progress(callback, *, stage, message, **extra):
+    """Send redacted browser lifecycle progress without affecting generation."""
+
+    if not callable(callback):
+        return
+    payload = {
+        "stage": str(stage)[:64],
+        "status": str(stage)[:64],
+        "message": " ".join(str(message or "").split())[:500],
+    }
+    for key in ("item_id", "work_id", "works_name"):
+        if extra.get(key) not in (None, ""):
+            payload[key] = str(extra[key])[:256]
+    try:
+        callback(payload)
+    except Exception as error:
+        _log(f"[xunfei] 浏览器进度回调异常（已忽略）: {error}")
+
+
 # ============================================================================
 # 发音人配置
 # ============================================================================
@@ -456,6 +517,60 @@ class JS:
     }
     """
 
+    DISMISS_LOCAL_DRAFT_PROMPT = """
+    () => {
+        // 讯飞编辑页会把上一次被中断的编辑内容保存在自己的 local
+        // storage 中。重新打开持久化 Chrome profile 后，页面会先显示
+        // “发现本地缓存”拦截层；它通常不是 ant-modal，也没有稳定的
+        // class/role，不能只依赖通用弹窗选择器。当前 WordTTS 任务已经
+        // 在自己的数据库中保存了正文，因此这里明确选择“空白开始”，
+        // 让自动化继续输入本次任务的内容。
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+
+        const roots = [];
+        for (const element of document.querySelectorAll('body *')) {
+            if (!visible(element)) continue;
+            const text = normalize(element.innerText || element.textContent || '');
+            const cacheNotice = text.includes('发现本地缓存')
+                || text.includes('检测到本地编辑缓存')
+                || text.includes('本地编辑缓存');
+            const recoveryChoice = text.includes('恢复本地缓存')
+                || text.includes('是否恢复')
+                || text.includes('空白开始');
+            if (!cacheNotice || !recoveryChoice) continue;
+            roots.push({element, size: text.length});
+        }
+        roots.sort((left, right) => left.size - right.size);
+        for (const {element} of roots) {
+            const controls = element.querySelectorAll(
+                'button, [role="button"], [tabindex]'
+            );
+            for (const control of controls) {
+                if (!visible(control)) continue;
+                if (control.disabled || control.getAttribute('aria-disabled') === 'true') continue;
+                const label = normalize(control.innerText || control.textContent || '');
+                if (label === '空白开始'
+                    || label === '从空白开始'
+                    || label === '新建空白'
+                    || label === '不恢复缓存') {
+                    control.click();
+                    return 'clicked';
+                }
+            }
+        }
+        return roots.length ? 'blocked' : 'not_found';
+    }
+    """
+
     CHECK_NO_VISIBLE_MODAL = """
     () => {
         const visible = (el) => {
@@ -601,6 +716,53 @@ class JS:
     }
     """
 
+    PLACE_CARET_AT_ROW_END = """
+    (rowIndex) => {
+        // 一次 evaluate 完成“光标放到行尾”：聚焦编辑器、滚动到该行、
+        // 把原生 Selection 折叠到该行最后一个正文文本节点末尾。停顿按钮
+        // 只在编辑器当前原生光标处插入标记，所以折叠光标与原脚本
+        // “选整行 -> ArrowRight”等价，但省掉两三次重型 select_text 往返。
+        // 焦点必须在同一次调用里归还编辑器，否则工具栏点击时
+        // activeElement 还在音色面板上，点“2s”只会打开菜单。
+        const paragraph = document.querySelectorAll('.ssml-editor p')[Number(rowIndex)];
+        if (!paragraph) return { ok: false, reason: 'row_missing' };
+        const editor = paragraph.closest('.ssml-editor');
+        if (!editor) return { ok: false, reason: 'editor_missing' };
+        paragraph.scrollIntoView({
+            block: 'center',
+            inline: 'nearest',
+            behavior: 'instant',
+        });
+        const isMetadata = (node) => Boolean(
+            node?.parentElement?.closest(
+                '.ssml-tag, .ssml-editor-placeholder, [data-type="range_anchor"]'
+            )
+        );
+        const textNodes = [];
+        const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node) {
+            if (!isMetadata(node) && node.textContent?.length) textNodes.push(node);
+            node = walker.nextNode();
+        }
+        const last = textNodes[textNodes.length - 1];
+        if (!last) return { ok: false, reason: 'no_text' };
+        editor.focus();
+        const range = document.createRange();
+        range.setStart(last, last.textContent?.length || 0);
+        range.setEnd(last, last.textContent?.length || 0);
+        const selection = window.getSelection();
+        if (!selection) return { ok: false, reason: 'no_selection' };
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return {
+            ok: true,
+            text: String(last.textContent || ''),
+            collapsed: range.collapsed === true,
+        };
+    }
+    """
+
     CLEAR_EDITOR = """
     () => {
         const editor = document.querySelector('.ssml-editor');
@@ -635,7 +797,7 @@ class JS:
 
     CHECK_VOICE_SELECTED = """
     (name) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
         const expected = normalize(name);
         const visible = (element) => {
             const style = window.getComputedStyle(element);
@@ -649,7 +811,7 @@ class JS:
         const selected = (button) => {
             const ariaSelected = button.getAttribute('aria-selected');
             const style = window.getComputedStyle(button);
-            const inlineStyle = String(button.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+            const inlineStyle = String(button.getAttribute('style') || '').replace(/\\s+/g, '').toLowerCase();
             const hasSelectedBorder = style.borderColor === 'rgb(26, 145, 255)'
                 || inlineStyle.includes('border:1pxsolidrgb(26,145,255)')
                 || inlineStyle.includes('border:1pxsolid#1a91ff');
@@ -677,7 +839,7 @@ class JS:
 
     SEARCH_AND_CLICK_VOICE = """
     (name) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
         const expected = normalize(name);
         const visible = (element) => {
             const style = window.getComputedStyle(element);
@@ -712,7 +874,7 @@ class JS:
 
     CHECK_SEARCH_RESULT = """
     (name) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, '').trim();
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
         const expected = normalize(name);
         const visible = (element) => {
             const style = window.getComputedStyle(element);
@@ -1549,6 +1711,7 @@ def _poll(
     upper_interval = max(current_interval, float(max_interval or current_interval * 2.5))
     while True:
         _check_cancel_requested(cancel_check)
+        _check_page_open(page)
         try:
             result = check_fn()
             if result:
@@ -1564,7 +1727,11 @@ def _poll(
             remaining,
         )
         if page is not None:
-            page.wait_for_timeout(int(sleep_s * 1000))
+            try:
+                page.wait_for_timeout(int(sleep_s * 1000))
+            except Exception:
+                _check_page_open(page)
+                raise
         else:
             time.sleep(sleep_s)
         current_interval = min(upper_interval, current_interval * 1.35)
@@ -1631,6 +1798,7 @@ class XunFeiSession:
         self._ctx = None
         self._page = None
         self._logged_in = False
+        self._browser_disconnected = False
         self._real_ua = None
         # 页面状态跟踪（页面复用的关键）。音色 key 和页面显示名称都保留：
         # key 防止同名音色串用，页面回读防止讯飞提交后把音色恢复为默认值。
@@ -1910,13 +2078,33 @@ class XunFeiSession:
     # ------------------------------------------------------------------
 
     def _is_logged_in(self, page):
-        """检测是否已登录：登录按钮消失 = 已登录"""
+        """检测是否已登录：可见登录按钮消失 = 已登录。
+
+        讯飞页面会把登录入口保留在隐藏菜单、模板节点或无障碍树中。
+        扫描所有 ``button`` 会把这些不可见节点误判为“未登录”，导致
+        浏览器已经打开后，后台无期限等待用户再次扫码。
+        """
         try:
-            btns = page.locator("button")
-            for i in range(min(btns.count(), 30)):
+            if getattr(self, "_browser_disconnected", False) or page.is_closed():
+                return False
+            current_url = str(getattr(page, "url", "") or "").lower()
+            if any(marker in current_url for marker in ("/login", "/signin", "/auth/")):
+                return False
+            btns = page.locator("button:visible, [role='button']:visible")
+            for i in range(min(btns.count(), 50)):
                 try:
-                    txt = btns.nth(i).inner_text().strip()
-                    if txt == "登录":
+                    txt = re.sub(r"\s+", "", btns.nth(i).inner_text()).strip()
+                    if txt in {"登录", "立即登录", "扫码登录", "手机号登录", "登录注册"}:
+                        return False
+                except Exception:
+                    pass
+            dialogs = page.locator(
+                ".ant-modal:visible, [role='dialog']:visible, .el-dialog:visible"
+            )
+            for i in range(min(dialogs.count(), 20)):
+                try:
+                    text = re.sub(r"\s+", "", dialogs.nth(i).inner_text()).strip()
+                    if "登录" in text and any(token in text for token in ("扫码", "手机号", "验证码")):
                         return False
                 except Exception:
                     pass
@@ -3322,6 +3510,7 @@ class XunFeiSession:
             interval=0.35,
             max_interval=1.0,
             page=page,
+            cancel_check=cancel_check,
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
         if clicked2:
@@ -3689,28 +3878,110 @@ class XunFeiSession:
         if not ready:
             self._pause(page, 0.25, 0.08)
 
-    def _recover_and_retry(self, page):
+    def _recover_and_retry(self, page, cancel_check=None):
         """合成失败后恢复页面状态（重新加载编辑页，重置音色/参数记忆）。"""
         try:
+            _check_cancel_requested(cancel_check)
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_selector(".ssml-editor", timeout=30000)
+            editor_ready = _poll(
+                lambda: bool(page.locator(".ssml-editor:visible").count()),
+                timeout=30,
+                interval=0.25,
+                max_interval=1.0,
+                page=page,
+                cancel_check=cancel_check,
+            )
+            if not editor_ready:
+                _log("[xunfei]   页面恢复后编辑器未就绪")
+                return False
+            if not self._dismiss_local_draft_prompt(page, cancel_check=cancel_check):
+                _log("[xunfei]   页面仍被本地缓存恢复弹窗遮挡")
+                return False
             self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None
             return True
+        except XunfeiCancelled:
+            raise
         except Exception as e:
             _log(f"[xunfei]   页面恢复失败: {e}")
             return False
+
+    def _recover_for_retry(self, page, cancel_check=None):
+        """兼容旧调用桩，同时把真实取消探针传入页面恢复。"""
+        if cancel_check is None:
+            return self._recover_and_retry(page)
+        return self._recover_and_retry(page, cancel_check=cancel_check)
+
+    def _dismiss_local_draft_prompt(self, page, timeout=8, cancel_check=None):
+        """清除讯飞持久 profile 遗留的本地编辑缓存提示。"""
+        # 该层由前端异步挂载。首次 evaluate 发生在编辑器已经出现、但
+        # 缓存提示尚未完成渲染的窗口内时，立即返回 ``not_found`` 会让
+        # 后续输入动作撞上刚刚出现的遮罩层。只在本地页面上短暂等待它
+        # 自己出现；没有提示时最多增加约 1.5 秒，不把正常启动变成长轮询。
+        _check_cancel_requested(cancel_check)
+        state = _safe_eval(page, JS.DISMISS_LOCAL_DRAFT_PROMPT)
+        detect_deadline = time.monotonic() + min(1.5, max(0.0, float(timeout)))
+        while state == "not_found" and time.monotonic() < detect_deadline:
+            _check_cancel_requested(cancel_check)
+            try:
+                page.wait_for_timeout(100)
+            except Exception:
+                break
+            state = _safe_eval(page, JS.DISMISS_LOCAL_DRAFT_PROMPT)
+        # 旧版测试桩/兼容页面没有实现这个新探针，会返回 None 或 Mock；
+        # 不应因此阻断原有的生成流程。真实页面的探针始终返回字符串。
+        if not isinstance(state, str):
+            return True
+        if state == "not_found":
+            return True
+        if state != "clicked":
+            _log(
+                "[xunfei]   检测到讯飞本地缓存恢复弹窗，但未找到“空白开始”按钮"
+            )
+            return False
+
+        cleared = _poll(
+            lambda: (
+                True
+                if _safe_eval(page, JS.DISMISS_LOCAL_DRAFT_PROMPT) == "not_found"
+                else None
+            ),
+            timeout=timeout,
+            interval=0.15,
+            max_interval=0.5,
+            page=page,
+            cancel_check=cancel_check,
+        )
+        if cleared:
+            _log("[xunfei]   已清除讯飞上次中断留下的本地编辑缓存")
+        else:
+            _log("[xunfei]   讯飞本地缓存恢复弹窗关闭超时")
+        return bool(cleared)
 
     # ------------------------------------------------------------------
     # 登录与会话
     # ------------------------------------------------------------------
 
-    def login(self, login_timeout=300):
+    def _mark_browser_disconnected(self, *_args):
+        """Make a manually closed/crashed Chrome session fail health checks."""
+        if not self._browser_disconnected:
+            _log("[xunfei] 浏览器窗口已关闭或连接断开，将在下次任务中重建会话")
+        self._browser_disconnected = True
+        self._logged_in = False
+
+    def login(self, login_timeout=300, cancel_check=None, progress_callback=None):
         """
         打开可见的 Chrome 浏览器，导航到讯飞配音。
         首次需要手动登录（手机号+验证码），后续自动复用已保存的登录状态。
         """
+        self._browser_disconnected = False
+        _check_cancel_requested(cancel_check)
+        _notify_runtime_progress(
+            progress_callback,
+            stage="browser_starting",
+            message="正在启动讯飞浏览器会话",
+        )
         self._playwright = sync_playwright().start()
 
         chrome_path = _find_chrome()
@@ -3788,6 +4059,15 @@ class XunFeiSession:
         self._ctx.add_init_script(STEALTH_SCRIPT)
         self._ctx.add_init_script(MUTE_AUDIO_SCRIPT)
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        try:
+            self._ctx.on("close", self._mark_browser_disconnected)
+        except Exception:
+            pass
+        for event_name in ("close", "crash"):
+            try:
+                self._page.on(event_name, self._mark_browser_disconnected)
+            except Exception:
+                pass
 
         # 注册网络响应监听（整个会话期间持续捕获 worksId / sign_url）
         self._response_handler = self._on_response
@@ -3800,54 +4080,124 @@ class XunFeiSession:
         except Exception:
             pass
 
+        try:
+            self._page.bring_to_front()
+        except Exception:
+            pass
         _log("[xunfei] 正在打开讯飞配音...")
+        _notify_runtime_progress(
+            progress_callback,
+            stage="page_loading",
+            message="正在打开讯飞配音页面",
+        )
 
         try:
             self._page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
         except Exception as goto_error:
             _log(f"[xunfei] 首次加载提示: {goto_error}")
 
-        # 不再按秒轮询 document.readyState。讯飞页面可能持续有网络请求，
-        # readyState=complete 并不等于编辑器可用；直接等待真正需要的编辑器
-        # 节点，页面一旦就绪就立即继续，避免启动阶段白占 CPU 和最多 30 秒。
-        try:
-            self._page.wait_for_selector(
-                ".ssml-editor", state="attached", timeout=30000
-            )
-        except Exception:
+        def editor_visible():
+            try:
+                return bool(self._page.locator(".ssml-editor:visible").count())
+            except Exception:
+                return False
+
+        def page_readiness():
+            if self._browser_disconnected:
+                return "disconnected"
+            # Detect the login surface as soon as it is rendered. Waiting for
+            # the editor first made a logged-out/reloaded page look frozen for
+            # two consecutive 30-second waits even though the user only needed
+            # to complete the visible login step.
+            if not self._is_logged_in(self._page):
+                return "login"
+            return "editor" if editor_visible() else None
+
+        # 不再让一个不可取消的 wait_for_selector 把“返回配置”卡住 30 秒。
+        # 按短间隔探测编辑器或登录界面，同时让 cancel_check 能中断登录/重建。
+        readiness = _poll(
+            page_readiness,
+            timeout=30,
+            interval=0.25,
+            max_interval=1.0,
+            page=self._page,
+            cancel_check=cancel_check,
+        )
+        if readiness == "disconnected":
+            raise XunfeiError("讯飞浏览器连接已断开")
+        if not readiness:
             _log("[xunfei] 页面编辑器未找到，重试加载...")
+            _notify_runtime_progress(
+                progress_callback,
+                stage="page_reloading",
+                message="页面加载较慢，正在重新建立讯飞页面",
+            )
+            _check_cancel_requested(cancel_check)
             try:
                 self._page.goto(
                     HOME_URL, wait_until="domcontentloaded", timeout=60000
                 )
             except Exception:
                 pass
-            try:
-                self._page.wait_for_selector(
-                    ".ssml-editor", state="attached", timeout=30000
-                )
-            except Exception:
+            readiness = _poll(
+                page_readiness,
+                timeout=30,
+                interval=0.25,
+                max_interval=1.0,
+                page=self._page,
+                cancel_check=cancel_check,
+            )
+            if readiness == "disconnected":
+                raise XunfeiError("讯飞浏览器连接已断开")
+            if not readiness:
                 raise XunfeiError("无法加载讯飞配音编辑器")
 
+        if readiness == "editor":
+            _notify_runtime_progress(
+                progress_callback,
+                stage="editor_ready",
+                message="讯飞配音编辑器已就绪",
+            )
+        if readiness == "editor" and not self._dismiss_local_draft_prompt(self._page, cancel_check=cancel_check):
+            raise XunfeiError("讯飞页面被本地缓存恢复弹窗遮挡")
+
         # 检测登录状态
-        if self._is_logged_in(self._page):
+        if readiness == "editor" and self._is_logged_in(self._page):
             _log("[xunfei] 检测到已保存的登录状态，无需重新登录")
         else:
+            _notify_runtime_progress(
+                progress_callback,
+                stage="waiting_login",
+                message="等待你在讯飞浏览器中完成登录",
+            )
             _log("[xunfei] 登录状态无效，请在浏览器中手动登录...")
             _log(f"[xunfei] 等待用户登录（超时 {login_timeout} 秒）...")
             deadline = time.time() + login_timeout
             logged = False
+            next_status_log = time.monotonic() + 10
             while time.time() < deadline:
-                self._page.wait_for_timeout(2000)
+                _check_cancel_requested(cancel_check)
+                if self._browser_disconnected:
+                    raise XunfeiError("讯飞浏览器连接已断开")
+                self._page.wait_for_timeout(500)
                 if self._is_logged_in(self._page):
-                    if self._page.locator(".ssml-editor").count() > 0:
+                    if editor_visible():
                         logged = True
                         break
+                if time.monotonic() >= next_status_log:
+                    _log(f"[xunfei] 仍在等待登录/页面就绪（当前页面: {self._page.url}）")
+                    next_status_log = time.monotonic() + 10
             if not logged:
                 raise XunfeiLoginRequired(
                     f"等待登录超时（{login_timeout}秒），讯飞配音登录未完成"
                 )
             _log("[xunfei] 登录成功！")
+
+        _notify_runtime_progress(
+            progress_callback,
+            stage="session_ready",
+            message="讯飞浏览器会话已就绪，开始提交生成任务",
+        )
 
         self._logged_in = True
 
@@ -4002,6 +4352,265 @@ class XunFeiSession:
                 return True
         except Exception:
             pass
+        return False
+
+    @staticmethod
+    def _composite_pause_duration_candidates(value):
+        """把讯飞停顿控件的展示/属性值转换为毫秒候选。
+
+        讯飞页面的不同版本分别出现过 ``2s``、``2 秒``、``2000ms`` 和
+        ``data-value=2000``。停顿菜单不是公开 API，不能只依赖其中一个
+        文案或属性；这里仅解析明确的时长表达式，不做模糊的字符串包含。
+        """
+        text = str(value or "").strip().casefold()
+        if not text:
+            return []
+        text = re.sub(r"\s+", "", text)
+        candidates = []
+        for match in re.finditer(
+            r"(?<![\d.])(\d+(?:\.\d+)?)(ms|毫秒|s|秒)(?!\w)",
+            text,
+        ):
+            number = float(match.group(1))
+            unit = match.group(2)
+            milliseconds = number if unit in {"ms", "毫秒"} else number * 1000
+            if milliseconds.is_integer():
+                candidates.append(int(milliseconds))
+        clock = re.search(r"(?<!\d)(\d+)[:：](\d{1,2})(?!\d)", text)
+        if clock:
+            candidates.append(int(clock.group(1)) * 60_000 + int(clock.group(2)) * 1000)
+        if re.fullmatch(r"\d+(?:\.\d+)?", text):
+            number = float(text)
+            if number.is_integer():
+                # 裸数字在 data-value 中通常是毫秒，在 data-duration 中
+                # 也可能表示秒；调用方会同时比较这两种解释。
+                candidates.extend((int(number), int(number * 1000)))
+        return sorted(set(candidates))
+
+    @classmethod
+    def _composite_pause_metadata_matches(cls, item, boundary_ms):
+        """严格判断一个可见控件是否代表目标时长的停顿。"""
+        expected = int(boundary_ms)
+        if not isinstance(item, dict) or item.get("disabled") or item.get("isEditorMarker"):
+            return False
+        type_text = cls._normalize_composite_ui_text(item.get("dataType"))
+        class_text = cls._normalize_composite_ui_text(item.get("className"))
+        pause_type = bool(re.search(r"break|pause|停顿", f"{type_text} {class_text}"))
+        values = [
+            item.get("text"),
+            item.get("ariaLabel"),
+            item.get("title"),
+            item.get("dataValue"),
+            item.get("dataDuration"),
+            item.get("dataMs"),
+            item.get("dataTime"),
+        ]
+        for value in values:
+            if expected in cls._composite_pause_duration_candidates(value):
+                return True
+            # 某些页面只在 data-type=break 节点上保留裸秒数，例如
+            # data-value="2"；没有 break/pause 语义时不接受这种解释，
+            # 避免误点其它带数字的工具控件。
+            if pause_type:
+                try:
+                    number = float(str(value).strip())
+                except (TypeError, ValueError):
+                    number = None
+                if number is not None and (
+                    int(number) == expected or int(number * 1000) == expected
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _composite_pause_control_selector():
+        """返回停顿工具/菜单的可见控件选择器。
+
+        停顿菜单可能是 button，也可能是带 data-value 的 div；不能只查
+        button，否则页面会显示工具栏却永远找不到可插入的 2s 选项。
+        """
+        return (
+            'button:visible, [role="button"]:visible, '
+            '[role="menuitem"]:visible, .ant-dropdown-menu-item:visible, '
+            '.ant-menu-item:visible, li:visible, '
+            '[data-type="break"]:visible, [data-type="pause"]:visible, '
+            '[data-value]:visible, [data-duration]:visible, [data-ms]:visible, '
+            '[data-time]:visible, [aria-label]:visible, [title]:visible, '
+            '.cursor-pointer:visible'
+        )
+
+    @classmethod
+    def _composite_pause_control_metadata(cls, page):
+        controls = page.locator(cls._composite_pause_control_selector())
+        metadata = controls.evaluate_all(
+            """els => els.map((el, index) => ({
+                index,
+                tagName: el.tagName || '',
+                role: el.getAttribute('role') || '',
+                text: (el.innerText || el.textContent || '').trim(),
+                ariaLabel: el.getAttribute('aria-label') || '',
+                title: el.getAttribute('title') || '',
+                dataType: el.getAttribute('data-type') || '',
+                dataValue: el.getAttribute('data-value') || '',
+                dataDuration: el.getAttribute('data-duration') || '',
+                dataMs: el.getAttribute('data-ms') || '',
+                dataTime: el.getAttribute('data-time') || '',
+                className: typeof el.className === 'string' ? el.className : '',
+                disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+                isEditorMarker: !!el.closest('.ssml-editor') && (
+                    el.matches('[data-type="break"], [data-type="pause"]')
+                    || /break|pause/i.test(typeof el.className === 'string' ? el.className : '')
+                ),
+            }))"""
+        )
+        return controls, metadata if isinstance(metadata, list) else []
+
+    @classmethod
+    def _click_composite_pause_duration(
+        cls, page, boundary_ms, *, restore_selection=None
+    ):
+        """在当前编辑器工具栏/弹出菜单中点击目标停顿时长。"""
+        try:
+            controls, metadata = cls._composite_pause_control_metadata(page)
+        except Exception:
+            return False
+        matches = [
+            item for item in metadata[:400]
+            if cls._composite_pause_metadata_matches(item, boundary_ms)
+        ]
+        # 真实 button/role button 优先，避免先点到带 title 的内部 span。
+        matches.sort(
+            key=lambda item: (
+                0 if str(item.get("tagName") or "").upper() == "BUTTON" else 1,
+                0 if str(item.get("role") or "") == "button" else 1,
+                int(item.get("index", 0)),
+            )
+        )
+        for item in matches:
+            try:
+                if callable(restore_selection):
+                    restore_selection()
+                controls.nth(int(item["index"])).click(timeout=3000)
+                return True
+            except Exception:
+                continue
+        return False
+
+    @classmethod
+    def _click_composite_pause_control(
+        cls, page, boundary_ms, *, restore_selection=None
+    ):
+        """打开必要的停顿菜单并点击目标时长，返回是否完成页面点击。
+
+        老版本页面把 ``2s`` 直接放在工具栏，新版本先显示“停顿”按钮，
+        点击后才挂载时长菜单。两条路径都必须使用真实 Playwright click；
+        不调用页面内部 React 方法，也不伪造编辑器 DOM。
+        """
+        if cls._click_composite_pause_duration(
+            page,
+            boundary_ms,
+            restore_selection=restore_selection,
+        ):
+            return True
+
+        try:
+            controls, metadata = cls._composite_pause_control_metadata(page)
+        except Exception:
+            return False
+
+        def is_pause_trigger(item):
+            if not isinstance(item, dict) or item.get("disabled") or item.get("isEditorMarker"):
+                return False
+            labels = (
+                str(item.get("text") or ""),
+                str(item.get("ariaLabel") or ""),
+                str(item.get("title") or ""),
+            )
+            normalized = " ".join(labels).casefold()
+            return (
+                "停顿" in normalized
+                or "pause" in normalized
+                or "insert break" in normalized
+            )
+
+        triggers = [item for item in metadata[:400] if is_pause_trigger(item)]
+        triggers.sort(
+            key=lambda item: (
+                0 if str(item.get("tagName") or "").upper() == "BUTTON" else 1,
+                0 if str(item.get("role") or "") == "button" else 1,
+                int(item.get("index", 0)),
+            )
+        )
+        for item in triggers:
+            try:
+                # 工具栏的 mousedown 可能会保存当前原生 Selection；先在
+                # 同一个 contenteditable 中恢复精确的行尾折叠选区，避免
+                # 点击“停顿”时编辑器拿到的是上一次音色面板的选区。
+                if callable(restore_selection):
+                    restore_selection()
+                controls.nth(int(item["index"])).click(timeout=3000)
+            except Exception:
+                continue
+            # 规范的编辑器会在工具栏 mousedown 时保留 Selection，但部分
+            # 页面版本只在菜单打开后才完成这个动作。回调只恢复浏览器
+            # Selection，不修改页面内容；由调用方提供精确的目标正文。
+            if callable(restore_selection):
+                try:
+                    restore_selection()
+                except Exception:
+                    pass
+            target_clicked = _poll(
+                lambda: cls._click_composite_pause_duration(
+                    page,
+                    boundary_ms,
+                    restore_selection=restore_selection,
+                ),
+                timeout=2,
+                interval=0.04,
+                max_interval=0.2,
+                page=page,
+            )
+            if target_clicked:
+                return True
+            # 有的页面“停顿”按钮本身就是固定时长插入按钮，没有单独的
+            # 菜单项。把这次真实点击交给后面的 DOM 回读判断；若没有
+            # 产生目标标记，调用方会明确报错，不会继续提交。
+            if not item.get("dataValue") and not item.get("dataDuration"):
+                return True
+
+        # 工具栏折叠时，停顿入口可能藏在“更多/展开”菜单里；只接受
+        # 明确的更多工具文案，避免误点任务详情等其它“展开”按钮。
+        def is_more_trigger(item):
+            if not isinstance(item, dict) or item.get("disabled") or item.get("isEditorMarker"):
+                return False
+            value = " ".join(
+                str(item.get(key) or "")
+                for key in ("text", "ariaLabel", "title")
+            ).casefold()
+            return any(token in value for token in ("更多工具", "更多功能", "more tools", "more"))
+
+        for item in [item for item in metadata[:400] if is_more_trigger(item)]:
+            try:
+                controls.nth(int(item["index"])).click(timeout=3000)
+            except Exception:
+                continue
+            if callable(restore_selection):
+                try:
+                    restore_selection()
+                except Exception:
+                    pass
+            if _poll(
+                lambda: cls._click_composite_pause_duration(
+                    page,
+                    boundary_ms,
+                    restore_selection=restore_selection,
+                ),
+                timeout=1.5,
+                interval=0.04,
+                max_interval=0.2,
+                page=page,
+            ):
+                return True
         return False
 
     @classmethod
@@ -4695,14 +5304,59 @@ class XunFeiSession:
         ]
         try:
             result = page.evaluate(
-                """expected => expected.map(({row, value}) => {
-                    const paragraph = document.querySelectorAll('.ssml-editor p')[row];
-                    const count = paragraph
-                        ? Array.from(paragraph.querySelectorAll('[data-type="break"]'))
-                            .filter(el => el.getAttribute('data-value') === value).length
-                        : 0;
-                    return {row, value, count};
-                }).filter(item => item.count !== 1)""",
+                """expected => {
+                    const normalize = (raw) => String(raw || '')
+                        .replace(/\\s+/g, '')
+                        .toLowerCase();
+                    const parseDurations = (raw) => {
+                        const text = normalize(raw);
+                        if (!text) return [];
+                        const values = [];
+                        for (const match of text.matchAll(
+                            /(?<![\\d.])(\\d+(?:\\.\\d+)?)(ms|毫秒|s|秒)(?!\\w)/g
+                        )) {
+                            const number = Number(match[1]);
+                            values.push((match[2] === 'ms' || match[2] === '毫秒')
+                                ? number : number * 1000);
+                        }
+                        const clock = text.match(/(?<!\\d)(\\d+)[:：](\\d{1,2})(?!\\d)/);
+                        if (clock) values.push(Number(clock[1]) * 60000 + Number(clock[2]) * 1000);
+                        if (/^\\d+(?:\\.\\d+)?$/.test(text)) {
+                            const number = Number(text);
+                            values.push(number, number * 1000);
+                        }
+                        return values.filter(Number.isFinite);
+                    };
+                    const isTargetPause = (el, value) => {
+                        const type = normalize(el.getAttribute('data-type'));
+                        const className = normalize(
+                            typeof el.className === 'string' ? el.className : ''
+                        );
+                        const pauseType = /break|pause|停顿/.test(`${type} ${className}`);
+                        if (!pauseType) return false;
+                        const rawValues = [
+                            el.getAttribute('data-value'),
+                            el.getAttribute('data-duration'),
+                            el.getAttribute('data-ms'),
+                            el.getAttribute('data-time'),
+                            el.getAttribute('aria-label'),
+                            el.getAttribute('title'),
+                            el.textContent,
+                        ];
+                        return rawValues.some((raw) => parseDurations(raw).some(
+                            (duration) => Math.round(duration) === Number(value)
+                        ));
+                    };
+                    const paragraphs = document.querySelectorAll('.ssml-editor p');
+                    return expected.map(({row, value}) => {
+                        const paragraph = paragraphs[row];
+                        const nodes = paragraph
+                            ? [paragraph, ...paragraph.querySelectorAll('*')]
+                            : [];
+                        const count = nodes.filter((el) => isTargetPause(el, value)).length;
+                        return {row, value, count};
+                    }).filter(item => item.count !== 1);
+                }""",
                 expected,
             )
         except Exception:
@@ -4715,41 +5369,110 @@ class XunFeiSession:
     ):
         """在指定题目末行末尾通过页面停顿按钮插入内部定位标记。"""
         paragraphs = page.locator(".ssml-editor p")
-        paragraph = paragraphs.nth(row_index)
-        # 先选中整行，再用方向键折叠到文本末尾，避免点击段落中部把
-        # 停顿插到句中或被浏览器保留为跨段选区。正常路径直接在当前页面
-        # 建立正文 Range，避免每处停顿额外等待一次 Playwright select_text；
-        # 页面版本不接受该选区时再回退到原生方式。
-        fast_selection = _safe_eval(page, JS.SELECT_EDITOR_ROW, row_index)
-        fast_box = fast_selection.get("box") if isinstance(fast_selection, dict) else None
-        if not isinstance(fast_box, dict) or not fast_selection.get("text"):
-            if row_index < 0 or row_index >= paragraphs.count():
-                raise XunfeiError("多人配音停顿位置超出编辑器段落范围")
-            paragraph.select_text(timeout=5000)
-        else:
-            page.wait_for_timeout(10)
-        page.keyboard.press("ArrowRight")
-        # select_text + ArrowRight 都是同步的浏览器输入动作；只给页面
-        # 一个很短的事件循环机会，实际插入结果由下面的回读轮询确认。
-        page.wait_for_timeout(10)
+        if row_index < 0 or row_index >= paragraphs.count():
+            raise XunfeiError("多人配音停顿位置超出编辑器段落范围")
         label = f"{int(boundary_ms) / 1000:g}s"
+
+        def marker_present():
+            return not cls._read_composite_pause_issues(page, [(row_index, boundary_ms)])
+
+        def settled(clicked):
+            # verify=False 的批量路径依赖随后的整批回读修复；单次插入只
+            # 以点击成功为完成条件。verify=True 时必须回读到标记才算数。
+            if not clicked:
+                return False
+            return not verify or marker_present()
+
+        def log_inserted():
+            if emit_log:
+                _log(f"[xunfei]   已在第 {row_index + 1} 行后插入 {label} 停顿")
+
+        # 主路径：一次 evaluate 把原生光标折叠到该行末尾（等价于原脚本
+        # “选整行 -> ArrowRight”的落点，但省掉两三次重型 select_text
+        # 往返），再用一步定位的真实 click 点击停顿时长按钮。是否真正
+        # 插入由回读校验决定，失败才逐级降级。
+        try:
+            placed = page.evaluate(JS.PLACE_CARET_AT_ROW_END, row_index)
+        except Exception:
+            placed = None
+        if isinstance(placed, dict) and placed.get("ok"):
+            if settled(cls._click_composite_ui_control(page, label)):
+                log_inserted()
+                return
+
+        # 原脚本契约回退：JS 选整行 -> ArrowRight 折叠到行尾。程序化
+        # 光标不被页面认账时，这个方向键折叠仍然有效。
+        fast_box = _safe_eval(page, JS.SELECT_EDITOR_ROW, row_index)
+        if not isinstance(fast_box, dict) or not fast_box.get("text"):
+            paragraphs.nth(row_index).select_text(timeout=5000)
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(10)
+        if settled(cls._click_composite_ui_control(page, label)):
+            log_inserted()
+            return
+
+        # 最终兜底：原生 select_text 保证焦点、选区和页面键盘事件属于
+        # 同一个 contenteditable，再配合整页元数据扫描和停顿菜单路径。
+        paragraph = paragraphs.nth(row_index)
+        target = paragraph
+        try:
+            content = paragraph.locator(
+                'span.range-annotation-content.speaker-content'
+                ':not(.ssml-tag):not([data-type="range_anchor"]):visible'
+            )
+            if content.count() == 1:
+                target = content.first
+        except Exception:
+            target = paragraph
+        try:
+            target.scroll_into_view_if_needed(timeout=5000)
+            target.select_text(timeout=5000)
+        except Exception:
+            # 页面版本可能没有 speaker-content 包裹未标注正文；整段 p
+            # 仍然是同一个编辑器原生选区，作为安全回退。
+            paragraph.scroll_into_view_if_needed(timeout=5000)
+            paragraph.select_text(timeout=5000)
+
+        def collapse_pause_selection_to_end():
+            """重建原脚本的“选整行 -> ArrowRight -> 行尾”契约。"""
+            try:
+                target.scroll_into_view_if_needed(timeout=5000)
+                target.select_text(timeout=5000)
+            except Exception:
+                paragraph.scroll_into_view_if_needed(timeout=5000)
+                paragraph.select_text(timeout=5000)
+            page.keyboard.press("ArrowRight")
+            # select_text + ArrowRight 都是同步的浏览器输入动作；给页面
+            # 一个很短的事件循环机会，实际插入结果由下面的回读轮询确认。
+            page.wait_for_timeout(20)
+
+        collapse_pause_selection_to_end()
+
+        def restore_selection():
+            collapse_pause_selection_to_end()
+
         clicked = _poll(
             lambda: (
-                True if cls._click_composite_ui_control(page, label) else None
+                True
+                if cls._click_composite_pause_control(
+                    page,
+                    boundary_ms,
+                    restore_selection=restore_selection,
+                )
+                else None
             ),
-            timeout=1.5,
+            timeout=2.5,
             interval=0.04,
             max_interval=0.2,
             page=page,
         )
         if not clicked:
-            raise XunfeiError(f"未找到讯飞停顿按钮: {label}")
+            raise XunfeiError(f"未找到讯飞停顿按钮或时长菜单: {label}")
         if verify:
-            selector = (
-                f'[data-type="break"][data-value="{int(boundary_ms)}"]'
-            )
             inserted = _poll(
-                lambda: paragraphs.nth(row_index).locator(selector).count() > 0,
+                lambda: not cls._read_composite_pause_issues(
+                    page, [(row_index, boundary_ms)]
+                ),
                 timeout=3,
                 interval=0.04,
                 max_interval=0.2,
@@ -4759,8 +5482,7 @@ class XunFeiSession:
                 raise XunfeiError(
                     f"讯飞停顿插入校验失败：第 {row_index + 1} 行未找到 {boundary_ms}ms 标记"
                 )
-        if emit_log:
-            _log(f"[xunfei]   已在第 {row_index + 1} 行后插入 {label} 停顿")
+        log_inserted()
 
     @classmethod
     def _prepare_composite_editor(cls, page, work):
@@ -4900,6 +5622,8 @@ class XunFeiSession:
         )
 
         pause_started_at = time.perf_counter()
+        if boundaries and not cls._close_composite_voice_panel(page):
+            raise XunfeiError("多人配音音色面板未关闭，无法定位停顿工具栏")
         for row_index, boundary_ms in boundaries:
             cls._insert_composite_pause(
                 page,
@@ -4972,6 +5696,8 @@ class XunFeiSession:
         )
         last_error = None
         for attempt in range(1, max_retries + 1):
+            self._confirm_click_succeeded = False
+            self._submission_state_uncertain = False
             _check_cancel_requested(cancel_check)
             submission_confirmed = False
             _log(
@@ -4979,8 +5705,10 @@ class XunFeiSession:
                 f"{works_name}（{len(work.get('item_ids') or [])} 道题）"
             )
             try:
+                if not self._dismiss_local_draft_prompt(page, cancel_check=cancel_check):
+                    raise XunfeiError("讯飞页面被本地缓存恢复弹窗遮挡")
                 if page.locator(".ssml-editor").count() == 0:
-                    if not self._recover_and_retry(page):
+                    if not self._recover_for_retry(page, cancel_check):
                         raise XunfeiError("页面恢复失败")
 
                 # 文本、连续同配置批量选区、音色/参数和内部停顿均通过
@@ -5084,8 +5812,8 @@ class XunFeiSession:
                 last_error = error
                 cooldown = 18 + (time.time() % 10) * 2
                 _log(f"[xunfei]   多人配音频控冷却 {cooldown:.0f}s 后重试提交")
-                page.wait_for_timeout(int(cooldown * 1000))
-                if attempt < max_retries and not self._recover_and_retry(page):
+                _wait_with_cancel(page, cooldown, cancel_check=cancel_check)
+                if attempt < max_retries and not self._recover_for_retry(page, cancel_check):
                     break
             except Exception as error:
                 if submission_confirmed:
@@ -5096,7 +5824,7 @@ class XunFeiSession:
                     ) from error
                 last_error = error
                 _log(f"[xunfei]   多人配音提交异常: {error}")
-                if attempt < max_retries and not self._recover_and_retry(page):
+                if attempt < max_retries and not self._recover_for_retry(page, cancel_check):
                     break
         raise XunfeiError(f"讯飞多人配音生成失败：{last_error or '已重试仍未成功'}")
 
@@ -5134,12 +5862,16 @@ class XunFeiSession:
         page = self._page
         last_error = None
         for attempt in range(1, max_retries + 1):
+            self._confirm_click_succeeded = False
+            self._submission_state_uncertain = False
             _check_cancel_requested(cancel_check)
             submission_confirmed = False
             _log(f"[xunfei]   第 {attempt}/{max_retries} 次尝试提交...")
             try:
+                if not self._dismiss_local_draft_prompt(page, cancel_check=cancel_check):
+                    raise XunfeiError("讯飞页面被本地缓存恢复弹窗遮挡")
                 if page.locator(".ssml-editor").count() == 0:
-                    if not self._recover_and_retry(page):
+                    if not self._recover_for_retry(page, cancel_check):
                         raise XunfeiError("页面恢复失败")
 
                 # 同组任务命中这两个缓存时，不会重复切换音色或设置参数。
@@ -5251,8 +5983,8 @@ class XunFeiSession:
                 last_error = error
                 cooldown = 18 + (time.time() % 10) * 2
                 _log(f"[xunfei]   频控冷却 {cooldown:.0f}s 后重试提交")
-                page.wait_for_timeout(int(cooldown * 1000))
-                self._recover_and_retry(page)
+                _wait_with_cancel(page, cooldown, cancel_check=cancel_check)
+                self._recover_for_retry(page, cancel_check)
             except Exception as attempt_error:
                 if submission_confirmed:
                     raise XunfeiSubmissionAmbiguous(
@@ -5262,7 +5994,7 @@ class XunFeiSession:
                     ) from attempt_error
                 last_error = attempt_error
                 _log(f"[xunfei]   第 {attempt} 次提交异常: {attempt_error}")
-                if not self._recover_and_retry(page):
+                if not self._recover_for_retry(page, cancel_check):
                     break
 
         raise XunfeiError(f"讯飞配音生成失败：{last_error or '已重试仍未成功'}")
@@ -6156,6 +6888,13 @@ class XunFeiSession:
                     works_name = self._normalize_works_name(
                         (previous or {}).get("works_name") or work["works_name"]
                     )
+                    report_progress({
+                        "work_id": work_id,
+                        "job_id": work_id,
+                        "works_name": works_name,
+                        "stage": "reconciling",
+                        "downloaded": False,
+                    })
                     recovered_works_id = self._recover_works_id_by_name(
                         self._page,
                         works_name,
@@ -6180,6 +6919,14 @@ class XunFeiSession:
                         f"[xunfei] ♻️ 通过作品名找回多人配音作品 "
                         f"worksId={recovered_works_id} work={work_id}"
                     )
+                    report_progress({
+                        "work_id": work_id,
+                        "job_id": work_id,
+                        "works_id": str(recovered_works_id),
+                        "works_name": works_name,
+                        "stage": "reconciled",
+                        "downloaded": False,
+                    })
                 else:
                     generate_kwargs = {
                         "output_name": work.get("output_name"),
@@ -6403,6 +7150,7 @@ class XunFeiSession:
             self._page = None
             self._playwright = None
             self._logged_in = False
+            self._browser_disconnected = True
             self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None
@@ -6439,16 +7187,91 @@ _playwright_executor = None
 _playwright_executor_lock = threading.Lock()
 
 
+class _DaemonSingleThreadExecutor:
+    """Run Playwright Sync API calls on one daemon thread without hanging exit.
+
+    ``asyncio`` only requires an executor-like object with ``submit`` for
+    ``run_in_executor``.  ``ThreadPoolExecutor`` deliberately uses non-daemon
+    workers, which kept a finished test process alive after the last assertion
+    whenever a Playwright call had been made.  The browser session must still
+    be serialized, but an abandoned worker must not prevent the application or
+    test runner from exiting.
+    """
+
+    def __init__(self, *, thread_name: str):
+        self._tasks = queue.Queue()
+        self._lock = threading.Lock()
+        self._shutdown = False
+        self._thread = threading.Thread(
+            target=self._worker,
+            name=thread_name,
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, function, *args, **kwargs):
+        future = Future()
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            self._tasks.put((future, function, args, kwargs))
+        return future
+
+    def _worker(self):
+        while True:
+            task = self._tasks.get()
+            if task is None:
+                return
+            future, function, args, kwargs = task
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                result = function(*args, **kwargs)
+            except BaseException as error:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        with self._lock:
+            if not self._shutdown:
+                self._shutdown = True
+                if cancel_futures:
+                    while True:
+                        try:
+                            task = self._tasks.get_nowait()
+                        except queue.Empty:
+                            break
+                        if task is not None:
+                            task[0].cancel()
+                self._tasks.put(None)
+            thread = self._thread
+        if wait and threading.current_thread() is not thread:
+            thread.join()
+
+
 def _get_playwright_executor():
     """返回专供 Playwright Sync API 使用的单线程执行器。"""
     global _playwright_executor
     with _playwright_executor_lock:
         if _playwright_executor is None:
-            _playwright_executor = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="xunfei-playwright",
+            _playwright_executor = _DaemonSingleThreadExecutor(
+                thread_name="xunfei-playwright",
             )
         return _playwright_executor
+
+
+def _shutdown_playwright_executor(wait=True):
+    """Release the dedicated worker after a browser session is closed."""
+    global _playwright_executor
+    with _playwright_executor_lock:
+        executor = _playwright_executor
+        _playwright_executor = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+
+
+atexit.register(_shutdown_playwright_executor, False)
 
 
 def _notify_batch_progress(callback, payload):
@@ -6485,6 +7308,8 @@ def _session_is_healthy(session):
         return False
     if not getattr(session, "_logged_in", False):
         return False
+    if getattr(session, "_browser_disconnected", False):
+        return False
     page = getattr(session, "_page", None)
     ctx = getattr(session, "_ctx", None)
     if page is None or ctx is None:
@@ -6502,7 +7327,7 @@ def _discard_session_unsafe():
     _session = None
 
 
-async def ensure_session(voice_key="amanda"):
+async def ensure_session(voice_key="amanda", cancel_check=None, progress_callback=None):
     """
     确保讯飞配音浏览器会话已登录。
     如果会话不存在或已损坏，则创建并打开浏览器等待用户登录。
@@ -6520,19 +7345,57 @@ async def ensure_session(voice_key="amanda"):
             if _session is not None:
                 if _session_is_healthy(_session):
                     return _session
+                # A user closing the Playwright window leaves the Python
+                # session object and its profile lock alive.  Drop the global
+                # reference and close that stale object on this same
+                # Playwright executor thread before creating a replacement.
+                stale = _session
                 _discard_session_unsafe()
+                try:
+                    stale.close()
+                except Exception as error:
+                    _log(f"[xunfei] 清理失效浏览器会话异常（继续重建）: {error}")
             session = XunFeiSession(voice_key=voice_key)
+            # Publish the candidate while login is still in progress.  If the
+            # user closes the newly opened browser before login/editor
+            # readiness, the adapter can inspect the same session and mark it
+            # as a safe pre-confirm handoff instead of losing the disconnect
+            # signal because the normal post-login assignment was never hit.
+            _session = session
             try:
-                session.login(login_timeout=300)
+                login_kwargs = {"login_timeout": 300}
+                if cancel_check is not None:
+                    login_kwargs["cancel_check"] = cancel_check
+                if progress_callback is not None:
+                    login_kwargs["progress_callback"] = progress_callback
+                # Keep compatibility with injected test/legacy session
+                # implementations that predate one or both observability
+                # hooks. Only remove a keyword when Python explicitly reports
+                # that keyword as unsupported.
+                while True:
+                    try:
+                        session.login(**login_kwargs)
+                        break
+                    except TypeError as error:
+                        message = str(error)
+                        unsupported = next(
+                            (key for key in ("progress_callback", "cancel_check")
+                             if key in login_kwargs and key in message),
+                            None,
+                        )
+                        if unsupported is None:
+                            raise
+                        login_kwargs.pop(unsupported, None)
             except Exception:
                 try:
                     session.close()
                 except Exception:
                     pass
                 raise
-            # 必须在线程内写入全局会话。否则两个 asyncio 任务同时首次
+            # 必须在线程内确认全局会话。否则两个 asyncio 任务同时首次
             # 调用 ensure_session 时，第二个任务可能在主事件循环中看见
-            # 仍为空，再创建第二个 Playwright Sync 会话。
+            # 仍为空，再创建第二个 Playwright Sync 会话；这里通常已经
+            # 在 login 前发布过同一个对象，赋值仍保留作显式不变量。
             _session = session
             return session
 
@@ -6622,7 +7485,11 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
 
     import asyncio
     first_voice = str((jobs[0] or {}).get("voice_key") or DEFAULT_FEMALE)
-    session = await ensure_session(voice_key=first_voice)
+    session = await ensure_session(
+        voice_key=first_voice,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
     normalized_jobs = []
     for index, job in enumerate(jobs):
         item = dict(job)
@@ -6727,7 +7594,11 @@ async def synth_xunfei_composite(
         )
     except (AttributeError, IndexError, TypeError):
         pass
-    session = await ensure_session(voice_key=first_voice)
+    session = await ensure_session(
+        voice_key=first_voice,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
     normalized_works = []
     for index, work in enumerate(works, start=1):
         item = dict(work)
@@ -6830,17 +7701,18 @@ async def synth_xunfei_composite(
 async def close_session():
     """关闭讯飞配音浏览器会话。"""
     global _session
-    import asyncio
 
     with _session_lock:
         old = _session
         _session = None
-    if old is not None:
-        try:
+    try:
+        if old is not None:
             await _run_playwright_sync(old.close)
             _log("[xunfei] 浏览器会话已关闭")
-        except Exception as e:
-            _log(f"[xunfei] 关闭浏览器会话异常: {e}")
+    except Exception as e:
+        _log(f"[xunfei] 关闭浏览器会话异常: {e}")
+    finally:
+        _shutdown_playwright_executor()
 
 
 # ============================================================================

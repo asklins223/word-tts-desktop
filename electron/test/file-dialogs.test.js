@@ -46,6 +46,7 @@ function createHarness(overrides = {}) {
         getMainWindow: overrides.getMainWindow || (() => owner),
         isTrustedSender: overrides.isTrustedSender || (() => true),
         logger: { log() {}, error() {} },
+        maxContentBytes: overrides.maxContentBytes,
     });
     return { service, owner, event, calls };
 }
@@ -64,6 +65,29 @@ test('选择 Word 使用 IPC 发起窗口作为原生对话框父窗口', async 
     ]);
     assert.deepEqual(calls.open[0][1].properties, ['openFile']);
     assert.equal(calls.focus, 1);
+});
+
+test('原生源文件选择返回受控流句柄和大小，不读取整份文件到内存', async () => {
+    let closed = 0;
+    const { service, event } = createHarness({
+        fs: {
+            constants: { O_RDONLY: 0, O_NOFOLLOW: 0 },
+            promises: {
+                open: async () => ({
+                    stat: async () => ({ isFile: () => true, size: 12345 }),
+                    close: async () => { closed += 1; },
+                }),
+            },
+        },
+    });
+    const result = await service.selectFileSource(event);
+
+    assert.equal(result.success, true);
+    assert.equal(result.fileName, 'lesson.docx');
+    assert.equal(result.sizeBytes, 12345);
+    assert.ok(result.handle);
+    await result.handle.close();
+    assert.equal(closed, 1);
 });
 
 test('原生文件框打开前会恢复并显示当前窗口', async () => {
@@ -117,6 +141,48 @@ test('保存文件弹出系统保存框并复制到用户选择的位置', async
     assert.equal(calls.save[0][0], owner);
     assert.equal(calls.save[0][1].defaultPath, path.join('/Downloads', 'lesson.mp3'));
     assert.deepEqual(calls.copy, [['/safe/lesson.mp3', '/chosen/lesson.mp3']]);
+});
+
+test('保存内存字节先 fsync 临时文件再原子替换目标文件', async () => {
+    const writes = [];
+    const opens = [];
+    const renames = [];
+    const unlinks = [];
+    const { service, event } = createHarness({
+        fs: {
+            promises: {
+                writeFile: async (...args) => { writes.push(args); },
+                open: async (...args) => {
+                    opens.push(args);
+                    return {
+                        sync: async () => {},
+                        close: async () => {},
+                    };
+                },
+                rename: async (...args) => { renames.push(args); },
+                unlink: async (...args) => { unlinks.push(args); },
+            },
+        },
+    });
+
+    const result = await service.saveFileContent(event, new Uint8Array([1, 2, 3]), '../lesson.mp3');
+
+    assert.deepEqual(result, { success: true });
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0][1].toString('hex'), '010203');
+    assert.deepEqual(writes[0][2], { flag: 'wx' });
+    assert.equal(opens.length, 1);
+    assert.equal(opens[0][0], writes[0][0]);
+    assert.deepEqual(renames, [[writes[0][0], '/chosen/lesson.mp3']]);
+    assert.deepEqual(unlinks, []);
+});
+
+test('保存内存字节超过上限时不会弹出保存框', async () => {
+    const { service, event, calls } = createHarness({ maxContentBytes: 2 });
+    const result = await service.saveFileContent(event, Buffer.from([1, 2, 3]), 'lesson.mp3');
+
+    assert.deepEqual(result, { success: false, reason: 'file-too-large' });
+    assert.equal(calls.save.length, 0);
 });
 
 test('保存文件的所有失败分支都返回非空结构化原因', async (t) => {

@@ -128,6 +128,122 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual([row["item_index"] for row in rows], [0, 0, 1])
         self.assertEqual(boundaries, [(1, 2000)])
 
+    def test_composite_pause_insertion_opens_menu_and_inserts_target_marker(self):
+        """停顿入口先开菜单时，必须点击目标时长并回读页面节点。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <style>
+          #pause-menu { position: fixed; left: 20px; top: 40px; }
+          .ssml-editor { width: 640px; border: 1px solid #999; }
+        </style>
+        <div id="toolbar">
+          <button id="pause-trigger" type="button" aria-label="停顿">停顿</button>
+          <div id="pause-menu" style="display:none">
+            <div class="cursor-pointer" data-value="500">0.5s</div>
+            <div class="cursor-pointer" data-value="2000">2 秒</div>
+          </div>
+        </div>
+        <div class="ssml-editor" contenteditable="true">
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">Amanda</b>
+            <span class="range-annotation-content speaker-content">First line.</span>
+          </span></p>
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">George</b>
+            <span class="range-annotation-content speaker-content">Second line.</span>
+          </span></p>
+        </div>
+        <script>
+          // 真实编辑器的工具栏会在 mousedown 时保留 Selection，避免
+          // 点击菜单后选区被工具栏自身夺走；测试桩也模拟这个页面契约。
+          const savedSelections = new Map();
+          const saveSelection = () => {
+            const selection = window.getSelection();
+            if (!selection || !selection.rangeCount) return;
+            savedSelections.set('pause', selection.getRangeAt(0).cloneRange());
+          };
+          document.getElementById('pause-trigger').addEventListener('mousedown', (event) => {
+            saveSelection();
+            event.preventDefault();
+          });
+          document.getElementById('pause-trigger').onclick = () => {
+            document.getElementById('pause-menu').style.display = 'block';
+          };
+          document.querySelectorAll('#pause-menu [data-value]').forEach((option) => {
+            option.addEventListener('mousedown', (event) => {
+              const range = savedSelections.get('pause');
+              if (range) {
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+              }
+              event.preventDefault();
+            });
+            option.onclick = () => {
+              const selection = window.getSelection();
+              if (!selection || !selection.rangeCount) return;
+              const range = selection.getRangeAt(0);
+              const anchor = selection.anchorNode;
+              const paragraph = anchor && (anchor.parentElement || anchor).closest('p');
+              if (!paragraph || !range.collapsed) return;
+              const marker = document.createElement('span');
+              marker.className = 'ssml-tag pause-marker';
+              marker.setAttribute('data-type', 'break');
+              marker.setAttribute('data-value', option.dataset.value);
+              range.insertNode(marker);
+            };
+          });
+        </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                XunFeiSession._insert_composite_pause(page, 0, 2000)
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]').count(),
+                    1,
+                )
+                self.assertEqual(
+                    XunFeiSession._read_composite_pause_issues(
+                        page, [(0, 2000)]
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('.speaker-content').inner_text(),
+                    'First line.',
+                )
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]')
+                    .evaluate("el => el.previousSibling && el.previousSibling.textContent"),
+                    'First line.',
+                )
+            finally:
+                browser.close()
+
+    def test_composite_pause_duration_matching_rejects_wrong_duration(self):
+        self.assertTrue(
+            XunFeiSession._composite_pause_metadata_matches(
+                {"text": "插入停顿 2 秒"}, 2000
+            )
+        )
+        self.assertTrue(
+            XunFeiSession._composite_pause_metadata_matches(
+                {"dataType": "break", "dataValue": "2"}, 2000
+            )
+        )
+        self.assertFalse(
+            XunFeiSession._composite_pause_metadata_matches(
+                {"text": "1s"}, 2000
+            )
+        )
+
     def test_composite_rows_batch_only_contiguous_equal_signatures(self):
         session = XunFeiSession()
         rows = [
@@ -1040,6 +1156,33 @@ class XunfeiFlowTests(unittest.TestCase):
         )
         self.assertGreaterEqual(delayed_page.calls, 2)
 
+    def test_interrupted_xunfei_draft_prompt_is_dismissed_before_reuse(self):
+        """中断后复用持久浏览器时，不能让讯飞本地缓存提示拦住新任务。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div id="draft-prompt" style="display:block;width:420px;height:180px">
+          <strong>发现本地缓存</strong>
+          <p>检测到上一次编辑内容，是否恢复？</p>
+          <button id="blank" type="button"
+                  onclick="document.getElementById('draft-prompt').remove()">
+            空白开始
+          </button>
+          <button type="button">恢复本地缓存</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true"></div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            session = XunFeiSession()
+
+            self.assertTrue(session._dismiss_local_draft_prompt(page, timeout=1))
+            self.assertEqual(page.locator("#draft-prompt").count(), 0)
+            self.assertEqual(page.locator(".ssml-editor").count(), 1)
+            browser.close()
+
     def test_order_modal_does_not_wait_for_missing_ai_switch_again(self):
         """订单支付弹窗出现后，不应再次等待不存在的作品设置开关。"""
         session = XunFeiSession()
@@ -1878,6 +2021,35 @@ class XunfeiFlowTests(unittest.TestCase):
 
         self.assertIs(first, second)
         self.assertEqual(len(created), 1)
+
+    def test_failed_login_keeps_candidate_session_for_disconnect_classification(self):
+        original_session = xunfei._session
+        original_available = xunfei.is_available
+        original_session_class = xunfei.XunFeiSession
+
+        class FailedLoginSession:
+            def __init__(self, voice_key="amanda"):
+                self.voice_key = voice_key
+                self._browser_disconnected = False
+
+            def login(self, **_kwargs):
+                raise RuntimeError("Target page, context or browser has been closed")
+
+            def close(self):
+                self._browser_disconnected = True
+
+        xunfei._session = None
+        xunfei.is_available = lambda: True
+        xunfei.XunFeiSession = FailedLoginSession
+        try:
+            with self.assertRaises(RuntimeError):
+                asyncio.run(xunfei.ensure_session())
+            self.assertIsInstance(xunfei._session, FailedLoginSession)
+            self.assertTrue(xunfei._session._browser_disconnected)
+        finally:
+            xunfei._session = original_session
+            xunfei.is_available = original_available
+            xunfei.XunFeiSession = original_session_class
 
 
 if __name__ == "__main__":

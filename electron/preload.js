@@ -6,15 +6,31 @@
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
+const { createWorkflowApi } = require('./workflow-api');
+const { createWorkflowEventTransport } = require('./workflow-event-transport');
+const { createWorkflowArtifactTransport } = require('./workflow-artifact-transport');
+
+const workflow = createWorkflowApi({
+    request: (input) => ipcRenderer.invoke('workflow-request', input),
+    uploadSourceFile: (input) => ipcRenderer.invoke('workflow-source-upload', input),
+    openEvents: createWorkflowEventTransport(ipcRenderer),
+    openArtifactStream: createWorkflowArtifactTransport(ipcRenderer),
+});
 
 contextBridge.exposeInMainWorld('electronAPI', {
     // 文件操作
-    selectFile: () => ipcRenderer.invoke('select-file'),
-    saveFileByPath: (sourcePath, suggestedName) => ipcRenderer.invoke('save-file-by-path', sourcePath, suggestedName),
-    showInFolder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
+    // Native selection uses an opaque streaming handle; the byte-returning
+    // method remains as a compatibility fallback for older renderer callers.
+    selectFile: () => ipcRenderer.invoke('select-source-file'),
+    selectFileStream: () => ipcRenderer.invoke('select-source-file-stream'),
+    saveFile: (bytes, suggestedName) => ipcRenderer.invoke('save-artifact-file', bytes, suggestedName),
+    saveArtifactStream: (artifactId, suggestedName) => ipcRenderer.invoke(
+        'save-artifact-stream',
+        { artifactId, suggestedName },
+    ),
 
-    // 服务器
-    backend: ipcRenderer.sendSync('backend-config'),
+    // 服务器能力保留在主进程；renderer 只能通过下方的受限 workflow proxy 访问。
+    workflow,
     serverReady: () => ipcRenderer.invoke('server-ready'),
     onAppNotice: (callback) => {
         if (typeof callback !== 'function') return () => {};
