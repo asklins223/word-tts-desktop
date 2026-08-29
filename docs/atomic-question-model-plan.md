@@ -817,6 +817,7 @@ external_operation_targets(
 | 阶段1 | revmatch-v1 revision 匹配 + document_revision_members | df75d01 |
 | 阶段2 | OperationPlan/不可变 Scope/AUDIO 任务 + work_items 投影 + legacy_aliases | 1fcc1f9 |
 | 阶段4 | 统一 OperationRunner/OperationAdapter + ExternalUpsertAdapter 接线 | f1dafdb |
+| 阶段4 | 真实 TTS 引擎接入（TtsEngineAudioAdapter，音色策略按注册表） | 42ddbf0 |
 
 关键设计修正（实施中确认）：
 
@@ -827,7 +828,7 @@ external_operation_targets(
 
 待完成：
 
-1. 真实 TTS 引擎接入 OperationAdapter（现用 FakeAudioAdapter 干跑）；
+1. ~~真实 TTS 引擎接入 OperationAdapter~~ 已完成（42ddbf0，TtsEngineAudioAdapter 接 wordtts 合成核心，引擎函数可注入）；
 2. 阶段3 统一结构分段器（各 Parser 仍独立重扫全文）与听后选择/信息转述业务字段抽取；
 3. 旧 UI 命令桥接与 progress.json 单向投影元数据（schema_version/generation）；
 4. 历史数据回填脚本（legacy_aliases 的存量回填部分）；
