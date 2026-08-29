@@ -26,7 +26,7 @@
 
 ## 当前可重复验证
 
-本轮 2.7.45 最新证据：Python `309` 项、Electron Node tests `84` 项通过（新增 source-staging 分块暂存 8 项、Store workspace 投影 4 项、停顿快速路径优先级 1 项）；2A gate、OpenAPI 契约检查通过后重新打包并更新 DMG 校验和。正式包默认启用真实 Provider，只有 `--smoke-test`、`--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 才进入离线路径。
+本轮 2.7.45 最新证据：Python `309` 项、Electron Node tests `84` 项通过（新增 source-staging 分块暂存 8 项、Store workspace 投影 4 项、停顿快速路径优先级 1 项）；2A gate、OpenAPI 契约检查通过。当前 DMG 为 [`小猪wordTTS-2.7.45-arm64.dmg`](../electron/release/小猪wordTTS-2.7.45-arm64.dmg)，SHA-256=`31c5d9ffb536f361c3629f81d1e0928a1338c2a552b8dc1396167a5f16df067f`，已通过后端 Playwright/Chromium smoke、桌面 `--smoke-test` 与 ad-hoc 签名校验。正式包默认启用真实 Provider，只有 `--smoke-test`、`--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 才进入离线路径。
 
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py' -q
