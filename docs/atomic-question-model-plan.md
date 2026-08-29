@@ -797,3 +797,38 @@ external_operation_targets(
 9. category 解耦和新原子模型到旧 TTS `work_items`/`progress.json` 的兼容投影。
 
 在这九项完成前，不建议直接开发外部录入适配器，也不建议继续向当前 `category` 字段堆叠更多小题型含义。
+
+## 12. 实施状态（2026-08-29 更新）
+
+基线：`tools/parse_baseline.py` + `examples/baselines/parse/20260829-pre-atomic-model/`
+（13 份示例文档 465 条，两解析路径逐条一致；每次提交前指纹比对零回归）。
+
+已完成：
+
+| 切片 | 内容 | 提交 |
+| --- | --- | --- |
+| 基线 | 解析基线快照工具 + 方案冻结 | 62cb17c |
+| 阶段1 | question_model 规范化模型 + ParseCandidate + 信息获取/听后选择抽取器 | c4ba382 |
+| 阶段1 | 全部 7 大题型接入（11 个小题型含预留） | e2b9ee6 |
+| 阶段1 | ParseCandidate 裁决层（显式标记优先/唯一 owner/AMBIGUOUS） | a308919 |
+| 阶段2 | v0006 全部表 + 幂等落库仓储 | b022a36 |
+| 重构 | 两级题型注册表（family + sub_type，能力/音色/命名挂小题型） | 3bc0e51 |
+| 阶段4 | v0007 external_record/operation_targets + 多态目标 trigger | 772a74f |
+| 阶段1 | revmatch-v1 revision 匹配 + document_revision_members | df75d01 |
+| 阶段2 | OperationPlan/不可变 Scope/AUDIO 任务 + work_items 投影 + legacy_aliases | 1fcc1f9 |
+| 阶段4 | 统一 OperationRunner/OperationAdapter + ExternalUpsertAdapter 接线 | f1dafdb |
+
+关键设计修正（实施中确认）：
+
+- 信息获取文档题目在录音稿**之前**，小题关联到后续第一段录音稿；
+- content_hash 为纯内容指纹（不含身份），revision id = 身份+内容派生；
+- 文档版本成员关系由 `document_revision_members` 表达（revision 行内容寻址可复用）；
+- 模仿朗读/词汇为叶子题型（业务确认），外网/教材与单词/例句是属性不是小题型。
+
+待完成：
+
+1. 真实 TTS 引擎接入 OperationAdapter（现用 FakeAudioAdapter 干跑）；
+2. 阶段3 统一结构分段器（各 Parser 仍独立重扫全文）与听后选择/信息转述业务字段抽取；
+3. 旧 UI 命令桥接与 progress.json 单向投影元数据（schema_version/generation）；
+4. 历史数据回填脚本（legacy_aliases 的存量回填部分）；
+5. 阶段5A 灰度/feature flag/监控指标。
