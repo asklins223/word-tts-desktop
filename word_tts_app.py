@@ -151,7 +151,7 @@ from word_parser import parse_document_auto, PARSER_MAP
 
 # ---- 讯飞配音客户端（统一 TTS 引擎，女声/男声均使用）----
 try:
-    import xunfei_peiyin as _xunfei
+    import xunfei as _xunfei
     _XUNFEI_AVAILABLE = _xunfei.is_available()
 except Exception:
     _XUNFEI_AVAILABLE = False

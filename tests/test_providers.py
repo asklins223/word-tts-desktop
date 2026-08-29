@@ -117,7 +117,7 @@ class ProviderTests(unittest.TestCase):
         )
 
     def test_closed_page_transport_error_is_safe_before_confirmation(self) -> None:
-        import xunfei_peiyin as legacy
+        import xunfei.runtime as legacy
 
         class ClosedPage:
             def is_closed(self):

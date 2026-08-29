@@ -53,7 +53,20 @@ hiddenimports = [
     # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx / openpyxl 的导入。
     'docx',
     'openpyxl',
-    'xunfei_peiyin',
+    'xunfei',
+    'xunfei.config',
+    'xunfei.errors',
+    'xunfei.signing',
+    'xunfei.voice_catalog',
+    'xunfei.page_scripts',
+    'xunfei.page_actions',
+    'xunfei.downloads',
+    'xunfei.composite_actions',
+    'xunfei.generation',
+    'xunfei.submission_tracker',
+    'xunfei.helpers',
+    'xunfei.session',
+    'xunfei.runtime',
     'xunfei_voice_catalog',
     # 只使用同步 Playwright API。playwright 自带的官方 PyInstaller hook
     # 会收集 driver/package；下方在 Analysis 后剔除重复的 Node 可执行文件。

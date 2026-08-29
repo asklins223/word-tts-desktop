@@ -8,8 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import xunfei_peiyin as xunfei
-from xunfei_peiyin import XunFeiSession
+import xunfei
+import xunfei.downloads as xunfei_downloads
+import xunfei.runtime as xunfei_runtime
+from xunfei import XunFeiSession
 
 
 class _FakeKeyboard:
@@ -1143,25 +1145,25 @@ class XunfeiFlowTests(unittest.TestCase):
             browser.close()
 
     def test_existing_sync_session_is_checked_off_the_asyncio_loop(self):
-        original_session = xunfei._session
-        original_available = xunfei.is_available
-        original_health = xunfei._session_is_healthy
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_health = xunfei_runtime._session_is_healthy
         seen_threads = []
         fake_session = _HealthyFakeSession()
-        xunfei._session = fake_session
-        xunfei.is_available = lambda: True
+        xunfei_runtime._session = fake_session
+        xunfei_runtime.is_available = lambda: True
 
         def health_check(session):
             seen_threads.append(threading.current_thread())
             return session is fake_session
 
-        xunfei._session_is_healthy = health_check
+        xunfei_runtime._session_is_healthy = health_check
         try:
             result = asyncio.run(xunfei.ensure_session())
         finally:
-            xunfei._session = original_session
-            xunfei.is_available = original_available
-            xunfei._session_is_healthy = original_health
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime._session_is_healthy = original_health
 
         self.assertIs(result, fake_session)
         self.assertEqual(len(seen_threads), 1)
@@ -1174,8 +1176,8 @@ class XunfeiFlowTests(unittest.TestCase):
             seen_threads.append(threading.current_thread())
 
         async def run_calls():
-            await xunfei._run_playwright_sync(record_thread)
-            await xunfei._run_playwright_sync(record_thread)
+            await xunfei_runtime._run_playwright_sync(record_thread)
+            await xunfei_runtime._run_playwright_sync(record_thread)
 
         asyncio.run(run_calls())
 
@@ -1775,7 +1777,7 @@ class XunfeiFlowTests(unittest.TestCase):
         with mock.patch.object(session, "_wait_for_pending_ready", return_value={}), \
                 mock.patch.object(session, "_fetch_works_list_pages", return_value=[]), \
                 mock.patch.object(session, "_fetch_sign_url_in_page", return_value=None), \
-                mock.patch.object(xunfei, "_safe_eval", return_value=True):
+                mock.patch.object(xunfei_downloads, "_safe_eval", return_value=True):
             result = session._download_pending_batch(pending)
 
         self.assertTrue(result["missing-works"]["works_id_invalid"])
@@ -2003,7 +2005,7 @@ class XunfeiFlowTests(unittest.TestCase):
                         "_download_selected_rows",
                         return_value=[FakeDownload()],
                     ), \
-                    mock.patch.object(xunfei, "_safe_eval", return_value=True):
+                        mock.patch.object(xunfei_downloads, "_safe_eval", return_value=True):
                 results = session._download_pending_batch(pending)
 
             self.assertFalse(results["works-a"]["downloaded"])
@@ -2030,7 +2032,7 @@ class XunfeiFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = str(Path(temp_dir, "audio.mp3"))
             with mock.patch.object(
-                xunfei.urllib.request,
+                xunfei_downloads.urllib.request,
                 "urlopen",
                 return_value=FakeResponse(),
             ):
@@ -2066,10 +2068,10 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "goto" for call in calls))
 
     def test_concurrent_first_session_creation_reuses_one_sync_session(self):
-        original_session = xunfei._session
-        original_available = xunfei.is_available
-        original_health = xunfei._session_is_healthy
-        original_session_class = xunfei.XunFeiSession
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_health = xunfei_runtime._session_is_healthy
+        original_session_class = xunfei_runtime.XunFeiSession
         created = []
 
         class FakeSession:
@@ -2084,10 +2086,10 @@ class XunfeiFlowTests(unittest.TestCase):
             def login(self, login_timeout=300):
                 return None
 
-        xunfei._session = None
-        xunfei.is_available = lambda: True
-        xunfei._session_is_healthy = lambda session: session is not None
-        xunfei.XunFeiSession = FakeSession
+        xunfei_runtime._session = None
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime._session_is_healthy = lambda session: session is not None
+        xunfei_runtime.XunFeiSession = FakeSession
         try:
             async def create_both():
                 return await asyncio.gather(
@@ -2097,18 +2099,18 @@ class XunfeiFlowTests(unittest.TestCase):
 
             first, second = asyncio.run(create_both())
         finally:
-            xunfei._session = original_session
-            xunfei.is_available = original_available
-            xunfei._session_is_healthy = original_health
-            xunfei.XunFeiSession = original_session_class
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime._session_is_healthy = original_health
+            xunfei_runtime.XunFeiSession = original_session_class
 
         self.assertIs(first, second)
         self.assertEqual(len(created), 1)
 
     def test_failed_login_keeps_candidate_session_for_disconnect_classification(self):
-        original_session = xunfei._session
-        original_available = xunfei.is_available
-        original_session_class = xunfei.XunFeiSession
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_session_class = xunfei_runtime.XunFeiSession
 
         class FailedLoginSession:
             def __init__(self, voice_key="amanda"):
@@ -2121,18 +2123,18 @@ class XunfeiFlowTests(unittest.TestCase):
             def close(self):
                 self._browser_disconnected = True
 
-        xunfei._session = None
-        xunfei.is_available = lambda: True
-        xunfei.XunFeiSession = FailedLoginSession
+        xunfei_runtime._session = None
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime.XunFeiSession = FailedLoginSession
         try:
             with self.assertRaises(RuntimeError):
                 asyncio.run(xunfei.ensure_session())
-            self.assertIsInstance(xunfei._session, FailedLoginSession)
-            self.assertTrue(xunfei._session._browser_disconnected)
+            self.assertIsInstance(xunfei_runtime._session, FailedLoginSession)
+            self.assertTrue(xunfei_runtime._session._browser_disconnected)
         finally:
-            xunfei._session = original_session
-            xunfei.is_available = original_available
-            xunfei.XunFeiSession = original_session_class
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime.XunFeiSession = original_session_class
 
 
 if __name__ == "__main__":

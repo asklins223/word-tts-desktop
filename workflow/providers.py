@@ -645,9 +645,9 @@ class XunfeiTTSAdapter:
         progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
     ) -> ProviderReceipt:
         try:
-            import xunfei_peiyin as legacy
+            import xunfei.runtime as legacy
         except ImportError as exc:
-            raise ProviderCapabilityError("legacy Xunfei module is unavailable") from exc
+            raise ProviderCapabilityError("Xunfei provider package is unavailable") from exc
         item_specs = self._legacy_item_specs(payload)
         works = self._legacy_works(submission_key, payload)
         works_name = str(works[0]["works_name"])
@@ -764,9 +764,9 @@ class XunfeiTTSAdapter:
         progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
     ) -> ProviderReceipt | None:
         try:
-            import xunfei_peiyin as legacy
+            import xunfei.runtime as legacy
         except ImportError as exc:
-            raise ProviderCapabilityError("legacy Xunfei module is unavailable") from exc
+            raise ProviderCapabilityError("Xunfei provider package is unavailable") from exc
         item_specs = self._legacy_item_specs(payload)
         works = self._legacy_works(submission_key, payload)
         works_name = str(works[0]["works_name"])
