@@ -104,5 +104,6 @@
     "development-host baseline only"
   ],
   "release_ready": false,
-  "status": "OPEN"
+  "status": "OPEN",
+  "waived_items": []
 }
