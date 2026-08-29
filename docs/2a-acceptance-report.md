@@ -53,7 +53,7 @@ T8/T16 剩余项已在本地完成并刷新证据：
 - **T8 Store workspace 投影**：`workflow-store.js` 维护有界 workspace（阶段、分段计数、运行时消息、条目总数、执行/结果状态），`prepare` 切换 run 时重置；渲染层以订阅回调从投影渲染进度权威数值，断线重连/快照重同步后自动回到最新值。
 - **T16b 语音资源上限**：头像/试听样本在渲染层按资源类型限 8MB（主进程代理 16MB 之内）。结果页音频为按条目按需的已验证 Artifact、ZIP 走服务端 export-zip，内存边界已写入 `docs/workflow-spec.md`。
 - **T11 逻辑证据**：新增停顿快速路径优先级回归——工具栏直带时长按钮的页面由折叠光标主路径完成插入，重型兜底零调用；插入位置仍按行尾回读校验。
-- 证据：Python `272` 项、Electron `84` 项通过（新增 source-staging 8 项、workspace 4 项、停顿优先级 1 项；server.py 旧引擎删除后 `test_desktop_server` 收敛为 6 项活跃面测试）；Node 24.20.0 下 2A gate 13 项 PASS（`2a-gate-report.json`）。2.7.45 macOS arm64 DMG [`小猪wordTTS-2.7.45-arm64.dmg`](../electron/release/小猪wordTTS-2.7.45-arm64.dmg)（SHA-256=`694bd0dab9ccf2732953b16d0183f8c96caee2bb4031816cbcbb66c972a82316`，server.py 删除旧引擎后重新打包）已通过后端 Playwright/Chromium smoke、桌面 `--smoke-test` 与 ad-hoc 签名校验。
+- 证据：Python `272` 项、Electron `84` 项通过（新增 source-staging 8 项、workspace 4 项、停顿优先级 1 项；server.py 旧引擎删除后 `test_desktop_server` 收敛为 6 项活跃面测试）；Node 24.20.0 下 2A gate 13 项 PASS（`2a-gate-report.json`）。2.7.45 macOS arm64 DMG [`小猪wordTTS-2.7.45-arm64.dmg`](../electron/release/小猪wordTTS-2.7.45-arm64.dmg)（SHA-256=`9a283f89b19313fde150c47e3e3c957e6ce808cbaaff0bd91f9f70040b7cadb4`，server.py 删除旧引擎后重新打包）已通过后端 Playwright/Chromium smoke、桌面 `--smoke-test` 与 ad-hoc 签名校验。
 
 ## server.py 旧引擎物理删除（2026-08-29）
 

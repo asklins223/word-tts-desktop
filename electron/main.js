@@ -74,12 +74,14 @@ function smokeLog(message) {
 
 if (SMOKE_LOG_PATH) {
     try { fs.writeFileSync(SMOKE_LOG_PATH, '', 'utf8'); } catch (_) { /* ignore */ }
-    process.on('uncaughtException', (error) => {
-        smokeLog(`uncaughtException: ${error?.stack || error}`);
-    });
-    process.on('unhandledRejection', (reason) => {
-        smokeLog(`unhandledRejection: ${reason?.stack || reason}`);
-    });
+    // 冒烟模式下的未捕获异常必须让自检失败。此前这里只写日志继续运行，
+    // 导致缺少打包文件的坏包也能通过构建冒烟（如 ./source-staging 缺失）。
+    const failSmoke = (kind, detail) => {
+        smokeLog(`${kind}: ${detail}`);
+        if (!smokeExitRequested) exitSmokeTest(1);
+    };
+    process.on('uncaughtException', (error) => failSmoke('uncaughtException', error?.stack || error));
+    process.on('unhandledRejection', (reason) => failSmoke('unhandledRejection', reason?.stack || reason));
 }
 
 // 冒烟测试只验证后端/渲染器启动，不需要 GPU 合成；Windows runner 的虚拟
