@@ -32,9 +32,21 @@ def alias_id(kind, value, target_kind, target_id):
 
 
 def backfill_progress_file(conn, progress_path):
-    """把一个旧 progress.json 的条目回填为 legacy 别名（幂等）。"""
+    """把一个旧 progress.json 的条目回填为 legacy 别名（幂等）。
+
+    同时按方案 6.4 把未桥接的存量会话登记为 ``LEGACY_OUT_OF_BAND``：
+    它们不混入新 workflow 的统计，也不得发起新的外部录入。
+    """
     with open(progress_path, encoding="utf-8") as fh:
         progress = json.load(fh)
+    session_id = f"legacy-progress:{os.path.dirname(progress_path)}"
+    conn.execute(
+        """INSERT OR IGNORE INTO legacy_execution_sessions
+           (session_id, source_classification, legacy_source,
+            bridge_version, import_state, recorded_at)
+           VALUES (?, 'LEGACY_OUT_OF_BAND', ?, NULL, 'PENDING', ?)""",
+        (session_id, progress_path, _now()),
+    )
     inserted = 0
     for item in progress.get("items", []):
         raw = item.get("raw_item") or {}
