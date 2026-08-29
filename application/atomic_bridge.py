@@ -44,6 +44,7 @@ def bridge_parse_to_atomic_model(
         sync_sub_type_registry,
     )
     from question_types import parse_document_auto
+    from wordtts.config import PARSER_VERSION
 
     try:
         results, _ = parse_document_auto(str(source_path))
@@ -69,7 +70,7 @@ def bridge_parse_to_atomic_model(
                 Path(filename).stem,
                 adjudicated.candidates if adjudicated else [],
                 file_hash=source_sha256,
-                parser_version=14,
+                parser_version=PARSER_VERSION,
                 now=now,
             )
             plan_id = create_operation_plan(

@@ -169,7 +169,17 @@ class OperationRunner:
                 f"{adapter.operation_type}"
             )
 
-        step_id = self.ensure_step(operation_id, workflow_id, now=created)
+        own_tx = not self.conn.in_transaction
+        if own_tx:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            step_id = self.ensure_step(operation_id, workflow_id, now=created)
+        except Exception:
+            if own_tx:
+                self.conn.execute("ROLLBACK")
+            raise
+        if own_tx:
+            self.conn.execute("COMMIT")
         step_status = self.conn.execute(
             "SELECT status FROM workflow_steps WHERE step_id = ?",
             (step_id,),
@@ -189,18 +199,40 @@ class OperationRunner:
         snapshot = self._load_snapshot(operation_id, operation_type,
                                        scope_row_id)
         config = config or {}
-        adapter.capabilities()
+        capabilities = adapter.capabilities() or {}
+        # 方案 3.4：范围能力矩阵在计划/执行前校验，越界直接阻断
+        allowed_kinds = capabilities.get("scope_kinds")
+        if allowed_kinds and snapshot.scope_kind not in allowed_kinds:
+            return OperationResult(
+                status=ResultStatus.PERMANENT_FAILED,
+                error_code="SCOPE_KIND_NOT_SUPPORTED",
+                details={"scope_kind": snapshot.scope_kind,
+                         "supported": list(allowed_kinds)},
+            )
         adapter.validate(snapshot, config)
         prepared = adapter.prepare(snapshot, config)
 
-        attempt_id, fencing_token = self._open_attempt(
-            operation_id, step_id, workflow_id, created)
-        self._set_step_status(step_id, "RUNNING")
+        # record_intent：step + attempt + fencing token 在单个事务内
+        # （方案 3.0.1 事务边界；连接为 autocommit，显式 BEGIN 保证原子）
+        own_tx = not self.conn.in_transaction
+        if own_tx:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            attempt_id, fencing_token = self._open_attempt(
+                operation_id, step_id, workflow_id, created)
+            self._set_step_status(step_id, "RUNNING", created)
+        except Exception:
+            if own_tx:
+                self.conn.execute("ROLLBACK")
+            raise
+        if own_tx:
+            self.conn.execute("COMMIT")
 
         bind = getattr(adapter, "bind", None)
         if callable(bind):
             bind(workflow_id=workflow_id, attempt_id=attempt_id)
 
+        # execute：事务外调用外部系统/Provider（方案 3.0.1 冻结边界）
         try:
             receipt = adapter.execute(prepared, fencing_token)
         except Exception as exc:
@@ -213,9 +245,20 @@ class OperationRunner:
             return result
 
         result = adapter.verify(receipt)
-        self._record_receipt(operation_id, attempt_id, receipt, result)
-        self._link_external_operation(receipt, step_id, attempt_id)
-        self._finalize(step_id, attempt_id, result, created)
+        own_tx = not self.conn.in_transaction
+        if own_tx:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._record_receipt(operation_id, attempt_id, receipt, result,
+                                 step_id=step_id)
+            self._link_external_operation(receipt, step_id, attempt_id)
+            self._finalize(step_id, attempt_id, result, created)
+        except Exception:
+            if own_tx:
+                self.conn.execute("ROLLBACK")
+            raise
+        if own_tx:
+            self.conn.execute("COMMIT")
         return result
 
     # ---- 内部 ----
@@ -321,8 +364,22 @@ class OperationRunner:
         )
 
     def _record_receipt(self, operation_id: str, attempt_id: str,
-                        receipt: dict, result: OperationResult) -> None:
-        """回执与结果摘要保存到 attempt（外部回执仍在各自事实表）。"""
+                        receipt: dict, result: OperationResult,
+                        *, step_id: str = "") -> None:
+        """回执落点按结果分层（方案 3.0.1 observe/verify）：
+
+        - 成功回执 → ``workflow_steps.output_reference_json``（产物引用）；
+        - 失败/歧义诊断 → ``step_attempts.error_details_json``；
+        外部系统的副作用回执仍由 external_operations.receipt_json 持有。
+        """
+        if result.status == ResultStatus.SUCCEEDED:
+            self.conn.execute(
+                """UPDATE workflow_steps SET output_reference_json = ?
+                   WHERE step_id = ?""",
+                (json.dumps({"receipt": receipt, "operation_id": operation_id},
+                            ensure_ascii=False), step_id),
+            )
+            return
         details = {
             "receipt": receipt,
             "result": result.status,

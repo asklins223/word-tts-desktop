@@ -196,8 +196,7 @@ def _persist_stimulus(conn, entity: Stimulus, source_document_id: str,
 
 def _persist_question(conn, entity: QuestionItem, source_document_id: str,
                       document_revision_id: str, created: str) -> str:
-    from .model import SUB_TYPE_REGISTRY as _REG
-    family_code = _REG[entity.question_type].family
+    family_code = SUB_TYPE_REGISTRY[entity.question_type].family
     existing_type = conn.execute(
         "SELECT type_code, sub_type_code FROM question_items WHERE question_id = ?",
         (entity.question_id,),

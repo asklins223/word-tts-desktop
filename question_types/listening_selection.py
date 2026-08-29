@@ -64,11 +64,16 @@ class ListeningSelectionParser(BaseParser):
         current_lines = []
         script_index = 0
 
-        def flush_questions():
-            """【录音原文】之前收集的题干组归属到即将开始的录音稿。"""
+        def flush_questions(ordinal=None):
+            """收集到的题干组归属到指定录音稿序号。
+
+            - 【录音原文】处：归属到即将开始的录音稿（script_index+1）；
+            - 节尾/解析结束：无主题干组置 None（保留实体、不猜测归属），
+              绝不跨题型组错误归属（方案 5.3：归属不确定不得静默合并）。
+            """
             nonlocal pending_questions
             for question in pending_questions:
-                question["script_ordinal"] = script_index + 1
+                question["script_ordinal"] = ordinal
                 questions.append(question)
             pending_questions = []
 
@@ -92,6 +97,7 @@ class ListeningSelectionParser(BaseParser):
             # 先处理题型标题，允许同一文档中出现多组听后选择。
             if self.RE_SECTION_START.search(value):
                 flush()
+                flush_questions(None)
                 in_section = True
                 continue
 
@@ -101,13 +107,14 @@ class ListeningSelectionParser(BaseParser):
             # 下一大节属于其他题型时，停止采集，避免把后续录音原文混入。
             if self.RE_MAJOR_SECTION.match(value):
                 flush()
+                flush_questions(None)
                 in_section = False
                 continue
 
             script_match = self.RE_SCRIPT.match(value)
             if script_match:
                 flush()
-                flush_questions()
+                flush_questions(script_index + 1)
                 collecting = True
                 remainder = script_match.group(1).strip()
                 if remainder:
@@ -148,7 +155,7 @@ class ListeningSelectionParser(BaseParser):
             current_lines.append(value)
 
         flush()
-        flush_questions()
+        flush_questions(None)
         result = self._result(items)
         result["questions"] = questions
         return result

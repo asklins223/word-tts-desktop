@@ -60,6 +60,7 @@ def project_audio_tasks_to_work_items(
             "projection": "atomic-question-model/v1",
         }
         item_id = f"audio:{operation_id}"
+        sub_type_code = _sub_type_of(conn, target_revision_id, target_kind)
         conn.execute(
             """
             INSERT OR IGNORE INTO work_items
@@ -71,9 +72,9 @@ def project_audio_tasks_to_work_items(
                     'PENDING', ?, ?)
             """,
             (item_id, workflow_id, operation_id, sequence, content,
-             _hash_of(content), _sub_type_of(conn, target_revision_id,
-                                             target_kind),
-             voice_policy, json.dumps(metadata, ensure_ascii=False),
+             _hash_of(content), sub_type_code,
+             _voice_policy_of(conn, sub_type_code),
+             json.dumps(metadata, ensure_ascii=False),
              created, created),
         )
         # 主目标的 legacy 别名（work_item → 业务实体版本）
@@ -122,6 +123,16 @@ def _sub_type_of(conn: sqlite3.Connection, revision_id: str, kind: str):
         (revision_id,),
     ).fetchone()
     return row[0] if row else None
+
+
+def _voice_policy_of(conn: sqlite3.Connection, sub_type_code: str | None) -> str | None:
+    """voice_key 用注册表音色策略（speaker/forced_female/default）。"""
+    if not sub_type_code:
+        return None
+    from .model import SUB_TYPE_REGISTRY
+
+    sub_type = SUB_TYPE_REGISTRY.get(sub_type_code)
+    return sub_type.voice_policy if sub_type else None
 
 
 def _hash_of(content: str) -> str:

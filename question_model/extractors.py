@@ -186,6 +186,8 @@ def _extract_listening_selection(result: dict, source_key: str) -> ParseCandidat
     diagnostics = ["audio_only_candidate"]
     if questions:
         diagnostics.append("listening_choice_answer_not_extracted")
+        if any(q.stimulus_id is None for q in questions):
+            diagnostics.append("listening_choice_question_without_script")
     else:
         diagnostics.append("listening_choice_stem_options_answer_not_extracted")
     entities = tuple(stimuli) + tuple(questions)

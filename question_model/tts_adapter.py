@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from typing import Any, Callable
 
 from .model import SUB_TYPE_REGISTRY
@@ -94,8 +95,10 @@ class TtsEngineAudioAdapter:
                 fencing_token: int) -> dict[str, Any]:
         spec = prepared.payload
         os.makedirs(self.output_dir, exist_ok=True)
+        # item_id 含冒号（operation:...），Windows 文件名非法：消毒
+        safe_name = re.sub(r'[\\/:*?"<>|]', "-", spec["item_id"])
         out_path = os.path.join(
-            self.output_dir, f"{spec['item_id']}_{fencing_token}.mp3")
+            self.output_dir, f"{safe_name}_{fencing_token}.mp3")
         audio = self._engine_fn()(
             spec["text"], spec["rate"], spec["volume"], spec["pitch"],
             default_voice=spec.get("default_voice"),

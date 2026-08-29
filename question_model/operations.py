@@ -102,13 +102,18 @@ def create_scope(
     目标版本必须真实存在（外键 + 显式校验）。
     """
     created = now or _now()
+    seen_members = set()
+    deduped = []
+    for m in members:
+        key = (m["target_kind"], m["target_id"], m.get("target_revision_id"))
+        if key in seen_members:
+            continue
+        seen_members.add(key)
+        deduped.append({"target_kind": m["target_kind"],
+                        "target_id": m["target_id"],
+                        "target_revision_id": m.get("target_revision_id")})
     normalized = sorted(
-        ({
-            "target_kind": m["target_kind"],
-            "target_id": m["target_id"],
-            "target_revision_id": m.get("target_revision_id"),
-        }
-         for m in members),
+        deduped,
         key=lambda m: (m["target_kind"], m["target_id"],
                        m["target_revision_id"] or ""),
     )
