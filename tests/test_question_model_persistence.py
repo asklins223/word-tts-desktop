@@ -225,25 +225,15 @@ class TestSubTypeRegistry(PersistenceTestBase):
         sync_sub_type_registry(self.con)
         self.assertEqual(self.table_count("question_sub_types"), 11)
 
-    def test_reserved_sub_type_cannot_back_rows(self):
+    def test_asking_info_registry_state(self):
+        """询问信息已激活：注册表状态与 answer_kind 落库。"""
         from question_model import sync_sub_type_registry
         sync_sub_type_registry(self.con)
-        with self.assertRaises(sqlite3.IntegrityError):
-            # 询问信息未接入：不允许任何实体行引用（业务校验在模型层，
-            # 这里验证注册表状态标记已落库）
-            status = self.con.execute(
-                "SELECT status FROM question_sub_types WHERE sub_type_code = 'asking_info'"
-            ).fetchone()[0]
-            self.assertEqual(status, "reserved")
-            self.con.execute(
-                """
-                INSERT INTO question_items
-                    (question_id, source_document_id, type_code,
-                     sub_type_code, created_at)
-                VALUES ('question:doc:asking-1', 'missing', 'info_retelling',
-                        'asking_info', '2026')
-                """
-            )
+        row = self.con.execute(
+            """SELECT status, answer_kind FROM question_sub_types
+               WHERE sub_type_code = 'asking_info'"""
+        ).fetchone()
+        self.assertEqual(tuple(row), ("active", "spoken_response"))
 
     def test_sub_type_capability_columns(self):
         from question_model import sync_sub_type_registry

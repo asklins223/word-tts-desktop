@@ -285,18 +285,20 @@ class TestRegistryAlignment:
                        "listening_choice", "listening_response"):
             assert tuple(FAMILY_SUB_TYPES[family]) == (family,)
 
-    def test_info_retelling_asking_info_reserved(self):
-        """询问信息已注册但未接入：预留状态，不得产出实体。"""
-        assert SUB_TYPE_REGISTRY["asking_info"].status == "reserved"
-        import pytest
+    def test_asking_info_active_with_spoken_response(self):
+        """询问信息已接入：题干+参考应答字段完整，spoken_response 能力。"""
+        assert SUB_TYPE_REGISTRY["asking_info"].status == "active"
+        assert SUB_TYPE_REGISTRY["asking_info"].answer_kind == "spoken_response"
         from question_model import QuestionItem
-        with pytest.raises(ValueError):
-            QuestionItem(
-                question_id="question:x:asking-1",
-                question_type="asking_info",
-                stem="Where is the library?",
-                source_locator="询问信息/问题1",
-            )
+        question = QuestionItem(
+            question_id="question:x:asking-1",
+            question_type="asking_info",
+            stem="Where is the library?",
+            source_locator="询问信息/问题1",
+            answer=__import__("question_model", fromlist=["Answer"]).Answer(
+                "spoken_response", "Where is the library?"),
+        )
+        assert question.question_fields_complete is True
 
     def test_capability_matrix_on_registry(self):
         """能力声明挂在小题型：听选信息有选项，回答问题口头作答。"""
@@ -409,3 +411,46 @@ class TestListeningChoiceBusinessFields:
         assert results[0]["item_count"] == 6
         assert all(i["category"] == "听后选择录音稿"
                    for i in results[0]["items"])
+
+
+class TestInfoRetellingBusinessFields:
+    """阶段3⑤c：信息转述/询问信息任务拆分（业务字段通道）。"""
+
+    def _live_candidate(self):
+        from question_types.segmenter import parse_document_once
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "examples", "documents", "信息转述及询问信息 7上- U1.docx")
+        results, _ = parse_document_once(path)
+        return extract_candidate("信息转述及询问", results[0], "信息转述样例")
+
+    def test_asking_questions_are_complete_candidates(self):
+        """询问信息两个问题字段完整：首个可进外部链路的候选。"""
+        candidate = self._live_candidate()
+        questions = [e for e in candidate.entities if hasattr(e, "question_type")]
+        assert [q.question_number for q in questions] == [11, 12]
+        assert all(q.question_type == "asking_info" for q in questions)
+        assert all(q.question_fields_complete for q in questions)
+        assert all(q.answer.kind == "spoken_response" for q in questions)
+        assert all(q.answer.value for q in questions)
+        # 字段完整但未人工确认：CANDIDATE，不是 CONFIRMED
+        assert all(q.resolution_state is ResolutionState.CANDIDATE
+                   for q in questions)
+        assert candidate.capabilities["question_fields_complete"] is True
+        assert candidate.capabilities["audio_only"] is False
+
+    def test_retelling_reference_captured(self):
+        """转述参考答案进入 tasks 通道（评分参考，不是小题）。"""
+        candidate = self._live_candidate()
+        assert "info_retelling_reference_not_extracted" \
+            not in candidate.diagnostics
+        assert "info_retelling_task_split_not_extracted" \
+            not in candidate.diagnostics
+
+    def test_items_channel_untouched(self):
+        from question_types.segmenter import parse_document_once
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "examples", "documents", "信息转述及询问信息 7上- U1.docx")
+        results, _ = parse_document_once(path)
+        assert results[0]["item_count"] == 1

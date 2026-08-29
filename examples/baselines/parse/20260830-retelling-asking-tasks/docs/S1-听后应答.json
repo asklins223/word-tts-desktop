@@ -1,0 +1,222 @@
+{
+  "source_file": "S1-听后应答.docx",
+  "sha256": "528ea1d1844fb0d03f6ec13009b9553c04e2a6974e57358ddcb521eead7a8eab",
+  "content_detected_types": [
+    "听后应答"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 7 条内容",
+  "parse_results": [
+    {
+      "source_file": "S1-听后应答.docx",
+      "doc_type": "听后应答",
+      "item_count": 7,
+      "items": [
+        {
+          "category": "听后应答录音稿",
+          "index": 1,
+          "number": 1,
+          "filename_stem": "7上-应答-1",
+          "voice": "female",
+          "text": "Good morning, class."
+        },
+        {
+          "category": "听后应答录音稿",
+          "index": 2,
+          "number": 2,
+          "filename_stem": "7上-应答-2",
+          "voice": "female",
+          "text": "Can you say hi to the class?"
+        },
+        {
+          "category": "听后应答录音稿",
+          "index": 3,
+          "number": 3,
+          "filename_stem": "7上-应答-3",
+          "voice": "female",
+          "text": "May I have your name?"
+        },
+        {
+          "category": "听后应答录音稿",
+          "index": 4,
+          "number": 4,
+          "filename_stem": "7上-应答-4",
+          "voice": "female",
+          "text": "How do you spell your name?"
+        },
+        {
+          "category": "听后应答录音稿",
+          "index": 5,
+          "number": 5,
+          "filename_stem": "7上-应答-5",
+          "voice": "female",
+          "text": "Nice to meet you, Emma."
+        },
+        {
+          "category": "听后应答录音稿",
+          "index": 6,
+          "number": 6,
+          "filename_stem": "7上-应答-6",
+          "voice": "female",
+          "text": "How are you today?"
+        },
+        {
+          "category": "听后应答录音稿",
+          "index": 7,
+          "number": 7,
+          "filename_stem": "7上-应答-7",
+          "voice": "female",
+          "text": "That’s the bell. Let’s go to class."
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "听后应答",
+  "cli_result": {
+    "source_file": "S1-听后应答.docx",
+    "doc_type": "听后应答",
+    "item_count": 7,
+    "items": [
+      {
+        "category": "听后应答录音稿",
+        "index": 1,
+        "number": 1,
+        "filename_stem": "7上-应答-1",
+        "voice": "female",
+        "text": "Good morning, class."
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 2,
+        "number": 2,
+        "filename_stem": "7上-应答-2",
+        "voice": "female",
+        "text": "Can you say hi to the class?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 3,
+        "number": 3,
+        "filename_stem": "7上-应答-3",
+        "voice": "female",
+        "text": "May I have your name?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 4,
+        "number": 4,
+        "filename_stem": "7上-应答-4",
+        "voice": "female",
+        "text": "How do you spell your name?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 5,
+        "number": 5,
+        "filename_stem": "7上-应答-5",
+        "voice": "female",
+        "text": "Nice to meet you, Emma."
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 6,
+        "number": 6,
+        "filename_stem": "7上-应答-6",
+        "voice": "female",
+        "text": "How are you today?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 7,
+        "number": 7,
+        "filename_stem": "7上-应答-7",
+        "voice": "female",
+        "text": "That’s the bell. Let’s go to class."
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "听后应答_7上-应答-1",
+      "doc_type": "听后应答",
+      "category": "听后应答录音稿",
+      "seq": 1,
+      "filename": "7上-应答-1.mp3",
+      "voice_override": "female",
+      "text_preview": "Good morning, class.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后应答_7上-应答-2",
+      "doc_type": "听后应答",
+      "category": "听后应答录音稿",
+      "seq": 2,
+      "filename": "7上-应答-2.mp3",
+      "voice_override": "female",
+      "text_preview": "Can you say hi to the class?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后应答_7上-应答-3",
+      "doc_type": "听后应答",
+      "category": "听后应答录音稿",
+      "seq": 3,
+      "filename": "7上-应答-3.mp3",
+      "voice_override": "female",
+      "text_preview": "May I have your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后应答_7上-应答-4",
+      "doc_type": "听后应答",
+      "category": "听后应答录音稿",
+      "seq": 4,
+      "filename": "7上-应答-4.mp3",
+      "voice_override": "female",
+      "text_preview": "How do you spell your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后应答_7上-应答-5",
+      "doc_type": "听后应答",
+      "category": "听后应答录音稿",
+      "seq": 5,
+      "filename": "7上-应答-5.mp3",
+      "voice_override": "female",
+      "text_preview": "Nice to meet you, Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后应答_7上-应答-6",
+      "doc_type": "听后应答",
+      "category": "听后应答录音稿",
+      "seq": 6,
+      "filename": "7上-应答-6.mp3",
+      "voice_override": "female",
+      "text_preview": "How are you today?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后应答_7上-应答-7",
+      "doc_type": "听后应答",
+      "category": "听后应答录音稿",
+      "seq": 7,
+      "filename": "7上-应答-7.mp3",
+      "voice_override": "female",
+      "text_preview": "That’s the bell. Let’s go to class.",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "f956d1c19682cdd6347ba124e5abc726f1c668704de32dbc8fb2a7d36c77830f",
+    "cli_result": "02e6b692a5633a28029d4c3def8ab0d6007a7f07c8b877be19b1d7efec53dc67",
+    "progress_items": "e4b65c2b82eaa0b6ac68a5c798c50c443033ab9309ba2a75aedfe49bcc60da99"
+  }
+}

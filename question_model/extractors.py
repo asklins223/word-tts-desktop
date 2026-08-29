@@ -26,6 +26,7 @@ from collections import Counter
 from .model import (
     QUESTION_TYPE_CODES,
     SUB_TYPE_REGISTRY,
+    Answer,
     ContentUnit,
     Option,
     ParseCandidate,
@@ -41,6 +42,11 @@ DIAGNOSTIC_CONFIDENCE_PENALTY = 0.15
 CAPABILITIES_AUDIO_ONLY = {
     "question_fields_complete": False,
     "audio_only": True,
+}
+
+CAPABILITIES_BUSINESS_COMPLETE = {
+    "question_fields_complete": True,
+    "audio_only": False,
 }
 
 
@@ -245,9 +251,12 @@ def _extract_listening_response(result: dict, source_key: str) -> ParseCandidate
 
 
 def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
-    """信息转述及询问：当前只解析出整段录音稿。
+    """信息转述及询问：转述材料 + 询问信息小题（业务字段通道）。
 
-    转述/询问任务的拆分未抽取，只能生成材料级音频候选，不伪装成小题。
+    ``result["tasks"]`` 由解析器提供：retelling 任务携带转述参考答案；
+    asking 任务（题干+参考应答字段完整）→ ``asking_info`` QuestionItem，
+    ``resolution_state=CANDIDATE``（待人工确认），是首个可进外部链路的
+    完整小题候选。
     """
     type_code = QUESTION_TYPE_CODES["信息转述及询问"]
     stimuli = []
@@ -264,18 +273,41 @@ def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
             resolution_state=ResolutionState.DRAFT,
         ))
 
-    diagnostics = [
-        "info_retelling_task_split_not_extracted",
-        "audio_only_candidate",
-    ]
+    questions = []
+    for raw in result.get("tasks", []):
+        if raw.get("task_kind") != "asking":
+            continue
+        locator = f"询问信息/问题{raw['number']}"
+        reference = raw.get("reference_answer")
+        questions.append(QuestionItem(
+            question_id=build_identity("question", source_key, locator),
+            question_type="asking_info",
+            stem=raw["prompt"],
+            source_locator=locator,
+            question_number=raw["number"],
+            answer=Answer("spoken_response", reference) if reference else None,
+            section="询问信息",
+            resolution_state=ResolutionState.CANDIDATE,
+        ))
+
+    diagnostics = []
+    if not any(t.get("task_kind") == "retelling" for t in result.get("tasks", [])):
+        diagnostics.append("info_retelling_reference_not_extracted")
+    if not questions:
+        diagnostics.append("info_retelling_task_split_not_extracted")
+        diagnostics.append("audio_only_candidate")
+        capabilities = dict(CAPABILITIES_AUDIO_ONLY)
+    else:
+        capabilities = dict(CAPABILITIES_BUSINESS_COMPLETE)
+    entities = tuple(stimuli) + tuple(questions)
     return ParseCandidate(
         candidate_id=f"candidate:{type_code}:{source_key}",
         type_code=type_code,
-        claimed_blocks=tuple(s.source_locator for s in stimuli),
-        entities=tuple(stimuli),
+        claimed_blocks=tuple(e.source_locator for e in entities),
+        entities=entities,
         confidence=_confidence(diagnostics),
         diagnostics=tuple(diagnostics),
-        capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+        capabilities=capabilities,
     )
 
 

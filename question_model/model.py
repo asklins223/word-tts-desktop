@@ -90,7 +90,7 @@ SUB_TYPE_REGISTRY: dict[str, QuestionSubType] = {
         QuestionSubType("info_retelling", "info_retelling", "信息转述",
                         "stimulus", audio_granularity="script_whole"),
         QuestionSubType("asking_info", "info_retelling", "询问信息",
-                        "question", status="reserved"),
+                        "question", answer_kind="spoken_response"),
         # 模仿朗读：本身就是最小题型；外网/教材是来源属性不是小题型
         QuestionSubType("imitation_reading", "imitation_reading", "模仿朗读",
                         "stimulus", audio_granularity="passage"),
@@ -261,7 +261,15 @@ class QuestionItem:
 
     @property
     def question_fields_complete(self) -> bool:
-        return bool(self.stem) and bool(self.options) and self.answer is not None
+        """按小题型注册表能力判定：选择题要选项，口语应答题要应答。"""
+        sub_type = SUB_TYPE_REGISTRY[self.question_type]
+        if not self.stem:
+            return False
+        if sub_type.has_options and not self.options:
+            return False
+        if sub_type.answer_kind and self.answer is None:
+            return False
+        return True
 
     def to_dict(self) -> dict:
         return {

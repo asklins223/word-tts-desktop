@@ -32,9 +32,17 @@ class InfoRetellingParser(BaseParser):
     # 任何「第X节」标记（用于检测其他题型的章节边界）
     RE_ANY_SECTION = re.compile(r'第[一二三四五六七八九十]+节')
     RE_SCRIPT = re.compile(r'录音稿\s*[：:]\s*(.*)')
+    # 业务字段（阶段3⑤c）：子节标题 / 参考答案 / 询问问题题干
+    RE_SUB_SECTION = re.compile(r'第([一二])节\s*(信息转述|询问信息)')
+    RE_ANSWER_LINE = re.compile(r'^参考答案\s*[：:]\s*(.*)$')
+    RE_TASK_STEM = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)$')
 
     def parse(self):
         items = []
+        tasks = []                # 业务字段通道：转述/询问任务（不影响 items）
+        current_section = None    # retelling / asking
+        answers_region = False    # 询问节「参考答案：」之后的英文问句区
+        asking_by_number = {}
         in_section = False
         collecting = False
         current_lines = []
@@ -53,6 +61,52 @@ class InfoRetellingParser(BaseParser):
             current_lines = []
 
         for _, text, _ in self.paras:
+            value = str(text or '').strip()
+            # ---- 子节标题（信息转述 / 询问信息） ----
+            sub = self.RE_SUB_SECTION.match(value)
+            if sub:
+                flush()
+                current_section = ('retelling' if sub.group(2) == '信息转述'
+                                   else 'asking')
+                answers_region = False
+                in_section = current_section == 'retelling'
+                continue
+
+            # ---- 询问信息节：中文提示问句 + 英文参考问句 ----
+            if current_section == 'asking':
+                answer_mark = self.RE_ANSWER_LINE.match(value)
+                if answer_mark:
+                    answers_region = True
+                    continue
+                task = self.RE_TASK_STEM.match(value)
+                if task:
+                    number = int(task.group(1))
+                    if answers_region:
+                        if number in asking_by_number:
+                            asking_by_number[number]["reference_answer"] = \
+                                sanitize(task.group(2))
+                    else:
+                        record = {
+                            "task_kind": "asking",
+                            "number": number,
+                            "prompt": sanitize(task.group(2)),
+                            "reference_answer": None,
+                        }
+                        asking_by_number[number] = record
+                        tasks.append(record)
+                    continue
+                continue
+
+            # ---- 信息转述节：转述参考答案（评分参考） ----
+            if in_section and current_section == 'retelling':
+                answer_line = self.RE_ANSWER_LINE.match(value)
+                if answer_line and answer_line.group(1).strip():
+                    tasks.append({
+                        "task_kind": "retelling",
+                        "reference_answer": sanitize(answer_line.group(1)),
+                    })
+                    # 参考答案同时是既有规则的节终标记，落入下方原逻辑
+
             # ---- 章节开始 ----
             if self.RE_SECTION_START.search(text):
                 flush()
@@ -90,7 +144,9 @@ class InfoRetellingParser(BaseParser):
                 current_lines.append(text)
 
         flush()
-        return self._result(items)
+        result = self._result(items)
+        result["tasks"] = tasks
+        return result
 
 
 QUESTION_TYPE = QuestionType(
