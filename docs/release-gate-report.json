@@ -1,0 +1,119 @@
+{
+  "checks": [
+    {
+      "detail": "package.json='2.7.44', package-lock.json='2.7.44'",
+      "label": "package-version-source",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "file='1', module='1'",
+      "label": "data-format-version",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "clean",
+      "label": "forbidden-renderer",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "clean",
+      "label": "forbidden-preload",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "clean",
+      "label": "forbidden-proxy",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "Electron requests the process-wide single-instance lock",
+      "label": "single-instance-lock",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "startup probe uses versioned path and capability header",
+      "label": "versioned-startup-probe",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "formal Electron enables the real provider by default; --smoke-test remains offline",
+      "label": "real-provider-default-on",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "legacy API has a production 410 path",
+      "label": "legacy-api-retirement-code",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "backend defaults to real provider on; --disable-real-provider is explicit offline opt-out",
+      "label": "backend-real-provider-default-on",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "GET /api/config -> HTTP 410",
+      "label": "legacy-api-410",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "detected v24.20.0; Node 24 is required for support",
+      "label": "node-24",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "real account smoke has not been executed",
+      "label": "real-xunfei-smoke-evidence",
+      "passed": false,
+      "status": "WAIVED",
+      "waiver": "real account smoke waived by product owner: the current Xunfei account has no quota, so a controlled real-account smoke cannot be scheduled; informal field usage is not accepted as support evidence. Re-run the smoke when quota is available."
+    },
+    {
+      "detail": "page-free logical smoke passed with network_calls=0 and page_calls=0",
+      "label": "logical-xunfei-smoke",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "target-device model simulation is evidenced without a hardware claim",
+      "label": "target-device-model",
+      "passed": true,
+      "status": "PASS"
+    },
+    {
+      "detail": "development-host baseline only",
+      "label": "target-device-performance",
+      "passed": false,
+      "status": "WAIVED",
+      "waiver": "target-device field evidence waived by product owner: only the development-host baseline exists. Re-measure on target hardware before making a minimum-spec support claim."
+    }
+  ],
+  "gate": "RELEASE",
+  "hard_failures": [],
+  "open_items": [],
+  "release_ready": true,
+  "status": "PASS",
+  "waived_items": [
+    {
+      "detail": "real account smoke has not been executed",
+      "label": "real-xunfei-smoke-evidence",
+      "waiver": "real account smoke waived by product owner: the current Xunfei account has no quota, so a controlled real-account smoke cannot be scheduled; informal field usage is not accepted as support evidence. Re-run the smoke when quota is available."
+    },
+    {
+      "detail": "development-host baseline only",
+      "label": "target-device-performance",
+      "waiver": "target-device field evidence waived by product owner: only the development-host baseline exists. Re-measure on target hardware before making a minimum-spec support claim."
+    }
+  ]
+}

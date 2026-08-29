@@ -1,0 +1,11 @@
+{
+  "reason": "explicit confirmation flag is missing",
+  "required_for_execution": [
+    "--confirm-real-side-effects",
+    "WORDTTS_ENABLE_REAL_PROVIDER=1",
+    "WORDTTS_XUNFEI_ACCOUNT_SCOPE",
+    "--source pointing to one approved .docx or .xlsx file"
+  ],
+  "side_effect_policy": "NO_REAL_CALL",
+  "status": "BLOCKED"
+}

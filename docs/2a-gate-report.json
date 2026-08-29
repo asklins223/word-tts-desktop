@@ -1,0 +1,226 @@
+{
+  "checks": [
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "db/migration_runner.py",
+        "--check",
+        "--profile",
+        "2a"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 0.07,
+      "label": "migration-check-2a",
+      "output_tail": "[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] temp profile through 0004 OK\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "db/migration_runner.py",
+        "--check",
+        "--profile",
+        "full"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 0.062,
+      "label": "migration-check-full",
+      "output_tail": "[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0005_external_records.sql ...\n[migrate] applied 0005_external_records.sql OK\n[migrate] temp profile through 0005 OK\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "db/schema_checks.py",
+        "--profile",
+        "2a"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 0.071,
+      "label": "schema-check-2a",
+      "output_tail": "[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[schema] version 0004, tables=33, checks passed\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "db/schema_checks.py",
+        "--profile",
+        "full"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 0.083,
+      "label": "schema-check-full",
+      "output_tail": "[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0005_external_records.sql ...\n[migrate] applied 0005_external_records.sql OK\n[schema] version 0005, tables=37, checks passed\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-q"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 77.255,
+      "label": "python-tests",
+      "output_tail": "facts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n[xunfei]   AI 标识弹窗‘不再提示’: ✓ (clicked_input)\n[xunfei]   AI 标识开关关闭: ✓ (off)\n[xunfei]   AI 标识弹窗确认: ✓\n[xunfei] 批量生成分组 1/1: 英语-Amanda speed=50, pitch=50, volume=50，共 2 条\n[xunfei] 批量生成分组 1/1: 英语-Amanda speed=50, pitch=50, volume=50，共 2 条\n[xunfei] ❌ 讯飞批量统一下载异常：下载页暂时不可用\n[xunfei] 批量生成分组 1/2: 英语-George speed=50, pitch=50, volume=50，共 1 条\n[xunfei] 批量生成分组 2/2: 英语-Amanda speed=35, pitch=50, volume=50，共 2 条\n[xunfei] 批量生成分组 1/3: Linda-品质 speed=50, pitch=50, volume=50，共 1 条\n[xunfei] 批量生成分组 2/3: Catherine-品质 speed=50, pitch=50, volume=50，共 1 条\n[xunfei] 批量生成分组 3/3: Steve speed=50, pitch=50, volume=50，共 1 条\n[xunfei] 进入讯飞作品下载页，准备勾选本批次 1 条音频\n[xunfei] 下载页已打开: <Mock name='mock.url' id='4450645680'>\n[xunfei] 批量生成分组 1/1: 英语-Amanda speed=50, pitch=50, volume=50，共 1 条\n[xunfei] ♻️ 通过作品名找回已提交任务 worksId=works-paid-once job=resume-ambiguous\n[xunfei] 批量生成分组 1/1: 英语-Amanda speed=50, pitch=50, volume=50，共 2 条\n[xunfei] 批量生成分组 1/1: 英语-Amanda speed=50, pitch=50, volume=50，共 1 条\n[xunfei] 批量生成分组 1/1: 英语-Amanda speed=50, pitch=50, volume=50，共 2 条\n[xunfei] 批量生成分组 1/1: 英语-Amanda speed=50, pitch=50, volume=50，共 1 条\n[xunfei] ♻️ 复用已提交任务 worksId=works-already-paid job=resume-1\n[xunfei] 进入讯飞作品下载页，准备勾选本批次 2 条音频\n[xunfei] 下载页已打开: <Mock name='mock.url' id='4460474208'>\n[xunfei]   ❌ 下载事件无法按 worksName/worksId 匹配 worksId=works-a，拒绝按顺序写入\n[xunfei] ❌ 下载页统一下载失败 worksId=works-a\n[xunfei] ✅ 下载页统一下载完成 worksId=works-b (4 bytes)\n[xunfei]   多人配音作品提交 1/4: ui-test（1 道题）\n[xunfei] ✅ 多人配音作品已提交 worksId=final-id work=composite:ui\n[xunfei]   已在第 1 行后插入 2s 停顿\n[xunfei]   多人配音作品提交 1/2: rate-limit-test（1 道题）\n[xunfei]   多人配音频控冷却 27s 后重试提交\n[xunfei]   多人配音作品提交 2/2: rate-limit-test（1 道题）\n[xunfei] ✅ 多人配音作品已提交 worksId=final-id work=composite:rate-limit\n[xunfei] ♻️ 通过作品名找回多人配音作品 worksId=composite-paid-once work=composite-resume-ambiguous\n[xunfei]   多人配音作品提交 1/3: ambiguous-composite（1 道题）\n[xunfei]   第 1/3 次尝试提交...\n[xunfei]   作品设置格式已确认为 MP3 (status=clicked_mp3)\n[xunfei]   已清除讯飞上次中断留下的本地编辑缓存\n[xunfei]   多人配音批量选区行 2-9（Shift-click）\n[xunfei]   作品设置中没有可用的 MP3 选项，停止提交 (status=mp3_not_found)\n[xunfei]   第一次确认前 AI 标识开关状态: off\n[xunfei]   第一次确认合成: ✓\n[xunfei]   第一次确认后的页面状态: order\n[xunfei]   作品设置弹窗已关闭，沿用第一次确认前已验证的 AI 标识关闭状态\n[xunfei]   ✅ 作品列表已匹配 worksId: target\n[xunfei]   ✅ 匹配作品音频已就绪 worksId: target\n[xunfei]   多人配音作品提交 1/2: cleanup-test（1 道题）\n[xunfei] ✅ 多人配音作品已提交 worksId=paid-once work=composite:cleanup\n[xunfei]   提交后页面清理异常（不重复提交）: editor cleanup failed\n[xunfei]   第 1/2 次尝试提交...\n[xunfei] ✅ 已提交待下载任务 worksId=paid-once voice=英语-Amanda\n[xunfei]   提交后页面清理异常（不重复提交）: editor cleanup failed\n[xunfei]   多人配音批量选区行 1-2（页面选区兜底）\n[xunfei]   忽略跨任务延迟 worksId response: sequence=1, cutoff=1\n[xunfei]   📝 捕获 worksId: new-id\n[xunfei]   页面当前音色不是缓存的 'Linda-品质'，强制重新搜索\n[xunfei]   搜索并选择发音人: Linda-品质 (key=speaker:linda)\n[xunfei]   📝 捕获 worksId: temporary-id\n[xunfei]   📝 捕获 worksId: final-id\n[xunfei]   📝 捕获 worksId: temporary-id\n[xunfei]   📝 捕获 worksId: final-id\n[xunfei]   ✅ 作品列表已匹配 worksId: target-id\n----------------------------------------------------------------------\nRan 308 tests in 59.756s\n\nOK\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "tools/process_recovery_probe.py"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 0.137,
+      "label": "process-kill-recovery",
+      "output_tail": "{\n  \"child_exit_code\": -9,\n  \"intent_state\": \"NEEDS_RECONCILE\",\n  \"provider_submit_calls\": 0,\n  \"side_effect_policy\": \"FAKE_PROVIDER_ONLY\",\n  \"status\": \"PASS\",\n  \"submission_id\": \"submission_97d43b9c8a3c46b0aac9d7a713108760\",\n  \"submission_state\": \"AMBIGUOUS\",\n  \"workflow_id\": \"workflow_c592983f784b4dab9cdef953b54a7d3a\"\n}\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "tools/xunfei_smoke.py",
+        "--logical-only",
+        "--source",
+        "examples/documents/信息转述及询问信息 7上- U1.docx",
+        "--max-items",
+        "100"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 0.252,
+      "label": "logical-xunfei-smoke",
+      "output_tail": "[migrate] applying 0001_foundation.sql ...\n[migrate] applied 0001_foundation.sql OK\n[migrate] applying 0002_execution.sql ...\n[migrate] applied 0002_execution.sql OK\n[migrate] applying 0003_artifacts.sql ...\n[migrate] applied 0003_artifacts.sql OK\n[migrate] applying 0004_events_and_integrity.sql ...\n[migrate] applied 0004_events_and_integrity.sql OK\n{\n  \"backend_query_calls\": 0,\n  \"backend_submit_calls\": 1,\n  \"item_count\": 1,\n  \"network_calls\": 0,\n  \"page_calls\": 0,\n  \"provider\": {\n    \"account_scope\": \"logical-smoke\",\n    \"backend\": \"_LogicalXunfeiBackend\",\n    \"capability_version\": \"xunfei-adapter-1\",\n    \"formats\": [\n      \"mp3\"\n    ],\n    \"generation_modes\": [\n      \"composite_cut\",\n      \"single_segment\"\n    ],\n    \"provider\": \"xunfei\",\n    \"real_calls_enabled\": false,\n    \"supports_query\": true,\n    \"supports_resume\": true\n  },\n  \"result\": {\n    \"artifact_ids\": [\n      \"artifact_b59cb93a0fd145be84ffe7cca012fc22\",\n      \"artifact_924402f6517544b8b02d0e496f502a7e\"\n    ],\n    \"attempt_id\": \"attempt_58cbdeb129c24697af7a747be139bc84\",\n    \"error_code\": null,\n    \"error_details\": null,\n    \"error_message\": null,\n    \"receipt_id\": \"receipt_d50652cec8af4dff88b5c1d38a7e3ca8\",\n    \"reused\": false,\n    \"status\": \"SUCCEEDED\",\n    \"step_id\": \"step_1aa54574cc524825a197d8d18a6f763b\",\n    \"submission_id\": \"submission_0b8540ab926c414380cb6bea446bd884\",\n    \"work_unit_id\": \"unit_f2caf89101a54a47976cd570b1b15374\",\n    \"workflow_id\": \"workflow_d5b0b57f2df34b909f52e917c1a0ec54\"\n  },\n  \"runtime\": {\n    \"platform\": \"macOS-26.6.1-arm64-arm-64bit\",\n    \"python\": \"3.12.14\"\n  },\n  \"side_effect_policy\": \"LOGICAL_ONLY_NO_NETWORK\",\n  \"source\": {\n    \"filename\": \"信息转述及询问信息 7上- U1.docx\",\n    \"size_bytes\": 26685\n  },\n  \"status\": \"PASS\",\n  \"workflow_id\": \"workflow_d5b0b57f2df34b909f52e917c1a0ec54\"\n}\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.12/bin/python3.12",
+        "-m",
+        "py_compile",
+        "api/__init__.py",
+        "api/workflow_routes.py",
+        "application/__init__.py",
+        "application/workflow_service.py",
+        "workflow/__init__.py",
+        "workflow/artifact_store.py",
+        "workflow/audio.py",
+        "workflow/data_safety.py",
+        "workflow/database.py",
+        "workflow/domain.py",
+        "workflow/engine.py",
+        "workflow/event_store.py",
+        "workflow/external.py",
+        "workflow/fake_external.py",
+        "workflow/fake_provider.py",
+        "workflow/garbage_collector.py",
+        "workflow/legacy_import.py",
+        "workflow/parser.py",
+        "workflow/providers.py",
+        "workflow/recovery.py",
+        "workflow/repositories.py",
+        "workflow/retry_policy.py",
+        "workflow/scheduler.py",
+        "workflow/security.py",
+        "workflow/side_effect_log.py",
+        "workflow/source_imports.py",
+        "workflow/state_machine.py",
+        "workflow/version.py",
+        "workflow/workspace.py"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main",
+      "duration_seconds": 0.084,
+      "label": "python-compile",
+      "output_tail": "",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "npm",
+        "test"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/electron",
+      "duration_seconds": 0.347,
+      "label": "electron-tests",
+      "output_tail": "\n> word-tts-desktop@2.7.44 test\n> node --test test/*.test.js\n\n✔ 选择 Word 使用 IPC 发起窗口作为原生对话框父窗口 (0.866959ms)\n✔ 原生源文件选择返回受控流句柄和大小，不读取整份文件到内存 (0.169542ms)\n✔ 原生文件框打开前会恢复并显示当前窗口 (0.082916ms)\n▶ 选择 Word 的取消、无窗口与系统异常均返回结构化原因\n  ✔ 用户取消 (0.236333ms)\n  ✔ 窗口不可用 (0.196208ms)\n  ✔ 系统对话框异常 (0.197458ms)\n✔ 选择 Word 的取消、无窗口与系统异常均返回结构化原因 (1.714709ms)\n✔ 保存文件弹出系统保存框并复制到用户选择的位置 (0.449208ms)\n✔ 保存内存字节先 fsync 临时文件再原子替换目标文件 (0.710334ms)\n✔ 保存内存字节超过上限时不会弹出保存框 (0.131791ms)\n▶ 保存文件的所有失败分支都返回非空结构化原因\n  ✔ 窗口不可用 (0.103792ms)\n  ✔ 路径越界 (0.047041ms)\n  ✔ 路径校验异常 (0.053375ms)\n  ✔ 源文件不存在 (0.041542ms)\n  ✔ 源文件检查异常 (0.045958ms)\n  ✔ 用户取消 (0.051916ms)\n  ✔ 保存框异常 (0.072792ms)\n  ✔ 保存框返回异常 (0.042334ms)\n  ✔ 复制异常 (0.037667ms)\n✔ 保存文件的所有失败分支都返回非空结构化原因 (0.787083ms)\n✔ 非主 frame 不能借用顶层窗口打开文件对话框 (0.052416ms)\n▶ 未知窗口、空 frame 与非本地页面均不能调用原生文件对话框\n  ✔ 未知窗口 (0.049667ms)\n  ✔ 空 frame (0.026583ms)\n  ✔ 非本地页面 (0.035375ms)\n✔ 未知窗口、空 frame 与非本地页面均不能调用原生文件对话框 (0.187292ms)\n✔ 长期配置只保留默认男女声的独立参数，不保存文档角色 (19.988709ms)\n✔ 生成方式预设支持默认合并模式和原有单条模式 (1.075667ms)\n✔ 男女默认音色相同时仍保持各自的默认语速 (1.289042ms)\n✔ 生成前会把当前文档和讯飞配置写入工作流快照 (0.93975ms)\n✔ 多人配音基础目录会迁移旧 flat 音色 key (1.042541ms)\n✔ 前端音色参数对非有限数字与后端保持一致 (1.031459ms)\n✔ 工作流快照同步只推进状态版本，不会被旧 SSE 快照回退 (0.843791ms)\n✔ 工作流快照同步也不会让事件 seq 回退 (0.799625ms)\n✔ 已接受或尚未清理的工作流不能再次当成可编辑草稿提交 (0.832583ms)\n✔ 生成页提供停止入口，并把配置冻结竞态收敛到接管流程 (1.219292ms)\n✔ 待核验提交不会暴露普通重试入口，避免把只读对账误显示成重新生成 (0.469875ms)\n✔ 试听媒体发生错误时会清理旧 Blob URL，后续点击可重新取 Artifact (0.652417ms)\n✔ 当前配置写入 localStorage 前会清理旧角色数据 (1.054084ms)\n✔ 进度计数始终按整数四舍五入并限制在总数内 (0.923333ms)\n✔ 结果页按文件音色元数据去重，并兼容可精确匹配的旧 voice 字段 (1.367583ms)\n✔ 结果页头像缓存未完成时先显示目录远程资源，缓存完成后才切换本地地址 (1.0335ms)\n✔ 结果页只接受成功条目的 READY 已验证音频，并使用服务端交付元数据 (6.4865ms)\n✔ 结果页不会在最新 TTS 产物无效时回退到旧音频 (1.019917ms)\n✔ 新完成任务在 ZIP 尚未创建时仍保留整理入口 (0.872625ms)\n✔ 历史记录状态投影不会把活动任务显示为完成或文件缺失 (0.814208ms)\n✔ Electron 窗口保持隔离并允许受信任的 CommonJS preload 加载工作流模块 (0.934916ms)\n✔ 工作流 API 客户端只通过代理发起版本化请求并自动携带幂等键 (1.400792ms)\n✔ 生成命令允许在明确的乐观锁冲突重试中复用同一个幂等键 (0.136417ms)\n✔ 取消命令也支持固定幂等键，重试不会制造第二次控制命令 (0.240583ms)\n✔ 事件连接委托主进程申请 ticket，源文件写入在 API 客户端内部申请 grant (0.324458ms)\n✔ 原生源文件引用走主进程流式上传，不把文件句柄暴露给渲染器 (0.118625ms)\n✔ 源文件上传 transport 的非 2xx 响应会传播稳定错误 (0.325375ms)\n✔ 非 2xx 响应会保留稳定错误码，Artifact 内容返回 ReadableStream (3.22025ms)\n✔ 生产 Artifact 读取优先委托主进程流式 transport (0.121875ms)\n✔ 语音资源通过带能力的 Preload transport 读取字节，不向渲染器暴露后端 URL (0.171375ms)\n✔ Artifact transport 不丢失 IPC 握手期间到达的首个数据块 (3.771166ms)\n✔ Artifact transport 取消读取时会关闭主进程流 (0.210541ms)\n✔ 事件 transport 不丢失 ready 握手期间主进程刷出的首帧 (1.096583ms)\n✔ 事件 transport 会把 listener 注册前收到的错误交付给后续 listener (0.175417ms)\n✔ workflow proxy rejects non-versioned paths and query tokens (0.572292ms)\n✔ SSE parser handles standard event ids, multi-line JSON and heartbeats (0.382916ms)\n✔ 主进程代理附加 capability，并把 JSON 响应结构化返回 (9.981583ms)\n✔ 源文档上传由主进程按长度流式转发，不把内容拼成一个请求缓冲 (2.805667ms)\n✔ Store 只在 reducer 成功后推进并持久化 SSE 游标，重复事件幂等 (0.641625ms)\n✔ Store 检测到 seq 缺口后停止推进游标，等待 catch-up/snapshot (0.357084ms)\n✔ Store 拒绝无效的快照或事件序号，不污染恢复游标 (0.07225ms)\n✔ Store 连接时从持久化游标申请新的一次性事件连接并能关闭 (0.165916ms)\n✔ Store prepare 为渲染器重连恢复持久化 seq，事件只在 Store 接受后推进 (0.067709ms)\n✔ Store prepare 可用当前会话快照作为事件游标，首次连接不会把后续事件误判为缺口 (0.069833ms)\n✔ Store 可清除过期游标，下一次连接回到服务端 snapshot (0.083042ms)\n✔ Store 同时提供受限的工作流快照投影，不保留配置和完整事件载荷 (0.081167ms)\nℹ tests 71\nℹ suites 0\nℹ pass 71\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 91.38675\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "npm",
+        "run",
+        "check:contracts"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/electron",
+      "duration_seconds": 2.996,
+      "label": "contract-check",
+      "output_tail": "\n> word-tts-desktop@2.7.44 check:contracts\n> npm run lint:contracts && npm run check:generated && npm run typecheck:contracts\n\n\n> word-tts-desktop@2.7.44 lint:contracts\n> redocly lint ../contracts/openapi.yaml\n\nNo configurations were provided -- using built in recommended configuration by default.\n\nvalidating ../contracts/openapi.yaml...\n../contracts/openapi.yaml: validated in 24ms\n\nWoohoo! Your API description is valid. 🎉\n\n\n> word-tts-desktop@2.7.44 check:generated\n> node ../scripts/check_generated_contracts.js\n\n✨ openapi-typescript 7.13.0\n🚀 /Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/contracts/openapi.yaml → /var/folders/jb/rc_045wd47b8js3j00x28lz00000gn/T/wordtts-openapi-40354-1787993524072.ts [46.8ms]\ngenerated contract is in sync\n\n> word-tts-desktop@2.7.44 typecheck:contracts\n> tsc --noEmit --target ES2022 --moduleResolution node --lib ES2022,DOM ../contracts/domain.ts ../contracts/generated.ts\n\n",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "main.js"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/electron",
+      "duration_seconds": 0.026,
+      "label": "electron-main-syntax",
+      "output_tail": "",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "preload.js"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/electron",
+      "duration_seconds": 0.023,
+      "label": "electron-preload-syntax",
+      "output_tail": "",
+      "returncode": 0,
+      "status": "PASS"
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "renderer/app.js"
+      ],
+      "cwd": "/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/electron",
+      "duration_seconds": 0.025,
+      "label": "electron-renderer-syntax",
+      "output_tail": "",
+      "returncode": 0,
+      "status": "PASS"
+    }
+  ],
+  "gate": "2A_LOCAL",
+  "open_items": [
+    "Real Xunfei smoke is intentionally not part of this local gate.",
+    "Platform-specific fsync and low-end-device thresholds require target hardware."
+  ],
+  "runtime": {
+    "node": "v24.20.0",
+    "platform": "macOS-26.6.1-arm64-arm-64bit",
+    "python": "3.12.14"
+  },
+  "side_effect_policy": "REAL_PROVIDER_DISABLED",
+  "status": "PASS"
+}
