@@ -20,10 +20,18 @@ from .model import (
 )
 from .adjudication import AdjudicatedParse, BlockConflict, adjudicate
 from .extractors import EXTRACTORS, extract_candidate
+from .persistence import (
+    SCHEMA_VERSION,
+    create_document_revision,
+    ensure_source_document,
+    persist_candidate,
+    persist_parse,
+)
 
 __all__ = [
     "IDENTITY_VERSION",
     "QUESTION_TYPE_CODES",
+    "SCHEMA_VERSION",
     "AdjudicatedParse",
     "Answer",
     "BlockConflict",
@@ -36,6 +44,10 @@ __all__ = [
     "adjudicate",
     "build_identity",
     "content_hash",
+    "create_document_revision",
+    "ensure_source_document",
     "EXTRACTORS",
     "extract_candidate",
+    "persist_candidate",
+    "persist_parse",
 ]

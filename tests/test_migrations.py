@@ -25,7 +25,7 @@ class MigrationRunnerTests(unittest.TestCase):
     def test_profiles_have_explicit_boundaries(self) -> None:
         migrations = load_migrations()
         self.assertEqual(resolve_target(migrations, profile="2a"), 4)
-        self.assertEqual(resolve_target(migrations, profile="full"), 5)
+        self.assertEqual(resolve_target(migrations, profile="full"), 6)
         self.assertEqual(resolve_target(migrations, up_to=4), 4)
 
     def test_clean_2a_database_does_not_apply_external_schema(self) -> None:
