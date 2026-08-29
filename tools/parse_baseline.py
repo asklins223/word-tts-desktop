@@ -89,7 +89,11 @@ def file_sha256(path):
 
 
 def parse_one_document(filepath):
-    """对单个文档跑两条现有解析路径，返回快照片段（纯数据，不含时间戳）。"""
+    """对单个文档跑两条现有解析路径。
+
+    返回 (doc_entry, fingerprints, versions)；doc_entry 为纯数据快照片段
+    （不含时间戳）。
+    """
     from question_types import PARSER_MAP, detect_doc_type, parse_document_auto
 
     filename = os.path.basename(filepath)
@@ -139,7 +143,7 @@ def parse_one_document(filepath):
         "audio_algorithm_version": AUDIO_ALGORITHM_VERSION,
         "default_tts_config": default_config,
     }
-    return doc_entry, fingerprints, versions, bool(progress_items) or bool(results)
+    return doc_entry, fingerprints, versions
 
 
 def capture(label):
@@ -150,7 +154,7 @@ def capture(label):
     category_totals = {}
     for filename in list_documents():
         filepath = os.path.join(DOC_DIR, filename)
-        doc_entry, fingerprints, versions, _ = parse_one_document(filepath)
+        doc_entry, fingerprints, versions = parse_one_document(filepath)
         documents.append({**doc_entry, "fingerprints": fingerprints})
 
         counts = {}

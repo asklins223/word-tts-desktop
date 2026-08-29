@@ -37,6 +37,7 @@ class ExternalUpsertAdapter:
         self.account_scope = account_scope or external_adapter.account_scope
         self._workflow_id: str | None = None
         self._attempt_id: str | None = None
+        self.last_operation: dict[str, Any] | None = None
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -114,7 +115,7 @@ class ExternalUpsertAdapter:
             "AMBIGUOUS": "AMBIGUOUS",
         }.get(side_effect, "PENDING")
         self._snapshot_targets(operation_id, payload, member_status)
-        self._last_operation = {
+        self.last_operation = {
             "external_operation_id": operation_id,
             "attempt_id": self._attempt_id,
         }
