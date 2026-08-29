@@ -1,13 +1,138 @@
 [
   {
+    "source_file": "7上-U2-信息获取.docx",
+    "doc_type": "信息获取",
+    "item_count": 14,
+    "items": [
+      {
+        "category": "听选信息题目",
+        "number": 1,
+        "filename_stem": "问题1",
+        "voice": "male",
+        "text": "M: What are Emma’s favourite stories?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 2,
+        "filename_stem": "问题2",
+        "voice": "female",
+        "text": "W: When does Emma usually write her stories?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 1,
+        "text": "M: Emma, what are you reading now? There are lots of books on your desk.\nW: Just some fairy tales. They are my favourite.\nM: That sounds great. Do you also write your own stories?\nW: Sure. I often write my stories in this notebook.\nM: Wow! When do you usually write them?\nW: I usually write them in the evening. It is very quiet then."
+      },
+      {
+        "category": "听选信息题目",
+        "number": 3,
+        "filename_stem": "问题3",
+        "voice": "male",
+        "text": "M: What does the boy like doing?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 4,
+        "filename_stem": "问题4",
+        "voice": "female",
+        "text": "W: Who teaches the boy to make Chinese knots?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 2,
+        "text": "W: What are you making? It looks beautiful.\nM: I’m making a Chinese knot. I like making them.\nW: Who teaches you to make them?\nM: My grandma. She is very good at it.\nW: Do you need any special tools?\nM: No. We only need some red strings.\nW: That’s interesting. Maybe you can show it in our art class.\nM: Good idea. I can bring one next week."
+      },
+      {
+        "category": "听选信息题目",
+        "number": 5,
+        "filename_stem": "问题5",
+        "voice": "male",
+        "text": "M: Where does Peter usually practice?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 6,
+        "filename_stem": "问题6",
+        "voice": "female",
+        "text": "W: How many students are in the club?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 3,
+        "text": "W: Hi Peter, your new skates are really nice! Do you skate after school?\nM: Yes. I’m a member of the school skating club. It's really fun.\nW: That sounds very interesting. Where do you usually practice?\nM: We practice on the school playground. It’s big enough for us.\nW: How many students are there in your club?\nM: We have twenty students now.\nW: I’d love to try skating as well.\nM: Sure. You can join us this Friday."
+      },
+      {
+        "category": "回答问题题目",
+        "number": 7,
+        "filename_stem": "问题7",
+        "voice": "male",
+        "text": "M: What is the speaker's favorite club?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 8,
+        "filename_stem": "问题8",
+        "voice": "female",
+        "text": "W: When do they practice in the art room?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 9,
+        "filename_stem": "问题9",
+        "voice": "male",
+        "text": "M: Who teaches them to move the little people and animals?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 10,
+        "filename_stem": "问题10",
+        "voice": "female",
+        "text": "W: Where do they usually show their stories?"
+      },
+      {
+        "category": "回答问题录音稿",
+        "index": 1,
+        "text": "(W) Traditional arts are very popular in our school. My favorite one is the shadow play club. We tell stories with light and shadow. We practice in the art room every Thursday. We make little people and animals with paper. Mr. Lin teaches us how to make them move like real actors. It is quite amazing and everyone loves it. We usually show our stories on the school stage. Many students come to watch our shows."
+      }
+    ]
+  },
+  {
     "source_file": "7上-U6-信息获取(1).docx",
     "doc_type": "信息获取",
-    "item_count": 3,
+    "item_count": 14,
     "items": [
+      {
+        "category": "听选信息题目",
+        "number": 1,
+        "filename_stem": "问题1",
+        "voice": "male",
+        "text": "M: What are the two goats doing?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 2,
+        "filename_stem": "问题2",
+        "voice": "female",
+        "text": "W: Where are the rabbits?"
+      },
       {
         "category": "听选信息录音稿",
         "index": 1,
         "text": "W: I love this farm, and I’m so happy to visit it with you guys again.\nM: Really? Look, the goats are running around a big box.\nW: Yes, they can get water from the box.\nM: I want to see the rabbits too. Do you remember where they are?\nW: Yes, they are near the farm gate.\nM: Great. I hope we can see them later."
+      },
+      {
+        "category": "听选信息题目",
+        "number": 3,
+        "filename_stem": "问题3",
+        "voice": "male",
+        "text": "M: Where is the young elephant?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 4,
+        "filename_stem": "问题4",
+        "voice": "female",
+        "text": "W: Why is the young elephant moving her ears?"
       },
       {
         "category": "听选信息录音稿",
@@ -15,9 +140,686 @@
         "text": "M: Excuse me, do you work with the elephants here?\nW: Yes, I do. How can I help you?\nM: I heard there is a young elephant here, but I cannot find her. Where is she?\nW: She is standing beside the large rock.\nM: I can see her now. Why is she moving her ears so often?\nW: Moving her ears helps her keep cool in hot weather.\nM: That’s interesting. Thank you for your explanation.\nW: You’re welcome."
       },
       {
+        "category": "听选信息题目",
+        "number": 5,
+        "filename_stem": "问题5",
+        "voice": "male",
+        "text": "M: What is Rocky looking for?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 6,
+        "filename_stem": "问题6",
+        "voice": "female",
+        "text": "W: Who is telling Rocky what to do?"
+      },
+      {
         "category": "听选信息录音稿",
         "index": 3,
         "text": "W: Welcome to our rescue dog training centre, and today Rocky will show us part of a rescue dog’s job.\nM: Great. What is Rocky looking for among those bags?\nW: He is looking for a bag with a special smell.\nM: Oh, he is checking all the bags one by one.\nW: Yes, his strong nose helps him find the right bag quickly.\nM: Who is the man telling Rocky what to do?\nW: That is Mr Lee, and he works with the dogs here.\nM: I see. We will watch from here and keep quiet."
+      },
+      {
+        "category": "回答问题题目",
+        "number": 7,
+        "filename_stem": "问题7",
+        "voice": "male",
+        "text": "M: What is the name of the school program?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 8,
+        "filename_stem": "问题8",
+        "voice": "female",
+        "text": "W: Where is Max leading Ms Green?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 9,
+        "filename_stem": "问题9",
+        "voice": "male",
+        "text": "M: How does Ms Green make Max start walking again?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 10,
+        "filename_stem": "问题10",
+        "voice": "female",
+        "text": "W: Why are guide dogs helpful in busy public places?"
+      },
+      {
+        "category": "回答问题录音稿",
+        "index": 1,
+        "text": "(W) Today is our school’s Open Day. As part of the “Animal Helpers Program”, the school invites Ms Green, who cannot see, and her guide dog, Max. Ms Green is showing us how Max helps her. He is leading her safely around chairs. When Max sees a bag in their way, he stops. After a student moves it, Ms Green says, “Forward,” and Max starts walking again. Our class claps when they finish. Guide dogs help people walk safely in busy public places. They are not only friendly animals but also helpful partners."
+      }
+    ]
+  },
+  {
+    "source_file": "S1-听后应答.docx",
+    "doc_type": "听后应答",
+    "item_count": 7,
+    "items": [
+      {
+        "category": "听后应答录音稿",
+        "index": 1,
+        "number": 1,
+        "filename_stem": "7上-应答-1",
+        "voice": "female",
+        "text": "Good morning, class."
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 2,
+        "number": 2,
+        "filename_stem": "7上-应答-2",
+        "voice": "female",
+        "text": "Can you say hi to the class?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 3,
+        "number": 3,
+        "filename_stem": "7上-应答-3",
+        "voice": "female",
+        "text": "May I have your name?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 4,
+        "number": 4,
+        "filename_stem": "7上-应答-4",
+        "voice": "female",
+        "text": "How do you spell your name?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 5,
+        "number": 5,
+        "filename_stem": "7上-应答-5",
+        "voice": "female",
+        "text": "Nice to meet you, Emma."
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 6,
+        "number": 6,
+        "filename_stem": "7上-应答-6",
+        "voice": "female",
+        "text": "How are you today?"
+      },
+      {
+        "category": "听后应答录音稿",
+        "index": 7,
+        "number": 7,
+        "filename_stem": "7上-应答-7",
+        "voice": "female",
+        "text": "That’s the bell. Let’s go to class."
+      }
+    ]
+  },
+  {
+    "source_file": "U6单词导入模板.xlsx",
+    "doc_type": "词汇",
+    "item_count": 80,
+    "items": [
+      {
+        "category": "单词",
+        "number": 1,
+        "filename_stem": "单词1",
+        "voice": "female",
+        "text": "pigeon"
+      },
+      {
+        "category": "例句",
+        "number": 1,
+        "filename_stem": "句子1",
+        "voice": "female",
+        "text": "A pigeon is standing near the window."
+      },
+      {
+        "category": "单词",
+        "number": 2,
+        "filename_stem": "单词2",
+        "voice": "female",
+        "text": "surprise"
+      },
+      {
+        "category": "例句",
+        "number": 2,
+        "filename_stem": "句子2",
+        "voice": "female",
+        "text": "The birthday gift was a lovely surprise."
+      },
+      {
+        "category": "单词",
+        "number": 3,
+        "filename_stem": "单词3",
+        "voice": "female",
+        "text": "droppings"
+      },
+      {
+        "category": "例句",
+        "number": 3,
+        "filename_stem": "句子3",
+        "voice": "female",
+        "text": "There are bird droppings on the bench."
+      },
+      {
+        "category": "单词",
+        "number": 4,
+        "filename_stem": "单词4",
+        "voice": "female",
+        "text": "boring"
+      },
+      {
+        "category": "例句",
+        "number": 4,
+        "filename_stem": "句子4",
+        "voice": "female",
+        "text": "The film is boring."
+      },
+      {
+        "category": "单词",
+        "number": 5,
+        "filename_stem": "单词5",
+        "voice": "female",
+        "text": "feed"
+      },
+      {
+        "category": "例句",
+        "number": 5,
+        "filename_stem": "句子5",
+        "voice": "female",
+        "text": "We feed the rabbits every morning."
+      },
+      {
+        "category": "单词",
+        "number": 6,
+        "filename_stem": "单词6",
+        "voice": "female",
+        "text": "madly"
+      },
+      {
+        "category": "例句",
+        "number": 6,
+        "filename_stem": "句子6",
+        "voice": "female",
+        "text": "The birds are flying madly to her."
+      },
+      {
+        "category": "单词",
+        "number": 7,
+        "filename_stem": "单词7",
+        "voice": "female",
+        "text": "scary"
+      },
+      {
+        "category": "例句",
+        "number": 7,
+        "filename_stem": "句子7",
+        "voice": "female",
+        "text": "The snake looks scary."
+      },
+      {
+        "category": "单词",
+        "number": 8,
+        "filename_stem": "单词8",
+        "voice": "female",
+        "text": "research"
+      },
+      {
+        "category": "例句",
+        "number": 8,
+        "filename_stem": "句子8",
+        "voice": "female",
+        "text": "Our class is doing some research on birds."
+      },
+      {
+        "category": "单词",
+        "number": 9,
+        "filename_stem": "单词9",
+        "voice": "female",
+        "text": "recognise"
+      },
+      {
+        "category": "例句",
+        "number": 9,
+        "filename_stem": "句子9",
+        "voice": "female",
+        "text": "I can recognise my teacher from her voice."
+      },
+      {
+        "category": "单词",
+        "number": 10,
+        "filename_stem": "单词10",
+        "voice": "female",
+        "text": "themselves"
+      },
+      {
+        "category": "例句",
+        "number": 10,
+        "filename_stem": "句子10",
+        "voice": "female",
+        "text": "The children made lunch by themselves."
+      },
+      {
+        "category": "单词",
+        "number": 11,
+        "filename_stem": "单词11",
+        "voice": "female",
+        "text": "mirror"
+      },
+      {
+        "category": "例句",
+        "number": 11,
+        "filename_stem": "句子11",
+        "voice": "female",
+        "text": "She looks at herself in the mirror."
+      },
+      {
+        "category": "单词",
+        "number": 12,
+        "filename_stem": "单词12",
+        "voice": "female",
+        "text": "itself"
+      },
+      {
+        "category": "例句",
+        "number": 12,
+        "filename_stem": "句子12",
+        "voice": "female",
+        "text": "The cat can clean itself."
+      },
+      {
+        "category": "单词",
+        "number": 13,
+        "filename_stem": "单词13",
+        "voice": "female",
+        "text": "maybe"
+      },
+      {
+        "category": "例句",
+        "number": 13,
+        "filename_stem": "句子13",
+        "voice": "female",
+        "text": "Maybe we can visit the museum tomorrow."
+      },
+      {
+        "category": "单词",
+        "number": 14,
+        "filename_stem": "单词14",
+        "voice": "female",
+        "text": "several"
+      },
+      {
+        "category": "例句",
+        "number": 14,
+        "filename_stem": "句子14",
+        "voice": "female",
+        "text": "Several students are watching the birds."
+      },
+      {
+        "category": "单词",
+        "number": 15,
+        "filename_stem": "单词15",
+        "voice": "female",
+        "text": "kilometre"
+      },
+      {
+        "category": "例句",
+        "number": 15,
+        "filename_stem": "句子15",
+        "voice": "female",
+        "text": "The island is one kilometre from here."
+      },
+      {
+        "category": "单词",
+        "number": 16,
+        "filename_stem": "单词16",
+        "voice": "female",
+        "text": "speed"
+      },
+      {
+        "category": "例句",
+        "number": 16,
+        "filename_stem": "句子16",
+        "voice": "female",
+        "text": "The train is moving at high speed."
+      },
+      {
+        "category": "单词",
+        "number": 17,
+        "filename_stem": "单词17",
+        "voice": "female",
+        "text": "amazing"
+      },
+      {
+        "category": "例句",
+        "number": 17,
+        "filename_stem": "句子17",
+        "voice": "female",
+        "text": "The rescue dog did an amazing job."
+      },
+      {
+        "category": "单词",
+        "number": 18,
+        "filename_stem": "单词18",
+        "voice": "female",
+        "text": "enough"
+      },
+      {
+        "category": "例句",
+        "number": 18,
+        "filename_stem": "句子18",
+        "voice": "female",
+        "text": "There was enough food for everyone."
+      },
+      {
+        "category": "单词",
+        "number": 19,
+        "filename_stem": "单词19",
+        "voice": "female",
+        "text": "beaver"
+      },
+      {
+        "category": "例句",
+        "number": 19,
+        "filename_stem": "句子19",
+        "voice": "female",
+        "text": "A beaver is building a dam."
+      },
+      {
+        "category": "单词",
+        "number": 20,
+        "filename_stem": "单词20",
+        "voice": "female",
+        "text": "wolf"
+      },
+      {
+        "category": "例句",
+        "number": 20,
+        "filename_stem": "句子20",
+        "voice": "female",
+        "text": "A wolf is walking through the forest."
+      },
+      {
+        "category": "单词",
+        "number": 21,
+        "filename_stem": "单词21",
+        "voice": "female",
+        "text": "engineer"
+      },
+      {
+        "category": "例句",
+        "number": 21,
+        "filename_stem": "句子21",
+        "voice": "female",
+        "text": "My uncle is an engineer."
+      },
+      {
+        "category": "单词",
+        "number": 22,
+        "filename_stem": "单词22",
+        "voice": "female",
+        "text": "hero"
+      },
+      {
+        "category": "例句",
+        "number": 22,
+        "filename_stem": "句子22",
+        "voice": "female",
+        "text": "Firefighters are real heroes."
+      },
+      {
+        "category": "单词",
+        "number": 23,
+        "filename_stem": "单词23",
+        "voice": "female",
+        "text": "rescue"
+      },
+      {
+        "category": "例句",
+        "number": 23,
+        "filename_stem": "句子23",
+        "voice": "female",
+        "text": "The rescue took three hours."
+      },
+      {
+        "category": "单词",
+        "number": 24,
+        "filename_stem": "单词24",
+        "voice": "female",
+        "text": "earthquake"
+      },
+      {
+        "category": "例句",
+        "number": 24,
+        "filename_stem": "句子24",
+        "voice": "female",
+        "text": "The earthquake damaged many houses."
+      },
+      {
+        "category": "单词",
+        "number": 25,
+        "filename_stem": "单词25",
+        "voice": "female",
+        "text": "missing"
+      },
+      {
+        "category": "例句",
+        "number": 25,
+        "filename_stem": "句子25",
+        "voice": "female",
+        "text": "The police are looking for the missing child."
+      },
+      {
+        "category": "单词",
+        "number": 26,
+        "filename_stem": "单词26",
+        "voice": "female",
+        "text": "save"
+      },
+      {
+        "category": "例句",
+        "number": 26,
+        "filename_stem": "句子26",
+        "voice": "female",
+        "text": "The doctor saved the boy."
+      },
+      {
+        "category": "单词",
+        "number": 27,
+        "filename_stem": "单词27",
+        "voice": "female",
+        "text": "dead"
+      },
+      {
+        "category": "例句",
+        "number": 27,
+        "filename_stem": "句子27",
+        "voice": "female",
+        "text": "The cat was dead when we found it."
+      },
+      {
+        "category": "单词",
+        "number": 28,
+        "filename_stem": "单词28",
+        "voice": "female",
+        "text": "dodo"
+      },
+      {
+        "category": "例句",
+        "number": 28,
+        "filename_stem": "句子28",
+        "voice": "female",
+        "text": "A dodo was a large bird that could not fly."
+      },
+      {
+        "category": "单词",
+        "number": 29,
+        "filename_stem": "单词29",
+        "voice": "female",
+        "text": "character"
+      },
+      {
+        "category": "例句",
+        "number": 29,
+        "filename_stem": "句子29",
+        "voice": "female",
+        "text": "Alice is my favourite character in the story."
+      },
+      {
+        "category": "单词",
+        "number": 30,
+        "filename_stem": "单词30",
+        "voice": "female",
+        "text": "museum"
+      },
+      {
+        "category": "例句",
+        "number": 30,
+        "filename_stem": "句子30",
+        "voice": "female",
+        "text": "We are going to the museum this weekend."
+      },
+      {
+        "category": "单词",
+        "number": 31,
+        "filename_stem": "单词31",
+        "voice": "female",
+        "text": "island"
+      },
+      {
+        "category": "例句",
+        "number": 31,
+        "filename_stem": "句子31",
+        "voice": "female",
+        "text": "Many birds live on the island."
+      },
+      {
+        "category": "单词",
+        "number": 32,
+        "filename_stem": "单词32",
+        "voice": "female",
+        "text": "ocean"
+      },
+      {
+        "category": "例句",
+        "number": 32,
+        "filename_stem": "句子32",
+        "voice": "female",
+        "text": "The ship is sailing across the ocean."
+      },
+      {
+        "category": "单词",
+        "number": 33,
+        "filename_stem": "单词33",
+        "voice": "female",
+        "text": "plenty"
+      },
+      {
+        "category": "例句",
+        "number": 33,
+        "filename_stem": "句子33",
+        "voice": "female",
+        "text": "Do not worry—we have plenty of time."
+      },
+      {
+        "category": "单词",
+        "number": 34,
+        "filename_stem": "单词34",
+        "voice": "female",
+        "text": "friendly"
+      },
+      {
+        "category": "例句",
+        "number": 34,
+        "filename_stem": "句子34",
+        "voice": "female",
+        "text": "The guide was friendly to us."
+      },
+      {
+        "category": "单词",
+        "number": 35,
+        "filename_stem": "单词35",
+        "voice": "female",
+        "text": "peaceful"
+      },
+      {
+        "category": "例句",
+        "number": 35,
+        "filename_stem": "句子35",
+        "voice": "female",
+        "text": "People want to live a peaceful life."
+      },
+      {
+        "category": "单词",
+        "number": 36,
+        "filename_stem": "单词36",
+        "voice": "female",
+        "text": "arrive"
+      },
+      {
+        "category": "例句",
+        "number": 36,
+        "filename_stem": "句子36",
+        "voice": "female",
+        "text": "The bus will arrive at ten."
+      },
+      {
+        "category": "单词",
+        "number": 37,
+        "filename_stem": "单词37",
+        "voice": "female",
+        "text": "forest"
+      },
+      {
+        "category": "例句",
+        "number": 37,
+        "filename_stem": "句子37",
+        "voice": "female",
+        "text": "Many wild animals live in the forest."
+      },
+      {
+        "category": "单词",
+        "number": 38,
+        "filename_stem": "单词38",
+        "voice": "female",
+        "text": "hunt"
+      },
+      {
+        "category": "例句",
+        "number": 38,
+        "filename_stem": "句子38",
+        "voice": "female",
+        "text": "It is wrong to hunt wild animals."
+      },
+      {
+        "category": "单词",
+        "number": 39,
+        "filename_stem": "单词39",
+        "voice": "female",
+        "text": "full"
+      },
+      {
+        "category": "例句",
+        "number": 39,
+        "filename_stem": "句子39",
+        "voice": "female",
+        "text": "The box is full of books."
+      },
+      {
+        "category": "单词",
+        "number": 40,
+        "filename_stem": "单词40",
+        "voice": "female",
+        "text": "fantastic"
+      },
+      {
+        "category": "例句",
+        "number": 40,
+        "filename_stem": "句子40",
+        "voice": "female",
+        "text": "We had a fantastic day at the zoo."
       }
     ]
   },
@@ -30,6 +832,49 @@
         "category": "信息转述录音稿",
         "index": 1,
         "text": "(W) I’m Emma, a junior high student. In our class, we have plan cards to help us challenge a new project. Every student can write a useful plan on it, so I write a plan about public speaking. We usually put the cards on the bookshelf so everyone can see it. Ben saw my card and wanted to try my plan too. So every day after lunch, Ben and I practise speaking in a small group. I think this can help us speak better."
+      }
+    ]
+  },
+  {
+    "source_file": "听后选择-7上 Starter Unit 1 Hello!.docx",
+    "doc_type": "听后选择",
+    "item_count": 6,
+    "items": [
+      {
+        "category": "听后选择录音稿",
+        "index": 1,
+        "question_index": 1,
+        "text": "W: Good morning, Peter! How are you?\nM: I’m fine, thanks."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 2,
+        "question_index": 2,
+        "text": "M: Hello! I’m Jack. What’s your name?\nW: Hi, my name is Emma Miller. You can call me Emma."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 3,
+        "question_index": 3,
+        "text": "W: How do you spell your name, Peter?\nM: P-E-T-E-R, Peter."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 4,
+        "question_index": 4,
+        "text": "M: Oh, that’s the bell.\nW: Let’s go to class."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 5,
+        "question_index": 5,
+        "text": "W: Good morning. I’m Helen Brown. What’s your name?\nM: My name is Tom Green. You can call me Tom.\nW: Nice to meet you, Tom.\nM: Nice to meet you too, Helen.\nW: Are you in Class 2?\nM: Yes, I am."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 6,
+        "question_index": 6,
+        "text": "W: Hello, Ben. Can you say hi to the class?\nM: Hi, everyone! I’m Ben Smith.\nW: Thank you, Ben. How do you spell your last name?\nM: S-M-I-T-H, Smith.\nW: Nice to meet you, Ben.\nM: Nice to meet you too, Ms Gao.\nW: Please sit down.\nM: Thank you, Ms Gao."
       }
     ]
   },
@@ -77,217 +922,2856 @@
     ]
   },
   {
-    "source_file": "词汇-G7-u1.docx",
-    "doc_type": "词汇",
-    "item_count": 0,
-    "items": []
+    "source_file": "课文跟读-7上-Starter Unit 1 Hello.docx",
+    "doc_type": "课文跟读",
+    "item_count": 37,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA句子1",
+        "voice": "female",
+        "text": "Can you say hi to the class?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA句子2",
+        "voice": "female",
+        "text": "Hi, everyone! I'm Peter Brown."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA句子3",
+        "voice": "female",
+        "text": "Good morning. My name is Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA句子4",
+        "voice": "female",
+        "text": "So what's your name?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA句子5",
+        "voice": "female",
+        "text": "Oh, I'm Fu Xing. Nice to meet you, Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA句子6",
+        "voice": "female",
+        "text": "Nice to meet you too, Fu Xing!"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA-段-C1-1",
+        "text": "Ms Gao: Good morning, class.",
+        "role": "Ms Gao",
+        "conversation_number": 1
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA-段-C1-2",
+        "text": "Class: Good morning, Ms Gao.",
+        "role": "Class",
+        "conversation_number": 1
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA-段-C1-3",
+        "text": "Ms Gao: Sit down, please.",
+        "role": "Ms Gao",
+        "conversation_number": 1
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA-段-C2-4",
+        "text": "Ms Gao: Hello, Peter. Can you say hi to the class?",
+        "role": "Ms Gao",
+        "conversation_number": 2
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA-段-C2-5",
+        "text": "Peter: Hi, everyone! I'm Peter Brown.",
+        "role": "Peter",
+        "conversation_number": 2
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA-段-C2-6",
+        "text": "Ms Gao: Thank you, Peter.",
+        "role": "Ms Gao",
+        "conversation_number": 2
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 7,
+        "filename_stem": "SA-段-C3-7",
+        "text": "Emma: Good morning. My name is Emma.",
+        "role": "Emma",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 8,
+        "filename_stem": "SA-段-C3-8",
+        "text": "Fu Xing: Good morning, Emma.",
+        "role": "Fu Xing",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 9,
+        "filename_stem": "SA-段-C3-9",
+        "text": "Emma: So what's your name?",
+        "role": "Emma",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 10,
+        "filename_stem": "SA-段-C3-10",
+        "text": "Fu Xing: Oh, I'm Fu Xing. Nice to meet you, Emma.",
+        "role": "Fu Xing",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 11,
+        "filename_stem": "SA-段-C3-11",
+        "text": "Emma: Nice to meet you too, Fu Xing!",
+        "role": "Emma",
+        "conversation_number": 3
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB句子1",
+        "voice": "female",
+        "text": "What's your name?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB句子2",
+        "voice": "female",
+        "text": "My name is Emma Miller."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB句子3",
+        "voice": "female",
+        "text": "How do you spell your name?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB句子4",
+        "voice": "female",
+        "text": "You can call me Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB句子5",
+        "voice": "female",
+        "text": "Nice to meet you, Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB句子6",
+        "voice": "female",
+        "text": "How are you?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 7,
+        "filename_stem": "SB句子7",
+        "voice": "female",
+        "text": "I'm fine, thanks."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 8,
+        "filename_stem": "SB句子8",
+        "voice": "female",
+        "text": "Oh, that's the bell. Let's go to class."
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB语篇-C1-1",
+        "text": "Teng Fei: Good morning. I'm Teng Fei. What's your name?",
+        "role": "Teng Fei",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB语篇-C1-2",
+        "text": "Emma: Good morning. My name is Emma Miller.",
+        "role": "Emma",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB语篇-C1-3",
+        "text": "Teng Fei: How do you spell your name?",
+        "role": "Teng Fei",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB语篇-C1-4",
+        "text": "Emma: E-M-M-A, Emma. M-I-L-L-E-R, Miller. You can call me Emma.",
+        "role": "Emma",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB语篇-C1-5",
+        "text": "Teng Fei: Nice to meet you, Emma.",
+        "role": "Teng Fei",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB语篇-C1-6",
+        "text": "Emma: Nice to meet you too, Teng Fei.",
+        "role": "Emma",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB语篇-C2-1",
+        "text": "Helen: Hello, Wang Yaming! How are you?",
+        "role": "Helen",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB语篇-C2-2",
+        "text": "Yaming: Hi, Helen. I'm fine, thank you. And you?",
+        "role": "Yaming",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB语篇-C2-3",
+        "text": "Helen: I'm great, thanks.",
+        "role": "Helen",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB语篇-C2-4",
+        "text": "Yaming: Oh, that's the bell. Let's go to class.",
+        "role": "Yaming",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB语篇-C2-5",
+        "text": "Helen: Goodbye!",
+        "role": "Helen",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB语篇-C2-6",
+        "text": "Yaming: Bye!",
+        "role": "Yaming",
+        "conversation_number": 2
+      }
+    ]
   },
   {
-    "source_file": "课文跟读-G7-1.docx",
+    "source_file": "课文跟读-7上U2.docx",
     "doc_type": "课文跟读",
-    "item_count": 34,
+    "item_count": 74,
     "items": [
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 1,
-        "text": "Learning without thinking is of no use."
+        "text": "Rock music is coming out of my computer.",
+        "voice": "male",
+        "filename_stem": "U-句子1"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 2,
-        "text": "Ms Chen writes the sentence on the blackboard and says, “Please write this down.”"
+        "text": "As a rock music lover, I play the electric guitar in the school band.",
+        "voice": "male",
+        "filename_stem": "U-句子2"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 3,
-        "text": "I write down the first word and stop."
+        "text": "Sometimes I write songs and share them online.",
+        "voice": "male",
+        "filename_stem": "U-句子3"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 4,
-        "text": "But is it OK to point out the mistake?"
+        "text": "There is so much fun in music.",
+        "voice": "male",
+        "filename_stem": "U-句子4"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 5,
-        "text": "Is that polite, in the first lesson?"
+        "text": "Right at this moment, the sound of Grandpa’s erhu cuts in.",
+        "voice": "male",
+        "filename_stem": "U-句子5"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 6,
-        "text": "Questions jump into my mind."
+        "text": "Music is also my grandpa’s hobby.",
+        "voice": "male",
+        "filename_stem": "U-句子6"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 7,
-        "text": "I look up at Ms Chen."
+        "text": "He likes playing the erhu in the park with his friends.",
+        "voice": "male",
+        "filename_stem": "U-句子7"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 8,
-        "text": "My eyes meet hers."
+        "text": "An idea suddenly hits me: “Why don’t we put our music together?”",
+        "voice": "male",
+        "filename_stem": "U-句子8"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 9,
-        "text": "But then I think about the meaning of the sentence."
+        "text": "We can learn from different kinds of music because they bring us together.",
+        "voice": "male",
+        "filename_stem": "U-句子9"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 10,
-        "text": "I put up my hand."
+        "text": "“Grandpa!” I rush into his room.",
+        "voice": "male",
+        "filename_stem": "U-句子10"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 11,
-        "text": "“Ms Chen, there’s a mistake,” I say."
+        "text": "I decide to take part in the school art festival with Grandpa this year.",
+        "voice": "male",
+        "filename_stem": "U-句子11"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 12,
-        "text": "That sentence is from Confucius, not from Mencius."
+        "text": "After a week’s practice, we are on the stage.",
+        "voice": "male",
+        "filename_stem": "U-句子12"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 13,
-        "text": "You need to think more in your learning."
+        "text": "I nod to Grandpa and we fire up our instruments.",
+        "voice": "male",
+        "filename_stem": "U-句子13"
       },
       {
         "category": "句子跟读",
         "section": "Understanding Idea",
         "number": 14,
-        "text": "Speaking up in the first lesson is a problem for Wang Han."
+        "text": "It feels great to enjoy our hobby together.",
+        "voice": "male",
+        "filename_stem": "U-句子14"
       },
       {
         "category": "段落跟读",
         "section": "Understanding Idea",
-        "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks us to write it down. I begin to write, but I stop after the first word. Questions jump into my mind. But then I think about the meaning of the sentence. I put up my hand. “Ms Chen, there’s a mistake,” I say. Ms Chen says yes and that is the first lesson for everybody. Learning will be more difficult, so we need to think more in our learning."
+        "sentence_number": 1,
+        "text": "Rock music is coming out of my computer.",
+        "voice": "male",
+        "filename_stem": "U-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 2,
+        "text": "As a rock music lover, I play the electric guitar and share songs online.",
+        "voice": "male",
+        "filename_stem": "U-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 3,
+        "text": "Grandpa likes a different kind of music.",
+        "voice": "male",
+        "filename_stem": "U-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 4,
+        "text": "He plays the erhu and sings Beijing opera with friends.",
+        "voice": "male",
+        "filename_stem": "U-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 5,
+        "text": "An idea suddenly hits me: “Why don’t we put our music together?”",
+        "voice": "male",
+        "filename_stem": "U-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 6,
+        "text": "After a week’s practice, Grandpa and I take part in the school art festival.",
+        "voice": "male",
+        "filename_stem": "U-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 7,
+        "text": "We fire up our instruments on the stage.",
+        "voice": "male",
+        "filename_stem": "U-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 8,
+        "text": "Everybody moves with our music, and we enjoy our hobby together.",
+        "voice": "male",
+        "filename_stem": "U-段落8"
       },
       {
         "category": "语篇跟读",
         "section": "Understanding Idea",
-        "discourse_number": 1,
-        "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks the students to write it down. Wang Han starts to write, but he soon stops. He finds something wrong with the sentence.\nHe wants to point out the mistake, but he is not sure. Is it polite to do that in the first lesson? Many questions jump into his mind. He looks up at Ms Chen and feels nervous.\nThen Wang Han thinks about the meaning of the sentence. At last, he puts up his hand and says, “Ms Chen, there’s a mistake. That sentence is from Confucius, not from Mencius.”\nMs Chen smiles and says, “Well done, Wang Han.” She says, “In fact, this is my first lesson for all of you.” In junior high school, learning will be more difficult. Students need to think more in their learning.\nFor Wang Han and his classmates, it is really an important lesson."
+        "discourse_number": 0,
+        "sentence_number": 1,
+        "text": "At home, rock music is playing on Li Ming’s computer.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-1"
       },
       {
         "category": "语篇跟读",
         "section": "Understanding Idea",
-        "discourse_number": 2,
-        "text": "Welcome to Students’ Union Radio! The new school year is beginning. What are the new student’s problems? Let’s take a look.\nFor many years, the biggest problems is: They have more subjects and more homework. They also have many activities. So how can they make good use for their time?"
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "He loves rock music and plays the electric guitar in the school band.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "Sometimes he writes songs and shares them online.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "Music brings him a lot of fun.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "At this moment, the sound of Grandpa’s erhu cuts in.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "Li Ming knows that music is Grandpa’s hobby too.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "Grandpa likes playing the erhu in the park with his friends, but his music is very different from rock music.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "An idea suddenly hits Li Ming: “Why don’t we put our music together?”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "This idea makes him excited.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "Then he rushes into Grandpa’s room.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "This year, Li Ming decides to take part in the school art festival with Grandpa.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "After a week’s practice, they are on the stage.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "Li Ming nods to Grandpa, and they fire up their instruments.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "Everybody moves with their music.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-14"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 15,
+        "text": "It feels great to enjoy their hobby together.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-15"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 1,
-        "text": "Mia, how do you feel about your first day in junior high tomorrow?"
+        "text": "Suddenly, a door appears in the wall.",
+        "voice": "male",
+        "filename_stem": "R-句子1"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 2,
-        "text": "Well, I’m a little nervous."
+        "text": "Emma shakes her head and stops writing.",
+        "voice": "male",
+        "filename_stem": "R-句子2"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 3,
-        "text": "Don’t worry."
+        "text": "There are no old classmates here.",
+        "voice": "male",
+        "filename_stem": "R-句子3"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 4,
-        "text": "We’ve got something for you!"
+        "text": "She feels a bit lonely.",
+        "voice": "male",
+        "filename_stem": "R-句子4"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 5,
-        "text": "We want to share some thoughts with you."
+        "text": "Emma likes writing magic stories.",
+        "voice": "male",
+        "filename_stem": "R-句子5"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 6,
-        "text": "Time flies!"
+        "text": "She wants to make friends and share the joy of writing.",
+        "voice": "male",
+        "filename_stem": "R-句子6"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 7,
-        "text": "Are you ready for your new life?"
+        "text": "An idea hits her.",
+        "voice": "male",
+        "filename_stem": "R-句子7"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 8,
-        "text": "Primary school is like a small pool."
+        "text": "Please write more!",
+        "voice": "male",
+        "filename_stem": "R-句子8"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 9,
-        "text": "Dad and Mum can protect your boat from winds."
+        "text": "Emma puts the notebook on a shelf and leaves.",
+        "voice": "male",
+        "filename_stem": "R-句子9"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 10,
-        "text": "But junior high is like a river."
+        "text": "A week later, Emma’s notebook is still on the shelf in the library.",
+        "voice": "male",
+        "filename_stem": "R-句子10"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 11,
-        "text": "You will face new problems."
+        "text": "There are pages of new writing by different people!",
+        "voice": "male",
+        "filename_stem": "R-句子11"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 12,
-        "text": "But sometimes you have to sail your boat by yourself."
+        "text": "How about starting a writing group?",
+        "voice": "male",
+        "filename_stem": "R-句子12"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 13,
-        "text": "Just try your best and work hard."
+        "text": "Let’s meet here on Wednesday after lunch.",
+        "voice": "male",
+        "filename_stem": "R-句子13"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 14,
-        "text": "You will go through storms towards the sea."
+        "text": "As a result, Emma makes friends through writing.",
+        "voice": "male",
+        "filename_stem": "R-句子14"
       },
       {
         "category": "句子跟读",
         "section": "Reading for writing",
         "number": 15,
-        "text": "One way is to face problems bravely."
+        "text": "It’s the best ending to my story.",
+        "voice": "male",
+        "filename_stem": "R-句子15"
       },
       {
         "category": "段落跟读",
         "section": "Reading for writing",
-        "text": "Before junior high starts, Mia got a letter from Dad and Mum. Primary school is like a small pool. Mia’s boat is safe there, and her parents can protect her boat from winds. But junior high is like a river. It is wide and the water moves fast. Mia will face new problems. Her parents are still there to help, but sometimes she has to sail her boat by herself. She should try her best and work hard. Then she can go through storms towards the sea."
+        "sentence_number": 1,
+        "text": "Emma is new at this school and feels a bit lonely.",
+        "voice": "male",
+        "filename_stem": "R-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 2,
+        "text": "She likes writing magic stories and wants to make friends.",
+        "voice": "male",
+        "filename_stem": "R-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 3,
+        "text": "In the library, an idea hits her.",
+        "voice": "male",
+        "filename_stem": "R-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 4,
+        "text": "She writes in her notebook, “Do you like the story? Please write more!”",
+        "voice": "male",
+        "filename_stem": "R-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 5,
+        "text": "Then she puts it on a shelf and leaves.",
+        "voice": "male",
+        "filename_stem": "R-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 6,
+        "text": "A week later, she opens it and sees pages of new writing.",
+        "voice": "male",
+        "filename_stem": "R-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 7,
+        "text": "A note suggests starting a writing group.",
+        "voice": "male",
+        "filename_stem": "R-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 8,
+        "text": "It is the best ending to her story.",
+        "voice": "male",
+        "filename_stem": "R-段落8"
       },
       {
         "category": "语篇跟读",
         "section": "Reading for writing",
         "discourse_number": 0,
-        "text": "Before Mia’s first day in junior high, Dad asks her how she feels about her new life. Mia says she is a little nervous. Mum tells her, “Don’t worry.” Then Dad and Mum give her a paper boat latter. They want to share some thoughts with her.\nIn the letter, they say, “Time flies! You are now in junior high. Are you ready for your new life?” They tell Mia that primary school is like a small pool. Her boat is safe there, and Dad and Mum can protect it from winds.\nBut junior high is like a river. It is wide, and the water moves fast. Mia will face new problems. Her parents are still there to help, but sometimes she has to sail her boat by herself.\nAt the end of the letter, they say, “Just try your best and work hard. You will go through storms towards the sea.” Mia reads the letter and feels loved. She is ready for her new journey."
+        "sentence_number": 1,
+        "text": "Emma is in the library with her notebook.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "In her magic story, a door suddenly appears in the wall.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "She reads the line again, shakes her head and stops writing.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "As a new student, Emma does not know many classmates yet, so she feels a bit lonely.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "Emma likes writing magic stories.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "She wants to make friends and share the joy of writing.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "Then an idea hits her: she can use her notebook.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "She writes a message for other students: “Hello! Do you like the story? Please write more!”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "After that, Emma puts the notebook on a shelf and leaves.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "A week later, Emma’s notebook is still on the shelf in the library.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "She opens it nervously.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "There are pages of new writing by different people.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "On the last page, someone writes, “How about starting a writing group? Let’s meet here on Wednesday after lunch.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "Emma smiles and thinks, “It’s the best ending to my story.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-14"
+      }
+    ]
+  },
+  {
+    "source_file": "课文跟读-G7-1.docx",
+    "doc_type": "课文跟读",
+    "item_count": 82,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 1,
+        "text": "Learning without thinking is of no use.",
+        "voice": "male",
+        "filename_stem": "U-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 2,
+        "text": "Ms Chen writes the sentence on the blackboard and says, “Please write this down.”",
+        "voice": "male",
+        "filename_stem": "U-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 3,
+        "text": "I write down the first word and stop.",
+        "voice": "male",
+        "filename_stem": "U-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 4,
+        "text": "But is it OK to point out the mistake?",
+        "voice": "male",
+        "filename_stem": "U-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 5,
+        "text": "Is that polite, in the first lesson?",
+        "voice": "male",
+        "filename_stem": "U-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 6,
+        "text": "Questions jump into my mind.",
+        "voice": "male",
+        "filename_stem": "U-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 7,
+        "text": "I look up at Ms Chen.",
+        "voice": "male",
+        "filename_stem": "U-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 8,
+        "text": "My eyes meet hers.",
+        "voice": "male",
+        "filename_stem": "U-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 9,
+        "text": "But then I think about the meaning of the sentence.",
+        "voice": "male",
+        "filename_stem": "U-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 10,
+        "text": "I put up my hand.",
+        "voice": "male",
+        "filename_stem": "U-句子10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 11,
+        "text": "“Ms Chen, there’s a mistake,” I say.",
+        "voice": "male",
+        "filename_stem": "U-句子11"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 12,
+        "text": "That sentence is from Confucius, not from Mencius.",
+        "voice": "male",
+        "filename_stem": "U-句子12"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 13,
+        "text": "You need to think more in your learning.",
+        "voice": "male",
+        "filename_stem": "U-句子13"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 14,
+        "text": "Speaking up in the first lesson is a problem for Wang Han.",
+        "voice": "male",
+        "filename_stem": "U-句子14"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 1,
+        "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks us to write it down.",
+        "voice": "male",
+        "filename_stem": "U-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 2,
+        "text": "I begin to write, but I stop after the first word.",
+        "voice": "male",
+        "filename_stem": "U-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 3,
+        "text": "Questions jump into my mind.",
+        "voice": "male",
+        "filename_stem": "U-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 4,
+        "text": "But then I think about the meaning of the sentence.",
+        "voice": "male",
+        "filename_stem": "U-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 5,
+        "text": "I put up my hand.",
+        "voice": "male",
+        "filename_stem": "U-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 6,
+        "text": "“Ms Chen, there’s a mistake,” I say.",
+        "voice": "male",
+        "filename_stem": "U-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 7,
+        "text": "Ms Chen says yes and that is the first lesson for everybody.",
+        "voice": "male",
+        "filename_stem": "U-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 8,
+        "text": "Learning will be more difficult, so we need to think more in our learning.",
+        "voice": "male",
+        "filename_stem": "U-段落8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 1,
+        "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks the students to write it down.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 2,
+        "text": "Wang Han starts to write, but he soon stops.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 3,
+        "text": "He finds something wrong with the sentence.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 4,
+        "text": "He wants to point out the mistake, but he is not sure.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 5,
+        "text": "Is it polite to do that in the first lesson?",
+        "voice": "male",
+        "filename_stem": "U-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 6,
+        "text": "Many questions jump into his mind.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 7,
+        "text": "He looks up at Ms Chen and feels nervous.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 8,
+        "text": "Then Wang Han thinks about the meaning of the sentence.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 9,
+        "text": "At last, he puts up his hand and says, “Ms Chen, there’s a mistake. That sentence is from Confucius, not from Mencius.”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 10,
+        "text": "Ms Chen smiles and says, “Well done, Wang Han.”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 11,
+        "text": "She says, “In fact, this is my first lesson for all of you.”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 12,
+        "text": "In junior high school, learning will be more difficult.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 13,
+        "text": "Students need to think more in their learning.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 14,
+        "text": "For Wang Han and his classmates, it is really an important lesson.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-14"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 1,
+        "text": "Welcome to Students’ Union Radio!",
+        "voice": "female",
+        "filename_stem": "U-语篇2-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 2,
+        "text": "The new school year is beginning.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 3,
+        "text": "What are the new student’s problems?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 4,
+        "text": "Let’s take a look.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 5,
+        "text": "For many years, the biggest problems is: They have more subjects and more homework.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 6,
+        "text": "They also have many activities.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 7,
+        "text": "So how can they make good use for their time?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 1,
+        "text": "Mia, how do you feel about your first day in junior high tomorrow?",
+        "voice": "male",
+        "filename_stem": "R-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 2,
+        "text": "Well, I’m a little nervous.",
+        "voice": "male",
+        "filename_stem": "R-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 3,
+        "text": "Don’t worry.",
+        "voice": "male",
+        "filename_stem": "R-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 4,
+        "text": "We’ve got something for you!",
+        "voice": "male",
+        "filename_stem": "R-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 5,
+        "text": "We want to share some thoughts with you.",
+        "voice": "male",
+        "filename_stem": "R-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 6,
+        "text": "Time flies!",
+        "voice": "male",
+        "filename_stem": "R-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 7,
+        "text": "Are you ready for your new life?",
+        "voice": "male",
+        "filename_stem": "R-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 8,
+        "text": "Primary school is like a small pool.",
+        "voice": "male",
+        "filename_stem": "R-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 9,
+        "text": "Dad and Mum can protect your boat from winds.",
+        "voice": "male",
+        "filename_stem": "R-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 10,
+        "text": "But junior high is like a river.",
+        "voice": "male",
+        "filename_stem": "R-句子10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 11,
+        "text": "You will face new problems.",
+        "voice": "male",
+        "filename_stem": "R-句子11"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 12,
+        "text": "But sometimes you have to sail your boat by yourself.",
+        "voice": "male",
+        "filename_stem": "R-句子12"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 13,
+        "text": "Just try your best and work hard.",
+        "voice": "male",
+        "filename_stem": "R-句子13"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 14,
+        "text": "You will go through storms towards the sea.",
+        "voice": "male",
+        "filename_stem": "R-句子14"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 15,
+        "text": "One way is to face problems bravely.",
+        "voice": "male",
+        "filename_stem": "R-句子15"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 1,
+        "text": "Before junior high starts, Mia got a letter from Dad and Mum.",
+        "voice": "male",
+        "filename_stem": "R-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 2,
+        "text": "Primary school is like a small pool.",
+        "voice": "male",
+        "filename_stem": "R-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 3,
+        "text": "Mia’s boat is safe there, and her parents can protect her boat from winds.",
+        "voice": "male",
+        "filename_stem": "R-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 4,
+        "text": "But junior high is like a river.",
+        "voice": "male",
+        "filename_stem": "R-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 5,
+        "text": "It is wide and the water moves fast.",
+        "voice": "male",
+        "filename_stem": "R-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 6,
+        "text": "Mia will face new problems.",
+        "voice": "male",
+        "filename_stem": "R-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 7,
+        "text": "Her parents are still there to help, but sometimes she has to sail her boat by herself.",
+        "voice": "male",
+        "filename_stem": "R-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 8,
+        "text": "She should try her best and work hard.",
+        "voice": "male",
+        "filename_stem": "R-段落8"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 9,
+        "text": "Then she can go through storms towards the sea.",
+        "voice": "male",
+        "filename_stem": "R-段落9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 1,
+        "text": "Before Mia’s first day in junior high, Dad asks her how she feels about her new life.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "Mia says she is a little nervous.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "Mum tells her, “Don’t worry.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "Then Dad and Mum give her a paper boat latter.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "They want to share some thoughts with her.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "In the letter, they say, “Time flies! You are now in junior high. Are you ready for your new life?”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "They tell Mia that primary school is like a small pool.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "Her boat is safe there, and Dad and Mum can protect it from winds.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "But junior high is like a river.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "It is wide, and the water moves fast.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "Mia will face new problems.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "Her parents are still there to help, but sometimes she has to sail her boat by herself.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "At the end of the letter, they say, “Just try your best and work hard. You will go through storms towards the sea.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "Mia reads the letter and feels loved.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-14"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 15,
+        "text": "She is ready for her new journey.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-15"
+      }
+    ]
+  },
+  {
+    "source_file": "课文跟读-G7-3.docx",
+    "doc_type": "课文跟读",
+    "item_count": 71,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 1,
+        "text": "It's a story about the love between a father and his son.",
+        "voice": "male",
+        "filename_stem": "U-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 2,
+        "text": "For years, the father served as the postman for this area.",
+        "voice": "male",
+        "filename_stem": "U-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 3,
+        "text": "He was often absent from home and the son seldom saw him.",
+        "voice": "male",
+        "filename_stem": "U-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 4,
+        "text": "Now the son is taking over his father’s position.",
+        "voice": "male",
+        "filename_stem": "U-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 5,
+        "text": "The father goes with him on his first day of work.",
+        "voice": "male",
+        "filename_stem": "U-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 6,
+        "text": "Along the way, they start to see into each other’s hearts.",
+        "voice": "male",
+        "filename_stem": "U-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 7,
+        "text": "For the first time, the son carries his father across a cold river.",
+        "voice": "male",
+        "filename_stem": "U-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 8,
+        "text": "It brings back the father’s memory of carrying the son on his back.",
+        "voice": "male",
+        "filename_stem": "U-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 9,
+        "text": "His love may be silent. But like a mountain, it is always there.",
+        "voice": "male",
+        "filename_stem": "U-句子9"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 1,
+        "text": "Postmen in the Mountains tells a touching story about love between a father and his son.",
+        "voice": "male",
+        "filename_stem": "U-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 2,
+        "text": "The father works as a postman in the mountains and is often absent from home.",
+        "voice": "male",
+        "filename_stem": "U-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 3,
+        "text": "When the father grows old, his son takes over his job.",
+        "voice": "male",
+        "filename_stem": "U-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 4,
+        "text": "On the son’s first trip, the father goes with him.",
+        "voice": "male",
+        "filename_stem": "U-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 5,
+        "text": "At a cold river, the son carries his father on his back.",
+        "voice": "male",
+        "filename_stem": "U-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 6,
+        "text": "This reminds the father of carrying his little boy years ago.",
+        "voice": "male",
+        "filename_stem": "U-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 7,
+        "text": "The father seldom speaks about his love, but his actions show it.",
+        "voice": "male",
+        "filename_stem": "U-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 8,
+        "text": "His love is silent, strong and always there, like a mountain.",
+        "voice": "male",
+        "filename_stem": "U-段落8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 1,
+        "text": "Postmen in the Mountains shows the silent love between a father and his son.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 2,
+        "text": "On a quiet mountain road, the son begins his first journey as a postman, with his father walking behind him.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 3,
+        "text": "For many years, the father worked as a postman in this area.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 4,
+        "text": "His job often kept him away from home, so the son seldom saw him and did not know him very well.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 5,
+        "text": "Now the son is taking over his father’s job.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 6,
+        "text": "As they deliver letters along the mountain road, they spend more time together and slowly begin to understand each other better.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 7,
+        "text": "When they reach a cold river, the son carries his father across on his back.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 8,
+        "text": "This reminds the father of carrying his little son many years ago.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 9,
+        "text": "He suddenly sees that his boy has grown into a strong young man, and tears come into his eyes.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 10,
+        "text": "The father seldom shows his love with words, hugs or kisses.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 11,
+        "text": "His love is silent, but it is always there, strong and steady like a mountain.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 1,
+        "text": "We all know about “problem teenagers”.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 2,
+        "text": "But do you know that some teenagers have “problem parents”?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 3,
+        "text": "So, today we are going to talk about these “problem parents”.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 4,
+        "text": "For example, Tina’s mother is an actress at a park.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 5,
+        "text": "Every day, she dresses up as a queen.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 6,
+        "text": "Cool, right?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 7,
+        "text": "But Tina doesn’t think so.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 8,
+        "text": "Her mother often goes to pick her up in this dress.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 9,
+        "text": "Tina is not happy about it.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 10,
+        "text": "It is always a good idea for Tina to have a good talk with her mother.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 1,
+        "text": "They are always close to each other.",
+        "voice": "male",
+        "filename_stem": "R-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 2,
+        "text": "Robert has a serious disease and cannot move at all.",
+        "voice": "male",
+        "filename_stem": "R-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 3,
+        "text": "He has to stay at home every day and he often feels lonely.",
+        "voice": "male",
+        "filename_stem": "R-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 4,
+        "text": "John sees Robert’s sad face and wants to help.",
+        "voice": "male",
+        "filename_stem": "R-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 5,
+        "text": "One day, he finds a way.",
+        "voice": "male",
+        "filename_stem": "R-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 6,
+        "text": "He puts Robert in a trailer and pulls it along with his bike.",
+        "voice": "male",
+        "filename_stem": "R-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 7,
+        "text": "A big, bright smile appears on Robert’s face.",
+        "voice": "male",
+        "filename_stem": "R-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 8,
+        "text": "It is hard for John to pull Robert’s trailer. But John refuses to race without his brother.",
+        "voice": "male",
+        "filename_stem": "R-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 9,
+        "text": "But for the brothers, some things are more important than winning.",
+        "voice": "male",
+        "filename_stem": "R-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 10,
+        "text": "“I feel happy because I can race with my brother,” Robert says.",
+        "voice": "male",
+        "filename_stem": "R-句子10"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 1,
+        "text": "John and Robert Taylor are close brothers.",
+        "voice": "male",
+        "filename_stem": "R-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 2,
+        "text": "Robert has a serious illness and cannot move by himself, so he often stays at home and feels lonely.",
+        "voice": "male",
+        "filename_stem": "R-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 3,
+        "text": "John wants to help his brother play like other children.",
+        "voice": "male",
+        "filename_stem": "R-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 4,
+        "text": "He puts Robert in a special trailer and pulls it with his bike.",
+        "voice": "male",
+        "filename_stem": "R-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 5,
+        "text": "Soon, they begin to take part in bike races together.",
+        "voice": "male",
+        "filename_stem": "R-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 6,
+        "text": "Pulling the trailer is difficult, but John never leaves Robert behind.",
+        "voice": "male",
+        "filename_stem": "R-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 7,
+        "text": "He refuses to race without his brother.",
+        "voice": "male",
+        "filename_stem": "R-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 8,
+        "text": "They may not always win, but that is not important to them.",
+        "voice": "male",
+        "filename_stem": "R-段落8"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 9,
+        "text": "For the brothers, the love between them powers their bike.",
+        "voice": "male",
+        "filename_stem": "R-段落9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 1,
+        "text": "While other children play outside, Robert Taylor has to stay at home.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "He has a serious disease and cannot move at all.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "Robert sometimes feels lonely and hopes to join the other kids.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "His brother John notices Robert’s sad face and thinks about how to help.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "One day, he finds a way.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "He puts Robert in a trailer and pulls it along with his bike.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "During their first race, a big, bright smile appears on Robert’s face.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "For the first time, he feels like the other kids.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "That first race becomes the start of many more races.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "Pulling Robert’s trailer is hard for John, but he refuses to race without his brother.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "They do not often win, yet they enjoy every race and the time together.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "For John and Robert, the result is not the most important thing.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "The love between them powers their bike.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "In their story, love always wins.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-14"
+      }
+    ]
+  },
+  {
+    "source_file": "课文跟读人教九上U1.docx",
+    "doc_type": "课文跟读",
+    "item_count": 73,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA句子1",
+        "voice": "female",
+        "text": "How has life changed in your hometown over the last 20 years?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA句子2",
+        "voice": "female",
+        "text": "Many young people used to work in big cities."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA句子3",
+        "voice": "female",
+        "text": "Now, more of them have come back to live and work here."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA句子4",
+        "voice": "female",
+        "text": "I used to grow a few vegetables on a small farm to sell at the local market."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA句子5",
+        "voice": "female",
+        "text": "Now, I have large, high-tech greenhouses."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA句子6",
+        "voice": "female",
+        "text": "There, I grow tons of fruit and vegetables, and sell them in large cities."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 7,
+        "filename_stem": "SA句子7",
+        "voice": "female",
+        "text": "Our village has become a tourist attraction."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 8,
+        "filename_stem": "SA句子8",
+        "voice": "female",
+        "text": "We also sell products online to people all over China."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 9,
+        "filename_stem": "SA句子9",
+        "voice": "female",
+        "text": "And our village has just built a new hospital and a library."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 10,
+        "filename_stem": "SA句子10",
+        "voice": "female",
+        "text": "Together you are building a new socialist village."
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA段落1",
+        "text": "Reporter: How has life changed in your hometown over the last 20 years?",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA段落2",
+        "text": "Mr Yan: Oh, it has changed quite a lot! Many young people used to work in big cities. Now, more of them have come back to live and work here.",
+        "role": "Mr Yan"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA段落3",
+        "text": "Reporter: Great! Have there been any other changes?",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA段落4",
+        "text": "Ms Wu: Yes, we've changed the way we farm. I used to grow a few vegetables on a small farm to sell at the local market. Now, I have large, high-tech greenhouses. There, I grow tons of fruit and vegetables, and sell them in large cities.",
+        "role": "Ms Wu"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA段落5",
+        "text": "Reporter: Wow, the new highway and railway must have helped a lot!",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA段落6",
+        "text": "Mr Yan: Oh, they have! Our village has become a tourist attraction. We can now sell local products to tourists. We also sell products online to people all over China.",
+        "role": "Mr Yan"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 7,
+        "filename_stem": "SA段落7",
+        "text": "Reporter: Have these changes greatly improved your lives?",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 8,
+        "filename_stem": "SA段落8",
+        "text": "Ms Wu: Yes! We now have new houses. And our village has just built a new hospital and a library.",
+        "role": "Ms Wu"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 9,
+        "filename_stem": "SA段落9",
+        "text": "Reporter: Wonderful! Together you are building a new socialist village.",
+        "role": "Reporter"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB句子1",
+        "voice": "female",
+        "text": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB句子2",
+        "voice": "female",
+        "text": "Before then, the only transport links between Mombasa, Kenya's main port, and Nairobi, Kenya's capital, were rough roads and an old railway line built in 1901."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB句子3",
+        "voice": "female",
+        "text": "It took 10 hours to get to Nairobi from Mombasa by train."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB句子4",
+        "voice": "female",
+        "text": "However, the new railway, built with China's help, has already cut the travel time between Mombasa and Nairobi to about four hours for passengers."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB句子5",
+        "voice": "female",
+        "text": "Now, more than two million people use it every year."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB句子6",
+        "voice": "female",
+        "text": "Local Kenyans have benefited a lot from the new railway."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 7,
+        "filename_stem": "SB句子7",
+        "voice": "female",
+        "text": "Many changes have taken place in the town over the last few years, and the people who live here have become rich."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 8,
+        "filename_stem": "SB句子8",
+        "voice": "female",
+        "text": "I am able to get to places on time and make business deals with ease."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 9,
+        "filename_stem": "SB句子9",
+        "voice": "female",
+        "text": "The railway has also made the transport of food easier."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 10,
+        "filename_stem": "SB句子10",
+        "voice": "female",
+        "text": "As a result, people now have more fresh food to eat."
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB语篇1",
+        "text": "On the Fast Track",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB语篇2",
+        "text": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB语篇3",
+        "text": "Before then, the only transport links between Mombasa, Kenya's main port, and Nairobi, Kenya's capital, were rough roads and an old railway line built in 1901.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB语篇4",
+        "text": "The old trains were very slow.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB语篇5",
+        "text": "It took 10 hours to get to Nairobi from Mombasa by train.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB语篇6",
+        "text": "However, the new railway, built with China's help, has already cut the travel time between Mombasa and Nairobi to about four hours for passengers.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 7,
+        "filename_stem": "SB语篇7",
+        "text": "Now, more than two million people use it every year.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 8,
+        "filename_stem": "SB语篇8",
+        "text": "Local Kenyans have benefited a lot from the new railway.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 9,
+        "filename_stem": "SB语篇9",
+        "text": "A government worker said, \"I'm very happy with the new railway built by our Chinese friends. Many changes have taken place in the town over the last few years, and the people who live here have become rich.\"",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 10,
+        "filename_stem": "SB语篇10",
+        "text": "A businessman said, \"My experience of using the train since 2017 has been good. It is very convenient and doesn't cost much money. I am able to get to places on time and make business deals with ease.\"",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 11,
+        "filename_stem": "SB语篇11",
+        "text": "The railway has also made the transport of food easier.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 12,
+        "filename_stem": "SB语篇12",
+        "text": "\"Food used to take hundreds of lorries to carry between the two cities, but now it takes only two or three trains,\" said a supermarket manager.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 13,
+        "filename_stem": "SB语篇13",
+        "text": "As a result, people now have more fresh food to eat.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 14,
+        "filename_stem": "SB语篇14",
+        "text": "Although China and Kenya are far away from each other, the railway shows how different countries can work together to build a better world.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 1,
+        "filename_stem": "RP语篇1",
+        "text": "Love My Hometown, Build My Hometown",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 2,
+        "filename_stem": "RP语篇2",
+        "text": "With a deep love for their hometown, people of different ages and professions are contributing to its development and growing along with it.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 3,
+        "filename_stem": "RP语篇3",
+        "text": "Today, let us explore three such stories.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 4,
+        "filename_stem": "RP语篇4",
+        "text": "The watermelon farmer",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 5,
+        "filename_stem": "RP语篇5",
+        "text": "Liu Guanghui is an agricultural technology expert in watermelon farming.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 6,
+        "filename_stem": "RP语篇6",
+        "text": "Although he is more than 70 years old, he still spends most of his days working in the sun on the farmland.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 7,
+        "filename_stem": "RP语篇7",
+        "text": "He wears a wide hat, and his skin is brown from the sun.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 8,
+        "filename_stem": "RP语篇8",
+        "text": "He loves farming and has spent his life researching ways to improve it.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 9,
+        "filename_stem": "RP语篇9",
+        "text": "On his days off, Guanghui provides local farmers with technical training and guidance for free.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 10,
+        "filename_stem": "RP语篇10",
+        "text": "With joint efforts of the government, farmers, and experts like him, the farming economy in the province has grown by more than one billion yuan over the years.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 11,
+        "filename_stem": "RP语篇11",
+        "text": "The flower live-streamer",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 12,
+        "filename_stem": "RP语篇12",
+        "text": "Jiang Hui's friends and fellow villagers call her the \"flower girl\".",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 13,
+        "filename_stem": "RP语篇13",
+        "text": "When she was young, Hui often visited her aunt's flower field after school, where she learnt how to grow flowers.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 14,
+        "filename_stem": "RP语篇14",
+        "text": "She also showed great talent in putting different flowers together beautifully.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 15,
+        "filename_stem": "RP语篇15",
+        "text": "After graduating from university, Hui decided to return to her hometown and start her own flower business.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 16,
+        "filename_stem": "RP语篇16",
+        "text": "To promote sales, she started to sell her flowers online.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 17,
+        "filename_stem": "RP语篇17",
+        "text": "It was hard at first, but she didn't give up.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 18,
+        "filename_stem": "RP语篇18",
+        "text": "She always patiently explained and offered practical advice to customers.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 19,
+        "filename_stem": "RP语篇19",
+        "text": "Gradually, her online shop became more popular.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 20,
+        "filename_stem": "RP语篇20",
+        "text": "She also helped and taught other villagers how to sell agricultural products online.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 21,
+        "filename_stem": "RP语篇21",
+        "text": "\"Many people now know about the agricultural products from our town,\" Hui said with a big smile.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 22,
+        "filename_stem": "RP语篇22",
+        "text": "\"This makes all the hard work worthwhile!\"",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 23,
+        "filename_stem": "RP语篇23",
+        "text": "The village teacher",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 24,
+        "filename_stem": "RP语篇24",
+        "text": "When Yuan Bailing was a little girl, it took her almost an hour to get to school each day, but she loved school so much that she never missed it.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 25,
+        "filename_stem": "RP语篇25",
+        "text": "As she grew up, she witnessed how her village changed greatly over the years.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 26,
+        "filename_stem": "RP语篇26",
+        "text": "Better roads and bridges have been built.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 27,
+        "filename_stem": "RP语篇27",
+        "text": "Now it takes only ten minutes for children to get to school.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 28,
+        "filename_stem": "RP语篇28",
+        "text": "As the first person from her village to graduate from university, Bailing decided to return to her hometown to become a teacher.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 29,
+        "filename_stem": "RP语篇29",
+        "text": "She wants to help more children get a good education and be part of her hometown's growth and development.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 30,
+        "filename_stem": "RP语篇30",
+        "text": "Though the area still needs further development, through the courage and hard work of its people—like Bailing—it has a bright future ahead.",
+        "voice": "female"
       }
     ]
   }
