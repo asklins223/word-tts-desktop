@@ -44,7 +44,7 @@ def project_audio_tasks_to_work_items(
     projected = []
     for sequence, (operation_id, scope_row_id, target_kind, target_id,
                    target_revision_id) in enumerate(tasks):
-        content, voice_policy = _load_target_content(conn, target_revision_id)
+        content, _ = _load_target_content(conn, target_revision_id)
         members = conn.execute(
             """
             SELECT m.target_kind, m.target_id, m.target_revision_id

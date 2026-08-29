@@ -123,6 +123,17 @@ class OperationRunner:
                     *, now: str | None = None) -> str:
         step_id = f"step:{operation_id}"
         created = now or _now()
+        existing = self.conn.execute(
+            "SELECT workflow_id FROM workflow_steps WHERE step_id = ?",
+            (step_id,),
+        ).fetchone()
+        if existing and existing[0] != workflow_id:
+            # 方案 3.3：同一逻辑任务只属于一个 workflow run；
+            # 跨 run 重执行必须先走重新规划生成新任务
+            raise ValueError(
+                f"操作任务 {operation_id} 已绑定到其他 workflow "
+                f"({existing[0]})；跨 run 重执行请重新规划"
+            )
         self.conn.execute(
             """
             INSERT OR IGNORE INTO workflow_steps
@@ -396,7 +407,7 @@ class OperationRunner:
         step_status = STEP_STATUS_BY_RESULT[result.status]
         attempt_status = ATTEMPT_STATUS_BY_RESULT[result.status]
         attempt_result = ATTEMPT_RESULT_BY_RESULT[result.status]
-        finished = created
+        finished = _now()
         self.conn.execute(
             """UPDATE step_attempts SET status = ?, result_status = ?,
                error_code = ?, finished_at = ?, state_version = state_version + 1

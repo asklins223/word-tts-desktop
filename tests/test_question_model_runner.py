@@ -274,3 +274,43 @@ class TestExternalWiring(RunnerTestBase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class TestCrossWorkflowGuard(RunnerTestBase):
+    """同一逻辑任务跨 workflow 重执行：明确报错而非 FK 静默违规。"""
+
+    def test_rebind_to_other_workflow_rejected(self):
+        _, tasks = self.build_plan()
+        operation_id = tasks[0]["operation_id"]
+        wf1 = self.repository.create_workflow("run-1", {})
+        wf2 = self.repository.create_workflow("run-2", {})
+        runner = OperationRunner(self.con)
+        adapter = FakeAudioAdapter()
+        first = runner.run(operation_id=operation_id, adapter=adapter,
+                           workflow_id=wf1.workflow_id, now=self.now)
+        self.assertEqual(first.status, ResultStatus.SUCCEEDED)
+        with self.assertRaises(ValueError):
+            runner.run(operation_id=operation_id, adapter=adapter,
+                       workflow_id=wf2.workflow_id, now=self.now)
+
+    def test_scope_kind_not_supported_blocked(self):
+        """能力矩阵在执行前阻断不支持的范围。"""
+        _, tasks = self.build_plan()
+        workflow = self.repository.create_workflow("run-3", {})
+        runner = OperationRunner(self.con)
+
+        class ContentOnlyAdapter(FakeAudioAdapter):
+            def capabilities(self):
+                return {"scope_kinds": ("CONTENT_UNIT",)}
+
+        result = runner.run(operation_id=tasks[0]["operation_id"],
+                            adapter=ContentOnlyAdapter(),
+                            workflow_id=workflow.workflow_id, now=self.now)
+        self.assertEqual(result.status, ResultStatus.PERMANENT_FAILED)
+        self.assertEqual(result.error_code, "SCOPE_KIND_NOT_SUPPORTED")
+        # 未产生 attempt（intent 未开）
+        attempts = self.con.execute(
+            "SELECT COUNT(*) FROM step_attempts WHERE step_id = ?",
+            (f"step:{tasks[0]['operation_id']}",),
+        ).fetchone()[0]
+        self.assertEqual(attempts, 0)
