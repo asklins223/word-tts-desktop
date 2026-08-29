@@ -1061,6 +1061,84 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual((budget["used_attempts"], budget["reserved_attempts"]), (1, 0))
         self.assertEqual((states["side_effect_state"], states["status"]), ("CONFIRMED", "SUCCEEDED"))
 
+    def test_ambiguous_run_routes_reconfigure_to_reconciliation_not_dead_end(self) -> None:
+        """终止/断网留下的 AMBIGUOUS run：patch 必须返回可路由的对账错误。
+
+        用户在配置页点击生成时不能再拿到笼统的 CONFIG_FROZEN 死胡同；
+        未决副作用必须以 RECONCILIATION_REQUIRED 暴露，且恢复入口
+        （attempt/work_unit/目标版本）可以通过 list_open_reconciliations
+        重建——应用重启后依然可达。
+        """
+
+        workflow_id = self._workflow_with_items()
+        provider = FakeProvider()
+        provider.fail_mode = "after"
+        engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "reconcile-route-artifacts"))
+
+        first = engine.run_tts(workflow_id, provider)
+        self.assertEqual(first.status, "AMBIGUOUS")
+        snapshot = self.repository.get_workflow(workflow_id)
+        self.assertEqual(snapshot.execution_state, "WAITING_USER")
+
+        interventions = self.repository.list_open_reconciliations(workflow_id)
+        self.assertEqual(len(interventions), 1)
+        intervention = interventions[0]
+        self.assertEqual(intervention["attempt_id"], first.attempt_id)
+        self.assertTrue(intervention["work_unit_id"])
+        self.assertGreaterEqual(intervention["work_unit_state_version"], 0)
+
+        with self.assertRaises(ConflictError) as raised:
+            self.repository.patch_draft(
+                workflow_id,
+                snapshot.state_version,
+                configuration={"mode": "composite_cut", "default_female_voice": "speaker:changed"},
+            )
+        self.assertEqual(raised.exception.code, "RECONCILIATION_REQUIRED")
+
+        # 对账（确认未提交）之后配置恢复可编辑，生成可以继续——文档不会
+        # 因为一次网络中断而永久卡死。
+        resolved = self.repository.targeted_command(
+            workflow_id,
+            "resolve",
+            {
+                "target_type": "WORK_UNIT",
+                "work_unit_id": intervention["work_unit_id"],
+            },
+            expected_state_version=self.repository.get_workflow(workflow_id).state_version,
+            expected_target_state_version=intervention["work_unit_state_version"],
+            request_id="test-reconcile-not-submitted",
+            decision="NOT_SUBMITTED",
+            evidence={
+                "source": "desktop-user-confirmed-not-submitted",
+                "evidence_hash": "test-evidence-hash",
+                "summary": "用户确认讯飞作品列表中没有本次作品",
+            },
+        )
+        self.assertEqual(resolved.execution_state, "WAITING_USER")
+        provider.fail_mode = None
+        second = engine.run_tts(workflow_id, provider)
+        self.assertEqual(second.status, "SUCCEEDED")
+
+    def test_fake_provider_ambiguous_submission_is_reconciled_without_resubmit(self) -> None:
+        workflow_id = self._workflow_with_items()
+        provider = FakeProvider()
+        provider.fail_mode = "after"
+        engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "engine-artifacts"))
+
+        first = engine.run_tts(workflow_id, provider)
+        self.assertEqual(first.status, "AMBIGUOUS")
+        self.assertEqual(first.error_code, "SUBMISSION_AMBIGUOUS")
+        self.assertEqual(provider.submit_calls, 1)
+
+        resumed = engine.run_tts(workflow_id, provider)
+        self.assertEqual(resumed.status, "SUCCEEDED")
+        self.assertEqual(provider.submit_calls, 1)
+        with self.database.read_transaction() as con:
+            budget = con.execute("SELECT used_attempts, reserved_attempts FROM retry_budgets").fetchone()
+            states = con.execute("SELECT side_effect_state, status FROM work_units").fetchone()
+        self.assertEqual((budget["used_attempts"], budget["reserved_attempts"]), (1, 0))
+        self.assertEqual((states["side_effect_state"], states["status"]), ("CONFIRMED", "SUCCEEDED"))
+
     def test_expired_provider_lease_is_fenced_before_provider_submit(self) -> None:
         workflow_id = self._workflow_with_items()
         provider = FakeProvider()

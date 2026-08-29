@@ -1090,6 +1090,27 @@ def install_workflow_api(
         runtime.ensure_initialized()
         return _workflow_envelope(runtime.repository.get_workflow(workflow_id))
 
+    @router.get("/workflows/{workflow_id}/recovery")
+    async def get_workflow_recovery(workflow_id: str):
+        """Expose the OPEN reconciliation handoffs after a restart.
+
+        任务被终止/断网后若有未决外部副作用，渲染层必须能重建
+        “确认未提交后重试”的目标参数；否则用户在配置页只能拿到
+        无法理解的冻结报错，任务看起来永远无法继续。
+        """
+
+        runtime.ensure_initialized()
+        snapshot = runtime.repository.get_workflow(workflow_id)
+        interventions = runtime.repository.list_open_reconciliations(workflow_id)
+        return {
+            "request_id": _request_id(),
+            "workflow_id": workflow_id,
+            "workflow_state_version": snapshot.state_version,
+            "execution_state": snapshot.execution_state,
+            "control_state": snapshot.control_state,
+            "interventions": interventions,
+        }
+
     @router.get("/workflows")
     async def list_workflows(limit: int = 100):
         runtime.ensure_initialized()

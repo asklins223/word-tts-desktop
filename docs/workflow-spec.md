@@ -16,7 +16,7 @@
 
 Workflow 汇总优先级为 `RECOVERING > BLOCKED > WAITING_USER > WAITING_RETRY > RUNNING > terminal`。Step 的执行、验证、失败、对账和清理 attempt 分开编号；`execute_attempt_no` 不被 RECONCILE/VERIFY/CLEANUP 占用。
 
-所有聚合写入都使用 `state_version` 条件更新；租约回写还必须匹配单调递增的 fencing token。`AMBIGUOUS` 只能进入 RECONCILE 或人工解决：确认已提交进入 VERIFY，确认未提交后才允许重新进入 READY。取消遇到未决副作用时只能收敛到 BLOCKED/TERMINATING，不能报告为普通成功取消。
+所有聚合写入都使用 `state_version` 条件更新；租约回写还必须匹配单调递增的 fencing token。存在未决外部副作用的 run 拒绝改配置时必须返回专用错误码 `RECONCILIATION_REQUIRED`（而非笼统的配置冻结），并可通过 `GET /api/v1/workflows/{id}/recovery` 发现 OPEN 对账目标（attempt/work_unit/目标版本/作品名）；渲染层收到该错误码时必须路由到“确认未提交后重试”面板，不得以死胡同报错结束。`AMBIGUOUS` 只能进入 RECONCILE 或人工解决：确认已提交进入 VERIFY，确认未提交后才允许重新进入 READY。取消遇到未决副作用时只能收敛到 BLOCKED/TERMINATING，不能报告为普通成功取消。
 
 公开命令分两类：parse/generate/pause/resume/cancel 使用 workflow-level `expected_state_version`；retry/reconcile/resolve 必须同时携带 typed target 和 `expected_target_state_version`。MIXED attempt 只能下钻到 WorkUnit、WorkUnitAttempt、receipt 或 external operation，不能以步骤级命令覆盖子操作。
 

@@ -61,3 +61,7 @@ T8/T16 剩余项已在本地完成并刷新证据：
 
 未迁移路径（`/api/config`、`/api/health`、`/api/generate` 等）由中间件统一返回 `410 API_VERSION_RETIRED`，不再依赖路由存在；`tools/release_gate.py` 的 `legacy-api-410` 与 `legacy-api-retirement-code` 探针均 PASS。`tests/test_desktop_server.py` 由 43 项（1592 行）收敛为 6 项活跃面安全/契约测试，并新增"旧路径 410 收口"回归。全量验证：Python `272` 项、Electron `84` 项、2A gate 13 项 PASS（Node 24.20.0）、发布门 `release_ready=true`。
 
+## 对账死胡同修复（2026-08-29 晚）
+
+用户实测发现：多次生成中终止任务后，配置页再次生成会拿到 `workflow configuration is frozen after an execution attempt has started`，看起来文档永久无法继续。根因是计费保护的未决副作用（SUBMISSION_AMBIGUOUS）与纯配置冻结共用同一个错误码，且重启后对账入口不可发现。修复：`patch_draft` 在未决副作用场景返回专用 `RECONCILIATION_REQUIRED`；新增 `GET /api/v1/workflows/{id}/recovery` 暴露 OPEN 对账目标（attempt/work_unit/目标版本/works_name）；渲染层收到该错误码时自动拉取目标并弹出“确认未提交后重试”面板——确认未提交后同 run 继续生成，文档不会因网络问题卡死。回归：`test_ambiguous_run_routes_reconfigure_to_reconciliation_not_dead_end`、`test_recovery_endpoint_and_frozen_reconfigure_are_routable`；全量 Python `274` / Electron `86` 通过。
+

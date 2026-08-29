@@ -1090,6 +1090,15 @@ class WorkflowRepository:
                     and row["control_state"] == "RUNNING"
                 )
                 if not safe_reconfigure:
+                    if unresolved:
+                        # 有未决外部副作用：这不是“配置冻结”，而是必须先走
+                        # 对账（确认未提交/已提交）才能收敛。给渲染层一个可
+                        # 路由的专用错误码，避免用户在配置页拿到死胡同报错。
+                        raise ConflictError(
+                            "workflow has unresolved provider side effects; complete reconciliation before reconfiguring",
+                            code="RECONCILIATION_REQUIRED",
+                            details={"workflow_id": workflow_id},
+                        )
                     raise ConflictError(
                         "workflow configuration is frozen after an execution attempt has started",
                         code="CONFIG_FROZEN",
@@ -2270,6 +2279,53 @@ class WorkflowRepository:
                 now,
             ),
         )
+
+    def list_open_reconciliations(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Return OPEN provider-reconciliation handoffs for one workflow.
+
+        渲染层在重启后用这个投影重建“确认未提交后重试”的目标参数
+        （attempt/work_unit/目标版本），保证终止或断网后的任务永远有
+        可达的收敛入口，而不是停留在无法理解的报错上。
+        """
+
+        with self.database.read_transaction() as con:
+            rows = con.execute(
+                """SELECT i.intervention_id, i.attempt_id, i.work_unit_id, i.reason,
+                          i.created_at,
+                          u.state_version AS work_unit_state_version,
+                          u.status AS work_unit_status,
+                          u.side_effect_state,
+                          (
+                              SELECT json_extract(e.payload_json, '$.details.works_name')
+                              FROM workflow_events e
+                              WHERE e.workflow_id = i.workflow_id
+                                AND e.event_type = 'TTS_SUBMISSION_AMBIGUOUS'
+                                AND json_extract(e.payload_json, '$.work_unit_id') = i.work_unit_id
+                              ORDER BY e.seq DESC LIMIT 1
+                          ) AS works_name
+                   FROM user_interventions i
+                   LEFT JOIN work_units u ON u.work_unit_id = i.work_unit_id
+                   WHERE i.workflow_id = ?
+                     AND i.state = 'OPEN'
+                     AND i.intervention_type = 'RECONCILE_PROVIDER'
+                   ORDER BY i.created_at, i.intervention_id""",
+                (workflow_id,),
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                work_unit_state_version = row["work_unit_state_version"]
+                result.append({
+                    "intervention_id": str(row["intervention_id"]),
+                    "attempt_id": str(row["attempt_id"]) if row["attempt_id"] else None,
+                    "work_unit_id": str(row["work_unit_id"]) if row["work_unit_id"] else None,
+                    "work_unit_state_version": int(work_unit_state_version) if work_unit_state_version is not None else None,
+                    "work_unit_status": str(row["work_unit_status"] or "") or None,
+                    "side_effect_state": str(row["side_effect_state"] or "") or None,
+                    "works_name": str(row["works_name"]) if row["works_name"] else None,
+                    "reason": str(row["reason"] or "")[:500],
+                    "created_at": str(row["created_at"] or "") or None,
+                })
+            return result
 
     def _resolve_target(self, con: sqlite3.Connection, workflow_id: str, target: CommandTarget, row: sqlite3.Row, table: str, key_column: str, decision: str) -> bool:
         submission_id: str | None = None

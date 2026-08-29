@@ -1769,7 +1769,7 @@ async function startProcessing(useDefaults, presetConfig, itemIds = null) {
         // PATCH 与后台调度之间存在竞态：PATCH 读取时仍可编辑，真正提交
         // 前自动化任务已经先被接受。CONFIG_FROZEN 在这里不是“重新报错”
         // 的终点，而是重新读取并接管那个已经在跑的任务。
-        if (['CONFIG_FROZEN', 'GENERATION_ALREADY_RUNNING'].includes(err?.code) && workflowApi) {
+        if (['CONFIG_FROZEN', 'GENERATION_ALREADY_RUNNING', 'RECONCILIATION_REQUIRED'].includes(err?.code) && workflowApi) {
             try {
                 const authoritative = await workflowApi.getWorkflow(session.session_id);
                 if (
@@ -1782,6 +1782,45 @@ async function startProcessing(useDefaults, presetConfig, itemIds = null) {
                     showToast('任务已经在运行，已接管后台进度', 'warning');
                     return;
                 }
+                // 终止/断网后留下未决外部副作用：正确的出路是“确认未提交后
+                // 重试”的对账流程，而不是死胡同报错。重启后目标参数从
+                // /recovery 端点重建，保证这个入口永远可达。
+                if (err.code === 'RECONCILIATION_REQUIRED') {
+                    const recovery = await workflowApi.getWorkflowRecovery?.(session.session_id).catch(() => null);
+                    const intervention = recovery?.interventions?.find(
+                        (item) => item?.attempt_id && item?.work_unit_id
+                            && Number.isInteger(Number(item.work_unit_state_version)),
+                    );
+                    if (intervention && currentSession?.session_id === session.session_id) {
+                        lastAmbiguousRecoveryTarget = {
+                            attempt_id: String(intervention.attempt_id),
+                            work_unit_id: String(intervention.work_unit_id),
+                            target_state_version: Number(intervention.work_unit_state_version),
+                            workflow_state_version: Number(recovery.workflow_state_version || 0),
+                            submission_id: null,
+                        };
+                        clearGenerationStartupTimer();
+                        generateAbortController = null;
+                        generationResult = 'error';
+                        const reconcileMessage = `本次任务的讯飞提交结果还未确认（生成被终止或网络中断都会出现${intervention.works_name ? `，作品名 ${intervention.works_name}` : ''}）。请点击下方“确认未提交后重试”，在讯飞作品列表核对后即可继续生成；确认未提交不会重复扣费。`;
+                        $('gen-title').textContent = '任务待核验';
+                        $('generation-file-name').textContent = `「${session.source_filename || '当前文档'}」的提交结果待核验；确认后可继续生成。`;
+                        $('status-text').textContent = reconcileMessage;
+                        $('progress-bar').style.width = '0%';
+                        setProgressIndeterminate(false);
+                        setGenerationVisualState('warning');
+                        addLogEntry({
+                            level: 'warn', stage: 'complete', kind: 'summary', status: 'warning',
+                            key: 'task:summary',
+                            title: '讯飞提交结果待核验',
+                            detail: reconcileMessage,
+                        });
+                        showGenerationRecovery(reconcileMessage, { ambiguous: true, target: lastAmbiguousRecoveryTarget });
+                        showToast('提交结果待核验：请确认未提交后继续', 'warning');
+                        resetGenerateState();
+                        return;
+                    }
+                }
             } catch (syncError) {
                 console.warn('配置冻结后同步已接受任务失败:', syncError);
             }
@@ -1792,9 +1831,11 @@ async function startProcessing(useDefaults, presetConfig, itemIds = null) {
         const serviceUnavailable = err instanceof TypeError || /failed to fetch/i.test(err.message || '');
         const failureMessage = serviceUnavailable
             ? '无法连接生成服务，请重试连接后再次生成。'
-            : err?.code === 'CONFIG_FROZEN'
-                ? '本次任务已经开始过外部提交，不能在原任务中修改音色或参数；请点击“重新开始”新建任务后再生成。'
-                : `启动失败：${err.message}`;
+            : err?.code === 'RECONCILIATION_REQUIRED'
+                ? '本次任务在讯飞的提交结果还未确认，需要先完成核验才能继续；请点击“重试生成”重建核验入口。'
+                : err?.code === 'CONFIG_FROZEN'
+                    ? '本次任务已经开始过外部提交，不能在原任务中修改音色或参数；请点击“重新开始”新建任务后再生成。'
+                    : `启动失败：${err.message}`;
         $('gen-title').textContent = '任务未能启动';
         $('generation-file-name').textContent = `未能启动「${session.source_filename || '当前文档'}」；设置与解析结果仍会保留。`;
         $('status-text').textContent = failureMessage;

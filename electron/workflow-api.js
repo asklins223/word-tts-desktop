@@ -71,6 +71,10 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}`);
             return response.workflow;
         },
+        async getWorkflowRecovery(workflowId) {
+            // 未决副作用的对账入口：重启后重建“确认未提交后重试”的目标。
+            return call('GET', `/api/v1/workflows/${encode(workflowId)}/recovery`);
+        },
         async getWorkspace(workflowId) {
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}/workspace`);
             return response?.workspace || null;

@@ -2,6 +2,7 @@
 
 ## v2.7.45
 
+- 修复“终止任务后无法再生成”的死胡同：任务被终止/断网留下未决外部副作用时，配置页点击生成现在返回可路由的 `RECONCILIATION_REQUIRED` 并自动弹出“确认未提交后重试”对账面板；新增 `/api/v1/workflows/{id}/recovery` 端点，应用重启后也能重建对账目标（作品名一并展示），确认未提交即可继续生成，文档不会因网络问题永久卡死。
 - 修复打包崩溃：`electron/source-staging.js` 此前未加入 electron-builder 的 `build.files` 清单，安装包启动即报 "Cannot find module './source-staging'"；已补入清单并新增打包清单覆盖回归测试（main/preload 的每个本地依赖必须在清单内）。
 - 打包自检加固：`--smoke-test` 模式下未捕获异常此前只写日志被吞掉，坏包也能通过构建冒烟；现在冒烟模式遇未捕获异常立即以非零码退出，构建脚本会明确失败。
 - 按产品决定物理删除 server.py 内的旧会话引擎与全部旧 `/api/*` 路由（4074→646 行）：未迁移路径由中间件统一返回 `410 API_VERSION_RETIRED`，`/api/v1` 工作流挂载、音色目录与音色资产缓存、打包启动逻辑不受影响。

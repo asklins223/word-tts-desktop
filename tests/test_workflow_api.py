@@ -121,6 +121,56 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(response.json()["error_code"], "TARGET_REQUIRED")
 
+    def test_recovery_endpoint_and_frozen_reconfigure_are_routable(self) -> None:
+        """终止留下的 AMBIGUOUS run 必须有可达的对账入口和可路由的 409。"""
+        from workflow.artifact_store import ArtifactStore
+        from workflow.engine import WorkflowEngine
+
+        provider = FakeProvider()
+        provider.fail_mode = "after"
+        self.runtime.providers.register(provider)
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        self.runtime.repository.create_item(
+            workflow_id,
+            item_type="sentence",
+            sequence=0,
+            normalized_content="reconcile discovery",
+            item_identity_key="sentence:reconcile-discovery",
+        )
+        engine = WorkflowEngine(
+            self.runtime.repository,
+            ArtifactStore(Path(self.temp.name) / "recovery-artifacts"),
+        )
+        result = engine.run_tts(workflow_id, provider)
+        self.assertEqual(result.status, "AMBIGUOUS")
+
+        recovery = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/recovery",
+            headers=self._headers("recovery-read-key"),
+        )
+        self.assertEqual(recovery.status_code, 200, recovery.text)
+        payload = recovery.json()
+        self.assertEqual(payload["workflow_id"], workflow_id)
+        self.assertEqual(len(payload["interventions"]), 1)
+        intervention = payload["interventions"][0]
+        self.assertEqual(intervention["attempt_id"], result.attempt_id)
+        self.assertTrue(intervention["work_unit_id"])
+        self.assertGreaterEqual(intervention["work_unit_state_version"], 0)
+        self.assertIn("works_name", intervention)
+
+        snapshot = self.runtime.repository.get_workflow(workflow_id)
+        response = self.client.patch(
+            f"/api/v1/workflows/{workflow_id}",
+            headers=self._headers("recovery-patch-key"),
+            json={
+                "expected_state_version": snapshot.state_version,
+                "configuration": {"mode": "composite_cut", "default_female_voice": "speaker:changed"},
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["error_code"], "RECONCILIATION_REQUIRED")
+
     def test_credential_like_configuration_is_rejected_before_persistence(self) -> None:
         secret = "do-not-write-this-secret"
         response = self.client.post(
