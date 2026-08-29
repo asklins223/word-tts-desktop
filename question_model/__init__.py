@@ -6,8 +6,11 @@
 """
 
 from .model import (
+    FAMILY_SUB_TYPES,
     IDENTITY_VERSION,
     QUESTION_TYPE_CODES,
+    SUB_TYPE_REGISTRY,
+    QuestionSubType,
     Answer,
     ContentUnit,
     Option,
@@ -26,11 +29,15 @@ from .persistence import (
     ensure_source_document,
     persist_candidate,
     persist_parse,
+    sync_sub_type_registry,
 )
 
 __all__ = [
     "IDENTITY_VERSION",
     "QUESTION_TYPE_CODES",
+    "SUB_TYPE_REGISTRY",
+    "FAMILY_SUB_TYPES",
+    "QuestionSubType",
     "SCHEMA_VERSION",
     "AdjudicatedParse",
     "Answer",

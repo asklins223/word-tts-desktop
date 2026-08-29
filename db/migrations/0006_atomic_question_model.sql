@@ -13,6 +13,28 @@
 -- * 本迁移只建表，不回填历史数据；回填与双写桥接按方案 7.1.1 顺序另做。
 
 -- ============================================================
+-- 小题型注册表镜像（代码权威，repository 幂等同步）
+-- ============================================================
+
+CREATE TABLE question_sub_types (
+    sub_type_code   TEXT PRIMARY KEY,
+    type_family     TEXT NOT NULL CHECK (length(type_family) > 0),
+    display_name    TEXT NOT NULL,
+    item_role       TEXT NOT NULL CHECK (item_role IN ('question', 'stimulus', 'content')),
+    has_options     INTEGER NOT NULL DEFAULT 0 CHECK (has_options IN (0, 1)),
+    answer_kind     TEXT,
+    audio_granularity TEXT NOT NULL DEFAULT 'per_item' CHECK (
+        audio_granularity IN ('per_item', 'script_whole', 'passage')
+    ),
+    voice_policy    TEXT NOT NULL DEFAULT 'speaker' CHECK (
+        voice_policy IN ('speaker', 'forced_female', 'default')
+    ),
+    naming_prefix   TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'reserved')),
+    capabilities_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(capabilities_json))
+);
+
+-- ============================================================
 -- 文档身份与版本
 -- ============================================================
 
@@ -80,8 +102,10 @@ CREATE TABLE question_items (
     question_id         TEXT PRIMARY KEY,
     source_document_id  TEXT NOT NULL,
     type_code           TEXT NOT NULL CHECK (length(type_code) > 0),
+    sub_type_code       TEXT NOT NULL CHECK (length(sub_type_code) > 0),
     current_revision_id TEXT,
     created_at          TEXT NOT NULL,
+    FOREIGN KEY (sub_type_code) REFERENCES question_sub_types(sub_type_code),
     FOREIGN KEY (source_document_id)
         REFERENCES source_documents(source_document_id) ON DELETE RESTRICT
 );
@@ -90,6 +114,7 @@ CREATE TABLE question_revisions (
     question_revision_id TEXT PRIMARY KEY,
     question_id          TEXT NOT NULL,
     document_revision_id TEXT NOT NULL,
+    sub_type_code        TEXT NOT NULL CHECK (length(sub_type_code) > 0),
     stem                 TEXT NOT NULL CHECK (length(stem) > 0),
     options_json         TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(options_json)),
     answer_json          TEXT CHECK (answer_json IS NULL OR json_valid(answer_json)),
@@ -107,6 +132,7 @@ CREATE TABLE question_revisions (
     UNIQUE (question_id, content_hash),
     FOREIGN KEY (question_id)
         REFERENCES question_items(question_id) ON DELETE RESTRICT,
+    FOREIGN KEY (sub_type_code) REFERENCES question_sub_types(sub_type_code),
     FOREIGN KEY (document_revision_id)
         REFERENCES document_revisions(document_revision_id) ON DELETE RESTRICT
 );
@@ -131,9 +157,12 @@ CREATE TABLE question_parts (
 CREATE TABLE stimuli (
     stimulus_id         TEXT PRIMARY KEY,
     source_document_id  TEXT NOT NULL,
+    sub_type_code       TEXT NOT NULL CHECK (length(sub_type_code) > 0),
     stimulus_type       TEXT NOT NULL CHECK (length(stimulus_type) > 0),
+    material_source     TEXT,
     current_revision_id TEXT,
     created_at          TEXT NOT NULL,
+    FOREIGN KEY (sub_type_code) REFERENCES question_sub_types(sub_type_code),
     FOREIGN KEY (source_document_id)
         REFERENCES source_documents(source_document_id) ON DELETE RESTRICT
 );
@@ -142,14 +171,17 @@ CREATE TABLE stimulus_revisions (
     stimulus_revision_id TEXT PRIMARY KEY,
     stimulus_id          TEXT NOT NULL,
     document_revision_id TEXT NOT NULL,
+    sub_type_code        TEXT NOT NULL CHECK (length(sub_type_code) > 0),
     text                 TEXT NOT NULL CHECK (length(text) > 0),
     section              TEXT,
+    material_source      TEXT,
     source_locator       TEXT NOT NULL,
     content_hash         TEXT NOT NULL CHECK (length(content_hash) = 64),
     created_at           TEXT NOT NULL,
     UNIQUE (stimulus_id, content_hash),
     FOREIGN KEY (stimulus_id)
         REFERENCES stimuli(stimulus_id) ON DELETE RESTRICT,
+    FOREIGN KEY (sub_type_code) REFERENCES question_sub_types(sub_type_code),
     FOREIGN KEY (document_revision_id)
         REFERENCES document_revisions(document_revision_id) ON DELETE RESTRICT
 );
@@ -177,12 +209,13 @@ CREATE TABLE question_stimuli (
 CREATE TABLE content_units (
     content_unit_id     TEXT PRIMARY KEY,
     source_document_id  TEXT NOT NULL,
-    content_kind        TEXT NOT NULL CHECK (length(content_kind) > 0),
+    sub_type_code       TEXT NOT NULL CHECK (length(sub_type_code) > 0),
     unit_kind           TEXT NOT NULL DEFAULT 'LEARNING_CONTENT' CHECK (
         unit_kind IN ('LEARNING_CONTENT', 'QUESTION', 'STIMULUS', 'OTHER')
     ),
     current_revision_id TEXT,
     created_at          TEXT NOT NULL,
+    FOREIGN KEY (sub_type_code) REFERENCES question_sub_types(sub_type_code),
     FOREIGN KEY (source_document_id)
         REFERENCES source_documents(source_document_id) ON DELETE RESTRICT
 );
@@ -191,6 +224,8 @@ CREATE TABLE content_unit_revisions (
     content_unit_revision_id TEXT PRIMARY KEY,
     content_unit_id          TEXT NOT NULL,
     document_revision_id     TEXT NOT NULL,
+    sub_type_code            TEXT NOT NULL CHECK (length(sub_type_code) > 0),
+    entry_kind               TEXT,
     text                     TEXT NOT NULL CHECK (length(text) > 0),
     section                  TEXT,
     discourse_number         INTEGER,
@@ -202,6 +237,7 @@ CREATE TABLE content_unit_revisions (
     UNIQUE (content_unit_id, content_hash),
     FOREIGN KEY (content_unit_id)
         REFERENCES content_units(content_unit_id) ON DELETE RESTRICT,
+    FOREIGN KEY (sub_type_code) REFERENCES question_sub_types(sub_type_code),
     FOREIGN KEY (document_revision_id)
         REFERENCES document_revisions(document_revision_id) ON DELETE RESTRICT
 );
@@ -378,7 +414,7 @@ CREATE INDEX idx_stimulus_revisions_doc
 CREATE INDEX idx_question_stimuli_stimulus
     ON question_stimuli(stimulus_revision_id);
 CREATE INDEX idx_content_units_source
-    ON content_units(source_document_id, content_kind);
+    ON content_units(source_document_id, sub_type_code);
 CREATE INDEX idx_content_unit_revisions_doc
     ON content_unit_revisions(document_revision_id);
 CREATE INDEX idx_operation_scopes_plan
@@ -393,3 +429,9 @@ CREATE INDEX idx_operation_task_deps_upstream
     ON operation_task_dependencies(depends_on_operation_id);
 CREATE INDEX idx_legacy_aliases_value
     ON legacy_aliases(alias_kind, alias_value);
+CREATE INDEX idx_question_items_sub_type
+    ON question_items(sub_type_code);
+CREATE INDEX idx_stimuli_sub_type
+    ON stimuli(sub_type_code);
+CREATE INDEX idx_content_units_sub_type
+    ON content_units(sub_type_code);

@@ -18,7 +18,13 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
-from .model import ContentUnit, ParseCandidate, QuestionItem, Stimulus
+from .model import (
+    SUB_TYPE_REGISTRY,
+    ContentUnit,
+    ParseCandidate,
+    QuestionItem,
+    Stimulus,
+)
 
 SCHEMA_VERSION = 1
 
@@ -84,6 +90,50 @@ def create_document_revision(
     return document_revision_id
 
 
+def sync_sub_type_registry(conn: sqlite3.Connection) -> int:
+    """把代码权威的小题型注册表幂等同步到 question_sub_types 表。"""
+    import json as _json
+
+    rows = []
+    for st in SUB_TYPE_REGISTRY.values():
+        capabilities = {
+            "has_options": st.has_options,
+            "answer_kind": st.answer_kind,
+            "audio_granularity": st.audio_granularity,
+            "voice_policy": st.voice_policy,
+            "naming_prefix": st.naming_prefix,
+        }
+        rows.append((
+            st.code, st.family, st.display_name, st.item_role,
+            1 if st.has_options else 0, st.answer_kind,
+            st.audio_granularity, st.voice_policy, st.naming_prefix,
+            st.status, _json.dumps(capabilities, ensure_ascii=False),
+        ))
+    before = conn.total_changes
+    conn.executemany(
+        """
+        INSERT INTO question_sub_types
+            (sub_type_code, type_family, display_name, item_role, has_options,
+             answer_kind, audio_granularity, voice_policy, naming_prefix,
+             status, capabilities_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sub_type_code) DO UPDATE SET
+            type_family = excluded.type_family,
+            display_name = excluded.display_name,
+            item_role = excluded.item_role,
+            has_options = excluded.has_options,
+            answer_kind = excluded.answer_kind,
+            audio_granularity = excluded.audio_granularity,
+            voice_policy = excluded.voice_policy,
+            naming_prefix = excluded.naming_prefix,
+            status = excluded.status,
+            capabilities_json = excluded.capabilities_json
+        """,
+        rows,
+    )
+    return conn.total_changes - before
+
+
 def _question_revision_id(content_hash: str) -> str:
     return f"question-revision:{content_hash}"
 
@@ -113,32 +163,41 @@ def _answer_json(answer) -> str | None:
 def _persist_stimulus(conn, entity: Stimulus, source_document_id: str,
                       document_revision_id: str, created: str) -> str:
     existing_type = conn.execute(
-        "SELECT stimulus_type FROM stimuli WHERE stimulus_id = ?",
+        "SELECT sub_type_code, stimulus_type FROM stimuli WHERE stimulus_id = ?",
         (entity.stimulus_id,),
     ).fetchone()
-    if existing_type and existing_type[0] != entity.stimulus_type:
+    if existing_type and (
+        existing_type[0] != entity.sub_type_code
+        or existing_type[1] != entity.stimulus_type
+    ):
         raise ValueError(
             f"材料身份漂移: {entity.stimulus_id} "
-            f"{existing_type[0]} != {entity.stimulus_type}"
+            f"{tuple(existing_type)} != "
+            f"('{entity.sub_type_code}', '{entity.stimulus_type}')"
         )
     conn.execute(
         """
         INSERT OR IGNORE INTO stimuli
-            (stimulus_id, source_document_id, stimulus_type, created_at)
-        VALUES (?, ?, ?, ?)
+            (stimulus_id, source_document_id, sub_type_code, stimulus_type,
+             material_source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (entity.stimulus_id, source_document_id, entity.stimulus_type, created),
+        (entity.stimulus_id, source_document_id, entity.sub_type_code,
+         entity.stimulus_type, entity.material_source, created),
     )
     revision_id = _stimulus_revision_id(entity.content_hash)
     conn.execute(
         """
         INSERT OR IGNORE INTO stimulus_revisions
-            (stimulus_revision_id, stimulus_id, document_revision_id, text,
-             section, source_locator, content_hash, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (stimulus_revision_id, stimulus_id, document_revision_id,
+             sub_type_code, text, section, material_source, source_locator,
+             content_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (revision_id, entity.stimulus_id, document_revision_id, entity.text,
-         entity.section, entity.source_locator, entity.content_hash, created),
+        (revision_id, entity.stimulus_id, document_revision_id,
+         entity.sub_type_code, entity.text, entity.section,
+         entity.material_source, entity.source_locator, entity.content_hash,
+         created),
     )
     conn.execute(
         "UPDATE stimuli SET current_revision_id = ? WHERE stimulus_id = ?",
@@ -149,33 +208,43 @@ def _persist_stimulus(conn, entity: Stimulus, source_document_id: str,
 
 def _persist_question(conn, entity: QuestionItem, source_document_id: str,
                       document_revision_id: str, created: str) -> str:
+    from .model import SUB_TYPE_REGISTRY as _REG
+    family_code = _REG[entity.question_type].family
     existing_type = conn.execute(
-        "SELECT type_code FROM question_items WHERE question_id = ?",
+        "SELECT type_code, sub_type_code FROM question_items WHERE question_id = ?",
         (entity.question_id,),
     ).fetchone()
-    if existing_type and existing_type[0] != entity.question_type:
+    if existing_type and (
+        existing_type[0] != family_code
+        or existing_type[1] != entity.question_type
+    ):
         raise ValueError(
             f"小题身份漂移: {entity.question_id} "
-            f"{existing_type[0]} != {entity.question_type}"
+            f"{tuple(existing_type)} != "
+            f"('{family_code}', '{entity.question_type}')"
         )
     conn.execute(
         """
         INSERT OR IGNORE INTO question_items
-            (question_id, source_document_id, type_code, created_at)
-        VALUES (?, ?, ?, ?)
+            (question_id, source_document_id, type_code, sub_type_code,
+             created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (entity.question_id, source_document_id, entity.question_type, created),
+        (entity.question_id, source_document_id, family_code,
+         entity.question_type, created),
     )
     revision_id = _question_revision_id(entity.content_hash)
     conn.execute(
         """
         INSERT OR IGNORE INTO question_revisions
-            (question_revision_id, question_id, document_revision_id, stem,
-             options_json, answer_json, question_number, number_inferred,
-             section, source_locator, resolution_state, content_hash, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (question_revision_id, question_id, document_revision_id,
+             sub_type_code, stem, options_json, answer_json, question_number,
+             number_inferred, section, source_locator, resolution_state,
+             content_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (revision_id, entity.question_id, document_revision_id, entity.stem,
+        (revision_id, entity.question_id, document_revision_id,
+         entity.question_type, entity.stem,
          _options_json(entity.options), _answer_json(entity.answer),
          entity.question_number, 1 if entity.number_inferred else 0,
          entity.section, entity.source_locator, entity.resolution_state.value,
@@ -191,7 +260,7 @@ def _persist_question(conn, entity: QuestionItem, source_document_id: str,
 def _persist_content_unit(conn, entity: ContentUnit, source_document_id: str,
                           document_revision_id: str, created: str) -> str:
     existing_kind = conn.execute(
-        "SELECT content_kind FROM content_units WHERE content_unit_id = ?",
+        "SELECT sub_type_code FROM content_units WHERE content_unit_id = ?",
         (entity.content_unit_id,),
     ).fetchone()
     if existing_kind and existing_kind[0] != entity.content_kind:
@@ -202,7 +271,7 @@ def _persist_content_unit(conn, entity: ContentUnit, source_document_id: str,
     conn.execute(
         """
         INSERT OR IGNORE INTO content_units
-            (content_unit_id, source_document_id, content_kind, unit_kind,
+            (content_unit_id, source_document_id, sub_type_code, unit_kind,
              created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
@@ -214,11 +283,13 @@ def _persist_content_unit(conn, entity: ContentUnit, source_document_id: str,
         """
         INSERT OR IGNORE INTO content_unit_revisions
             (content_unit_revision_id, content_unit_id, document_revision_id,
-             text, section, discourse_number, sentence_number, entry_number,
-             source_locator, content_hash, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             sub_type_code, entry_kind, text, section, discourse_number,
+             sentence_number, entry_number, source_locator, content_hash,
+             created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (revision_id, entity.content_unit_id, document_revision_id, entity.text,
+        (revision_id, entity.content_unit_id, document_revision_id,
+         entity.content_kind, entity.entry_kind, entity.text,
          entity.section, entity.discourse_number, entity.sentence_number,
          entity.entry_number, entity.source_locator, entity.content_hash,
          created),
@@ -311,6 +382,7 @@ def persist_parse(
     if own_transaction:
         conn.execute("BEGIN IMMEDIATE")
     try:
+        sync_sub_type_registry(conn)
         source_document_id = ensure_source_document(
             conn, logical_key, source_type=source_type, now=now)
         document_revision_id = create_document_revision(

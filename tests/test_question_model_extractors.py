@@ -12,7 +12,9 @@ import pytest
 
 from question_model import (
     EXTRACTORS,
+    FAMILY_SUB_TYPES,
     QUESTION_TYPE_CODES,
+    SUB_TYPE_REGISTRY,
     ParseCandidate,
     ResolutionState,
     extract_candidate,
@@ -84,10 +86,21 @@ class TestInfoAcquisition:
             assert entity.resolution_state is ResolutionState.DRAFT
             assert entity.to_dict()["resolution_state"] == "DRAFT"
 
-    def test_type_code_stable(self, candidate):
+    def test_sub_type_split(self, candidate):
+        """信息获取按小题型产出：听选信息 6 题 + 回答问题 4 题。"""
         assert candidate.type_code == "info_acquisition"
-        assert all(q.question_type == "info_acquisition"
-                   for q in candidate.entities if hasattr(q, "question_type"))
+        questions = [q for q in candidate.entities if hasattr(q, "question_type")]
+        listening = [q for q in questions if q.question_type == "listening_info"]
+        answering = [q for q in questions if q.question_type == "answer_question"]
+        assert len(listening) == 6
+        assert len(answering) == 4
+        assert all(q.major_type == "信息获取" for q in questions)
+        assert all(q.type_family == "info_acquisition" for q in questions)
+
+    def test_stimulus_sub_types(self, candidate):
+        stimuli = [e for e in candidate.entities if hasattr(e, "stimulus_type")]
+        assert {s.sub_type_code for s in stimuli} == {
+            "listening_info", "answer_question"}
 
 
 class TestDeterminism:
@@ -120,7 +133,8 @@ class TestListeningSelection:
     def test_stimuli_only(self, candidate):
         assert candidate.type_code == "listening_choice"
         assert len(candidate.entities) == 6
-        assert all(hasattr(e, "stimulus_type") for e in candidate.entities)
+        assert all(e.sub_type_code == "listening_choice"
+                   for e in candidate.entities)
 
     def test_audio_only_with_diagnostics(self, candidate):
         """听后选择当前只解析录音稿：必须带诊断，不得伪造成完整小题。"""
@@ -139,7 +153,8 @@ class TestListeningResponse:
         """方案 4 节映射表：每个待应答句一条 QuestionItem。"""
         assert candidate.type_code == "listening_response"
         assert len(candidate.entities) == 7
-        assert all(hasattr(e, "question_type") for e in candidate.entities)
+        assert all(q.question_type == "listening_response"
+                   for q in candidate.entities)
         numbers = sorted(q.question_number for q in candidate.entities)
         assert numbers == list(range(1, 8))
 
@@ -156,7 +171,8 @@ class TestInfoRetelling:
         candidate, _ = extract_from_baseline("信息转述及询问信息 7上- U1")
         assert candidate.type_code == "info_retelling"
         assert len(candidate.entities) == 1
-        assert all(hasattr(e, "stimulus_type") for e in candidate.entities)
+        assert all(e.sub_type_code == "info_retelling"
+                   for e in candidate.entities)
         assert candidate.audio_only
         assert "info_retelling_task_split_not_extracted" in candidate.diagnostics
 
@@ -170,7 +186,15 @@ class TestImitationReading:
     def test_one_passage_stimulus_per_item(self, candidate):
         assert candidate.type_code == "imitation_reading"
         assert len(candidate.entities) == 6
-        assert all(e.stimulus_type == "reading_passage" for e in candidate.entities)
+        assert all(e.sub_type_code == "imitation_reading"
+                   for e in candidate.entities)
+        assert all(e.stimulus_type == "reading_passage"
+                   for e in candidate.entities)
+
+    def test_material_source_is_attribute_not_sub_type(self, candidate):
+        """外网/教材是来源属性：模仿朗读本身就是最小题型。"""
+        sources = {e.material_source for e in candidate.entities}
+        assert sources == {"外网", "教材"}
 
     def test_locator_carries_source_and_unit(self, candidate):
         """外网/教材来源与单元号进入定位，4 外网 + 2 教材。"""
@@ -192,9 +216,9 @@ class TestTextReading:
         assert candidate.type_code == "text_reading"
         assert len(candidate.entities) == 82
         kinds = [e.content_kind for e in candidate.entities]
-        assert kinds.count("sentence_reading") == 29
-        assert kinds.count("paragraph_reading") == 17
-        assert kinds.count("discourse_reading") == 36
+        assert kinds.count("text_reading_sentence") == 29
+        assert kinds.count("text_reading_paragraph") == 17
+        assert kinds.count("text_reading_discourse") == 36
         assert all(e.unit_kind == "LEARNING_CONTENT" for e in candidate.entities)
 
     def test_structural_numbers_preserved(self, candidate):
@@ -227,24 +251,60 @@ class TestVocabulary:
     def test_words_and_example_sentences(self, candidate):
         assert candidate.type_code == "vocabulary"
         assert len(candidate.entities) == 80
-        kinds = [e.content_kind for e in candidate.entities]
-        assert kinds.count("word") == 40
-        assert kinds.count("example_sentence") == 40
+        assert all(e.content_kind == "vocabulary" for e in candidate.entities)
+        entry_kinds = [e.entry_kind for e in candidate.entities]
+        assert entry_kinds.count("word") == 40
+        assert entry_kinds.count("example_sentence") == 40
         assert all(e.unit_kind == "LEARNING_CONTENT" for e in candidate.entities)
 
     def test_entry_numbers_preserved(self, candidate):
-        words = [e for e in candidate.entities if e.content_kind == "word"]
+        words = [e for e in candidate.entities if e.entry_kind == "word"]
         assert sorted(e.entry_number for e in words) == list(range(1, 41))
         assert len({e.content_unit_id for e in candidate.entities}) == 80
 
 
 class TestRegistryAlignment:
     def test_extractors_cover_all_registered_types(self):
-        """全部注册题型必须接入原子小题抽取。"""
+        """全部注册大题型必须接入原子小题抽取。"""
         from question_types import QUESTION_TYPES
         registered = {qt.key for qt in QUESTION_TYPES}
         assert registered == set(QUESTION_TYPE_CODES)
         assert registered == set(EXTRACTORS.keys())
+
+    def test_family_sub_types_cover_all_families(self):
+        """每个大题型至少有一个小题型；family 代码必须有效。"""
+        assert set(FAMILY_SUB_TYPES) == set(QUESTION_TYPE_CODES.values())
+        for family, sub_codes in FAMILY_SUB_TYPES.items():
+            assert len(sub_codes) >= 1
+            for code in sub_codes:
+                assert SUB_TYPE_REGISTRY[code].family == family
+
+    def test_leaf_families_have_single_self_sub_type(self):
+        """模仿朗读/词汇/听后选择/听后应答本身就是最小题型。"""
+        for family in ("imitation_reading", "vocabulary",
+                       "listening_choice", "listening_response"):
+            assert tuple(FAMILY_SUB_TYPES[family]) == (family,)
+
+    def test_info_retelling_asking_info_reserved(self):
+        """询问信息已注册但未接入：预留状态，不得产出实体。"""
+        assert SUB_TYPE_REGISTRY["asking_info"].status == "reserved"
+        import pytest
+        from question_model import QuestionItem
+        with pytest.raises(ValueError):
+            QuestionItem(
+                question_id="question:x:asking-1",
+                question_type="asking_info",
+                stem="Where is the library?",
+                source_locator="询问信息/问题1",
+            )
+
+    def test_capability_matrix_on_registry(self):
+        """能力声明挂在小题型：听选信息有选项，回答问题口头作答。"""
+        assert SUB_TYPE_REGISTRY["listening_info"].has_options is True
+        assert SUB_TYPE_REGISTRY["listening_info"].answer_kind == "single_choice"
+        assert SUB_TYPE_REGISTRY["answer_question"].has_options is False
+        assert SUB_TYPE_REGISTRY["answer_question"].answer_kind == "spoken_response"
+        assert SUB_TYPE_REGISTRY["vocabulary"].voice_policy == "forced_female"
 
 
 class TestGuardRails:

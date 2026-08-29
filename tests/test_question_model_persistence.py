@@ -201,15 +201,70 @@ class TestPersistParse(PersistenceTestBase):
         persist_parse(self.con, "U6单词导入模板", [candidate],
                       file_hash=FILE_HASH, parser_version=PARSER_VERSION)
         self.assertEqual(self.table_count("content_unit_revisions"), 80)
-        kinds = dict(self.con.execute(
-            "SELECT content_kind, COUNT(*) FROM content_units GROUP BY content_kind"
+        entry_kinds = dict(self.con.execute(
+            "SELECT entry_kind, COUNT(*) FROM content_unit_revisions GROUP BY entry_kind"
         ).fetchall())
-        self.assertEqual(kinds, {"word": 40, "example_sentence": 40})
+        self.assertEqual(entry_kinds, {"word": 40, "example_sentence": 40})
+        kinds = {row[0] for row in self.con.execute(
+            "SELECT DISTINCT sub_type_code FROM content_units")}
+        self.assertEqual(kinds, {"vocabulary"})
+
+
+class TestSubTypeRegistry(PersistenceTestBase):
+    def test_registry_synced_on_persist(self):
+        candidate = extract_from_baseline("7上-U2-信息获取")
+        persist_parse(self.con, "7上-U2-信息获取", [candidate],
+                      file_hash=FILE_HASH, parser_version=PARSER_VERSION)
+        rows = dict(self.con.execute(
+            "SELECT sub_type_code, type_family FROM question_sub_types"))
+        self.assertEqual(rows["listening_info"], "info_acquisition")
+        self.assertEqual(rows["asking_info"], "info_retelling")
+        self.assertEqual(len(rows), 11)
+        # 幂等：重复同步不产生新行
+        from question_model import sync_sub_type_registry
+        sync_sub_type_registry(self.con)
+        self.assertEqual(self.table_count("question_sub_types"), 11)
+
+    def test_reserved_sub_type_cannot_back_rows(self):
+        from question_model import sync_sub_type_registry
+        sync_sub_type_registry(self.con)
+        with self.assertRaises(sqlite3.IntegrityError):
+            # 询问信息未接入：不允许任何实体行引用（业务校验在模型层，
+            # 这里验证注册表状态标记已落库）
+            status = self.con.execute(
+                "SELECT status FROM question_sub_types WHERE sub_type_code = 'asking_info'"
+            ).fetchone()[0]
+            self.assertEqual(status, "reserved")
+            self.con.execute(
+                """
+                INSERT INTO question_items
+                    (question_id, source_document_id, type_code,
+                     sub_type_code, created_at)
+                VALUES ('question:doc:asking-1', 'missing', 'info_retelling',
+                        'asking_info', '2026')
+                """
+            )
+
+    def test_sub_type_capability_columns(self):
+        from question_model import sync_sub_type_registry
+        sync_sub_type_registry(self.con)
+        row = self.con.execute(
+            """
+            SELECT has_options, answer_kind, voice_policy
+            FROM question_sub_types WHERE sub_type_code = 'listening_info'
+            """
+        ).fetchone()
+        self.assertEqual(row, (1, "single_choice", "speaker"))
 
 
 class TestSchemaIntegrity(PersistenceTestBase):
     def test_resolution_state_enum_enforced(self):
-        from question_model.persistence import ensure_source_document, create_document_revision
+        from question_model.persistence import (
+            create_document_revision,
+            ensure_source_document,
+            sync_sub_type_registry,
+        )
+        sync_sub_type_registry(self.con)
         source_document_id = ensure_source_document(self.con, "doc")
         revision_id = create_document_revision(
             self.con, source_document_id, file_hash=FILE_HASH,
@@ -218,8 +273,10 @@ class TestSchemaIntegrity(PersistenceTestBase):
             self.con.execute(
                 """
                 INSERT INTO question_items
-                    (question_id, source_document_id, type_code, created_at)
-                VALUES ('question:doc:x', ?, 'info_acquisition', '2026')
+                    (question_id, source_document_id, type_code,
+                     sub_type_code, created_at)
+                VALUES ('question:doc:x', ?, 'info_acquisition',
+                        'listening_info', '2026')
                 """,
                 (source_document_id,),
             )

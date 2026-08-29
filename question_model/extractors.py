@@ -25,6 +25,7 @@ from collections import Counter
 
 from .model import (
     QUESTION_TYPE_CODES,
+    SUB_TYPE_REGISTRY,
     ContentUnit,
     ParseCandidate,
     QuestionItem,
@@ -54,6 +55,15 @@ def _section_of(category: str) -> str:
     return category
 
 
+# category → 小题型；信息获取按听选信息/回答问题两个小题型产出
+INFO_ACQUISITION_SUB_TYPES = {
+    "听选信息题目": "listening_info",
+    "听选信息录音稿": "listening_info",
+    "回答问题题目": "answer_question",
+    "回答问题录音稿": "answer_question",
+}
+
+
 def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
     type_code = QUESTION_TYPE_CODES["信息获取"]
     stimuli: list[Stimulus] = []
@@ -67,7 +77,7 @@ def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
             locator = f"{raw['category']}/题目{number if number is not None else raw.get('filename_stem', '?')}"
             questions.append(QuestionItem(
                 question_id=build_identity("question", source_key, locator),
-                question_type=type_code,
+                question_type=INFO_ACQUISITION_SUB_TYPES[raw["category"]],
                 stem=raw["text"],
                 source_locator=locator,
                 question_number=number,
@@ -83,6 +93,7 @@ def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
             locator = f"{category}/录音稿{raw.get('index')}"
             stimulus = Stimulus(
                 stimulus_id=build_identity("stimulus", source_key, locator),
+                sub_type_code=INFO_ACQUISITION_SUB_TYPES[category],
                 stimulus_type="listening_script",
                 text=raw["text"],
                 source_locator=locator,
@@ -130,6 +141,7 @@ def _extract_listening_selection(result: dict, source_key: str) -> ParseCandidat
         locator = f"{category}/录音稿{raw.get('index')}"
         stimuli.append(Stimulus(
             stimulus_id=build_identity("stimulus", source_key, locator),
+            sub_type_code="listening_choice",
             stimulus_type="listening_script",
             text=raw["text"],
             source_locator=locator,
@@ -214,6 +226,7 @@ def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
         locator = f"{category}/录音稿{raw.get('index')}"
         stimuli.append(Stimulus(
             stimulus_id=build_identity("stimulus", source_key, locator),
+            sub_type_code=type_code,
             stimulus_type="listening_script",
             text=raw["text"],
             source_locator=locator,
@@ -253,10 +266,12 @@ def _extract_imitation_reading(result: dict, source_key: str) -> ParseCandidate:
         locator = f"{category}/{unit}/朗读{ordinal_by_group[key]}"
         stimuli.append(Stimulus(
             stimulus_id=build_identity("stimulus", source_key, locator),
+            sub_type_code=type_code,
             stimulus_type="reading_passage",
             text=raw["text"],
             source_locator=locator,
             section=category,
+            material_source=raw.get("source"),
             resolution_state=ResolutionState.DRAFT,
         ))
 
@@ -273,12 +288,12 @@ def _extract_imitation_reading(result: dict, source_key: str) -> ParseCandidate:
 
 
 TEXT_READING_KINDS = {
-    "语篇跟读": "discourse_reading",
-    "段落跟读": "paragraph_reading",
-    "句子跟读": "sentence_reading",
+    "语篇跟读": "text_reading_discourse",
+    "段落跟读": "text_reading_paragraph",
+    "句子跟读": "text_reading_sentence",
 }
 
-VOCABULARY_KINDS = {
+VOCABULARY_ENTRY_KINDS = {
     "单词": "word",
     "例句": "example_sentence",
 }
@@ -349,19 +364,20 @@ def _extract_vocabulary(result: dict, source_key: str) -> ParseCandidate:
     locators = []
     for raw in result["items"]:
         category = raw.get("category", "")
-        if category not in VOCABULARY_KINDS:
+        if category not in VOCABULARY_ENTRY_KINDS:
             continue
         locators.append(f"{category}/词条{raw.get('number')}")
     deduped, duplicated = _dedupe_locators(locators)
     for raw, locator in zip(result["items"], deduped):
         category = raw.get("category", "")
-        if category not in VOCABULARY_KINDS:
+        if category not in VOCABULARY_ENTRY_KINDS:
             continue
         units.append(ContentUnit(
             content_unit_id=build_identity("content", source_key, locator),
-            content_kind=VOCABULARY_KINDS[category],
+            content_kind="vocabulary",
             text=raw["text"],
             source_locator=locator,
+            entry_kind=VOCABULARY_ENTRY_KINDS[category],
             entry_number=raw.get("number"),
             resolution_state=ResolutionState.DRAFT,
         ))
