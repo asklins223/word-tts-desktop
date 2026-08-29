@@ -99,8 +99,16 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
                 Object.assign(error, payload, { code: payload.error_code, status });
                 throw error;
             }
+            const bytes = await toBytes(response?.body);
+            // 头像/试听样本是有界小资源（正常 <1MB）；主进程代理已有 16MB
+            // 响应上限，这里按资源类型再显式设限，防止单个异常响应占据
+            // 渲染进程内存。整块文档内容必须走 source/artifact 流式通道。
+            const maxVoiceAssetBytes = 8 * 1024 * 1024;
+            if (bytes.byteLength > maxVoiceAssetBytes) {
+                throw new Error(`voice asset exceeds the ${maxVoiceAssetBytes} byte limit`);
+            }
             return {
-                bytes: await toBytes(response?.body),
+                bytes,
                 contentType: response?.headers?.['content-type'] || response?.headers?.['Content-Type'] || null,
             };
         },

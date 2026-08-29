@@ -3866,7 +3866,42 @@ async function selectFile() {
 
 function handleFileSelected(file) {
     if (isRestarting || $('upload-zone')?.getAttribute('aria-disabled') === 'true') return;
-    if (!file || typeof file.arrayBuffer !== 'function') return;
+    void ingestSourceFile(file);
+}
+
+/**
+ * 导入拖拽/选择的源文档。Electron 下通过主进程分块暂存：渲染层每次只
+ * 持有一个分块（约 4MB），文件内容由主进程在允许目录内落盘后按一次性
+ * 句柄流式上传，300MB 级文档不再整块进入渲染进程内存。暂存不可用时
+ * （例如浏览器模式）回退到原来的整块读取路径。
+ */
+async function ingestSourceFile(file) {
+    if (!file || typeof file.slice !== 'function') return;
+    const staging = isElectron ? window.electronAPI?.sourceUpload : null;
+    if (staging && typeof staging.begin === 'function') {
+        let uploadId = null;
+        try {
+            const opened = await staging.begin({ fileName: file.name, sizeBytes: file.size });
+            uploadId = opened.uploadId;
+            const chunkSize = Number(opened.chunkSize) || 4 * 1024 * 1024;
+            let offset = 0;
+            while (offset < Number(file.size)) {
+                const chunk = new Uint8Array(await file.slice(offset, offset + chunkSize).arrayBuffer());
+                await staging.write({ uploadId, offset, bytes: chunk });
+                offset += chunk.byteLength;
+            }
+            const completed = await staging.complete(uploadId);
+            if (!completed?.success || !completed.sourceFileId) {
+                throw new Error(completed?.reason ? `文档流式导入未通过校验：${completed.reason}` : '文档流式导入失败');
+            }
+            processSourceFileReference(completed.sourceFileId, completed.fileName, completed.sizeBytes);
+            return;
+        } catch (error) {
+            if (uploadId) await staging.abort(uploadId).catch(() => {});
+            console.warn('拖拽文档流式导入失败，回退整块读取:', error);
+            showToast(`文档流式导入失败，改为直接读取：${error.message || '未知错误'}`, 'warning');
+        }
+    }
     void file.arrayBuffer().then((buffer) => processSourceBytes(new Uint8Array(buffer), file.name));
 }
 
@@ -3977,12 +4012,6 @@ async function processSourceContent(content, filename, expectedSizeBytes) {
             isParsing = false;
         }
     }
-}
-
-async function uploadFile(file) {
-    if (!file || typeof file.arrayBuffer !== 'function') return;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    return processSourceBytes(bytes, file.name);
 }
 
 // ============================================================================
@@ -6429,6 +6458,58 @@ function showToast(msg, tone = 'info') {
     toastTimer = setTimeout(() => {
         toast.classList.remove('show');
     }, tone === 'error' ? 5200 : 2800);
+}
+
+// ============================================================================
+// Store 订阅式进度投影（T8）
+// ============================================================================
+
+/**
+ * 进度 UI 的权威数值来自 workflowStore 的 workspace 投影：只有被 Store
+ * 接受（顺序校验、去重）的 snapshot/event 才会推进这里的渲染。断线重连、
+ * 快照重同步或补齐后，订阅回调会自动把界面拉回投影的最新值，不再依赖
+ * “逐个事件各写一次 DOM”的时序。
+ */
+let lastWorkspaceRenderKey = '';
+function renderWorkflowWorkspace(storeState) {
+    const workspace = storeState?.workspace;
+    if (!workspace || !isGenerating || generationResult) return;
+    const phase = String(workspace.phase || '');
+    const message = String(workspace.runtime?.message || '');
+    const segments = workspace.segments || {};
+    const hasSegments = Number(segments.total) > 0;
+    const completed = hasSegments ? Math.min(Math.max(0, Number(segments.completed) || 0), Number(segments.total)) : 0;
+    const renderKey = [
+        phase,
+        message,
+        hasSegments ? `${completed}/${segments.total}` : 'none',
+        String(workspace.items.total ?? ''),
+        String(workspace.executionState ?? ''),
+    ].join('|');
+    if (renderKey === lastWorkspaceRenderKey) return;
+    lastWorkspaceRenderKey = renderKey;
+
+    if (hasSegments) {
+        const percent = Math.min(100, Math.round((completed / Number(segments.total)) * 100));
+        $('progress-bar').style.width = `${percent}%`;
+        $('progress-bar').parentElement?.setAttribute('aria-valuenow', String(percent));
+        $('progress-percent').textContent = String(percent);
+        setProgressIndeterminate(false);
+        $('progress-stats').textContent = `${message || '讯飞浏览器处理中'} · ${completed} / ${segments.total}`;
+    } else if (phase && phase !== 'attention') {
+        // 分段计数还没产生（浏览器启动/准备阶段）：保持不确定进度，只
+        // 同步阶段文案。
+        setProgressIndeterminate(true);
+        if (message) $('progress-stats').textContent = `${message} · 0 / ${summarizeParseResults(currentSession?.parse_results).total || '—'}`;
+    }
+    if (message && $('generation-live-status')?.textContent !== message) {
+        $('generation-live-status').textContent = message;
+        $('status-text').textContent = message;
+    }
+}
+
+if (workflowStore && typeof workflowStore.subscribe === 'function') {
+    workflowStore.subscribe(renderWorkflowWorkspace);
 }
 
 // ============================================================================

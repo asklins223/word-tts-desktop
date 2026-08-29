@@ -1,6 +1,6 @@
 {
   "name": "word-tts-desktop",
-  "version": "2.7.44",
+  "version": "2.7.45",
   "description": "小猪wordTTS 文档配音桌面工具",
   "main": "main.js",
   "author": "asklins223",
@@ -57,7 +57,9 @@
       {
         "from": "server_backend_build/server_backend",
         "to": "server_backend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
@@ -88,7 +90,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",

@@ -742,7 +742,9 @@ class JS:
         const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
         let node = walker.nextNode();
         while (node) {
-            if (!isMetadata(node) && node.textContent?.length) textNodes.push(node);
+            // 只认非空白正文节点：段内换行缩进不是内容，光标必须落在
+            // 真实正文末尾，否则停顿标记会插到空白节点后面。
+            if (!isMetadata(node) && node.textContent?.trim().length) textNodes.push(node);
             node = walker.nextNode();
         }
         const last = textNodes[textNodes.length - 1];

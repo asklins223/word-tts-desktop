@@ -32,6 +32,14 @@ Workflow 汇总优先级为 `RECOVERING > BLOCKED > WAITING_USER > WAITING_RETRY
 
 事件与状态同事务落库，使用每个 workflow 单调递增 `seq`、唯一 `event_id`、`mutation_id`、correlation/causation 和 actor 审计字段。SSE 的 `id` 是 `event_id`，data 带 `seq`；连接先消费一次性 ticket，再通过 `Last-Event-ID` catch-up，游标过期则返回可识别的重同步错误。内存广播只能唤醒连接，不能作为恢复事实。
 
+渲染层进度 UI 的权威数值来自 workflowStore 的 workspace 投影：只有被 Store 接受（顺序校验、去重）的 snapshot/event 才推进投影（阶段、分段计数、运行时消息、条目总数），投影保持有界标量，事件 payload 的大字段不进入响应式状态。断线重连或快照重同步后，订阅回调把界面拉回投影的最新值；事件处理函数只负责日志与一次性转场。
+
+## 内存边界（T16）
+
+- 源文档导入全部走流式：原生对话框经主进程 `O_NOFOLLOW` 句柄直接流式上传；拖拽文件由渲染层按约 4MB 分块经 IPC 交给主进程在允许目录内落盘（`source-staging`，一次性 uploadId、顺序校验、TTL 与退出清理），渲染进程任何时刻不持有整块文档。
+- 语音头像/试听样本是有界小资源：主进程代理响应上限 16MB，渲染层按资源类型再限 8MB。
+- 结果页音频为服务端已验证的 run-local Artifact，单文件受服务端 Blob 大小上限约束，按条目按需取用；ZIP 交付走服务端 `export-zip`，不在渲染层拼装。波形解码是按条目的有界内存路径，MSE 流式播放是后续可选优化。
+
 上传、Provider 下载和音频处理都先写受管 staging，关闭文件后校验 size/SHA-256，再原子转正为 Blob；数据库提交前不能暴露 READY。迁移、数据库锁、磁盘不足、旧 generation 迟到写入、ticket 重放和进程中断都必须 fail-closed，并留下可恢复诊断。
 
 ## MVP 边界

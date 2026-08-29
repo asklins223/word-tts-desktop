@@ -56,6 +56,64 @@ function projectWorkflowSnapshot(workflow) {
     return projection;
 }
 
+function capWorkspaceText(value, limit = 500) {
+    const text = String(value ?? '');
+    return text ? text.slice(0, limit) : null;
+}
+
+function createWorkspaceState() {
+    return {
+        // items 计数来自服务端条目事实（item_count）；segments 计数来自
+        // 讯飞运行时的分段进度，两者单位不同，UI 按可用性择优展示。
+        items: { total: null, completed: 0, failed: 0, skipped: 0 },
+        segments: { completed: 0, total: 0 },
+        phase: null,
+        runtime: { status: null, stage: null, message: null, itemId: null, updatedAt: null },
+        executionState: null,
+        resultStatus: null,
+        updatedAt: null,
+    };
+}
+
+// 只投影 UI 需要的有界标量；事件 payload 中的大字段（progress 快照、
+// 诊断详情、错误 details）一律不进入响应式状态。
+function advanceWorkspaceWithEvent(workspace, event) {
+    const type = String(event.event_type || '');
+    const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+    const runtimePatch = {
+        status: capWorkspaceText(payload.status),
+        stage: capWorkspaceText(payload.stage),
+        message: capWorkspaceText(payload.message || payload.error),
+        itemId: capWorkspaceText(payload.item_id),
+        updatedAt: event.created_at || workspace.runtime.updatedAt,
+    };
+    const touch = (phase) => {
+        workspace.phase = phase || workspace.phase;
+        workspace.runtime = { ...workspace.runtime, ...runtimePatch };
+        workspace.updatedAt = event.created_at || workspace.updatedAt;
+    };
+    if (type === 'TTS_PLAN_PREPARED') {
+        const count = Number(payload.item_count);
+        if (Number.isInteger(count) && count > 0) workspace.items.total = count;
+        touch('preparing');
+    } else if (type === 'TTS_RUNTIME_STATUS' || type === 'TTS_RUNTIME_PROGRESS') {
+        const completed = Number(payload.completed_segments);
+        const total = Number(payload.total_segments);
+        if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+            workspace.segments = { completed: Math.max(0, completed), total: Math.max(0, total) };
+        }
+        touch('running');
+    } else if (type === 'TTS_SUBMISSION_IN_FLIGHT') {
+        touch('submitting');
+    } else if (type === 'PROVIDER_RECEIPT_OBSERVED') {
+        touch('downloading');
+    } else if (type === 'TTS_OUTPUT_VERIFIED') {
+        touch('verifying');
+    } else if (type === 'TTS_SUBMISSION_AMBIGUOUS' || type === 'TTS_SUBMISSION_REJECTED' || type === 'GENERATION_TASK_FAILED') {
+        touch('attention');
+    }
+}
+
 function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX } = {}) {
     let state = {
         workflow: null,
@@ -65,6 +123,7 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX } = {}
         needsCatchup: false,
         connected: false,
         error: null,
+        workspace: createWorkspaceState(),
     };
     const listeners = new Set();
     let stream = null;
@@ -107,10 +166,17 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX } = {}
     };
 
     function getState() {
+        const workspace = state.workspace;
         return {
             ...state,
             workflow: state.workflow ? { ...state.workflow } : null,
             workflowProjection: projectWorkflowSnapshot(state.workflow),
+            workspace: {
+                ...workspace,
+                items: { ...workspace.items },
+                segments: { ...workspace.segments },
+                runtime: { ...workspace.runtime },
+            },
         };
     }
 
@@ -135,6 +201,9 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX } = {}
             needsCatchup: false,
             connected: false,
             error: null,
+            // 切换 run 时 workspace 必须重置；旧 run 的分段进度绝不能
+            // 泄漏成新任务的初始显示。
+            workspace: createWorkspaceState(),
         };
         notify();
         return getState();
@@ -189,6 +258,15 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX } = {}
             if (snapshotSeq < state.lastSeq) {
                 return { accepted: false, reason: 'stale-snapshot' };
             }
+            const workspace = state.workspace;
+            const snapshotState = snapshot.state;
+            const itemCount = Number(snapshotState.item_count);
+            if (Number.isInteger(itemCount) && itemCount > 0) {
+                workspace.items.total = itemCount;
+            }
+            workspace.executionState = snapshotState.execution_state ? String(snapshotState.execution_state) : workspace.executionState;
+            workspace.resultStatus = snapshotState.result_status ? String(snapshotState.result_status) : workspace.resultStatus;
+            workspace.updatedAt = snapshotState.updated_at || workspace.updatedAt;
             state = {
                 ...state,
                 workflow: snapshot.state,
@@ -218,6 +296,7 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX } = {}
             notify();
             return { accepted: false, reason: 'gap', expectedSeq: state.lastSeq + 1, actualSeq: event.seq };
         }
+        advanceWorkspaceWithEvent(state.workspace, event);
         state = {
             ...state,
             workflowId: event.workflow_id,

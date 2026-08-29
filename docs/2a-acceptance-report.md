@@ -44,3 +44,13 @@ SIDE_EFFECT_POLICY: REAL_PROVIDER_DISABLED
 本轮复核补充又落地两项修复并刷新证据：自动重试调度器现在要求 run 存在用户确认生成的 `WORKFLOW_GENERATE` 事件才无人值守重试，历史接管产物遗留的 `WAITING_RETRY` 任务不再自行重开讯飞浏览器（新增回归 `test_unattended_retry_requires_an_accepted_generation_command`）；composite_cut 停顿插入新增“光标折叠到行尾”快速路径（`JS.PLACE_CARET_AT_ROW_END` 一次求值完成聚焦与选区折叠，一步点击时长控件），失败时依次降级到原脚本选区契约与原生 `select_text` 兜底，单处停顿的 Playwright 往返回到原脚本水平，插入结果仍由逐行回读校验兜住。`tools/release_gate.py` 新增显式豁免机制（`WAIVED` 状态 + 原因留痕，`--no-waivers` 恢复严格门），发布门在豁免后 `release_ready=true`。
 
 本轮针对实施复核的 7 个高优先级问题又完成了租约续期 TTL/阻塞调用心跳、失租约后的持久化对账收敛、journal/SQLite 意图状态对齐、STEP/ITEM resolve 的结构化拒绝、已成功 WorkUnit 的重试保护、正式运行默认开启真实 Provider 和创建 workflow 幂等原子化；窗口退出时也会关闭未消费的源文件句柄及 Artifact 流。创建路径之外，已有资源命令的 reservation/业务变更/response complete 仍是分开的短事务，尚未宣称为全局单事务语义。
+
+## 2.7.45 收尾（2026-08-29）
+
+T8/T16 剩余项已在本地完成并刷新证据：
+
+- **T16a 拖拽导入流式化**：新增 `electron/source-staging.js` 分块暂存（约 4MB/块、一次性 uploadId、顺序校验、大小上限、TTL 与退出清理），主进程经 `source-upload-begin/write/complete/abort` IPC 落盘后按一次性句柄复用 `workflow-source-upload` 流式管道；渲染层拖拽路径不再整块读取文档，失败自动回退整块读取并提示。
+- **T8 Store workspace 投影**：`workflow-store.js` 维护有界 workspace（阶段、分段计数、运行时消息、条目总数、执行/结果状态），`prepare` 切换 run 时重置；渲染层以订阅回调从投影渲染进度权威数值，断线重连/快照重同步后自动回到最新值。
+- **T16b 语音资源上限**：头像/试听样本在渲染层按资源类型限 8MB（主进程代理 16MB 之内）。结果页音频为按条目按需的已验证 Artifact、ZIP 走服务端 export-zip，内存边界已写入 `docs/workflow-spec.md`。
+- **T11 逻辑证据**：新增停顿快速路径优先级回归——工具栏直带时长按钮的页面由折叠光标主路径完成插入，重型兜底零调用；插入位置仍按行尾回读校验。
+- 证据：Python `309` 项、Electron `84` 项通过（新增 source-staging 8 项、workspace 4 项、停顿优先级 1 项）；Node 24.20.0 下 2A gate 13 项 PASS（`2a-gate-report.json`）。2.7.45 的 macOS 安装包在本轮收尾后重新打包并更新校验和。

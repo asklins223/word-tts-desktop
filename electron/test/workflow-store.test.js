@@ -155,3 +155,87 @@ test('Store 同时提供受限的工作流快照投影，不保留配置和完�
     assert.equal(projection.configuration_snapshot, undefined);
     assert.equal(projection.runtime.credentials, undefined);
 });
+
+// ============================================================================
+// T8：workspace 进度投影
+// ============================================================================
+
+function typedEvent(seq, eventType, payload = {}) {
+    const frame = event(seq, `event-${seq}`);
+    frame.event.event_type = eventType;
+    frame.event.payload = payload;
+    frame.event.created_at = '2026-01-01T00:00:01Z';
+    return frame;
+}
+
+function seededStore() {
+    const store = createWorkflowStore();
+    store.consume({ kind: 'snapshot', snapshot: {
+        workflow_id: 'workflow-1', snapshot_seq: 1, snapshot_event_id: 'event-1',
+        state: { workflow_id: 'workflow-1', latest_seq: 1, item_count: 12, execution_state: 'RUNNING' },
+    } });
+    return store;
+}
+
+test('workspace 投影按事件顺序推进阶段、分段计数与运行时消息', () => {
+    const store = seededStore();
+    const seen = [];
+    store.subscribe((state) => seen.push(state.workspace.phase));
+
+    assert.equal(store.consume(typedEvent(2, 'TTS_PLAN_PREPARED', { item_count: 12 })).accepted, true);
+    assert.equal(store.getState().workspace.phase, 'preparing');
+    assert.equal(store.getState().workspace.items.total, 12);
+
+    store.consume(typedEvent(3, 'TTS_RUNTIME_STATUS', { status: 'starting', message: '正在启动讯飞浏览器会话' }));
+    store.consume(typedEvent(4, 'TTS_RUNTIME_PROGRESS', {
+        status: 'processing', message: '正在处理条目 item-3',
+        completed_segments: 5, total_segments: 12, item_id: 'item-3',
+    }));
+
+    const workspace = store.getState().workspace;
+    assert.equal(workspace.phase, 'running');
+    assert.deepEqual(workspace.segments, { completed: 5, total: 12 });
+    assert.equal(workspace.runtime.message, '正在处理条目 item-3');
+    assert.equal(workspace.runtime.itemId, 'item-3');
+    assert.equal(workspace.executionState, 'RUNNING');
+    assert.deepEqual(seen, ['preparing', 'running', 'running']);
+});
+
+test('workspace 投影是有界的：超长消息被截断，诊断字段不进入状态', () => {
+    const store = seededStore();
+    store.consume(typedEvent(2, 'TTS_RUNTIME_PROGRESS', {
+        message: 'x'.repeat(5000),
+        hugeDiag: { nested: 'blob' },
+        completed_segments: 1, total_segments: 2,
+    }));
+    const workspace = store.getState().workspace;
+    assert.equal(workspace.runtime.message.length, 500);
+    assert.equal(JSON.stringify(workspace).includes('hugeDiag'), false);
+});
+
+test('prepare 切换 run 时重置 workspace，旧进度不会泄漏成新任务的初值', () => {
+    const store = seededStore();
+    store.consume(typedEvent(2, 'TTS_RUNTIME_PROGRESS', { completed_segments: 9, total_segments: 12 }));
+    assert.equal(store.getState().workspace.segments.completed, 9);
+
+    store.prepare('workflow-2');
+    const workspace = store.getState().workspace;
+    assert.deepEqual(workspace.segments, { completed: 0, total: 0 });
+    assert.equal(workspace.phase, null);
+    assert.equal(workspace.items.total, null);
+});
+
+test('陈旧快照不会回退 workspace 的条目总数', () => {
+    const store = createWorkflowStore();
+    store.consume({ kind: 'snapshot', snapshot: {
+        workflow_id: 'workflow-1', snapshot_seq: 5, snapshot_event_id: 'event-5',
+        state: { workflow_id: 'workflow-1', item_count: 37, execution_state: 'RUNNING' },
+    } });
+    const rejected = store.consume({ kind: 'snapshot', snapshot: {
+        workflow_id: 'workflow-1', snapshot_seq: 3, snapshot_event_id: 'event-3',
+        state: { workflow_id: 'workflow-1', item_count: 1, execution_state: 'CREATED' },
+    } });
+    assert.deepEqual(rejected, { accepted: false, reason: 'stale-snapshot' });
+    assert.equal(store.getState().workspace.items.total, 37);
+    assert.equal(store.getState().workspace.executionState, 'RUNNING');
+});

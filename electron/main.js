@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const net = require('net');
 const { pathToFileURL } = require('url');
 const { createNativeFileDialogs } = require('./file-dialogs');
+const { createSourceUploadStaging } = require('./source-staging');
 const {
     newStreamId,
     openWorkflowSse,
@@ -44,6 +45,7 @@ const pendingAppNotices = new Map();
 const workflowSseStreams = new Map();
 const workflowArtifactStreams = new Map();
 const workflowSourceFiles = new Map();
+let sourceUploadStaging = null;
 const SOURCE_FILE_TOKEN_TTL_MS = 5 * 60 * 1000;
 const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
@@ -696,6 +698,11 @@ function closeWorkflowSourceFile(state) {
     if (!state) return;
     if (state.expiryTimer) clearTimeout(state.expiryTimer);
     try { state.handle?.close?.().catch?.(() => {}); } catch (_) { /* best effort cleanup */ }
+    if (state.stagingPath) {
+        // 分块暂存文件在上传消费、超时或退出时都必须物理删除。
+        fs.promises.unlink(state.stagingPath).catch(() => {});
+        state.stagingPath = null;
+    }
 }
 
 function closeWorkflowSourceFiles() {
@@ -713,6 +720,72 @@ function registerIpcHandlers() {
         getMainWindow: () => mainWindow,
         isTrustedSender: isTrustedRendererEvent,
     });
+
+    // 拖拽导入的分块暂存区：渲染层只持有单个分块，主进程在允许目录内
+    // 落盘后再交给 workflow-source-upload 的流式管道。
+    sourceUploadStaging = createSourceUploadStaging({
+        fs,
+        path,
+        stagingDir: path.join(app.getPath('userData'), 'source-staging'),
+        logger: console,
+    });
+
+    ipcMain.handle('source-upload-begin', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted source upload sender');
+        try {
+            return await sourceUploadStaging.begin({
+                fileName: input.fileName,
+                sizeBytes: input.sizeBytes,
+                senderId: event.sender.id,
+            });
+        } catch (error) {
+            console.error('[main] source upload begin failed:', error.message);
+            throw error;
+        }
+    });
+
+    ipcMain.handle('source-upload-write', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted source upload sender');
+        return sourceUploadStaging.write({
+            uploadId: input.uploadId,
+            offset: input.offset,
+            bytes: input.bytes,
+        }, event.sender.id);
+    });
+
+    ipcMain.handle('source-upload-complete', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted source upload sender');
+        return sourceUploadStaging.complete({ uploadId: input.uploadId }, event.sender.id, {
+            openStagedHandle: async ({ filePath, fileName, sizeBytes, fileHandle }) => {
+                // 暂存文件位于 userData 允许目录内，但仍走 realpath 允许列表
+                // 与一次性句柄注册，和原生对话框路径保持同一安全边界。
+                if (!isAllowedFilePath(filePath)) return { success: false, reason: 'untrusted-path' };
+                const sourceFileId = newStreamId();
+                const state = {
+                    handle: fileHandle,
+                    senderId: event.sender.id,
+                    fileName,
+                    sizeBytes,
+                    expiryTimer: null,
+                    stagingPath: filePath,
+                };
+                state.expiryTimer = setTimeout(() => {
+                    if (workflowSourceFiles.get(sourceFileId) !== state) return;
+                    workflowSourceFiles.delete(sourceFileId);
+                    closeWorkflowSourceFile(state);
+                }, SOURCE_FILE_TOKEN_TTL_MS);
+                state.expiryTimer.unref?.();
+                workflowSourceFiles.set(sourceFileId, state);
+                return { success: true, sourceFileId, fileName, sizeBytes };
+            },
+        });
+    });
+
+    ipcMain.handle('source-upload-abort', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted source upload sender');
+        return sourceUploadStaging.abort({ uploadId: input.uploadId });
+    });
+
 
     // New workflow API transport.  The renderer only receives structured
     // responses; the long-lived capability stays in this main-process scope.
@@ -1188,6 +1261,7 @@ app.on('will-quit', (event) => {
     workflowArtifactStreams.forEach(({ stream }) => stream.destroy());
     workflowArtifactStreams.clear();
     closeWorkflowSourceFiles();
+    void sourceUploadStaging?.disposeAll('app-quit');
     if (!pythonProcess || quitCleanupStarted) return;
     quitCleanupStarted = true;
     event.preventDefault();

@@ -5,7 +5,7 @@
  * 渲染进程通过 window.electronAPI 访问这些方法。
  */
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const { createWorkflowApi } = require('./workflow-api');
 const { createWorkflowEventTransport } = require('./workflow-event-transport');
 const { createWorkflowArtifactTransport } = require('./workflow-artifact-transport');
@@ -28,6 +28,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
         'save-artifact-stream',
         { artifactId, suggestedName },
     ),
+    // 拖拽导入：渲染层只暴露 File -> 本地路径 的映射与分块暂存 API，
+    // 文件内容按块经 IPC 进入主进程落盘，渲染进程不再整块持有文档。
+    getPathForFile: (file) => {
+        try {
+            return typeof webUtils?.getPathForFile === 'function' ? webUtils.getPathForFile(file) : null;
+        } catch (_) {
+            return null;
+        }
+    },
+    sourceUpload: {
+        begin: (input) => ipcRenderer.invoke('source-upload-begin', input),
+        write: (input) => ipcRenderer.invoke('source-upload-write', input),
+        complete: (uploadId) => ipcRenderer.invoke('source-upload-complete', { uploadId }),
+        abort: (uploadId) => ipcRenderer.invoke('source-upload-abort', { uploadId }),
+    },
 
     // 服务器能力保留在主进程；renderer 只能通过下方的受限 workflow proxy 访问。
     workflow,

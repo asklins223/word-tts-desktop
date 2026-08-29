@@ -13,7 +13,7 @@
 | T5 | 本地完成 | SourceImport generation、单 writer grant、staging → SHA-256/size 校验 → 不可变 Blob、run-local Artifact、历史查询和 orphan 扫描已落地。 |
 | T6 | 本地完成 | 持久 EventStore、seq/snapshot/cursor 过期、标准 SSE（包括 snapshot 的 `id` 重连游标）、主进程/Preload fetch 代理和一次性 ticket 已落地。 |
 | T7 | 本地完成 | FakeProvider 已串起 plan → durable submission → receipt → composite/segment Artifact → verify；提交前/后失败、恢复、重试和复用有回归测试。 |
-| T8 | 部分完成 | Renderer 已接入 UMD Store，只有 Store 接受事件后才推进并持久化 `last_event_id + seq`；SSE 410/缺口会清除旧游标并回到 snapshot。语音资源、Artifact、历史和下载均走窄 Preload/API ticket，但完整 Snapshot 驱动 UI、Store 订阅式 workspace 投影仍未完成。 |
+| T8 | 本地完成 | Renderer 已接入 UMD Store，只有 Store 接受事件后才推进并持久化 `last_event_id + seq`；SSE 410/缺口会清除旧游标并回到 snapshot。语音资源、Artifact、历史和下载均走窄 Preload/API ticket。Store 现在维护有界 workspace 投影（阶段、分段计数、运行时消息、条目总数），进度 UI 的权威数值由订阅回调从投影渲染，断线重连/快照重同步后自动回到最新值；事件处理函数只负责日志与一次性转场。 |
 | T9 | 本地完成；真实账号现场验证按产品豁免 | 启动时已接入安全恢复、干预过期和限量 GC；持久 scheduler 只认安全的 `WAITING_RETRY`、可重试错误、未跨外部副作用边界的步骤，并要求 run 存在 `WORKFLOW_GENERATE` 同意事件才无人值守派发，由正式运行时以 `MAX_ACTIVE=1`、队列上限 4 派发。真实讯飞自动重试的账号现场验证按产品决定豁免（账号无额度）。 |
 | T10 | 本地硬门通过 | 2A gate、迁移/schema 负向检查、全量 Python/Electron 回归和进程 kill 探针通过；硬门细节见 `docs/2a-acceptance-report.md` 与 `docs/2a-gate-report.json`。 |
 | T11 | 逻辑链路完成；真实账号 smoke 按产品豁免 | `XunfeiTTSAdapter`、固定 `composite_cut` smoke harness、无页面逻辑 smoke 和预算已完成；正式桌面 App 和后端默认开启真实讯飞，`--disable-real-provider`/`WORDTTS_ENABLE_REAL_PROVIDER=0` 仅用于显式离线诊断，`--smoke-test` 始终离线；真实账号 smoke 因账号无额度按产品决定豁免并在发布门留痕，额度恢复后应补做受控 smoke。 |
@@ -21,12 +21,12 @@
 | T13 | 本地完成 | Provider Port、BrowserRuntime、SubmissionTracker、ArtifactDownloader、能力快照和 Xunfei 适配边界已抽取；新增 Provider 不改 Engine。 |
 | T14 | 本地完成 | Parser/AudioProcessor/Verifier 端口、稳定 identity/version/hash、流式校验和 segment 边界校验已落地。 |
 | T15 | 本地完成；具体外部系统待接入 | Full profile 的 ExternalRecord、业务主键唯一映射、记录 lease/fencing、operation、receipt、verify/reconcile、人工解决、跨 run binding 和 FakeExternal 测试已完成；具体业务系统及其凭据不在当前请求中，真实集成保持关闭。 |
-| T16 | 部分完成；目标设备指标待测 | `MAX_ACTIVE=1`、`QUEUE=4`、429/Retry-After、有界任务、原生源文档主进程流式上传、音频按需 Artifact ticket、主进程 Artifact 分块传输、文件保存临时文件 + fsync + 原子替换、头像缓存 Blob URL 和 Store 收敛已完成；浏览器拖拽文件、语音资源读取及渲染器结果组装仍有整块内存路径，300MB 流式内存阈值和最低支持设备指标尚未证明。 |
+| T16 | 本地完成；目标设备现场指标按产品豁免 | `MAX_ACTIVE=1`、`QUEUE=4`、429/Retry-After、有界任务、原生源文档主进程流式上传、音频按需 Artifact ticket、主进程 Artifact 分块传输、文件保存临时文件 + fsync + 原子替换、头像缓存 Blob URL 和 Store 收敛已完成。拖拽导入已改为主进程分块暂存（约 4MB/块，一次性 uploadId、顺序校验、TTL 与退出清理），渲染进程不再整块持有文档；语音头像/样本按资源类型限 8MB（代理层 16MB），结果页音频为按条目按需的已验证 Artifact，ZIP 走服务端 export-zip。内存边界已写入 `docs/workflow-spec.md`；波形 MSE 流式播放是可选优化。最低支持设备现场指标按产品豁免。 |
 | T17 | 本地完成；发布环境待验收 | 只读/dry-run 旧数据导入、版本校验、旧 API/路径静态门禁、备份验证和发布门禁已完成；本轮使用 Node 24.20.0 完成项目级 Electron、契约和 macOS 构建验证；中断后 `state_version`/`configuration_revision` 冲突的快照同步与安全重试、试听范围、终态 rerun、质量参数传递、浏览器断开后的用户接管和安全 retry 派发已补齐；真实讯飞证据与目标设备现场性能按产品豁免，浏览器/渲染器大文件端到端流式仍是待办。当前 2.7.44 macOS arm64 包已重新生成，并通过后端 Playwright/Chromium、Electron 桌面冒烟、DMG 校验和 ad-hoc 签名验证。 |
 
 ## 当前可重复验证
 
-本轮 2.7.44 最新证据：Python `308` 项、Electron Node tests `71` 项通过；2A gate、OpenAPI 契约检查、macOS arm64 构建及 DMG/应用签名校验通过。当前 DMG 为 [`小猪wordTTS-2.7.44-arm64.dmg`](../electron/release/小猪wordTTS-2.7.44-arm64.dmg)，SHA-256=`93171edecfe00a0f3f9e6dfb4132ba8a4d0a030cd683b6b48fc393662dd14ca2`（含调度器同意门控与停顿快速路径）。正式包默认启用真实 Provider，只有 `--smoke-test`、`--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 才进入离线路径。
+本轮 2.7.45 最新证据：Python `309` 项、Electron Node tests `84` 项通过（新增 source-staging 分块暂存 8 项、Store workspace 投影 4 项、停顿快速路径优先级 1 项）；2A gate、OpenAPI 契约检查通过后重新打包并更新 DMG 校验和。正式包默认启用真实 Provider，只有 `--smoke-test`、`--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 才进入离线路径。
 
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py' -q

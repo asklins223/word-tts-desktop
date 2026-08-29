@@ -227,6 +227,89 @@ class XunfeiFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_composite_pause_fast_path_succeeds_without_heavy_fallback(self):
+        """工具栏直接带 2s 按钮的页面：折叠光标主路径必须完成插入。
+
+        该测试同时是“主路径优先”的逻辑证据——重型兜底
+        （原生 select_text + 整页元数据扫描 + 停顿菜单路径）在此场景下
+        一次都不应被调用，单处停顿的协议往返保持原脚本水平。
+        """
+        from playwright.sync_api import sync_playwright
+        from unittest import mock
+
+        html = """
+        <style>.ssml-editor { width: 640px; border: 1px solid #999; }</style>
+        <div id="toolbar">
+          <button id="pause-2s" type="button">2s</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true">
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">Amanda</b>
+            <span class="range-annotation-content speaker-content">First line.</span>
+          </span></p>
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">George</b>
+            <span class="range-annotation-content speaker-content">Second line.</span>
+          </span></p>
+        </div>
+        <script>
+          const savedSelection = { range: null };
+          document.getElementById('pause-2s').addEventListener('mousedown', (event) => {
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount) {
+              savedSelection.range = selection.getRangeAt(0).cloneRange();
+            }
+            event.preventDefault();
+          });
+          document.getElementById('pause-2s').onclick = () => {
+            const selection = window.getSelection();
+            if (!selection || !selection.rangeCount) return;
+            const range = selection.getRangeAt(0);
+            const anchor = selection.anchorNode;
+            const paragraph = anchor && (anchor.parentElement || anchor).closest('p');
+            if (!paragraph || !range.collapsed) return;
+            const marker = document.createElement('span');
+            marker.className = 'ssml-tag pause-marker';
+            marker.setAttribute('data-type', 'break');
+            marker.setAttribute('data-value', '2000');
+            range.insertNode(marker);
+          };
+        </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                with mock.patch.object(
+                    XunFeiSession,
+                    "_click_composite_pause_control",
+                    side_effect=AssertionError("heavy fallback must not run when the fast path works"),
+                ), mock.patch.object(
+                    XunFeiSession,
+                    "_click_composite_ui_control",
+                    wraps=XunFeiSession._click_composite_ui_control,
+                ) as direct_click:
+                    XunFeiSession._insert_composite_pause(page, 0, 2000)
+                direct_click.assert_called()
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]').count(),
+                    1,
+                )
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]')
+                    .evaluate("el => el.previousSibling && el.previousSibling.textContent"),
+                    'First line.',
+                )
+                self.assertEqual(
+                    XunFeiSession._read_composite_pause_issues(page, [(0, 2000)]),
+                    [],
+                )
+            finally:
+                browser.close()
+
     def test_composite_pause_duration_matching_rejects_wrong_duration(self):
         self.assertTrue(
             XunFeiSession._composite_pause_metadata_matches(
