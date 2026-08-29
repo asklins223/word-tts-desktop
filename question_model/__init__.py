@@ -23,6 +23,15 @@ from .model import (
 )
 from .adjudication import AdjudicatedParse, BlockConflict, adjudicate
 from .extractors import EXTRACTORS, extract_candidate
+from .audio_projection import project_audio_tasks_to_work_items
+from .operations import (
+    SCOPE_KINDS_BY_ROLE,
+    add_task_dependency,
+    create_audio_tasks,
+    create_operation_plan,
+    create_scope,
+    validate_scope_kind,
+)
 from .revision_match import (
     ALGORITHM_VERSION,
     DECISION_AMBIGUOUS,
@@ -43,6 +52,7 @@ from .persistence import (
 
 __all__ = [
     "ALGORITHM_VERSION",
+    "SCOPE_KINDS_BY_ROLE",
     "DECISION_AMBIGUOUS",
     "DECISION_CHANGED",
     "DECISION_MATCHED",
@@ -73,4 +83,10 @@ __all__ = [
     "persist_candidate",
     "persist_parse",
     "match_document_revisions",
+    "add_task_dependency",
+    "create_audio_tasks",
+    "create_operation_plan",
+    "create_scope",
+    "validate_scope_kind",
+    "project_audio_tasks_to_work_items",
 ]
