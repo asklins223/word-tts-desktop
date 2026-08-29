@@ -129,8 +129,9 @@ class TextReadingParser(BaseParser):
     RE_ARTICLE_SUBTITLE = re.compile(r'^//\s*(.*)$')
     RE_CONTENT_HEADING = re.compile(r'^(Reading\s+Plus)\s*[：:]?\s*$', re.I)
 
-    def __init__(self, filepath):
-        super().__init__(filepath)
+    def __init__(self, filepath, **kwargs):
+        # kwargs 透传 preloaded_paras（统一分段器一次加载，方案阶段3）
+        super().__init__(filepath, **kwargs)
         self._section_ab_profile_cache = None
 
     def parse(self):
