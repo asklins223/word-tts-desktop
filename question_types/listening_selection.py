@@ -45,14 +45,32 @@ class ListeningSelectionParser(BaseParser):
     )
     RE_NUMBERED_QUESTION = re.compile(r'^\d+\s*[.．、）)]\s*[^A-Za-z]?')
     RE_OPTION = re.compile(r'^[A-CＡ-Ｃ]\s*[.．、）)]\s*')
+    # 业务字段抽取（阶段3⑤）：题干与选项的完整形态
+    RE_STEM_FULL = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)$')
+    RE_OPTION_FULL = re.compile(r'^([A-CＡ-Ｃ])\s*[.．、）)]\s*(.+)$')
     RE_ANSWER = re.compile(r'^(?:参考答案|答案|解析)\s*[：:]?')
+
+    @staticmethod
+    def _normalize_option_id(raw):
+        # 全角Ａ-Ｃ 归一为 ASCII
+        return chr(ord(raw) - 0xFEE0) if ord(raw) > 127 else raw
 
     def parse(self):
         items = []
+        questions = []           # 业务字段通道：题干+选项（不影响 items）
+        pending_questions = []   # 等待归属到下一段录音稿的题干组
         in_section = False
         collecting = False
         current_lines = []
         script_index = 0
+
+        def flush_questions():
+            """【录音原文】之前收集的题干组归属到即将开始的录音稿。"""
+            nonlocal pending_questions
+            for question in pending_questions:
+                question["script_ordinal"] = script_index + 1
+                questions.append(question)
+            pending_questions = []
 
         def flush():
             nonlocal collecting, current_lines, script_index
@@ -89,6 +107,7 @@ class ListeningSelectionParser(BaseParser):
             script_match = self.RE_SCRIPT.match(value)
             if script_match:
                 flush()
+                flush_questions()
                 collecting = True
                 remainder = script_match.group(1).strip()
                 if remainder:
@@ -96,6 +115,24 @@ class ListeningSelectionParser(BaseParser):
                 continue
 
             if not collecting:
+                # 业务字段抽取：题干行与选项行（不属于任何录音稿）
+                stem_match = self.RE_STEM_FULL.match(value)
+                if stem_match:
+                    pending_questions.append({
+                        "number": int(stem_match.group(1)),
+                        "stem": sanitize(stem_match.group(2)),
+                        "options": [],
+                        "answer": None,
+                    })
+                    continue
+                option_match = self.RE_OPTION_FULL.match(value)
+                if option_match and pending_questions:
+                    pending_questions[-1]["options"].append({
+                        "option_id": self._normalize_option_id(
+                            option_match.group(1)),
+                        "text": sanitize(option_match.group(2)),
+                    })
+                    continue
                 continue
 
             # 下一道题的提示、题干、选项或答案都不是录音内容。
@@ -111,7 +148,10 @@ class ListeningSelectionParser(BaseParser):
             current_lines.append(value)
 
         flush()
-        return self._result(items)
+        flush_questions()
+        result = self._result(items)
+        result["questions"] = questions
+        return result
 
 
 QUESTION_TYPE = QuestionType(

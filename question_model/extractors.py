@@ -27,6 +27,7 @@ from .model import (
     QUESTION_TYPE_CODES,
     SUB_TYPE_REGISTRY,
     ContentUnit,
+    Option,
     ParseCandidate,
     QuestionItem,
     ResolutionState,
@@ -134,12 +135,19 @@ def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
 
 
 def _extract_listening_selection(result: dict, source_key: str) -> ParseCandidate:
+    """听后选择：录音稿 Stimulus + 题干/选项 QuestionItem（业务字段通道）。
+
+    ``result["questions"]`` 由解析器以独立通道提供（不影响音频 items）；
+    文档未携带答案 → ``question_fields_complete`` 仍为 False，
+    保持 DRAFT，不得进入外部链路（方案 5.2.2）。
+    """
     type_code = QUESTION_TYPE_CODES["听后选择"]
     stimuli: list[Stimulus] = []
+    stimulus_by_ordinal: dict[int, str] = {}
     for raw in result["items"]:
         category = raw.get("category", "")
         locator = f"{category}/录音稿{raw.get('index')}"
-        stimuli.append(Stimulus(
+        stimulus = Stimulus(
             stimulus_id=build_identity("stimulus", source_key, locator),
             sub_type_code="listening_choice",
             stimulus_type="listening_script",
@@ -147,17 +155,39 @@ def _extract_listening_selection(result: dict, source_key: str) -> ParseCandidat
             source_locator=locator,
             section=_section_of(category),
             resolution_state=ResolutionState.DRAFT,
+        )
+        stimulus_by_ordinal[raw.get("index")] = stimulus.stimulus_id
+        stimuli.append(stimulus)
+
+    questions: list[QuestionItem] = []
+    for raw in result.get("questions", []):
+        locator = f"听后选择题目/题目{raw['number']}"
+        script_ordinal = raw.get("script_ordinal")
+        questions.append(QuestionItem(
+            question_id=build_identity("question", source_key, locator),
+            question_type=type_code,
+            stem=raw["stem"],
+            source_locator=locator,
+            question_number=raw["number"],
+            options=tuple(Option(o["option_id"], o["text"])
+                          for o in raw.get("options", [])),
+            answer=None,
+            section=_section_of("听后选择录音稿"),
+            stimulus_id=stimulus_by_ordinal.get(script_ordinal),
+            resolution_state=ResolutionState.DRAFT,
         ))
 
-    diagnostics = [
-        "listening_choice_stem_options_answer_not_extracted",
-        "audio_only_candidate",
-    ]
+    diagnostics = ["audio_only_candidate"]
+    if questions:
+        diagnostics.append("listening_choice_answer_not_extracted")
+    else:
+        diagnostics.append("listening_choice_stem_options_answer_not_extracted")
+    entities = tuple(stimuli) + tuple(questions)
     return ParseCandidate(
         candidate_id=f"candidate:{type_code}:{source_key}",
         type_code=type_code,
-        claimed_blocks=tuple(s.source_locator for s in stimuli),
-        entities=tuple(stimuli),
+        claimed_blocks=tuple(e.source_locator for e in entities),
+        entities=entities,
         confidence=_confidence(diagnostics),
         diagnostics=tuple(diagnostics),
         capabilities=dict(CAPABILITIES_AUDIO_ONLY),

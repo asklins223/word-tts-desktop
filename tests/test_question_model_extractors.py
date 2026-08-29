@@ -357,3 +357,55 @@ class TestGuardRails:
         from question_types import QUESTION_TYPES
         registered = {qt.key for qt in QUESTION_TYPES}
         assert registered == set(QUESTION_TYPE_CODES)
+
+
+class TestListeningChoiceBusinessFields:
+    """阶段3⑤：听后选择业务字段抽取（题干+选项，独立通道）。"""
+
+    def _live_candidate(self):
+        from question_types.segmenter import parse_document_once
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "examples", "documents",
+            "听后选择-7上 Starter Unit 1 Hello!.docx")
+        results, _ = parse_document_once(path)
+        return extract_candidate("听后选择", results[0], "听后选择样例")
+
+    def test_questions_channel_yields_question_items(self):
+        candidate = self._live_candidate()
+        stimuli = [e for e in candidate.entities if hasattr(e, "stimulus_type")]
+        questions = [e for e in candidate.entities if hasattr(e, "question_type")]
+        assert len(stimuli) == 6
+        assert len(questions) == 8
+        # 题干+选项齐备但文档无答案 → 仍是 DRAFT / audio_only
+        assert all(len(q.options) == 3 for q in questions)
+        assert all(q.question_fields_complete is False for q in questions)
+        assert all(q.resolution_state is ResolutionState.DRAFT
+                   for q in questions)
+        assert "listening_choice_answer_not_extracted" in candidate.diagnostics
+        assert "listening_choice_stem_options_answer_not_extracted" \
+            not in candidate.diagnostics
+
+    def test_questions_link_to_following_script(self):
+        """题干组归属到其后的录音稿（第5/6题同段、第7/8题同段）。"""
+        candidate = self._live_candidate()
+        questions = sorted(
+            (q for q in candidate.entities if hasattr(q, "question_type")),
+            key=lambda q: q.question_number)
+        by_number = {q.question_number: q for q in questions}
+        assert by_number[1].stimulus_id != by_number[2].stimulus_id
+        assert by_number[5].stimulus_id == by_number[6].stimulus_id
+        assert by_number[7].stimulus_id == by_number[8].stimulus_id
+        assert by_number[6].stimulus_id != by_number[7].stimulus_id
+
+    def test_items_channel_untouched(self):
+        """音频通道零影响：items 仍只有录音稿，progress 流不变。"""
+        from question_types.segmenter import parse_document_once
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "examples", "documents",
+            "听后选择-7上 Starter Unit 1 Hello!.docx")
+        results, _ = parse_document_once(path)
+        assert results[0]["item_count"] == 6
+        assert all(i["category"] == "听后选择录音稿"
+                   for i in results[0]["items"])
