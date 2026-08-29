@@ -35,10 +35,14 @@ class BaseParser:
     # 子类可设为 True 以跳过 load_paragraphs（如 Excel 解析器）
     _SKIP_LOAD_PARAGRAPHS = False
 
-    def __init__(self, filepath):
+    def __init__(self, filepath, *, preloaded_paras=None):
+        # 阶段3 统一分段器：可注入已加载的段落（文档只读一次），
+        # 缺省行为不变（自行加载）。格式: (段落列表, 元数据列表)
         self.filepath = filepath
         self.filename = os.path.basename(filepath)
-        if self._SKIP_LOAD_PARAGRAPHS:
+        if preloaded_paras is not None:
+            self.paras, self.paragraph_metadata = preloaded_paras
+        elif self._SKIP_LOAD_PARAGRAPHS:
             self.paras = []
             self.paragraph_metadata = []
         else:
