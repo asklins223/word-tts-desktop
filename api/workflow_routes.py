@@ -46,10 +46,17 @@ from workflow.repositories import (
     NotFoundError,
     RepositoryError,
     WorkflowRepository,
+    _snapshot_from_connection,
 )
 from workflow.scheduler import PersistentScheduler
 from workflow.security import OneTimeTicketManager, TicketError, TicketExpired, verify_capability
 from workflow.source_imports import SourceImportService
+from workflow.workspace import (
+    DELIVERABLE_AUDIO_FORMAT,
+    WORKSPACE_CONTENT_DETAIL_LIMIT,
+    artifact_blob_facts_match,
+    item_content_id,
+)
 
 
 class WorkflowCreateBody(BaseModel):
@@ -273,6 +280,7 @@ class WorkflowRuntime:
     initialized: bool = False
     generation_tasks: set[asyncio.Task] = field(default_factory=set)
     generation_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
+    generation_dispatch_guard: asyncio.Lock = field(default_factory=asyncio.Lock)
     generation_tasks_by_workflow: dict[str, asyncio.Task] = field(default_factory=dict)
     generation_cancel_events: dict[str, threading.Event] = field(default_factory=dict)
     recovery: RecoveryService | None = None
@@ -460,6 +468,8 @@ def _status_for_error(exc: Exception) -> int:
         return 413
     if code in {"RESOURCE_EXHAUSTED", "PROVIDER_RATE_LIMITED"}:
         return 429
+    if code == "ITEM_CONTENT_TOO_LARGE":
+        return 413
     if code == "INSUFFICIENT_STORAGE":
         return 507
     if code in {"EXTERNAL_CAPABILITY_REQUIRED", "PROVIDER_UNAVAILABLE"}:
@@ -682,6 +692,88 @@ def _workspace_capabilities(runtime: WorkflowRuntime, workflow_id: str) -> dict[
         "supports_resume": active,
         "supports_takeover": False,
     }
+    configuration = runtime.application._configuration(workflow_id)
+    provider_name = str(configuration.get("provider") or "xunfei")[:128]
+    provider_projection: dict[str, Any] = {
+        "provider": provider_name or "UNKNOWN",
+        "status": "UNKNOWN",
+        "ready": False,
+        "can_generate": False,
+        "can_start_generation": False,
+        "reason": "Provider 状态尚未确认",
+    }
+    try:
+        provider = runtime.providers.get(
+            provider_name or "xunfei",
+            str(configuration.get("account_scope") or "xunfei-default"),
+        )
+        capability_snapshot = getattr(provider, "capability_snapshot", None)
+        if callable(capability_snapshot):
+            capability_snapshot = capability_snapshot()
+        has_backend = getattr(provider, "backend", None) is not None
+        if isinstance(capability_snapshot, Mapping):
+            # Once an adapter supplies a snapshot, do not merge implicit
+            # backend defaults into omitted fields.  A partial/unknown
+            # snapshot must remain fail-closed until it explicitly confirms
+            # each capability.
+            provider_projection.update({
+                "status": "UNKNOWN",
+                "ready": False,
+                "can_generate": False,
+                "can_start_generation": False,
+            })
+            provider_projection["provider"] = str(
+                capability_snapshot.get("provider") or provider_projection["provider"]
+            )[:128]
+            snapshot_status = str(capability_snapshot.get("status") or "").upper()
+            if snapshot_status in {"UNKNOWN", "READY", "LOGIN_REQUIRED", "EXPIRED", "UNAVAILABLE", "DISABLED"}:
+                provider_projection["status"] = snapshot_status
+            if "ready" in capability_snapshot:
+                provider_projection["ready"] = bool(capability_snapshot["ready"])
+            if "can_generate" in capability_snapshot:
+                provider_projection["can_generate"] = bool(capability_snapshot["can_generate"])
+            if "can_start_generation" in capability_snapshot:
+                provider_projection["can_start_generation"] = bool(capability_snapshot["can_start_generation"])
+            if capability_snapshot.get("reason"):
+                provider_projection["reason"] = str(capability_snapshot["reason"])[:500]
+        else:
+            provider_projection["ready"] = bool(has_backend)
+            provider_projection["can_generate"] = provider_projection["ready"]
+            provider_projection["can_start_generation"] = bool(has_backend)
+            provider_projection["status"] = "READY" if provider_projection["ready"] else "UNKNOWN"
+            provider_projection["reason"] = (
+                "本地 Provider 已注册，可提交生成"
+                if provider_projection["ready"]
+                else "Provider 已注册，但尚未确认可用能力"
+            )
+        # A capability snapshot is advisory input, but blocked statuses must
+        # never be allowed to leak a stale ready/can_generate bit into the
+        # command gate.  READY also requires both explicit readiness and an
+        # explicit generation capability.
+        if provider_projection["status"] != "READY":
+            provider_projection["ready"] = False
+            provider_projection["can_generate"] = False
+            # A foreground generation may be the provider's login/reconnect
+            # entry point, but only an explicit adapter capability may open
+            # that path.  Unknown providers stay fail-closed.
+            provider_projection["can_start_generation"] = bool(
+                provider_projection["can_start_generation"]
+            )
+        else:
+            provider_projection["ready"] = bool(provider_projection["ready"])
+            provider_projection["can_generate"] = bool(
+                provider_projection["can_generate"] and provider_projection["ready"]
+            )
+            provider_projection["can_start_generation"] = bool(
+                provider_projection["can_start_generation"] and provider_projection["ready"]
+            )
+    except Exception:
+        provider_projection["provider"] = provider_name or "UNKNOWN"
+        provider_projection["status"] = "UNAVAILABLE"
+        provider_projection["can_generate"] = False
+        provider_projection["can_start_generation"] = False
+        provider_projection["reason"] = "当前运行时未注册该 Provider"
+    capabilities["provider"] = provider_projection
     if not active and snapshot.control_state in {"PAUSED", "PAUSE_REQUESTED"}:
         candidate = next(
             (
@@ -707,7 +799,13 @@ def _safe_content_filename(value: Any, fallback: str) -> str:
     raw = str(value or "").replace("\\", "/")
     name = Path(raw).name
     name = "".join(char for char in name if ord(char) >= 32 and ord(char) != 127).strip()
-    return (name[:256] or fallback)
+    if len(name) <= 256:
+        return name or fallback
+    suffix = Path(name).suffix.lower()
+    if suffix in {".docx", ".xlsx"}:
+        max_stem_length = max(1, 256 - len(suffix))
+        return f"{Path(name).stem[:max_stem_length]}{suffix}"
+    return name[:256] or fallback
 
 
 def _artifact_content_metadata(runtime: WorkflowRuntime, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -716,6 +814,34 @@ def _artifact_content_metadata(runtime: WorkflowRuntime, row: Mapping[str, Any])
     artifact_id = str(row["artifact_id"])
     fmt = str(row["blob_format"] or row["artifact_format"] or "bin").lower().lstrip(".") or "bin"
     artifact_type = str(row["artifact_type"] or "artifact")
+    source_mime = None
+    source_format = None
+    if artifact_type == "source":
+        # Source blobs are intentionally stored as ``bin`` so the upload
+        # protocol does not trust a renderer-controlled format header.  The
+        # validated content type captured at import time is still safe to use
+        # for the download response, but only for the two supported source
+        # formats.
+        try:
+            details = json.loads(str(row["source_details_json"] or "{}"))
+            metadata = details.get("metadata") if isinstance(details, Mapping) else None
+            content_type = str((metadata or {}).get("content_type") or "").split(";", 1)[0].strip().lower()
+            source_metadata_formats = {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+            }
+            source_format = source_metadata_formats.get(content_type)
+            source_mime = {
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            }.get(source_format)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            source_mime = None
+            source_format = None
+    if source_format:
+        # The stored blob remains ``bin`` by design, but the validated source
+        # metadata is authoritative for the user-facing artifact contract.
+        fmt = source_format
     filename = None
     try:
         workspace = runtime.repository.get_workspace(str(row["workflow_id"]))
@@ -751,10 +877,12 @@ def _artifact_content_metadata(runtime: WorkflowRuntime, row: Mapping[str, Any])
             filename = source_name
         else:
             filename = f"artifact.{fmt}"
-    mime = {
+    mime = source_mime or {
         "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
         "aac": "audio/aac", "ogg": "audio/ogg", "opus": "audio/ogg",
         "flac": "audio/flac", "json": "application/json", "zip": "application/zip",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }.get(fmt, "application/octet-stream")
     size = row["blob_size_bytes"] if row["blob_size_bytes"] is not None else row["artifact_size_bytes"]
     sha256 = row["blob_sha256"] or row["artifact_sha256"]
@@ -767,6 +895,35 @@ def _artifact_content_metadata(runtime: WorkflowRuntime, row: Mapping[str, Any])
     }
 
 
+def _artifact_row_value(row: Mapping[str, Any], key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _artifact_row_is_readable(row: Mapping[str, Any]) -> bool:
+    """Keep content tickets behind one consistent Artifact/Blob integrity fence."""
+
+    if not artifact_blob_facts_match(
+        artifact_format=_artifact_row_value(row, "artifact_format"),
+        blob_format=_artifact_row_value(row, "blob_format"),
+        artifact_sha256=_artifact_row_value(row, "artifact_sha256"),
+        blob_sha256=_artifact_row_value(row, "blob_sha256"),
+        artifact_size_bytes=_artifact_row_value(row, "artifact_size_bytes"),
+        blob_size_bytes=_artifact_row_value(row, "blob_size_bytes"),
+    ):
+        return False
+    artifact_type = str(_artifact_row_value(row, "artifact_type") or "")
+    artifact_format = str(_artifact_row_value(row, "artifact_format") or "").strip().lower().lstrip(".")
+    blob_format = str(_artifact_row_value(row, "blob_format") or "").strip().lower().lstrip(".")
+    if artifact_type == "tts-segment":
+        return artifact_format == DELIVERABLE_AUDIO_FORMAT and blob_format == DELIVERABLE_AUDIO_FORMAT
+    if artifact_type == "export-zip":
+        return artifact_format == "zip" and blob_format == "zip"
+    return True
+
+
 def _schedule_generation_task(
     runtime: WorkflowRuntime,
     workflow_id: str,
@@ -774,6 +931,7 @@ def _schedule_generation_task(
     generation_mode: str | None = None,
     provider: str | None = None,
     account_scope: str | None = None,
+    allow_interactive_provider: bool = True,
     item_ids: list[str] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> asyncio.Task:
@@ -828,6 +986,7 @@ def _schedule_generation_task(
                     generation_mode=generation_mode,
                     provider=provider,
                     account_scope=account_scope,
+                    allow_interactive_provider=allow_interactive_provider,
                     cancel_check=cancel_event.is_set,
                     pause_check=lambda: _pause_probe(runtime, workflow_id),
                     item_ids=item_ids,
@@ -914,14 +1073,19 @@ async def _dispatch_due_retries_once(runtime: WorkflowRuntime) -> int:
             )
             if not all_skipped:
                 adapter = runtime.application.provider(provider_name, account_scope)
-                runtime.application._ensure_provider_ready(adapter)
-            _schedule_generation_task(
-                runtime,
-                claim.workflow_id,
-                generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
-                provider=provider_name,
-                account_scope=account_scope,
-            )
+                runtime.application._ensure_provider_ready(
+                    adapter,
+                    allow_interactive=False,
+                )
+            async with runtime.generation_dispatch_guard:
+                _schedule_generation_task(
+                    runtime,
+                    claim.workflow_id,
+                    generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
+                    provider=provider_name,
+                    account_scope=account_scope,
+                    allow_interactive_provider=False,
+                )
             dispatched += 1
         except RepositoryError as exc:
             delay = 1 if getattr(exc, "code", "") == "RESOURCE_EXHAUSTED" else 30
@@ -975,17 +1139,27 @@ async def _dispatch_recoverable_once(runtime: WorkflowRuntime) -> int:
             )
             if not all_skipped:
                 adapter = runtime.application.provider(provider_name, account_scope)
-                runtime.application._ensure_provider_ready(adapter)
+                runtime.application._ensure_provider_ready(
+                    adapter,
+                    allow_interactive=False,
+                )
             taken_over = await asyncio.to_thread(runtime.repository.mark_takeover, workflow_id)
             if taken_over is None:
                 continue
-            _schedule_generation_task(
-                runtime,
-                workflow_id,
-                generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
-                provider=provider_name,
-                account_scope=account_scope,
-            )
+            # ``mark_takeover`` yields to the event loop.  A user command or
+            # another dispatcher pass can therefore register a local task
+            # before this coroutine reaches the enqueue step.  Reuse the
+            # same process-level fence as the foreground and retry paths so
+            # the durable takeover cannot produce two local workers.
+            async with runtime.generation_dispatch_guard:
+                _schedule_generation_task(
+                    runtime,
+                    workflow_id,
+                    generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
+                    provider=provider_name,
+                    account_scope=account_scope,
+                    allow_interactive_provider=False,
+                )
             dispatched += 1
         except RepositoryError:
             # A full local queue or a concurrent command leaves the durable
@@ -1071,10 +1245,10 @@ def install_workflow_api(
         """Return bounded restart candidates with server-owned continuation facts."""
 
         runtime.ensure_initialized()
-        return {
-            "workflows": runtime.repository.list_active_workflows(limit=limit),
-            "limit": min(max(1, int(limit)), 200),
-        }
+        return runtime.repository.list_active_workflows(
+            limit=limit,
+            _include_page=True,
+        )
 
     @router.get("/workflows/{workflow_id}/workspace")
     async def get_workflow_workspace(workflow_id: str):
@@ -1120,6 +1294,76 @@ def install_workflow_api(
     async def list_workflow_items(workflow_id: str):
         runtime.ensure_initialized()
         return {"items": runtime.repository.list_items(workflow_id)}
+
+    @router.get("/workflows/{workflow_id}/items/{item_id}/content/{content_id}")
+    async def get_workflow_item_content(
+        workflow_id: str,
+        item_id: str,
+        content_id: str,
+        expected_state_version: int | None = None,
+        offset_bytes: int = 0,
+        max_response_bytes: int = WORKSPACE_CONTENT_DETAIL_LIMIT,
+    ):
+        """Read one bounded item body after the list projection returned a ref.
+
+        Large text is deliberately not copied into every workspace refresh.
+        The opaque id is bound to the workflow, item and persisted content
+        hash, while the optional state version prevents an editor from
+        silently applying text loaded from an older workspace.
+        """
+
+        runtime.ensure_initialized()
+        if offset_bytes < 0:
+            raise RepositoryError("content offset must not be negative", code="VALIDATION_ERROR")
+        if max_response_bytes < 1024 or max_response_bytes > WORKSPACE_CONTENT_DETAIL_LIMIT:
+            raise RepositoryError(
+                "content response size exceeds the bounded detail limit",
+                code="VALIDATION_ERROR",
+                details={"max_response_bytes": WORKSPACE_CONTENT_DETAIL_LIMIT},
+            )
+        with runtime.repository.database.read_transaction() as con:
+            snapshot = _snapshot_from_connection(con, workflow_id)
+            if expected_state_version is not None and snapshot.state_version != int(expected_state_version):
+                raise ConflictError("workflow state_version is stale", code="STATE_CONFLICT")
+            row = con.execute(
+                """SELECT item_id, state_version, normalized_content, content_hash
+                   FROM work_items WHERE workflow_id=? AND item_id=?""",
+                (workflow_id, item_id),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError("item does not exist")
+            stored_hash = str(row["content_hash"] or "")
+            if item_content_id(workflow_id, item_id, stored_hash) != str(content_id):
+                raise NotFoundError("item content does not exist")
+            content = str(row["normalized_content"] or "")
+            raw_content = content.encode("utf-8")
+            size_bytes = len(raw_content)
+            if offset_bytes > size_bytes:
+                raise RepositoryError(
+                    "content offset is past the end of the item",
+                    code="VALIDATION_ERROR",
+                    details={"size_bytes": size_bytes, "offset_bytes": offset_bytes},
+                )
+            # Align a byte offset to a UTF-8 boundary so callers can request
+            # arbitrary chunks without receiving replacement characters.
+            aligned_offset = len(raw_content[:offset_bytes].decode("utf-8", errors="ignore").encode("utf-8"))
+            chunk = raw_content[aligned_offset:aligned_offset + max_response_bytes]
+            chunk_text = chunk.decode("utf-8", errors="ignore")
+            consumed_bytes = len(chunk_text.encode("utf-8"))
+            next_offset = aligned_offset + consumed_bytes
+            return {
+                "workflow_id": workflow_id,
+                "item_id": item_id,
+                "content_id": content_id,
+                "state_version": int(snapshot.state_version),
+                "item_state_version": int(row["state_version"] or 0),
+                "content_hash": stored_hash,
+                "size_bytes": size_bytes,
+                "offset_bytes": aligned_offset,
+                "next_offset_bytes": next_offset,
+                "truncated": next_offset < size_bytes,
+                "content": chunk_text,
+            }
 
     @router.get("/workflows/{workflow_id}/artifacts")
     async def list_workflow_artifacts(workflow_id: str, limit: int = 500):
@@ -1300,15 +1544,16 @@ def install_workflow_api(
                 )
         elif action == "resume" and _active_generation_task(runtime, workflow_id) is None:
             try:
-                _ensure_generation_dispatch_capacity(runtime, workflow_id)
-                configuration = runtime.application._configuration(workflow_id)
-                _schedule_generation_task(
-                    runtime,
-                    workflow_id,
-                    generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
-                    provider=str(configuration.get("provider") or "xunfei"),
-                    account_scope=str(configuration.get("account_scope") or "xunfei-default"),
-                )
+                async with runtime.generation_dispatch_guard:
+                    _ensure_generation_dispatch_capacity(runtime, workflow_id)
+                    configuration = runtime.application._configuration(workflow_id)
+                    _schedule_generation_task(
+                        runtime,
+                        workflow_id,
+                        generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
+                        provider=str(configuration.get("provider") or "xunfei"),
+                        account_scope=str(configuration.get("account_scope") or "xunfei-default"),
+                    )
             except Exception:
                 # Keep a restarted workflow paused if scheduling fails after
                 # the resume command was fenced.  A later explicit resume can
@@ -1372,7 +1617,6 @@ def install_workflow_api(
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        _ensure_generation_dispatch_capacity(runtime, workflow_id)
         if body.configuration_revision is not None:
             current_configuration_revision = runtime.repository.get_configuration_revision(workflow_id)
             if int(body.configuration_revision) != current_configuration_revision:
@@ -1384,52 +1628,58 @@ def install_workflow_api(
                         "current_configuration_revision": current_configuration_revision,
                     },
                 )
-        snapshot = runtime.application.accept_generation(
-            workflow_id,
-            expected_state_version=body.expected_state_version,
-            generation_mode=body.generation_mode,
-            provider=body.provider,
-            account_scope=body.account_scope,
-            expected_configuration_revision=body.configuration_revision,
-            request_id=request_id,
-        )
-        response = _command_response(snapshot, "generate", request_id)
-        try:
-            _schedule_generation_task(
-                runtime,
+        # The capacity check, durable acceptance and local task registration
+        # must be one process-level critical section.  Otherwise two concurrent
+        # requests can both observe a free slot, accept two RUNNING snapshots,
+        # and only then discover that one enqueue lost the race.
+        async with runtime.generation_dispatch_guard:
+            _ensure_generation_dispatch_capacity(runtime, workflow_id)
+            snapshot = runtime.application.accept_generation(
                 workflow_id,
+                expected_state_version=body.expected_state_version,
                 generation_mode=body.generation_mode,
                 provider=body.provider,
                 account_scope=body.account_scope,
-                item_ids=body.item_ids,
+                expected_configuration_revision=body.configuration_revision,
+                request_id=request_id,
             )
-        except RepositoryError as exc:
-            # Capacity is checked before acceptance, but the task registry can
-            # change between that check and enqueue.  Do not leave a durable
-            # RUNNING workflow behind when the race loses; make the failure
-            # visible as a retryable/waiting state instead.
-            if exc.code != "GENERATION_ALREADY_RUNNING":
+            response = _command_response(snapshot, "generate", request_id)
+            effective_configuration = runtime.application._configuration(workflow_id)
+            try:
+                _schedule_generation_task(
+                    runtime,
+                    workflow_id,
+                    generation_mode=str(effective_configuration.get("generation_mode") or "composite_cut"),
+                    provider=str(effective_configuration.get("provider") or "xunfei"),
+                    account_scope=str(effective_configuration.get("account_scope") or "xunfei-default"),
+                    item_ids=body.item_ids,
+                )
+            except RepositoryError as exc:
+                # Capacity is checked before acceptance, but the task registry
+                # can still change inside the helper.  Do not leave a durable
+                # RUNNING workflow behind when the enqueue fails.
+                if exc.code != "GENERATION_ALREADY_RUNNING":
+                    try:
+                        runtime.repository.record_generation_task_failure(
+                            workflow_id,
+                            error_code=exc.code,
+                            error_message=str(exc),
+                            error_details=getattr(exc, "details", None),
+                        )
+                    except Exception:
+                        pass
+                raise
+            except Exception as exc:
                 try:
                     runtime.repository.record_generation_task_failure(
                         workflow_id,
-                        error_code=exc.code,
+                        error_code=getattr(exc, "code", "INTERNAL_ERROR"),
                         error_message=str(exc),
                         error_details=getattr(exc, "details", None),
                     )
                 except Exception:
                     pass
-            raise
-        except Exception as exc:
-            try:
-                runtime.repository.record_generation_task_failure(
-                    workflow_id,
-                    error_code=getattr(exc, "code", "INTERNAL_ERROR"),
-                    error_message=str(exc),
-                    error_details=getattr(exc, "details", None),
-                )
-            except Exception:
-                pass
-            raise
+                raise
         runtime.repository.complete_idempotency(idem_id, response_status=202, response=response, workflow_id=workflow_id)
         return JSONResponse(response, status_code=202)
 
@@ -1890,10 +2140,20 @@ def install_workflow_api(
         runtime.ensure_initialized()
         with runtime.database.read_transaction() as con:
             row = con.execute(
-                """SELECT a.artifact_id, a.workflow_id, a.lifecycle_state, a.verified,
-                          b.lifecycle_state AS blob_lifecycle_state
+                """SELECT a.artifact_id, a.workflow_id, a.item_id, a.artifact_type,
+                          a.format AS artifact_format, a.sha256 AS artifact_sha256,
+                          a.size_bytes AS artifact_size_bytes, a.lifecycle_state, a.verified,
+                          b.storage_key, b.format AS blob_format,
+                          b.size_bytes AS blob_size_bytes, b.sha256 AS blob_sha256,
+                          b.lifecycle_state AS blob_lifecycle_state,
+                          wi.sequence AS item_sequence,
+                          si.error_details_json AS source_details_json
                    FROM artifacts a
                    LEFT JOIN artifact_blobs b ON b.blob_id=a.blob_id
+                   LEFT JOIN work_items wi ON wi.workflow_id=a.workflow_id AND wi.item_id=a.item_id
+                   LEFT JOIN workflows w ON w.workflow_id=a.workflow_id
+                   LEFT JOIN artifacts source_a ON source_a.artifact_id=w.source_artifact_id
+                   LEFT JOIN source_imports si ON si.current_artifact_id=source_a.artifact_id
                    WHERE a.artifact_id=?""",
                 (artifact_id,),
             ).fetchone()
@@ -1902,10 +2162,20 @@ def install_workflow_api(
             or row["lifecycle_state"] != "READY"
             or int(row["verified"] or 0) != 1
             or row["blob_lifecycle_state"] != "READY"
+            or not _artifact_row_is_readable(row)
         ):
             raise NotFoundError("artifact does not exist")
+        metadata = _artifact_content_metadata(runtime, row)
         token, _expires = runtime.tickets.issue(action="artifact-content", resource_id=artifact_id, audience="renderer", ttl_seconds=60)
-        return {"ticket": token, "artifact_id": artifact_id, "expires_at": _expires_at_iso(60)}
+        return {
+            "ticket": token,
+            "artifact_id": artifact_id,
+            "expires_at": _expires_at_iso(60),
+            "content_type": metadata["mime_type"],
+            "content_length": metadata["size_bytes"],
+            "sha256": metadata["sha256"],
+            "filename": metadata["filename"],
+        }
 
     @router.get("/artifacts/{artifact_id}/content")
     async def read_artifact(artifact_id: str, artifact_ticket: str = Header(..., alias="X-Artifact-Ticket")):
@@ -1931,7 +2201,7 @@ def install_workflow_api(
                      AND b.lifecycle_state='READY'""",
                 (artifact_id,),
             ).fetchone()
-        if row is None:
+        if row is None or not _artifact_row_is_readable(row):
             raise NotFoundError("artifact does not exist")
         file_obj = runtime.artifacts.read(str(row["storage_key"]))
 
@@ -1956,6 +2226,12 @@ def install_workflow_api(
             headers["Content-Length"] = str(metadata["size_bytes"])
         if metadata["sha256"]:
             headers["ETag"] = f'"{metadata["sha256"]}"'
+            headers["X-Artifact-SHA256"] = metadata["sha256"]
+        # HTTP field values are latin-1 encoded by Starlette.  Keep the
+        # browser-readable RFC 5987 filename in Content-Disposition above and
+        # expose an ASCII percent-encoded copy for Electron clients that read
+        # response headers directly.
+        headers["X-Artifact-Filename"] = quote(metadata["filename"], safe="")
         return StreamingResponse(chunks(), media_type=metadata["mime_type"], headers=headers)
 
     app.include_router(router)

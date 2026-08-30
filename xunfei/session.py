@@ -46,6 +46,7 @@ class SessionLifecycleMixin:
         self._playwright = None
         self._ctx = None
         self._page = None
+        self._status_lock = threading.Lock()
         self._logged_in = False
         self._browser_disconnected = False
         self._real_ua = None
@@ -89,17 +90,28 @@ class SessionLifecycleMixin:
 
     def _mark_browser_disconnected(self, *_args):
         """Make a manually closed/crashed Chrome session fail health checks."""
-        if not self._browser_disconnected:
+        with self._status_lock:
+            already_disconnected = self._browser_disconnected
+            self._browser_disconnected = True
+            self._logged_in = False
+        if not already_disconnected:
             _log("[xunfei] 浏览器窗口已关闭或连接断开，将在下次任务中重建会话")
-        self._browser_disconnected = True
-        self._logged_in = False
+
+    def runtime_status_snapshot(self):
+        """Return a consistent, thread-safe health view for UI projections."""
+        with self._status_lock:
+            return {
+                "logged_in": bool(self._logged_in),
+                "browser_disconnected": bool(self._browser_disconnected),
+            }
 
     def login(self, login_timeout=300, cancel_check=None, progress_callback=None):
         """
         打开可见的 Chrome 浏览器，导航到讯飞配音。
         首次需要手动登录（手机号+验证码），后续自动复用已保存的登录状态。
         """
-        self._browser_disconnected = False
+        with self._status_lock:
+            self._browser_disconnected = False
         _check_cancel_requested(cancel_check)
         _notify_runtime_progress(
             progress_callback,
@@ -323,7 +335,8 @@ class SessionLifecycleMixin:
             message="讯飞浏览器会话已就绪，开始提交生成任务",
         )
 
-        self._logged_in = True
+        with self._status_lock:
+            self._logged_in = True
 
     def close(self):
         """关闭浏览器，保留登录状态（持久化目录不被删除）。"""
@@ -352,8 +365,9 @@ class SessionLifecycleMixin:
             self._ctx = None
             self._page = None
             self._playwright = None
-            self._logged_in = False
-            self._browser_disconnected = True
+            with self._status_lock:
+                self._logged_in = False
+                self._browser_disconnected = True
             self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None

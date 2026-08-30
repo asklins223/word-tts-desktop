@@ -8,10 +8,18 @@ function loadRendererConfigFunctions() {
     const sourcePath = path.join(__dirname, '..', 'renderer', 'app.js');
     const source = fs.readFileSync(sourcePath, 'utf8').replace(/\ninit\(\);\s*$/, '\n');
     const storage = new Map();
+    const mediaState = { prefersDark: false };
+    const document = {
+        documentElement: { dataset: {}, style: {} },
+        getElementById: () => null,
+    };
     const context = {
         console,
-        document: {},
-        window: { electronAPI: undefined },
+        document,
+        window: {
+            electronAPI: undefined,
+            matchMedia: () => ({ matches: mediaState.prefersDark }),
+        },
         localStorage: {
             getItem: key => storage.get(key) || null,
             setItem: (key, value) => storage.set(key, String(value)),
@@ -23,12 +31,14 @@ function loadRendererConfigFunctions() {
         Blob,
         FormData,
         AbortController,
+        ReadableStream,
         Map,
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, historyStatusPresentation, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isAcceptedGenerationSnapshot, isWaitingForGenerationCleanup, isCancellationSettledSnapshot };`, context);
-    return { api: context.__rendererTests, storage };
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isAcceptedGenerationSnapshot, isWaitingForGenerationCleanup, isCancellationSettledSnapshot };`, context);
+    vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
+    return { api: context.__rendererTests, storage, document, mediaState };
 }
 
 test('长期配置只保留默认男女声的独立参数，不保存文档角色', () => {
@@ -143,6 +153,18 @@ test('前端音色参数对非有限数字与后端保持一致', () => {
     assert.equal(api.clampParamValue('not-a-number'), 50);
 });
 
+test('首次主题默认跟随系统，只有用户选择才持久化', () => {
+    const { api, storage, document, mediaState } = loadRendererConfigFunctions();
+    mediaState.prefersDark = true;
+    api.initializeTheme();
+
+    assert.equal(document.documentElement.dataset.theme, 'dark');
+    assert.equal(storage.has('wordtts_theme_preference'), false);
+
+    api.setWorkspaceTheme('light');
+    assert.equal(storage.get('wordtts_theme_preference'), 'light');
+});
+
 test('工作流快照同步只推进状态版本，不会被旧 SSE 快照回退', () => {
     const { api } = loadRendererConfigFunctions();
     const session = { session_id: 'workflow-1', state_version: 2 };
@@ -207,6 +229,7 @@ test('已接受或尚未清理的工作流不能再次当成可编辑草稿提�
     }), false);
     assert.equal(api.isTerminalWorkflowSnapshot({
         execution_state: 'TERMINAL',
+        control_state: 'TERMINATED',
         result_status: 'CANCELLED',
     }), true);
 });
@@ -323,18 +346,35 @@ test('结果页只接受成功条目的 READY 已验证音频，并使用服务�
     const workspace = {
         items: items.map(({ item_id, status }) => ({ item_id, status })),
         artifacts: [
-            { artifact_id: 'old', item_id: 'item-ok', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: '005.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 10 },
-            { artifact_id: 'new', item_id: 'item-ok', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: 'server-name.wav', format: 'wav', mime_type: 'audio/wav', size_bytes: 12 },
-            { artifact_id: 'failed-ready', item_id: 'item-failed', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: '002.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 8 },
+            { artifact_id: 'old', item_id: 'item-ok', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: '005.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 10, sha256: 'a'.repeat(64) },
+            { artifact_id: 'new', item_id: 'item-ok', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: 'server-name.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 12, sha256: 'b'.repeat(64) },
+            { artifact_id: 'failed-ready', item_id: 'item-failed', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: '002.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 8, sha256: 'c'.repeat(64) },
         ],
     };
 
     const files = api.resultFilesFromArtifacts(items, artifacts, workspace);
     assert.equal(files.length, 1);
     assert.equal(files[0].artifact_id, 'new');
-    assert.equal(files[0].filename, 'server-name.wav');
-    assert.equal(files[0].format, 'wav');
-    assert.equal(files[0].mime_type, 'audio/wav');
+    assert.equal(files[0].filename, 'server-name.mp3');
+    assert.equal(files[0].format, 'mp3');
+    assert.equal(files[0].mime_type, 'audio/mpeg');
+});
+
+test('结果页不会把最新 WAV 产物回退为旧 MP3 交付', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{ item_id: 'item-1', item_type: '句子', status: 'SUCCEEDED', sequence: 0 }];
+    const artifacts = [
+        { artifact_id: 'old', item_id: 'item-1', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, created_at: '2026-01-01T00:00:00Z' },
+        { artifact_id: 'new', item_id: 'item-1', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, created_at: '2026-01-02T00:00:00Z' },
+    ];
+    const workspace = {
+        items,
+        artifacts: [
+            { artifact_id: 'old', item_id: 'item-1', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: '001.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 10, sha256: 'a'.repeat(64) },
+            { artifact_id: 'new', item_id: 'item-1', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, filename: '001.wav', format: 'wav', mime_type: 'audio/wav', size_bytes: 12, sha256: 'b'.repeat(64) },
+        ],
+    };
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultFilesFromArtifacts(items, artifacts, workspace))), []);
 });
 
 test('结果页不会在最新 TTS 产物无效时回退到旧音频', () => {
@@ -353,6 +393,38 @@ test('结果页不会在最新 TTS 产物无效时回退到旧音频', () => {
     };
 
     assert.deepEqual(JSON.parse(JSON.stringify(api.resultFilesFromArtifacts(items, artifacts, workspace))), []);
+});
+
+test('结果页不会用原始 Artifact 列表复活 workspace 已标记的元数据冲突', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{ item_id: 'item-1', item_type: '句子', status: 'SUCCEEDED', sequence: 0 }];
+    const artifacts = [{
+        artifact_id: 'old', item_id: 'item-1', artifact_type: 'tts-segment',
+        lifecycle_state: 'READY', verified: true, format: 'mp3', size_bytes: 10,
+        sha256: 'a'.repeat(64), created_at: '2026-01-01T00:00:00Z',
+    }, {
+        artifact_id: 'new', item_id: 'item-1', artifact_type: 'tts-segment',
+        lifecycle_state: 'READY', verified: true, format: 'mp3', size_bytes: 12,
+        sha256: 'b'.repeat(64), created_at: '2026-01-02T00:00:00Z',
+    }];
+    const workspace = {
+        items,
+        artifacts: [{
+            artifact_id: 'new', item_id: 'item-1', artifact_type: 'tts-segment',
+            lifecycle_state: 'READY', verified: true,
+            // The server hides conflicting facts instead of exposing an
+            // unsafe filename/size/hash projection to the renderer.
+            filename: null, format: null, mime_type: null, size_bytes: null, sha256: null,
+        }],
+    };
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultFilesFromArtifacts(items, artifacts, workspace))), []);
+
+    // An empty authoritative projection means “no exposed artifacts”; it is
+    // not permission to fall back to a legacy list that still contains bytes.
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultFilesFromArtifacts(items, artifacts, {
+        items,
+        artifacts: [],
+    }))), []);
 });
 
 test('新完成任务在 ZIP 尚未创建时仍保留整理入口', () => {
@@ -384,6 +456,32 @@ test('新完成任务在 ZIP 尚未创建时仍保留整理入口', () => {
         zipAvailable: false,
         zipArtifactId: null,
     }, 0))), { visible: false, ready: false });
+
+    // A workspace projection with no ZIP is authoritative even when an older
+    // result context still carries a ready-looking ZIP id.
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultZipState({
+        executionState: 'TERMINAL',
+        resultStatus: 'SUCCEEDED',
+        zipAvailable: true,
+        zipArtifactId: 'stale-zip',
+        workspace: {
+            delivery: {
+                zip_available: false,
+                zip_artifact_id: null,
+                included_item_ids: ['item-1'],
+                excluded_item_ids: [],
+                exclusion_reasons: {},
+            },
+        },
+    }, 1))), { visible: true, ready: false });
+});
+
+test('ZIP 下载不从普通 Artifact 列表猜测旧导出', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    assert.doesNotMatch(source, /artifacts\.find\(artifact => \(\s*artifact\.lifecycle_state === 'READY'[\s\S]*artifact\.artifact_type === 'export-zip'/);
+    assert.match(source, /target\.mode === 'history' && !projectedWorkspace/);
+    assert.match(source, /projectedDelivery\.zip_available === true/);
+    assert.match(source, /hasAuthoritativeDelivery/);
 });
 
 test('历史记录状态投影不会把活动任务显示为完成或文件缺失', () => {
@@ -391,7 +489,117 @@ test('历史记录状态投影不会把活动任务显示为完成或文件缺�
     assert.equal(api.historyStatusPresentation({ execution_state: 'RUNNING', result_status: 'IN_PROGRESS' }).label, '生成中');
     assert.equal(api.historyStatusPresentation({ execution_state: 'WAITING_USER', result_status: 'IN_PROGRESS' }).label, '待处理/对账');
     assert.equal(api.historyStatusPresentation({ execution_state: 'TERMINAL', result_status: 'SUCCEEDED' }).label, '已完成');
+    assert.equal(api.historyStatusPresentation({
+        execution_state: 'TERMINAL',
+        result_status: 'SUCCEEDED',
+        completed: 0,
+        available_files: 2,
+        total: 2,
+    }).label, '交付待同步');
     assert.equal(api.historyStatusPresentation({ execution_state: 'TERMINAL', result_status: 'FAILED' }).label, '生成失败');
+
+    // A zero in the server workspace is authoritative; Math.max-style
+    // merging would incorrectly revive stale history counts.
+    assert.deepEqual(JSON.parse(JSON.stringify(api.historyProgressCounts(
+        { completed: 0, total: 3, failed: 0, cancelled: 0 },
+        { completed: 2, total: 3, failed: 4, cancelled: 1 },
+        2,
+    ))), {
+        completed: 0,
+        total: 3,
+        failed: 0,
+        cancelled: 0,
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(api.historyProgressCounts(
+        {},
+        { completed: 2, total: 3, failed: 1, cancelled: 0 },
+        2,
+    ))), {
+        completed: 2,
+        total: 3,
+        failed: 1,
+        cancelled: 0,
+    });
+
+    // The same missing item must not be counted again as a delivery blocker.
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultSummaryCounts(
+        { completed: 2, failed: 0, cancelled: 0 },
+        1,
+        { completed: 2, failed: 9, cancelled: 9 },
+        1,
+    ))), {
+        reportedCompleted: 2,
+        success: 1,
+        missingFiles: 1,
+        failed: 1,
+        cancelled: 0,
+        deliveryIssues: 1,
+        unresolved: 1,
+    });
+});
+
+test('历史活动任务只在服务端能力允许时显示继续生成', () => {
+    const { api } = loadRendererConfigFunctions();
+    const workspace = { snapshot: { workflow_id: 'workflow-1' } };
+
+    assert.equal(api.historyActiveCandidateState({ workspace, can_takeover: true }), 'takeover');
+    assert.equal(api.historyActiveActionLabel({ execution_state: 'RUNNING', result_status: 'IN_PROGRESS', active_candidate: { workspace, can_takeover: true } }), '继续生成');
+    assert.equal(api.historyActiveActionLabel({ execution_state: 'PAUSED', result_status: 'IN_PROGRESS', active_candidate: { workspace, can_resume: true } }), '恢复上下文');
+    assert.equal(api.historyActiveActionLabel({ execution_state: 'RUNNING', result_status: 'IN_PROGRESS', active_candidate: { workspace } }), '恢复上下文');
+    assert.equal(api.historyActiveActionLabel({ execution_state: 'WAITING_USER', result_status: 'IN_PROGRESS', active_candidate: { workspace, requires_reconcile: true } }), '查看核验');
+    assert.equal(api.historyActiveActionLabel({ execution_state: 'RUNNING', result_status: 'IN_PROGRESS' }), '查看状态');
+    assert.equal(api.historyActiveStatusLabel({ workspace, can_takeover: true }), '可继续生成');
+    assert.equal(api.historyActiveStatusLabel({ workspace, can_resume: true }), '可恢复上下文');
+    assert.equal(api.historyActiveStatusLabel({ workspace }), '待处理');
+});
+
+test('活动任务提示按接管、恢复、核验和待处理能力分组', () => {
+    const { api } = loadRendererConfigFunctions();
+    const workspace = { snapshot: { workflow_id: 'workflow-1' } };
+    const text = api.activeCandidateHintText([
+        { workspace, can_takeover: true },
+        { workspace, can_resume: true },
+        { workspace, requires_reconcile: true },
+        { workspace },
+        { workspace: null },
+    ], true);
+
+    assert.equal(text, '1 个任务可继续生成，1 个任务可恢复上下文，1 个任务需要核验，1 个任务待处理，1 个任务状态待同步（列表已截断）');
+});
+
+test('兼容导入按流式分块读取并执行明确大小上限', async () => {
+    const { api } = loadRendererConfigFunctions();
+    let arrayBufferCalled = false;
+    const file = {
+        size: 6,
+        stream: () => new ReadableStream({
+            start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.enqueue(new Uint8Array([4, 5, 6]));
+                controller.close();
+            },
+        }),
+        arrayBuffer: async () => {
+            arrayBufferCalled = true;
+            return new ArrayBuffer(6);
+        },
+    };
+    const bytes = await api.readBoundedSourceFile(file, 8, null);
+    assert.deepEqual([...bytes], [1, 2, 3, 4, 5, 6]);
+    assert.equal(arrayBufferCalled, false);
+
+    await assert.rejects(
+        api.readBoundedSourceFile({
+            size: 6,
+            stream: () => new ReadableStream({
+                start(controller) {
+                    controller.enqueue(new Uint8Array([1, 2, 3, 4, 5]));
+                    controller.enqueue(new Uint8Array([6]));
+                },
+            }),
+        }, 4, null),
+        error => error.code === 'SOURCE_SIZE_LIMIT',
+    );
 });
 
 test('Electron 窗口保持隔离并允许受信任的 CommonJS preload 加载工作流模块', () => {
@@ -402,4 +610,18 @@ test('Electron 窗口保持隔离并允许受信任的 CommonJS preload 加载�
     assert.match(mainSource, /nodeIntegration:\s*false/);
     assert.match(mainSource, /sandbox:\s*false/);
     assert.match(preloadSource, /require\(['"]\.\/workflow-api['"]\)/);
+});
+
+test('Renderer 只保留单一工作台入口', () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+    const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
+    const rendererDirectory = path.join(__dirname, '..', 'renderer');
+
+    assert.match(mainSource, /path\.join\(__dirname, 'renderer', 'index\.html'\)/);
+    assert.doesNotMatch(mainSource, /WORDTTS_RENDERER_SHELL|index-legacy/);
+    assert.doesNotMatch(preloadSource, /WORDTTS_RENDERER_SHELL|rendererShell/);
+    assert.equal(fs.existsSync(path.join(rendererDirectory, 'index.html')), true);
+    assert.equal(fs.existsSync(path.join(rendererDirectory, 'index-legacy.html')), false);
+    assert.equal(fs.existsSync(path.join(rendererDirectory, 'legacy-app.js')), false);
+    assert.equal(fs.existsSync(path.join(rendererDirectory, 'legacy-styles.css')), false);
 });

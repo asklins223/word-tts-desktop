@@ -30,7 +30,8 @@ class WorkflowDatabase:
         self.path = Path(path).expanduser().resolve()
         self.profile = profile
         self._lock_guard = threading.Lock()
-        self._lock_file: IO[str] | None = None
+        self._lock_file: IO[bytes] | None = None
+        self._lock_backend: str | None = None
         self.last_migration_backup: str | None = None
 
     def _prepare_parent(self) -> None:
@@ -94,14 +95,28 @@ class WorkflowDatabase:
             if self._lock_file is not None:
                 return False
             lock_path = self.path.parent / ".workflow.lock"
+            lock_file = lock_path.open("a+b", buffering=0)
+            lock_file.seek(0)
+            if lock_file.read(1) == b"":
+                lock_file.seek(0)
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
             try:
                 import fcntl
-            except ImportError:  # pragma: no cover - the supported MVP is macOS.
-                return True
-            lock_file = lock_path.open("a+", encoding="utf-8")
-            try:
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                backend = "fcntl"
+            except ImportError:  # pragma: no cover - exercised on Windows.
+                try:
+                    import msvcrt
+
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    backend = "msvcrt"
+                except (ImportError, OSError) as exc:
+                    lock_file.close()
+                    raise RuntimeError("workflow data directory cannot be locked on this platform") from exc
+            except (BlockingIOError, OSError) as exc:
                 lock_file.close()
                 raise RuntimeError("workflow data directory is already in use") from exc
             try:
@@ -109,6 +124,7 @@ class WorkflowDatabase:
             except OSError:
                 pass
             self._lock_file = lock_file
+            self._lock_backend = backend
             return True
 
     def close(self) -> None:
@@ -116,13 +132,20 @@ class WorkflowDatabase:
             if self._lock_file is None:
                 return
             try:
-                import fcntl
+                if self._lock_backend == "msvcrt":  # pragma: no cover - exercised on Windows.
+                    import msvcrt
 
-                fcntl.flock(self._lock_file, fcntl.LOCK_UN)
+                    self._lock_file.seek(0)
+                    msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
             except (ImportError, OSError):
                 pass
             self._lock_file.close()
             self._lock_file = None
+            self._lock_backend = None
 
     def __del__(self) -> None:  # pragma: no cover - exercised by process teardown.
         try:
@@ -149,6 +172,14 @@ class WorkflowDatabase:
     def read_transaction(self) -> Iterator[sqlite3.Connection]:
         con = self.connect(write=False)
         try:
+            # Keep every SELECT in one consistent SQLite snapshot. Without an
+            # explicit read transaction, state_version and joined item rows
+            # could come from different commits during a workspace refresh.
+            con.execute("BEGIN")
             yield con
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
         finally:
             con.close()

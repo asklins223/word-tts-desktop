@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -90,6 +91,48 @@ class ExternalLease:
 
 def _expires(seconds: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=max(1, int(seconds)))).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+EXTERNAL_LEASE_HEARTBEAT_INTERVAL_SECONDS = 20.0
+
+
+class _ExternalLeaseHeartbeat:
+    """Renew an external-record lease while an adapter call is blocking."""
+
+    def __init__(self, service: "ExternalRecordService", lease: ExternalLease, *, ttl_seconds: int = 60) -> None:
+        self._service = service
+        self._lease = lease
+        self._ttl_seconds = max(1, int(ttl_seconds))
+        self._stop = threading.Event()
+        self._interval_seconds = max(0.01, min(
+            float(EXTERNAL_LEASE_HEARTBEAT_INTERVAL_SECONDS),
+            self._ttl_seconds / 2,
+        ))
+        self._thread = threading.Thread(target=self._run, name="external-lease-heartbeat", daemon=True)
+
+    def __enter__(self) -> "_ExternalLeaseHeartbeat":
+        # Extend the lease before entering the adapter so a call that starts
+        # close to expiry does not cross the boundary immediately.
+        self._lease = self._service.renew_record_lease(self._lease, ttl_seconds=self._ttl_seconds)
+        self._thread.start()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self._stop.set()
+        self._thread.join(timeout=max(1.0, self._interval_seconds + 1.0))
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            try:
+                self._lease = self._service.renew_record_lease(
+                    self._lease,
+                    ttl_seconds=self._ttl_seconds,
+                )
+            except Exception:
+                # The post-adapter repository fence remains authoritative.  A
+                # failed heartbeat must not be treated as evidence that the
+                # external call did not happen.
+                continue
 
 
 def _safe_summary(value: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -577,9 +620,10 @@ class ExternalRecordService:
     ) -> dict[str, Any]:
         self._require_runtime()
         operation = self.assert_operation_lease(operation_id, lease)
-        verification = adapter.verify(
-            str(operation["external_operation_key"]), payload, operation.get("external_record_id")
-        )
+        with _ExternalLeaseHeartbeat(self, lease):
+            verification = adapter.verify(
+                str(operation["external_operation_key"]), payload, operation.get("external_record_id")
+            )
         if not verification.verified:
             self.mark_ambiguous(operation_id, lease, error_code="EXTERNAL_VERIFY_MISMATCH")
             raise ExternalVerifyMismatch("external verification does not match the intended payload")
@@ -596,7 +640,8 @@ class ExternalRecordService:
         """Query the external system; never submit from this path."""
         self._require_runtime()
         operation = self.assert_operation_lease(operation_id, lease)
-        lookup = adapter.query(str(operation["external_operation_key"]), operation.get("external_record_id"))
+        with _ExternalLeaseHeartbeat(self, lease):
+            lookup = adapter.query(str(operation["external_operation_key"]), operation.get("external_record_id"))
         if not lookup.found:
             self.mark_ambiguous(operation_id, lease, error_code="EXTERNAL_NOT_FOUND_REQUIRES_MANUAL")
             return {**self.get_operation(operation_id), "reconciliation": "NOT_FOUND_MANUAL_REQUIRED"}
@@ -653,7 +698,8 @@ class ExternalRecordService:
         if payload_hash != str(operation["target_payload_hash"]):
             raise ConflictError("external payload does not match the prepared operation", code="IDEMPOTENCY_CONFLICT")
         try:
-            submission = adapter.submit(str(operation["external_operation_key"]), payload)
+            with _ExternalLeaseHeartbeat(self, lease):
+                submission = adapter.submit(str(operation["external_operation_key"]), payload)
         except Exception:
             try:
                 self.mark_ambiguous(operation_id, lease, error_code="EXTERNAL_SUBMIT_UNKNOWN")

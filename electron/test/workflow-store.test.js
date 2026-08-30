@@ -154,6 +154,106 @@ test('Store 同时提供受限的工作流快照投影，不保留配置和完�
     assert.equal(projection.runtime.completed_segments, 1);
     assert.equal(projection.configuration_snapshot, undefined);
     assert.equal(projection.runtime.credentials, undefined);
+    const storedWorkflow = store.getState().workflow;
+    assert.equal(storedWorkflow.configuration_snapshot, undefined);
+    assert.equal(storedWorkflow.latest_event, undefined);
+    assert.equal(JSON.stringify(storedWorkflow).includes('credentials'), false);
+});
+
+test('Store workspace 投影保留 xlsx 来源、条目修订字段与显式 Provider 状态', () => {
+    const store = createWorkflowStore();
+    store.setWorkspace({
+        source_filename: 'U6-词汇模板.xlsx',
+        snapshot: {
+            workflow_id: 'workflow-1',
+            state_version: 11,
+            execution_state: 'CREATED',
+            control_state: 'RUNNING',
+            result_status: 'NONE',
+        },
+        progress: { total: 1, pending: 1, completed: 0, failed: 0, skipped: 0, cancelled: 0 },
+        provider: {
+            provider: 'xunfei',
+            status: 'EXPIRED',
+            ready: true,
+            can_generate: true,
+            reason: '登录已过期',
+        },
+        configuration: {
+            effective: {
+                rate: -0.2,
+                pitch: -1.5,
+                volume: 0.75,
+                role_configs: { narrator: { pitch: -2.5 } },
+            },
+        },
+        items: [{
+            item_id: 'item-1',
+            item_identity_key: 'sheet:Sheet1:2',
+            sequence: 1,
+            item_type: 'vocabulary',
+            normalized_content: 'abandon',
+            content_ref: null,
+            source_locator: 'Sheet1!A2:B2',
+            metadata: { word: 'abandon', example: 'Do not abandon the plan.' },
+            skip_reason: null,
+            content_hash: 'a'.repeat(64),
+            status: 'PENDING',
+            role: null,
+            voice_key: null,
+            attempt_count: 0,
+            error_code: null,
+            user_message: null,
+            retry_scope: 'ITEM',
+            requires_reconcile: false,
+            artifact_ids: [],
+            updated_at: '2026-08-30T00:00:00Z',
+        }],
+        available_actions: [],
+        blockers: [],
+        artifacts: [],
+        delivery: { zip_available: false, included_item_ids: [], excluded_item_ids: [], exclusion_reasons: {} },
+    });
+
+    const workspace = store.getState().workspaceData;
+    assert.equal(workspace.source_filename, 'U6-词汇模板.xlsx');
+    assert.equal(workspace.provider.status, 'EXPIRED');
+    assert.equal(workspace.provider.ready, false);
+    assert.equal(workspace.provider.can_generate, false);
+    assert.equal(workspace.provider.reason, '登录已过期');
+    assert.equal(workspace.configuration.effective.rate, -0.2);
+    assert.equal(workspace.configuration.effective.pitch, -1.5);
+    assert.equal(workspace.configuration.effective.volume, 0.75);
+    assert.equal(workspace.configuration.effective.role_configs.narrator.pitch, -2.5);
+    assert.equal(workspace.items[0].item_type, 'vocabulary');
+    assert.equal(workspace.items[0].source_locator, 'Sheet1!A2:B2');
+    assert.equal(workspace.items[0].normalized_content, 'abandon');
+    assert.equal(workspace.items[0].metadata.example, 'Do not abandon the plan.');
+});
+
+test('Store 的 workspace 快照缓存保持有界并保留当前工作流', () => {
+    const store = createWorkflowStore();
+    store.prepare('workflow-1');
+    for (let index = 1; index <= 10; index += 1) {
+        store.setWorkspace({
+            snapshot: {
+                workflow_id: `workflow-${index}`,
+                state_version: index,
+                execution_state: 'CREATED',
+                control_state: 'RUNNING',
+                result_status: 'IN_PROGRESS',
+            },
+            items: [],
+            artifacts: [],
+            blockers: [],
+            available_actions: [],
+        });
+    }
+    const cached = store.getState().workspaceByWorkflow;
+    assert.equal(Object.keys(cached).length, 8);
+    assert.ok(cached['workflow-1']);
+    assert.equal(cached['workflow-2'], undefined);
+    assert.ok(cached['workflow-10']);
 });
 
 // ============================================================================
@@ -238,4 +338,24 @@ test('陈旧快照不会回退 workspace 的条目总数', () => {
     assert.deepEqual(rejected, { accepted: false, reason: 'stale-snapshot' });
     assert.equal(store.getState().workspace.items.total, 37);
     assert.equal(store.getState().workspace.executionState, 'RUNNING');
+});
+
+test('陈旧 workspace 响应不会让对应同步状态永久停在 loading', async () => {
+    const store = createWorkflowStore({
+        workspaceLoader: async () => ({
+            snapshot: { workflow_id: 'workflow-stale', state_version: 4 },
+            items: [],
+            artifacts: [],
+        }),
+    });
+    store.setWorkspace({
+        snapshot: { workflow_id: 'workflow-stale', state_version: 5 },
+        items: [],
+        artifacts: [],
+    });
+
+    await store.hydrate('workflow-stale');
+    const state = store.getState();
+    assert.equal(state.workspaceSyncByWorkflow['workflow-stale'].state, 'ready');
+    assert.equal(state.workspaceData.snapshot.state_version, 5);
 });

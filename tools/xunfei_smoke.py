@@ -43,6 +43,12 @@ def _blocked(reason: str) -> dict[str, Any]:
 class _LogicalXunfeiBackend:
     """In-memory Xunfei-shaped backend for page-free logic smoke tests."""
 
+    # Keep the logical fixture recognizable as an MPEG-1 Layer III frame.
+    # The workflow deliberately rejects arbitrary provider bytes before they
+    # become a deliverable artifact, so a text-only placeholder is not a
+    # valid success fixture.
+    _MP3_FRAME_HEADER = b"\xff\xfb\x90\x64"
+
     def __init__(self, account_scope: str) -> None:
         self.account_scope = account_scope
         self.submit_calls = 0
@@ -64,7 +70,7 @@ class _LogicalXunfeiBackend:
             "canonical_key": f"logical-canonical-{digest[:24]}",
             "temporary_works_id": f"logical-temp-{digest[:16]}",
             "formal_works_id": f"logical-formal-{digest[:16]}",
-            "output": ("logical-xunfei-mp3:" + digest).encode("ascii"),
+            "output": self._MP3_FRAME_HEADER + ("logical-xunfei-mp3:" + digest).encode("ascii"),
             "summary": {"mode": "logical-only", "network": False, "page": False},
         }
         self._receipts[submission_key] = receipt

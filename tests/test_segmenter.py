@@ -8,6 +8,7 @@
 import glob
 import json
 import os
+from pathlib import Path
 
 from question_types import parse_document_auto
 from question_types.segmenter import (
@@ -69,3 +70,48 @@ def test_preloaded_parser_reuses_document_load():
         assert len(calls) == 1, "文档应只加载一次"
     finally:
         load_document_once.__globals__["load_paragraphs"] = original
+
+
+def test_xlsx_vocabulary_keeps_sheet_and_row_source_locations():
+    """Excel 词汇条目进入核对页前，必须保留可定位的工作表/行号。"""
+    path = os.path.join(DOC_DIR, "U6单词导入模板.xlsx")
+    results, _ = parse_document_auto(path)
+    assert results and results[0]["doc_type"] == "词汇"
+    first_word, first_sentence = results[0]["items"][:2]
+    assert first_word["category"] == "单词"
+    assert first_sentence["category"] == "例句"
+    assert first_word["source_locator"].startswith("工作表/")
+    assert "/行/2/单词" in first_word["source_locator"]
+    assert "/行/2/例句" in first_sentence["source_locator"]
+
+
+def test_xlsx_vocabulary_scans_matching_sheets_and_prefers_exact_word_header(tmp_path):
+    """多工作表模板不能只读活动页，也不能把「单词释义」误当单词列。"""
+    from openpyxl import Workbook
+
+    path = tmp_path / "multi-sheet-vocabulary.xlsx"
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "第一单元"
+    first.append(["单词释义", "单词名称", "例句"])
+    first.append(["错误列", "pigeon", "A pigeon is here."])
+    second = workbook.create_sheet("第二单元")
+    second.append(["例句", "单词"])
+    second.append(["A bird is there.", "bird"])
+    workbook.save(path)
+    workbook.close()
+
+    results, summary = parse_document_auto(str(path))
+    items = results[0]["items"]
+    assert summary == "检测到 1 种题型，成功提取 4 条内容"
+    assert [item["text"] for item in items] == [
+        "pigeon", "A pigeon is here.", "bird", "A bird is there.",
+    ]
+    assert "/第一单元/行/2/单词" in items[0]["source_locator"]
+    assert "/第二单元/行/2/单词" in items[2]["source_locator"]
+
+
+def test_parse_document_once_accepts_pathlike_xlsx():
+    results, summary = parse_document_once(Path(DOC_DIR) / "U6单词导入模板.xlsx")
+    assert results and results[0]["doc_type"] == "词汇"
+    assert "成功提取" in summary

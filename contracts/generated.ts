@@ -169,6 +169,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workflows/{workflow_id}/items/{item_id}/content/{content_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: components["parameters"]["WorkflowId"];
+                item_id: string;
+                content_id: string;
+            };
+            cookie?: never;
+        };
+        /** Read Bounded Workflow Item Content */
+        get: operations["getWorkflowItemContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workflows/{workflow_id}/artifacts": {
         parameters: {
             query?: never;
@@ -947,12 +968,13 @@ export interface components {
             /** @enum {string} */
             kind: "SERVICE" | "UI";
             /** @enum {string} */
-            type: "PARSE" | "SAVE_CONFIGURATION" | "GENERATE" | "PAUSE" | "RESUME" | "CANCEL" | "RETRY" | "RECONCILE" | "RESOLVE" | "ARCHIVE" | "ABANDON" | "RERUN" | "OPEN_VIEW" | "DOWNLOAD_ARTIFACT" | "DOWNLOAD_ZIP" | "RECONNECT";
+            type: "PARSE" | "SAVE_CONFIGURATION" | "GENERATE" | "PAUSE" | "RESUME" | "CANCEL" | "RETRY" | "RECONCILE" | "RESOLVE" | "ARCHIVE" | "ABANDON" | "RERUN" | "EXPORT_ZIP" | "OPEN_VIEW" | "DOWNLOAD_ARTIFACT" | "DOWNLOAD_ZIP" | "RECONNECT";
             enabled: boolean;
             reason: string | null;
             target: components["schemas"]["JsonObject"] | null;
             expected_state_version: number | null;
             expected_target_state_version: number | null;
+            expected_group_state_version: number | null;
             safe_to_retry: boolean;
             retry_scope: components["schemas"]["RetryScope"];
         };
@@ -973,6 +995,19 @@ export interface components {
             item_id: string;
             item_identity_key: string;
             sequence: number;
+            item_type: string;
+            normalized_content: string | null;
+            content_ref: {
+                content_id: string;
+                size_bytes: number;
+                content_hash: string;
+                max_response_bytes: number;
+            } | null;
+            source_locator: string | null;
+            metadata: {
+                [key: string]: unknown;
+            };
+            skip_reason: string | null;
             content_hash: string;
             /** @enum {string} */
             status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "AMBIGUOUS" | "CANCELLED" | "SKIPPED" | "UNRESOLVED";
@@ -986,6 +1021,19 @@ export interface components {
             artifact_ids: string[];
             /** Format: date-time */
             updated_at: string;
+        };
+        ItemContentResponse: {
+            workflow_id: string;
+            item_id: string;
+            content_id: string;
+            state_version: number;
+            item_state_version: number;
+            content_hash: string;
+            size_bytes: number;
+            offset_bytes: number;
+            next_offset_bytes: number;
+            truncated: boolean;
+            content: string;
         };
         WorkspaceArtifact: {
             artifact_id: string;
@@ -1048,9 +1096,12 @@ export interface components {
             total: number;
             completed: number;
             failed: number;
+            cancelled: number;
             skipped: number;
             pending: number;
+            deliverable: number;
             percent: number;
+            deliverable_percent: number;
         };
         WorkspaceDelivery: {
             zip_artifact_id: string | null;
@@ -1068,6 +1119,7 @@ export interface components {
         };
         WorkflowWorkspace: {
             schema_version: number;
+            source_filename: string;
             snapshot: components["schemas"]["WorkflowSnapshot"];
             progress: components["schemas"]["WorkspaceProgress"];
             blockers: components["schemas"]["WorkspaceBlocker"][];
@@ -1081,8 +1133,19 @@ export interface components {
             items: components["schemas"]["WorkspaceItem"][];
             artifacts: components["schemas"]["WorkspaceArtifact"][];
             configuration: components["schemas"]["ConfigurationProjection"];
+            provider: components["schemas"]["WorkspaceProvider"];
             delivery: components["schemas"]["WorkspaceDelivery"];
             sync: components["schemas"]["WorkspaceSync"];
+        };
+        WorkspaceProvider: {
+            provider: string;
+            /** @enum {string} */
+            status: "UNKNOWN" | "READY" | "LOGIN_REQUIRED" | "EXPIRED" | "UNAVAILABLE" | "DISABLED";
+            ready: boolean;
+            reason: string;
+            can_generate: boolean;
+            /** @description Whether a foreground generate command may open/login the provider. */
+            can_start_generation: boolean;
         };
         WorkflowWorkspaceEnvelope: {
             request_id: string;
@@ -1098,6 +1161,7 @@ export interface components {
         ActiveWorkflowListResponse: {
             workflows: components["schemas"]["ActiveWorkflowCandidate"][];
             limit: number;
+            truncated: boolean;
         };
         WorkflowHistoryRecord: {
             id: string;
@@ -1106,7 +1170,10 @@ export interface components {
             available_files: number;
             completed: number;
             failed: number;
+            cancelled: number;
+            skipped: number;
             total: number;
+            pending: number;
             format: string;
             generation_mode: string;
             preview: boolean;
@@ -1314,6 +1381,10 @@ export interface components {
             artifact_id: string;
             /** Format: date-time */
             expires_at: string;
+            content_type: string | null;
+            content_length: number | null;
+            sha256: string | null;
+            filename: string | null;
         };
         SourceWriterTicket: {
             grant: string;
@@ -1345,7 +1416,7 @@ export interface components {
         ErrorResponse: {
             request_id: string;
             /** @enum {string} */
-            error_code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "IDEMPOTENCY_CONFLICT" | "IDEMPOTENCY_IN_PROGRESS" | "STATE_CONFLICT" | "CONFIGURATION_CONFLICT" | "CONFIG_FROZEN" | "CONTROL_STATE_CONFLICT" | "TARGET_REQUIRED" | "CONTENT_CONFLICT" | "ITEM_ALREADY_DELIVERED" | "PARSE_ERROR" | "AUTH_ERROR" | "TRANSIENT_PROVIDER_ERROR" | "PROVIDER_RATE_LIMITED" | "PROVIDER_LOGIN_REQUIRED" | "PROVIDER_QUOTA_EXCEEDED" | "PROVIDER_RECEIPT_SCOPE" | "SUBMISSION_AMBIGUOUS" | "RECONCILIATION_REQUIRED" | "EVIDENCE_REQUIRED" | "SEGMENT_BOUNDARIES_UNVERIFIED" | "DOWNLOAD_ERROR" | "ARTIFACT_INVALID" | "PERSISTENCE_ERROR" | "PERSISTENCE_AMBIGUOUS" | "CURSOR_EXPIRED" | "CURSOR_INVALID" | "API_VERSION_RETIRED" | "SCHEMA_MISMATCH" | "DEPENDENCY_NOT_READY" | "EXTERNAL_CAPABILITY_REQUIRED" | "EXTERNAL_RUNTIME_ERROR" | "EXTERNAL_RECONCILIATION_REQUIRED" | "EXTERNAL_MAPPING_VERSION_CONFLICT" | "EXTERNAL_SCOPE_CONFLICT" | "EXTERNAL_OPERATION_ACTIVE" | "EXTERNAL_STATE_CONFLICT" | "EXTERNAL_SUBMIT_UNKNOWN" | "EXTERNAL_NOT_FOUND_REQUIRES_MANUAL" | "USER_CANCELLED" | "WORKFLOW_CANCELLED" | "INTERNAL_ERROR" | "STALE_ATTEMPT" | "RESOURCE_EXHAUSTED" | "SOURCE_NOT_AVAILABLE" | "EXTERNAL_TARGET_AMBIGUOUS" | "EXTERNAL_VERIFY_MISMATCH" | "DRAFT_EXPIRED" | "ARTIFACT_ORPHANED" | "CLEANUP_ERROR" | "MIGRATION_ERROR" | "MIGRATION_REQUIRED" | "GENERATION_ALREADY_RUNNING" | "GENERATION_NOT_RUNNING" | "PROVIDER_UNAVAILABLE" | "UNSUPPORTED_MEDIA_TYPE" | "CONTENT_TOO_LARGE" | "INSUFFICIENT_STORAGE";
+            error_code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "IDEMPOTENCY_CONFLICT" | "IDEMPOTENCY_IN_PROGRESS" | "STATE_CONFLICT" | "CONFIGURATION_CONFLICT" | "CONFIG_FROZEN" | "CONTROL_STATE_CONFLICT" | "TARGET_REQUIRED" | "CONTENT_CONFLICT" | "ITEM_ALREADY_DELIVERED" | "PARSE_ERROR" | "AUTH_ERROR" | "TRANSIENT_PROVIDER_ERROR" | "PROVIDER_RATE_LIMITED" | "PROVIDER_LOGIN_REQUIRED" | "PROVIDER_QUOTA_EXCEEDED" | "PROVIDER_RECEIPT_SCOPE" | "SUBMISSION_AMBIGUOUS" | "RECONCILIATION_REQUIRED" | "EVIDENCE_REQUIRED" | "SEGMENT_BOUNDARIES_UNVERIFIED" | "DOWNLOAD_ERROR" | "ARTIFACT_INVALID" | "PERSISTENCE_ERROR" | "PERSISTENCE_AMBIGUOUS" | "CURSOR_EXPIRED" | "CURSOR_INVALID" | "API_VERSION_RETIRED" | "SCHEMA_MISMATCH" | "DEPENDENCY_NOT_READY" | "EXTERNAL_CAPABILITY_REQUIRED" | "EXTERNAL_RUNTIME_ERROR" | "EXTERNAL_RECONCILIATION_REQUIRED" | "EXTERNAL_MAPPING_VERSION_CONFLICT" | "EXTERNAL_SCOPE_CONFLICT" | "EXTERNAL_OPERATION_ACTIVE" | "EXTERNAL_STATE_CONFLICT" | "EXTERNAL_SUBMIT_UNKNOWN" | "EXTERNAL_NOT_FOUND_REQUIRES_MANUAL" | "USER_CANCELLED" | "WORKFLOW_CANCELLED" | "INTERNAL_ERROR" | "STALE_ATTEMPT" | "RESOURCE_EXHAUSTED" | "SOURCE_NOT_AVAILABLE" | "EXTERNAL_TARGET_AMBIGUOUS" | "EXTERNAL_VERIFY_MISMATCH" | "DRAFT_EXPIRED" | "ARTIFACT_ORPHANED" | "CLEANUP_ERROR" | "MIGRATION_ERROR" | "MIGRATION_REQUIRED" | "GENERATION_ALREADY_RUNNING" | "GENERATION_NOT_RUNNING" | "PROVIDER_UNAVAILABLE" | "UNSUPPORTED_MEDIA_TYPE" | "CONTENT_TOO_LARGE" | "ITEM_CONTENT_TOO_LARGE" | "INSUFFICIENT_STORAGE";
             message: string;
             retryable: boolean;
             side_effect_occurred: boolean;
@@ -1773,6 +1844,43 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    getWorkflowItemContent: {
+        parameters: {
+            query?: {
+                expected_state_version?: number;
+                offset_bytes?: number;
+                max_response_bytes?: number;
+            };
+            header?: never;
+            path: {
+                workflow_id: components["parameters"]["WorkflowId"];
+                item_id: string;
+                content_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded item text referenced by a workspace projection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemContentResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description Item content exceeds the bounded detail response limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listWorkflowArtifacts: {

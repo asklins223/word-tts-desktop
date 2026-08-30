@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from workflow.artifact_store import ArtifactStore
 from workflow.database import WorkflowDatabase
@@ -161,6 +163,30 @@ class ExternalRuntimeTests(unittest.TestCase):
         self.assertEqual(result["side_effect_state"], "CONFIRMED")
         self.assertEqual(self.adapter.submit_calls, 1)
         self.assertGreaterEqual(self.adapter.query_calls, 1)
+
+    def test_external_adapter_calls_renew_the_record_lease_while_blocking(self) -> None:
+        _mapping, lease, operation = self._operation()
+        self.service.begin_operation(operation["external_operation_id"], lease)
+
+        class SlowAdapter(FakeExternalAdapter):
+            def query(self, operation_key, external_record_id=None):
+                time.sleep(0.08)
+                return super().query(operation_key, external_record_id)
+
+        adapter = SlowAdapter()
+        adapter.submit(
+            operation["external_operation_key"],
+            {"business_record_key": "business-1", "value": "hello"},
+        )
+        with patch("workflow.external.EXTERNAL_LEASE_HEARTBEAT_INTERVAL_SECONDS", 0.01), patch.object(
+            self.service,
+            "renew_record_lease",
+            wraps=self.service.renew_record_lease,
+        ) as renew:
+            result = self.service.reconcile(operation["external_operation_id"], lease, adapter)
+
+        self.assertEqual(result["side_effect_state"], "CONFIRMED")
+        self.assertGreaterEqual(renew.call_count, 3)
 
     def test_mismatch_creates_manual_intervention_and_never_confirms(self) -> None:
         _mapping, lease, operation = self._operation()

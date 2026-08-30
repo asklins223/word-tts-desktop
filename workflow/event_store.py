@@ -149,33 +149,75 @@ class EventStore:
         )
         created_at = utc_now()
         event_id = new_id("event")
-        con.execute(
-            """INSERT INTO workflow_events (
-                event_id, workflow_id, seq, mutation_id, schema_version,
-                step_id, item_id, attempt_id, request_id, correlation_id,
-                causation_id, actor_type, actor_id, event_type, phase,
-                payload_json, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                event_id,
-                workflow_id,
-                seq,
-                mutation_id,
-                self.schema_version,
-                step_id,
-                item_id,
-                attempt_id,
-                request_id,
-                correlation_id or str(uuid.uuid4()),
-                causation_id,
-                actor_type,
-                actor_id,
-                event_type,
-                phase,
-                canonical_json(dict(safe_payload)),
-                created_at,
-            ),
-        )
+        try:
+            con.execute(
+                """INSERT INTO workflow_events (
+                    event_id, workflow_id, seq, mutation_id, schema_version,
+                    step_id, item_id, attempt_id, request_id, correlation_id,
+                    causation_id, actor_type, actor_id, event_type, phase,
+                    payload_json, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event_id,
+                    workflow_id,
+                    seq,
+                    mutation_id,
+                    self.schema_version,
+                    step_id,
+                    item_id,
+                    attempt_id,
+                    request_id,
+                    correlation_id or str(uuid.uuid4()),
+                    causation_id,
+                    actor_type,
+                    actor_id,
+                    event_type,
+                    phase,
+                    canonical_json(dict(safe_payload)),
+                    created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            # A caller may have performed the initial SELECT before another
+            # connection committed the same mutation_id.  Return the durable
+            # event instead of turning an idempotent replay into HTTP 500.
+            duplicate = con.execute(
+                "SELECT * FROM workflow_events WHERE mutation_id=?",
+                (mutation_id,),
+            ).fetchone()
+
+            def rollback_allocated_sequence() -> None:
+                # The sequence counter is advanced before the event INSERT.
+                # Keep the counter consistent even when a caller catches the
+                # error and commits the surrounding transaction.
+                con.execute(
+                    """UPDATE workflow_event_streams SET latest_seq=latest_seq-1
+                       WHERE workflow_id=? AND latest_seq=?""",
+                    (workflow_id, seq),
+                )
+
+            if duplicate is None:
+                rollback_allocated_sequence()
+                raise EventStoreError("workflow event could not be persisted") from exc
+            if str(duplicate["workflow_id"]) != workflow_id:
+                rollback_allocated_sequence()
+                raise EventStoreError("mutation_id is already owned by another workflow") from exc
+            expected_payload = canonical_json(dict(safe_payload))
+            if (
+                str(duplicate["event_type"]) != event_type
+                or str(duplicate["payload_json"]) != expected_payload
+                or duplicate["step_id"] != step_id
+                or duplicate["item_id"] != item_id
+                or duplicate["attempt_id"] != attempt_id
+                or duplicate["phase"] != phase
+            ):
+                rollback_allocated_sequence()
+                raise EventStoreError("mutation_id is already used for a different event") from exc
+            # This transaction incremented latest_seq before discovering the
+            # duplicate.  Restore only the value we allocated; no other
+            # writer can change it while this write transaction is open.
+            rollback_allocated_sequence()
+            return _event_from_row(duplicate)
         return _event_from_row(
             con.execute("SELECT * FROM workflow_events WHERE event_id=?", (event_id,)).fetchone()
         )

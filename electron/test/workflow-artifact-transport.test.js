@@ -9,6 +9,16 @@ test('Artifact transport 不丢失 IPC 握手期间到达的首个数据块', as
     const ipc = new EventEmitter();
     ipc.invoke = async (channel, input = {}) => {
         if (channel === 'workflow-artifact-open') {
+            ipc.emit('workflow-artifact-meta', {}, {
+                requestId: input.requestId,
+                streamId: 'stream-1',
+                metadata: {
+                    content_type: 'audio/mpeg',
+                    content_length: 2,
+                    sha256: 'a'.repeat(64),
+                    filename: '001.mp3',
+                },
+            });
             ipc.emit('workflow-artifact-data', {}, {
                 requestId: input.requestId,
                 streamId: 'stream-1',
@@ -21,10 +31,17 @@ test('Artifact transport 不丢失 IPC 握手期间到达的首个数据块', as
             return 'stream-1';
         }
         if (channel === 'workflow-artifact-close') return true;
+        if (channel === 'workflow-artifact-ack') return true;
         throw new Error(`unexpected IPC channel: ${channel}`);
     };
 
     const stream = await createWorkflowArtifactTransport(ipc)({ artifactId: 'artifact-1' });
+    assert.deepEqual(stream.metadata, {
+        content_type: 'audio/mpeg',
+        content_length: 2,
+        sha256: 'a'.repeat(64),
+        filename: '001.mp3',
+    });
     const reader = stream.getReader();
     const first = await reader.read();
     assert.deepEqual(Array.from(first.value), [1, 2]);
@@ -44,6 +61,7 @@ test('Artifact transport 取消读取时会关闭主进程流', async () => {
             closed = input.streamId;
             return true;
         }
+        if (channel === 'workflow-artifact-ack') return true;
         throw new Error(`unexpected IPC channel: ${channel}`);
     };
 
@@ -51,4 +69,47 @@ test('Artifact transport 取消读取时会关闭主进程流', async () => {
     await stream.cancel();
     assert.ok(opened.requestId);
     assert.equal(closed, 'stream-2');
+});
+
+test('Artifact transport 只在 renderer 消费后确认下一块，避免 IPC 队列无限增长', async () => {
+    const ipc = new EventEmitter();
+    let ackCount = 0;
+    ipc.invoke = async (channel, input = {}) => {
+        if (channel === 'workflow-artifact-open') {
+            queueMicrotask(() => ipc.emit('workflow-artifact-data', {}, {
+                requestId: input.requestId,
+                streamId: 'stream-3',
+                data: new Uint8Array([1]),
+            }));
+            return 'stream-3';
+        }
+        if (channel === 'workflow-artifact-ack') {
+            assert.equal(input.streamId, 'stream-3');
+            ackCount += 1;
+            if (ackCount === 1) {
+                ipc.emit('workflow-artifact-data', {}, {
+                    requestId: null,
+                    streamId: 'stream-3',
+                    data: new Uint8Array([2]),
+                });
+            } else if (ackCount === 2) {
+                ipc.emit('workflow-artifact-end', {}, { streamId: 'stream-3' });
+            }
+            return true;
+        }
+        if (channel === 'workflow-artifact-close') return true;
+        throw new Error(`unexpected IPC channel: ${channel}`);
+    };
+
+    const stream = await createWorkflowArtifactTransport(ipc)({ artifactId: 'artifact-3' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(ackCount, 0);
+    const reader = stream.getReader();
+    assert.deepEqual(Array.from((await reader.read()).value), [1]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(ackCount, 1);
+    assert.deepEqual(Array.from((await reader.read()).value), [2]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(ackCount, 2);
+    assert.equal((await reader.read()).done, true);
 });

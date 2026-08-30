@@ -140,6 +140,27 @@ def is_available():
         return False
 
 
+def session_status_snapshot():
+    """Return session health flags without exposing the session object.
+
+    Capability projections run on the application thread while Playwright
+    callbacks run on its dedicated executor.  Keep the global lookup and the
+    per-session flags synchronized so a projection cannot combine values from
+    two different lifecycle transitions.
+    """
+    with _session_lock:
+        session = _session
+    if session is None:
+        return None
+    getter = getattr(session, "runtime_status_snapshot", None)
+    if not callable(getter):
+        # Do not fall back to reading private flags without their owning lock;
+        # an unknown legacy session is safer to project as unavailable than as
+        # spuriously READY.
+        return None
+    return getter()
+
+
 def _session_is_healthy(session):
     """轻量级健康检查。"""
     if session is None:

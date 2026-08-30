@@ -130,6 +130,32 @@ def validate_segment_boundaries(
     return ordered
 
 
+def looks_like_mp3_bytes(data: bytes | bytearray | memoryview, *, scan_bytes: int = 4096) -> bool:
+    """Perform a bounded MP3 container/frame-header check before publication."""
+
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        return False
+    window = bytes(data)[:max(4, int(scan_bytes))]
+    # An ``ID3`` prefix alone is only a metadata tag, not proof that the
+    # provider returned audio.  In particular, short test doubles such as
+    # ``b"ID3\\x04\\x00\\x00..."`` must not bypass the frame check.
+    for index in range(max(0, len(window) - 3)):
+        if window[index] != 0xFF or (window[index + 1] & 0xE0) != 0xE0:
+            continue
+        second = window[index + 1]
+        third = window[index + 2]
+        version = (second >> 3) & 0x03
+        layer = (second >> 1) & 0x03
+        bitrate_index = (third >> 4) & 0x0F
+        sample_rate_index = (third >> 2) & 0x03
+        # Version bits ``01`` are reserved, as are layer 0, bitrate indexes
+        # 0/15, and sample-rate index 3.  Checking the complete four-byte
+        # header prevents arbitrary ``ff e0`` data from passing the MP3 gate.
+        if version != 0x01 and layer != 0 and bitrate_index not in (0, 0x0F) and sample_rate_index != 0x03:
+            return True
+    return False
+
+
 def _iter_chunks(source: BinaryIO | Iterable[bytes], chunk_size: int) -> Iterator[bytes]:
     if hasattr(source, "read"):
         while True:
@@ -149,5 +175,5 @@ def _iter_chunks(source: BinaryIO | Iterable[bytes], chunk_size: int) -> Iterato
 
 __all__ = [
     "AUDIO_ALGORITHM_VERSION", "AudioError", "AudioMetadata", "AudioProcessor",
-    "AudioVerifier", "SegmentBoundary", "validate_segment_boundaries",
+    "AudioVerifier", "SegmentBoundary", "looks_like_mp3_bytes", "validate_segment_boundaries",
 ]

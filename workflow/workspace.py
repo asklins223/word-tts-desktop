@@ -9,19 +9,97 @@ command from a stale status enum or from a guessed file name.
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import re
 from collections import defaultdict
 from pathlib import PurePath
 from typing import Any, Mapping
 
+from .domain import content_hash
 from .repositories import NotFoundError, _snapshot_from_connection
 
 
 RETRY_SCOPES = {"NONE", "WORKFLOW", "ITEMS"}
+PROVIDER_STATUSES = {"UNKNOWN", "READY", "LOGIN_REQUIRED", "EXPIRED", "UNAVAILABLE", "DISABLED"}
 KNOWN_ITEM_STATUSES = {
     "PENDING", "RUNNING", "SUCCEEDED", "FAILED", "AMBIGUOUS",
     "CANCELLED", "SKIPPED", "UNRESOLVED",
 }
+
+# The workspace is a frequently refreshed UI projection.  Keep small text
+# inline for fast rendering, but make large content addressable so a restart
+# or a list refresh never duplicates an entire document in the renderer.
+WORKSPACE_INLINE_CONTENT_LIMIT = 16 * 1024
+WORKSPACE_CONTENT_DETAIL_LIMIT = 64 * 1024
+
+_ITEM_METADATA_ALLOWLIST = {
+    "category", "doc_type", "question_type", "section", "sub_type_code",
+    "material_source", "language", "sheet_name", "sheet_index", "row",
+    "column", "entry_number", "sentence_number", "number", "tags",
+    "operation_id", "scope_row_id", "projection", "parser_version",
+    "normalization_version",
+    "_workflow_skip_reason",
+}
+
+
+def item_content_id(workflow_id: str, item_id: str, stored_content_hash: str) -> str:
+    """Return a stable opaque identifier bound to workflow/item/content facts."""
+
+    digest = hashlib.sha256(
+        f"{workflow_id}:{item_id}:{stored_content_hash}".encode("utf-8")
+    ).hexdigest()
+    return f"content-{digest[:32]}"
+
+
+def _safe_metadata_value(value: Any, *, depth: int = 0) -> Any:
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _clean_text(value, 512)
+    if depth >= 2:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [
+            clean
+            for item in list(value)[:32]
+            if (clean := _safe_metadata_value(item, depth=depth + 1)) is not None
+        ]
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in list(value.items())[:32]:
+            clean = _safe_metadata_value(item, depth=depth + 1)
+            if clean is not None:
+                result[str(key)[:128]] = clean
+        return result
+    return None
+
+
+def _safe_item_metadata(raw: Any) -> tuple[dict[str, Any], bool]:
+    parsed = _json_object(raw)
+    result: dict[str, Any] = {}
+    for key, value in sorted(parsed.items(), key=lambda entry: str(entry[0])):
+        if str(key) not in _ITEM_METADATA_ALLOWLIST:
+            continue
+        clean = _safe_metadata_value(value)
+        if clean is not None:
+            result[str(key)] = clean
+    serialized_size = len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    if serialized_size <= 4096:
+        return result, False
+
+    # Keep the response bounded, but report the loss explicitly to the
+    # workspace builder.  Silently dropping metadata would make the review
+    # projection look complete while hiding parser facts from the user.
+    bounded: dict[str, Any] = {}
+    for key, value in result.items():
+        candidate = {**bounded, key: value}
+        if len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 4096:
+            continue
+        bounded = candidate
+    return bounded, True
 
 
 def _json_object(value: Any) -> dict[str, Any]:
@@ -43,6 +121,12 @@ def _safe_basename(value: Any, fallback: str) -> str:
     raw = str(value or "").replace("\\", "/")
     name = PurePath(raw).name
     name = re.sub(r"[\x00-\x1f\x7f]", "", name).strip()
+    if len(name) <= 256:
+        return name or fallback
+    suffix = PurePath(name).suffix.lower()
+    if suffix in {".docx", ".xlsx"}:
+        max_stem_length = max(1, 256 - len(suffix))
+        return f"{PurePath(name).stem[:max_stem_length]}{suffix}"
     return name[:256] or fallback
 
 
@@ -67,6 +151,55 @@ def _mime_type(fmt: str, artifact_type: str) -> str:
     }.get(fmt, "application/octet-stream")
 
 
+DELIVERABLE_AUDIO_FORMAT = "mp3"
+DELIVERABLE_AUDIO_MIME = "audio/mpeg"
+
+
+def _normalized_format(value: Any) -> str | None:
+    raw = str(value or "").strip().lower().lstrip(".")
+    return raw or None
+
+
+def _positive_size(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        return None
+    try:
+        size = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return size if size > 0 else None
+
+
+def artifact_blob_facts_match(
+    *,
+    artifact_format: Any,
+    blob_format: Any,
+    artifact_sha256: Any,
+    blob_sha256: Any,
+    artifact_size_bytes: Any,
+    blob_size_bytes: Any,
+) -> bool:
+    """Require the Artifact row and its Blob row to describe one byte object."""
+
+    artifact_fmt = _normalized_format(artifact_format)
+    blob_fmt = _normalized_format(blob_format)
+    artifact_sha = str(artifact_sha256 or "").strip().lower()
+    blob_sha = str(blob_sha256 or "").strip().lower()
+    if (
+        not artifact_fmt
+        or not blob_fmt
+        or artifact_fmt != blob_fmt
+        or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+        or artifact_sha != blob_sha
+    ):
+        return False
+    artifact_size = _positive_size(artifact_size_bytes)
+    blob_size = _positive_size(blob_size_bytes)
+    return artifact_size is not None and artifact_size == blob_size
+
+
 def _number(value: Any, *, integer: bool = True) -> int | float | None:
     if value is None or value == "":
         return None
@@ -74,7 +207,7 @@ def _number(value: Any, *, integer: bool = True) -> int | float | None:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    if number < 0:
+    if not math.isfinite(number) or number < 0:
         return None
     return int(round(number)) if integer else number
 
@@ -225,6 +358,7 @@ def _action(
     target: Mapping[str, Any] | None = None,
     expected_state_version: int | None = None,
     expected_target_state_version: int | None = None,
+    expected_group_state_version: int | None = None,
     safe_to_retry: bool = False,
     retry_scope: str = "NONE",
 ) -> dict[str, Any]:
@@ -236,6 +370,7 @@ def _action(
         "target": dict(target) if isinstance(target, Mapping) else None,
         "expected_state_version": expected_state_version if kind == "SERVICE" else None,
         "expected_target_state_version": expected_target_state_version if kind == "SERVICE" else None,
+        "expected_group_state_version": expected_group_state_version if kind == "SERVICE" else None,
         "safe_to_retry": bool(safe_to_retry),
         "retry_scope": retry_scope if retry_scope in RETRY_SCOPES else "NONE",
     }
@@ -349,28 +484,63 @@ def build_workflow_workspace(
         ).fetchall()
         artifacts_by_item: dict[str, list[str]] = defaultdict(list)
         ready_item_artifacts: dict[str, list[str]] = defaultdict(list)
+        deliverable_item_artifacts: dict[str, list[str]] = defaultdict(list)
         item_by_id = {str(row["item_id"]): row for row in item_rows}
         workspace_artifacts: list[dict[str, Any]] = []
         ready_artifact_ids: set[str] = set()
+        artifact_facts: dict[str, dict[str, Any]] = {}
         for row in artifact_rows:
             artifact_id = str(row["artifact_id"])
             item_id = str(row["item_id"]) if row["item_id"] is not None else None
-            fmt = _format(row["blob_format"] or row["artifact_format"])
             artifact_type = str(row["artifact_type"])
+            artifact_format = _normalized_format(row["artifact_format"])
+            blob_format = _normalized_format(row["blob_format"])
+            facts_match = artifact_blob_facts_match(
+                artifact_format=artifact_format,
+                blob_format=blob_format,
+                artifact_sha256=row["artifact_sha256"],
+                blob_sha256=row["blob_sha256"],
+                artifact_size_bytes=row["artifact_size_bytes"],
+                blob_size_bytes=row["blob_size_bytes"],
+            )
+            fmt = blob_format if facts_match else None
+            if artifact_type == "source":
+                # Source bytes are intentionally stored as ``bin`` because
+                # the upload header is not trusted as an artifact format.
+                # The validated source filename is still authoritative for
+                # the user-facing workspace/download metadata.
+                source_extension = PurePath(source_filename).suffix.lower().lstrip(".")
+                if facts_match and source_extension in {"docx", "xlsx"}:
+                    fmt = source_extension
             if item_id:
                 artifacts_by_item[item_id].append(artifact_id)
-            ready = (
+            base_ready = (
                 str(row["lifecycle_state"]) == "READY"
                 and bool(row["verified"])
                 and str(row["blob_lifecycle_state"] or "") == "READY"
             )
+            ready = base_ready and facts_match
+            deliverable = (
+                ready
+                and artifact_type == "tts-segment"
+                and artifact_format == DELIVERABLE_AUDIO_FORMAT
+                and blob_format == DELIVERABLE_AUDIO_FORMAT
+            )
+            artifact_facts[artifact_id] = {
+                "base_ready": base_ready,
+                "facts_match": facts_match,
+                "ready": ready,
+                "deliverable": deliverable,
+                "artifact_format": artifact_format,
+                "blob_format": blob_format,
+            }
             if ready:
                 ready_artifact_ids.add(artifact_id)
-            if ready and artifact_type == "tts-segment" and item_id:
-                ready_item_artifacts[item_id].append(artifact_id)
             item_row = item_by_id.get(item_id or "")
-            if artifact_type == "tts-segment" and item_row is not None:
+            if artifact_type == "tts-segment" and item_row is not None and fmt:
                 filename = f"{int(item_row['sequence']) + 1:03d}.{fmt}"
+            elif artifact_type == "tts-segment":
+                filename = None
             elif artifact_type == "export-zip":
                 filename = f"{_safe_basename(source_filename, 'wordtts').rsplit('.', 1)[0]}_tts.zip"
             elif artifact_type == "parse-output":
@@ -379,6 +549,11 @@ def build_workflow_workspace(
                 filename = _safe_basename(source_filename, "source")
             else:
                 filename = None
+            safe_size = None
+            safe_sha256 = None
+            if facts_match:
+                safe_size = int(row["blob_size_bytes"])
+                safe_sha256 = str(row["blob_sha256"]).lower()
             workspace_artifacts.append({
                 "artifact_id": artifact_id,
                 "workflow_id": str(row["workflow_id"]),
@@ -390,9 +565,8 @@ def build_workflow_workspace(
                 "format": fmt,
                 "extension": f".{fmt}" if fmt else None,
                 "mime_type": _mime_type(fmt, artifact_type) if fmt else None,
-                "size_bytes": int(row["blob_size_bytes"] if row["blob_size_bytes"] is not None else row["artifact_size_bytes"])
-                if (row["blob_size_bytes"] is not None or row["artifact_size_bytes"] is not None) else None,
-                "sha256": str(row["blob_sha256"] or row["artifact_sha256"]) if (row["blob_sha256"] or row["artifact_sha256"]) else None,
+                "size_bytes": safe_size,
+                "sha256": safe_sha256,
                 "verified": bool(row["verified"]),
                 "filename": filename,
                 "duration_ms": None,
@@ -401,6 +575,24 @@ def build_workflow_workspace(
                 "created_at": str(row["created_at"]),
                 "updated_at": str(row["updated_at"]),
             })
+
+        latest_tts_by_item: dict[str, dict[str, Any]] = {}
+        for artifact in workspace_artifacts:
+            item_id = artifact.get("item_id")
+            if artifact.get("artifact_type") != "tts-segment" or item_id is None:
+                continue
+            key = str(item_id)
+            current = latest_tts_by_item.get(key)
+            candidate_key = (str(artifact.get("created_at") or ""), str(artifact.get("artifact_id") or ""))
+            current_key = (str(current.get("created_at") or ""), str(current.get("artifact_id") or "")) if current else None
+            if current is None or candidate_key > current_key:
+                latest_tts_by_item[key] = artifact
+        for item_id, artifact in latest_tts_by_item.items():
+            facts = artifact_facts.get(str(artifact["artifact_id"]), {})
+            if facts.get("ready"):
+                ready_item_artifacts[item_id].append(str(artifact["artifact_id"]))
+            if facts.get("deliverable"):
+                deliverable_item_artifacts[item_id].append(str(artifact["artifact_id"]))
 
         has_attempt = con.execute(
             "SELECT 1 FROM step_attempts WHERE workflow_id=? AND attempt_kind='EXECUTE' LIMIT 1", (workflow_id,)
@@ -413,9 +605,12 @@ def build_workflow_workspace(
         blockers: list[dict[str, Any]] = []
         completed_ids: set[str] = set()
         failed_ids: set[str] = set()
+        cancelled_ids: set[str] = set()
         skipped_ids: set[str] = set()
         pending_ids: set[str] = set()
         unresolved_items: list[str] = []
+        projection_blocked_ids: set[str] = set()
+        artifact_recovery_units: dict[str, dict[str, Any]] = {}
         failed_item_rows: list[tuple[str, dict[str, Any], str | None]] = []
         for row in item_rows:
             item_id = str(row["item_id"])
@@ -439,17 +634,30 @@ def build_workflow_workspace(
                     and status != "SUCCEEDED"
                 )
             )
-            has_ready_artifact = bool(ready_item_artifacts.get(item_id))
+            latest_tts = latest_tts_by_item.get(item_id)
+            latest_tts_facts = artifact_facts.get(str(latest_tts.get("artifact_id")), {}) if latest_tts else {}
+            has_ready_artifact = bool(latest_tts_facts.get("ready"))
+            has_deliverable_artifact = bool(latest_tts_facts.get("deliverable"))
             if status not in KNOWN_ITEM_STATUSES:
                 pending_ids.add(item_id)
+                projection_blocked_ids.add(item_id)
                 blockers.append(_blocker(
                     "ITEM_STATUS_UNKNOWN", "条目状态无法确认", "服务端返回了未知条目状态，请重新同步。",
                     severity="BLOCKING", affected_item_ids=[item_id], requires_reconcile=True,
                 ))
-            elif has_ready_artifact and status == "SUCCEEDED":
+            elif has_deliverable_artifact and status == "SUCCEEDED":
                 completed_ids.add(item_id)
+            elif has_ready_artifact and status == "SUCCEEDED":
+                pending_ids.add(item_id)
+                projection_blocked_ids.add(item_id)
+                blockers.append(_blocker(
+                    "ARTIFACT_FORMAT_UNSUPPORTED", "音频格式未验证",
+                    "当前产物不是 MP3 或格式元数据未通过交付校验，暂不开放下载。",
+                    severity="ERROR", affected_item_ids=[item_id],
+                ))
             elif has_ready_artifact:
                 pending_ids.add(item_id)
+                projection_blocked_ids.add(item_id)
                 blockers.append(_blocker(
                     "ITEM_ARTIFACT_CONFLICT", "条目状态与产物不一致",
                     "已存在已验证音频，但条目状态不是成功；已暂缓计入交付，请重新同步。",
@@ -457,29 +665,83 @@ def build_workflow_workspace(
                 ))
             elif status == "SKIPPED":
                 skipped_ids.add(item_id)
-            elif status in {"FAILED", "CANCELLED"}:
+            elif status == "FAILED":
                 failed_ids.add(item_id)
                 failed_item_rows.append((item_id, dict(row), step_id))
+            elif status == "CANCELLED":
+                cancelled_ids.add(item_id)
             elif status == "SUCCEEDED":
                 # A durable item status alone is not a deliverable.  Keep the
                 # item pending until a READY, verified artifact is visible so
                 # the snapshot cannot advertise a false 100% completion.
                 pending_ids.add(item_id)
-                blockers.append(_blocker(
-                    "ARTIFACT_MISSING_OR_UNVERIFIED", "成功条目缺少可交付产物",
-                    "条目标记为成功，但服务端尚未确认对应产物可读取；请重新同步或重试校验。",
-                    severity="ERROR", affected_item_ids=[item_id], requires_reconcile=True,
-                ))
+                projection_blocked_ids.add(item_id)
+                unit_id = str(unit.get("work_unit_id") or "")
+                # Keep one disabled action even when the work-unit row itself
+                # is gone.  That projection is still actionable information:
+                # the UI can explain why no safe recovery target exists.
+                artifact_recovery_units.setdefault(unit_id, unit)
+                recovery_target = _target_for_unit(unit_id or None)
+                recovery_action = _action(
+                    "SERVICE", "RECONCILE", enabled=bool(recovery_target),
+                    reason=None if recovery_target else "缺少可对账的工作单元",
+                    target=recovery_target,
+                    expected_state_version=snapshot.state_version,
+                    expected_target_state_version=(
+                        int(unit["unit_state_version"])
+                        if unit.get("unit_state_version") is not None else None
+                    ),
+                )
+                if latest_tts and latest_tts_facts.get("base_ready") and not latest_tts_facts.get("facts_match"):
+                    blockers.append(_blocker(
+                        "ARTIFACT_METADATA_CONFLICT", "产物元数据不一致",
+                        "音频产物的 Artifact 与 Blob 元数据不一致，暂不开放交付；请重新生成。",
+                        severity="ERROR", affected_item_ids=[item_id],
+                    ))
+                else:
+                    blockers.append(_blocker(
+                        "ARTIFACT_MISSING_OR_UNVERIFIED", "成功条目缺少可交付产物",
+                        "条目标记为成功，但服务端尚未确认对应产物可读取；请重新同步或发起对账校验。",
+                        severity="ERROR", affected_item_ids=[item_id], requires_reconcile=True,
+                        recovery_action=recovery_action,
+                    ))
             else:
                 pending_ids.add(item_id)
             if requires_reconcile:
                 unresolved_items.append(item_id)
             retry_scope = "NONE" if requires_reconcile else ("ITEMS" if status == "FAILED" else "NONE")
+            normalized_content = str(row["normalized_content"] or "")
+            content_size_bytes = len(normalized_content.encode("utf-8"))
+            stored_content_hash = str(row["content_hash"])
+            content_ref = None
+            inline_content = normalized_content
+            if content_size_bytes > WORKSPACE_INLINE_CONTENT_LIMIT:
+                inline_content = None
+                content_ref = {
+                    "content_id": item_content_id(workflow_id, item_id, stored_content_hash),
+                    "size_bytes": content_size_bytes,
+                    "content_hash": stored_content_hash,
+                    "max_response_bytes": WORKSPACE_CONTENT_DETAIL_LIMIT,
+                }
+            metadata, metadata_overflow = _safe_item_metadata(row["metadata_json"])
+            skip_reason = _clean_text(metadata.pop("_workflow_skip_reason", None), 500)
+            if metadata_overflow:
+                blockers.append(_blocker(
+                    "ITEM_METADATA_TOO_LARGE", "条目来源信息过大",
+                    "条目来源信息超过工作区展示上限，已保留可展示部分；请重新同步或查看原文。",
+                    severity="ERROR", affected_item_ids=[item_id],
+                ))
             workspace_items.append({
                 "item_id": item_id,
                 "item_identity_key": str(row["item_identity_key"]),
                 "sequence": int(row["sequence"]),
-                "content_hash": str(row["content_hash"]),
+                "item_type": _clean_text(row["item_type"], 128) or "document",
+                "normalized_content": inline_content,
+                "content_ref": content_ref,
+                "source_locator": _clean_text(row["source_locator"], 512),
+                "metadata": metadata,
+                "skip_reason": skip_reason,
+                "content_hash": stored_content_hash,
                 "status": status,
                 "role": str(row["role"]) if row["role"] is not None else None,
                 "voice_key": str(row["voice_key"]) if row["voice_key"] is not None else None,
@@ -524,54 +786,97 @@ def build_workflow_workspace(
             ))
 
         total = len(item_rows)
-        accounted = len(completed_ids) + len(failed_ids) + len(skipped_ids) + len(pending_ids)
+        accounted = len(completed_ids) + len(failed_ids) + len(cancelled_ids) + len(skipped_ids) + len(pending_ids)
         if accounted < total:
-            pending_ids.update(item_id for item_id in item_by_id if item_id not in completed_ids | failed_ids | skipped_ids)
+            pending_ids.update(item_id for item_id in item_by_id if item_id not in completed_ids | failed_ids | cancelled_ids | skipped_ids)
         # The sets above are disjoint by construction except a defensive
         # unknown-status path; recalculate pending from the authoritative
         # partition to guarantee the progress invariant.
-        pending_ids = set(item_by_id) - completed_ids - failed_ids - skipped_ids
+        pending_ids = set(item_by_id) - completed_ids - failed_ids - cancelled_ids - skipped_ids
         completed = len(completed_ids)
         failed = len(failed_ids)
+        cancelled = len(cancelled_ids)
         skipped = len(skipped_ids)
         pending = len(pending_ids)
         progress = {
             "total": total,
             "completed": completed,
             "failed": failed,
+            "cancelled": cancelled,
             "skipped": skipped,
             "pending": pending,
-            "percent": int((100 * (completed + failed + skipped)) // total) if total else 0,
+            "deliverable": len(deliverable_item_artifacts),
+            "percent": int((100 * (completed + failed + cancelled + skipped)) // total) if total else 0,
+            "deliverable_percent": int((100 * len(deliverable_item_artifacts)) // total) if total else 0,
         }
 
-        zip_candidates = [
-            artifact for artifact in workspace_artifacts
-            if artifact["artifact_type"] == "export-zip"
-            and artifact["artifact_id"] in ready_artifact_ids
-        ]
-        zip_row = max(
-            zip_candidates,
-            key=lambda artifact: (str(artifact["created_at"]), str(artifact["artifact_id"])),
-            default=None,
-        )
         ready_tts_item_ids = {
-            str(item["item_id"])
-            for item in workspace_artifacts
-            if item["artifact_type"] == "tts-segment"
-            and item["item_id"] is not None
-            and item["artifact_id"] in ready_artifact_ids
+            item_id for item_id, artifact in latest_tts_by_item.items()
+            if artifact_facts.get(str(artifact["artifact_id"]), {}).get("ready")
+        }
+        deliverable_tts_item_ids = set(deliverable_item_artifacts)
+        deliverable_artifact_ids = {
+            artifact_id for artifact_ids in deliverable_item_artifacts.values() for artifact_id in artifact_ids
         }
         delivery_segments = [
             item for item in workspace_artifacts
             if item["artifact_type"] == "tts-segment"
             and item["item_id"] is not None
-            and item["artifact_id"] in ready_artifact_ids
+            and item["artifact_id"] in deliverable_artifact_ids
             and _row_value(item_by_id.get(str(item["item_id"])), "status") == "SUCCEEDED"
         ]
+        delivery_segments.sort(
+            key=lambda item: (
+                int(item_by_id[str(item["item_id"])]["sequence"]),
+                str(item["item_id"]),
+            )
+        )
+
+        zip_candidates = [
+            artifact for artifact in workspace_artifacts
+            if artifact["artifact_type"] == "export-zip"
+            and artifact["artifact_id"] in ready_artifact_ids
+            and artifact.get("format") == "zip"
+            and artifact.get("mime_type") == "application/zip"
+        ]
+        current_delivery_artifact_ids = {
+            str(item["artifact_id"]) for item in delivery_segments
+        }
+        expected_full_zip_id = None
+        if delivery_segments:
+            export_basis = [
+                {
+                    "item_id": str(segment["item_id"]),
+                    "sequence": int(item_by_id[str(segment["item_id"])]["sequence"]),
+                    "artifact_id": str(segment["artifact_id"]),
+                    "sha256": str(segment["sha256"]),
+                }
+                for segment in delivery_segments
+            ]
+            export_hash = content_hash({
+                "workflow_id": workflow_id,
+                "segments": export_basis,
+                "requested_item_ids": None,
+            })
+            expected_full_zip_id = f"artifact-export-{export_hash[:32]}"
+
+        # An export is immutable, so its creation time alone cannot prove that
+        # it contains the current TTS artifacts.  Prefer the content-addressed
+        # full export ID used by create_export_zip.  A v2 explicitly-selected
+        # subset may remain available while newer items are added, but a full
+        # export created during an earlier partial run must not be exposed as
+        # the current ZIP after a retry publishes a newer segment.
         zip_parent_item_ids: set[str] = set()
-        if zip_row is not None:
+        selected_zip = None
+        selected_parent_item_ids: set[str] = set()
+        ordered_zip_candidates = sorted(
+            zip_candidates,
+            key=lambda artifact: (str(artifact["created_at"]), str(artifact["artifact_id"])),
+            reverse=True,
+        )
+        for candidate in ordered_zip_candidates:
             parent_rows = con.execute(
-                """SELECT DISTINCT parent.item_id
+                """SELECT DISTINCT parent.item_id, parent.artifact_id
                    FROM artifact_derivations d
                    JOIN artifacts child ON child.artifact_id=d.child_artifact_id
                    JOIN artifacts parent ON parent.artifact_id=d.parent_artifact_id
@@ -584,13 +889,41 @@ def build_workflow_workspace(
                      AND parent.artifact_type='tts-segment'
                      AND parent.lifecycle_state='READY' AND parent.verified=1
                      AND parent_blob.lifecycle_state='READY'
+                     AND LOWER(TRIM(parent.format))='mp3'
+                     AND LOWER(TRIM(parent_blob.format))='mp3'
+                     AND parent.sha256=parent_blob.sha256
+                     AND parent.size_bytes=parent_blob.size_bytes
                      AND parent_item.status='SUCCEEDED'""",
-                (workflow_id, zip_row["artifact_id"]),
+                (workflow_id, candidate["artifact_id"]),
             ).fetchall()
-            zip_parent_item_ids = {str(row["item_id"]) for row in parent_rows if row["item_id"] is not None}
+            parent_artifact_ids = {str(row["artifact_id"]) for row in parent_rows}
+            parent_item_ids = {str(row["item_id"]) for row in parent_rows}
+            if not parent_artifact_ids or not parent_artifact_ids.issubset(current_delivery_artifact_ids):
+                continue
+            is_current_full = (
+                candidate["artifact_id"] == expected_full_zip_id
+                and parent_artifact_ids == current_delivery_artifact_ids
+            )
+            if is_current_full:
+                selected_zip = candidate
+                selected_parent_item_ids = parent_item_ids
+                break
+            producer_version = str(candidate.get("producer_version") or "")
+            is_explicit_ready_subset = producer_version == "2:subset-ready"
+            is_current_partial_subset = (
+                producer_version == "2:subset-partial"
+                and parent_artifact_ids == current_delivery_artifact_ids
+            )
+            if selected_zip is None and (is_explicit_ready_subset or is_current_partial_subset):
+                selected_zip = candidate
+                selected_parent_item_ids = parent_item_ids
+
+        zip_row = selected_zip
+        if zip_row is not None:
+            zip_parent_item_ids = selected_parent_item_ids
         included_item_ids = sorted(
             zip_parent_item_ids if zip_row is not None else {str(item["item_id"]) for item in delivery_segments},
-            key=lambda value: int(item_by_id[value]["sequence"]),
+            key=lambda value: (int(item_by_id[value]["sequence"]), value),
         )
         excluded_item_ids: list[str] = []
         exclusion_reasons: dict[str, str] = {}
@@ -599,10 +932,13 @@ def build_workflow_workspace(
             if item_id in included_item_ids:
                 continue
             status = str(row["status"])
-            if zip_row is not None and item_id in ready_tts_item_ids:
+            if zip_row is not None and item_id in deliverable_tts_item_ids:
                 reason = "NOT_SELECTED"
-            elif item_id in ready_tts_item_ids:
+            elif item_id in deliverable_tts_item_ids:
                 reason = "ITEM_ARTIFACT_CONFLICT"
+            elif item_id in ready_tts_item_ids:
+                latest_facts = artifact_facts.get(str(latest_tts_by_item[item_id]["artifact_id"]), {})
+                reason = "ARTIFACT_FORMAT_UNSUPPORTED" if latest_facts.get("facts_match") else "ARTIFACT_METADATA_CONFLICT"
             elif status == "SKIPPED":
                 reason = "ITEM_SKIPPED"
             elif status in {"AMBIGUOUS", "UNRESOLVED"}:
@@ -640,7 +976,28 @@ def build_workflow_workspace(
             not terminal and snapshot.control_state == "RUNNING"
             and snapshot.execution_state in {"CREATED", "PREPARING", "WAITING_RETRY", "WAITING_USER"}
             and bool(item_rows) and bool(set(item_by_id) - skipped_ids)
-            and not unresolved_items
+            and not unresolved_items and not projection_blocked_ids
+        )
+        provider_projection = capabilities.get("provider")
+        # Direct repository callers from older integrations do not know about
+        # provider capability projection yet.  The versioned HTTP route always
+        # supplies it, so only that explicit projection can disable GENERATE.
+        provider_can_generate = True
+        provider_can_start_generation = False
+        if isinstance(provider_projection, Mapping):
+            provider_ready = bool(provider_projection.get("ready"))
+            provider_status = str(provider_projection.get("status") or "").upper()
+            if provider_status not in PROVIDER_STATUSES:
+                provider_status = "READY" if provider_ready else "UNKNOWN"
+            provider_can_generate = bool(provider_projection.get(
+                "can_generate", provider_ready
+            ))
+            provider_can_generate = provider_can_generate and provider_status == "READY" and provider_ready
+            provider_can_start_generation = bool(provider_projection.get("can_start_generation", False))
+            provider_can_start_generation = provider_can_start_generation and provider_status not in {"UNAVAILABLE", "DISABLED"}
+        all_items_skipped = bool(item_rows) and not bool(set(item_by_id) - skipped_ids)
+        can_generate = can_generate and (
+            provider_can_generate or provider_can_start_generation or all_items_skipped
         )
         generate_reason = None
         if not can_generate:
@@ -654,6 +1011,13 @@ def build_workflow_workspace(
                 generate_reason = "没有可生成的条目"
             elif unresolved_items:
                 generate_reason = "存在未对账的外部副作用"
+            elif projection_blocked_ids:
+                generate_reason = "存在尚未核验或状态冲突的条目"
+            elif not provider_can_generate and not provider_can_start_generation and not all_items_skipped:
+                generate_reason = _clean_text(
+                    provider_projection.get("reason") if isinstance(provider_projection, Mapping) else None,
+                    500,
+                ) or "Provider 当前不可用"
             else:
                 generate_reason = "当前状态不允许生成"
         service_actions.append(_action(
@@ -664,26 +1028,47 @@ def build_workflow_workspace(
         pause_enabled = (
             not terminal and snapshot.control_state == "RUNNING"
             and snapshot.execution_state in {"PREPARING", "RUNNING"}
-            and bool(capabilities.get("supports_pause", True))
+            and bool(capabilities.get("supports_pause", False))
         )
         service_actions.append(_action(
             "SERVICE", "PAUSE", enabled=pause_enabled,
-            reason="当前运行时不支持协作式暂停" if not bool(capabilities.get("supports_pause", True)) else "当前没有可暂停的运行任务",
+            reason="当前运行时不支持协作式暂停" if not bool(capabilities.get("supports_pause", False)) else "当前没有可暂停的运行任务",
             target=workflow_target, expected_state_version=snapshot.state_version,
         ))
         resume_enabled = (
             not terminal and snapshot.control_state in {"PAUSED", "PAUSE_REQUESTED"}
-            and bool(capabilities.get("supports_resume", True))
+            and bool(capabilities.get("supports_resume", False))
         )
         service_actions.append(_action(
             "SERVICE", "RESUME", enabled=resume_enabled,
-            reason="当前运行时不支持恢复" if not bool(capabilities.get("supports_resume", True)) else "工作流未处于暂停状态",
+            reason="当前运行时不支持恢复" if not bool(capabilities.get("supports_resume", False)) else "工作流未处于暂停状态",
             target=workflow_target, expected_state_version=snapshot.state_version,
         ))
         cancel_enabled = not terminal and snapshot.control_state != "TERMINATED"
         service_actions.append(_action(
             "SERVICE", "CANCEL", enabled=cancel_enabled,
             reason="工作流已进入终态" if not cancel_enabled else None,
+            target=workflow_target, expected_state_version=snapshot.state_version,
+        ))
+        export_enabled = (
+            terminal
+            and snapshot.result_status in {"SUCCEEDED", "PARTIAL_SUCCESS"}
+            and bool(delivery_segments)
+            and zip_row is None
+        )
+        export_reason = None
+        if not export_enabled:
+            if zip_row is not None:
+                export_reason = "已有可下载的 ZIP Artifact"
+            elif not terminal:
+                export_reason = "工作流尚未结束"
+            elif snapshot.result_status not in {"SUCCEEDED", "PARTIAL_SUCCESS"}:
+                export_reason = "当前工作流没有可整理的成功结果"
+            else:
+                export_reason = "没有通过核验的音频可纳入 ZIP"
+        service_actions.append(_action(
+            "SERVICE", "EXPORT_ZIP", enabled=export_enabled,
+            reason=export_reason,
             target=workflow_target, expected_state_version=snapshot.state_version,
         ))
         for item_id, item_row, step_id in failed_item_rows:
@@ -697,6 +1082,23 @@ def build_workflow_workspace(
                 target=_target_for_item(item_id, step_id), expected_state_version=snapshot.state_version,
                 expected_target_state_version=int(item_row["state_version"]), safe_to_retry=True,
                 retry_scope="ITEMS",
+            ))
+        # A SUCCEEDED work item without a verified artifact is a corruption or
+        # garbage-collection boundary, not an ordinary retryable failure. Give
+        # the user a read-only reconciliation command when its durable work
+        # unit is still available; never silently resubmit the provider call.
+        for unit in artifact_recovery_units.values():
+            unit_id = str(unit.get("work_unit_id") or "") or None
+            target = _target_for_unit(unit_id)
+            service_actions.append(_action(
+                "SERVICE", "RECONCILE", enabled=bool(target),
+                reason=None if target else "成功条目缺少可对账的工作单元",
+                target=target,
+                expected_state_version=snapshot.state_version,
+                expected_target_state_version=(
+                    int(unit["unit_state_version"])
+                    if unit.get("unit_state_version") is not None else None
+                ),
             ))
         for item_id in sorted(set(unresolved_items)):
             unit = item_units.get(item_id) or {}
@@ -725,13 +1127,18 @@ def build_workflow_workspace(
         service_actions.append(_action(
             "SERVICE", "RERUN", enabled=(terminal and snapshot.group_state_version >= 0),
             reason="仅终态工作流可以创建新运行" if not terminal else None,
-            target=workflow_target, expected_state_version=snapshot.group_state_version,
+            target=workflow_target, expected_state_version=None,
+            expected_group_state_version=snapshot.group_state_version,
             safe_to_retry=True, retry_scope="WORKFLOW",
         ))
 
         ui_actions = [_action("UI", "OPEN_VIEW", enabled=True, target=workflow_target)]
         for artifact in workspace_artifacts:
-            if artifact["artifact_id"] in ready_artifact_ids:
+            if artifact["artifact_id"] in deliverable_artifact_ids or (
+                artifact["artifact_type"] == "export-zip"
+                and zip_row is not None
+                and artifact["artifact_id"] == zip_row["artifact_id"]
+            ):
                 ui_actions.append(_action(
                     "UI", "DOWNLOAD_ARTIFACT", enabled=True,
                     target={"target_type": "ARTIFACT", "artifact_id": artifact["artifact_id"]},
@@ -765,9 +1172,35 @@ def build_workflow_workspace(
             "excluded_item_ids": excluded_item_ids,
             "exclusion_reasons": exclusion_reasons,
         }
+        if not isinstance(provider_projection, Mapping):
+            provider_projection = {
+                "provider": "UNKNOWN",
+                "status": "UNKNOWN",
+                "ready": False,
+                "can_generate": False,
+                "reason": "Provider 状态尚未由当前运行时确认",
+            }
+        provider_status = str(provider_projection.get("status") or "").upper()
+        if provider_status not in PROVIDER_STATUSES:
+            provider_status = "READY" if provider_projection.get("ready") else "UNKNOWN"
+        provider_ready = bool(provider_projection.get("ready")) and provider_status == "READY"
+        provider_can_generate = bool(provider_projection.get(
+            "can_generate", provider_ready
+        )) and provider_ready
+        provider_can_start_generation = bool(provider_projection.get("can_start_generation", False))
+        provider_can_start_generation = provider_can_start_generation and provider_status not in {"UNAVAILABLE", "DISABLED"}
+        provider = {
+            "provider": _clean_text(provider_projection.get("provider"), 128) or "UNKNOWN",
+            "status": provider_status,
+            "ready": provider_ready,
+            "reason": _clean_text(provider_projection.get("reason"), 500) or "Provider 状态未知",
+            "can_generate": provider_can_generate,
+            "can_start_generation": provider_can_start_generation,
+        }
         return {
             "schema_version": 1,
             "snapshot": snapshot.as_dict(),
+            "source_filename": source_filename,
             "progress": progress,
             "blockers": blockers,
             "available_actions": service_actions + ui_actions,
@@ -775,6 +1208,7 @@ def build_workflow_workspace(
             "items": workspace_items,
             "artifacts": workspace_artifacts,
             "configuration": configuration,
+            "provider": provider,
             "delivery": delivery,
             "sync": {
                 "state_version": snapshot.state_version,
@@ -784,4 +1218,9 @@ def build_workflow_workspace(
         }
 
 
-__all__ = ["build_workflow_workspace"]
+__all__ = [
+    "DELIVERABLE_AUDIO_FORMAT",
+    "DELIVERABLE_AUDIO_MIME",
+    "artifact_blob_facts_match",
+    "build_workflow_workspace",
+]

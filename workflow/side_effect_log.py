@@ -174,27 +174,91 @@ class SideEffectIntentLog:
             return str(current["intent_id"])
 
     def read_entries(self) -> list[dict[str, Any]]:
-        """Read and validate every journal line; malformed data is fatal."""
+        """Read and validate every journal line.
 
-        if not self.path.exists():
+        The append protocol always writes a trailing newline.  If a process
+        dies after writing only part of the final line, discard that torn tail
+        while preserving every preceding complete record.  A malformed line
+        that *does* end in a newline remains fatal: it is a data-integrity
+        error, not a crash-tail repair case.
+        """
+
+        raw_bytes = self._read_and_repair_torn_tail()
+        if not raw_bytes:
             return []
         entries: list[dict[str, Any]] = []
         try:
-            with self.path.open("r", encoding="utf-8") as source:
-                for line_number, raw in enumerate(source, 1):
-                    if not raw.strip():
-                        continue
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SideEffectLogError("side-effect journal is not valid UTF-8") from exc
+        for line_number, raw in enumerate(text.splitlines(), 1):
+            if not raw.strip():
+                continue
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise SideEffectLogError(f"invalid side-effect journal line {line_number}") from exc
+            if not isinstance(value, dict):
+                raise SideEffectLogError(f"side-effect journal line {line_number} is not an object")
+            self._validate_entry(value, line_number)
+            entries.append(value)
+        return entries
+
+    def _read_and_repair_torn_tail(self) -> bytes:
+        if not self.path.exists():
+            return b""
+        try:
+            with self._lock:
+                with self.path.open("r+b", buffering=0) as source:
+                    self._lock_descriptor(source, exclusive=True)
                     try:
-                        value = json.loads(raw)
-                    except json.JSONDecodeError as exc:
-                        raise SideEffectLogError(f"invalid side-effect journal line {line_number}") from exc
-                    if not isinstance(value, dict):
-                        raise SideEffectLogError(f"side-effect journal line {line_number} is not an object")
-                    self._validate_entry(value, line_number)
-                    entries.append(value)
+                        raw = source.read()
+                        if raw and not raw.endswith(b"\n"):
+                            last_newline = raw.rfind(b"\n")
+                            tail = raw[last_newline + 1:]
+                            complete_legacy_line = False
+                            try:
+                                # Older versions wrote a single JSON record
+                                # without a final newline.  Preserve it when
+                                # it is complete; read_entries still performs
+                                # the authoritative journal-schema checks.
+                                candidate = json.loads(tail.decode("utf-8"))
+                                if isinstance(candidate, dict):
+                                    # Parsing as an object is not enough: a
+                                    # torn write can end at a valid JSON object
+                                    # prefix (for example {"a":1}).  Only a
+                                    # complete, current-schema journal entry
+                                    # may be repaired by appending the missing
+                                    # newline.  Invalid objects are discarded
+                                    # as torn tails and will not be persisted
+                                    # as a durable journal line.
+                                    self._validate_entry(
+                                        candidate,
+                                        raw[:last_newline + 1].count(b"\n") + 1,
+                                    )
+                                    complete_legacy_line = True
+                            except (UnicodeDecodeError, json.JSONDecodeError, SideEffectLogError):
+                                pass
+                            if complete_legacy_line:
+                                source.seek(0, os.SEEK_END)
+                                source.write(b"\n")
+                                source.flush()
+                                os.fsync(source.fileno())
+                                self._fsync_directory(self.path.parent)
+                                raw += b"\n"
+                            else:
+                                repaired = raw[: last_newline + 1] if last_newline >= 0 else b""
+                                source.seek(len(repaired))
+                                source.truncate()
+                                source.flush()
+                                os.fsync(source.fileno())
+                                self._fsync_directory(self.path.parent)
+                                raw = repaired
+                        return raw
+                    finally:
+                        self._unlock_descriptor(source)
         except OSError as exc:
             raise SideEffectLogError(f"cannot read side-effect journal: {self.path}") from exc
-        return entries
 
     def latest_by_key(self) -> dict[tuple[str, str], dict[str, Any]]:
         latest: dict[tuple[str, str], dict[str, Any]] = {}
@@ -236,23 +300,13 @@ class SideEffectIntentLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with self.path.open("ab", buffering=0) as target:
-                try:
-                    import fcntl
-
-                    fcntl.flock(target.fileno(), fcntl.LOCK_EX)
-                except (ImportError, OSError):
-                    pass
+                self._lock_descriptor(target, exclusive=True)
                 try:
                     target.write(serialized)
                     target.flush()
                     os.fsync(target.fileno())
                 finally:
-                    try:
-                        import fcntl
-
-                        fcntl.flock(target.fileno(), fcntl.LOCK_UN)
-                    except (ImportError, OSError):
-                        pass
+                    self._unlock_descriptor(target)
             try:
                 os.chmod(self.path, 0o600)
             except OSError as exc:
@@ -260,6 +314,48 @@ class SideEffectIntentLog:
             self._fsync_directory(self.path.parent)
         except OSError as exc:
             raise SideEffectLogError(f"cannot fsync side-effect journal: {self.path}") from exc
+
+    @staticmethod
+    def _lock_descriptor(target: Any, *, exclusive: bool) -> None:
+        """Coordinate append/repair across processes on supported desktops."""
+
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - exercised on Windows CI.
+            try:
+                import msvcrt
+            except ImportError as exc:  # pragma: no cover - unsupported host.
+                raise OSError("no supported side-effect journal lock backend") from exc
+            # ``msvcrt.locking`` locks the region beginning at the current
+            # file position.  Always use the first byte so append and repair
+            # operations contend on the same region, regardless of where the
+            # file was opened.
+            target.seek(0)
+            mode = getattr(msvcrt, "LK_LOCK" if exclusive else "LK_RLCK", msvcrt.LK_LOCK)
+            msvcrt.locking(target.fileno(), mode, 1)
+            target.seek(0)
+            return
+        fcntl.flock(target.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+    @staticmethod
+    def _unlock_descriptor(target: Any) -> None:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - exercised on Windows CI.
+            try:
+                import msvcrt
+            except ImportError:
+                return
+            try:
+                target.seek(0)
+                msvcrt.locking(target.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            return
+        try:
+            fcntl.flock(target.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
 
     @classmethod
     def _validate_entry(cls, entry: Mapping[str, Any], line_number: int) -> None:

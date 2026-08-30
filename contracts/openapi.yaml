@@ -253,6 +253,47 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /workflows/{workflow_id}/items/{item_id}/content/{content_id}:
+    parameters:
+      - $ref: '#/components/parameters/WorkflowId'
+      - name: item_id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 256 }
+      - name: content_id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^content-[0-9a-f]{32}$' }
+    get:
+      summary: Read Bounded Workflow Item Content
+      operationId: getWorkflowItemContent
+      parameters:
+        - name: expected_state_version
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+        - name: offset_bytes
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: max_response_bytes
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1024, maximum: 65536, default: 65536 }
+      responses:
+        '200':
+          description: Bounded item text referenced by a workspace projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemContentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          description: Item content exceeds the bounded detail response limit.
+
   /workflows/{workflow_id}/artifacts:
     parameters:
       - $ref: '#/components/parameters/WorkflowId'
@@ -1567,11 +1608,11 @@ components:
       enum: [NONE, WORKFLOW, ITEMS]
     WorkspaceAction:
       type: object
-      required: [kind, type, enabled, reason, target, expected_state_version, expected_target_state_version, safe_to_retry, retry_scope]
+      required: [kind, type, enabled, reason, target, expected_state_version, expected_target_state_version, expected_group_state_version, safe_to_retry, retry_scope]
       additionalProperties: false
       properties:
         kind: { type: string, enum: [SERVICE, UI] }
-        type: { type: string, enum: [PARSE, SAVE_CONFIGURATION, GENERATE, PAUSE, RESUME, CANCEL, RETRY, RECONCILE, RESOLVE, ARCHIVE, ABANDON, RERUN, OPEN_VIEW, DOWNLOAD_ARTIFACT, DOWNLOAD_ZIP, RECONNECT] }
+        type: { type: string, enum: [PARSE, SAVE_CONFIGURATION, GENERATE, PAUSE, RESUME, CANCEL, RETRY, RECONCILE, RESOLVE, ARCHIVE, ABANDON, RERUN, EXPORT_ZIP, OPEN_VIEW, DOWNLOAD_ARTIFACT, DOWNLOAD_ZIP, RECONNECT] }
         enabled: { type: boolean }
         reason: { type: [string, 'null'], maxLength: 500 }
         target:
@@ -1580,6 +1621,7 @@ components:
             - type: 'null'
         expected_state_version: { type: [integer, 'null'], minimum: 0 }
         expected_target_state_version: { type: [integer, 'null'], minimum: 0 }
+        expected_group_state_version: { type: [integer, 'null'], minimum: 0 }
         safe_to_retry: { type: boolean }
         retry_scope: { $ref: '#/components/schemas/RetryScope' }
     WorkspaceBlocker:
@@ -1604,12 +1646,30 @@ components:
             - type: 'null'
     WorkspaceItem:
       type: object
-      required: [item_id, item_identity_key, sequence, content_hash, status, role, voice_key, attempt_count, error_code, user_message, retry_scope, requires_reconcile, artifact_ids, updated_at]
+      required: [item_id, item_identity_key, sequence, item_type, normalized_content, content_ref, source_locator, metadata, skip_reason, content_hash, status, role, voice_key, attempt_count, error_code, user_message, retry_scope, requires_reconcile, artifact_ids, updated_at]
       additionalProperties: false
       properties:
         item_id: { type: string }
         item_identity_key: { type: string }
         sequence: { type: integer, minimum: 0 }
+        item_type: { type: string, minLength: 1, maxLength: 128 }
+        normalized_content: { type: [string, 'null'], maxLength: 16384 }
+        content_ref:
+          anyOf:
+            - type: object
+              required: [content_id, size_bytes, content_hash, max_response_bytes]
+              additionalProperties: false
+              properties:
+                content_id: { type: string, pattern: '^content-[0-9a-f]{32}$' }
+                size_bytes: { type: integer, minimum: 0 }
+                content_hash: { type: string, minLength: 64, maxLength: 64 }
+                max_response_bytes: { type: integer, minimum: 1 }
+            - type: 'null'
+        source_locator: { type: [string, 'null'], maxLength: 512 }
+        metadata:
+          type: object
+          additionalProperties: true
+        skip_reason: { type: [string, 'null'], maxLength: 500 }
         content_hash: { type: string, minLength: 64, maxLength: 64 }
         status: { type: string, enum: [PENDING, RUNNING, SUCCEEDED, FAILED, AMBIGUOUS, CANCELLED, SKIPPED, UNRESOLVED] }
         role: { type: [string, 'null'] }
@@ -1623,6 +1683,22 @@ components:
           type: array
           items: { type: string }
         updated_at: { type: string, format: date-time }
+    ItemContentResponse:
+      type: object
+      required: [workflow_id, item_id, content_id, state_version, item_state_version, content_hash, size_bytes, offset_bytes, next_offset_bytes, truncated, content]
+      additionalProperties: false
+      properties:
+        workflow_id: { type: string }
+        item_id: { type: string }
+        content_id: { type: string, pattern: '^content-[0-9a-f]{32}$' }
+        state_version: { type: integer, minimum: 0 }
+        item_state_version: { type: integer, minimum: 0 }
+        content_hash: { type: string, minLength: 64, maxLength: 64 }
+        size_bytes: { type: integer, minimum: 0 }
+        offset_bytes: { type: integer, minimum: 0 }
+        next_offset_bytes: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        content: { type: string, maxLength: 65536 }
     WorkspaceArtifact:
       type: object
       required: [artifact_id, workflow_id, item_id, step_id, work_unit_id, artifact_type, lifecycle_state, format, extension, mime_type, size_bytes, sha256, verified, filename, duration_ms, producer, producer_version, created_at, updated_at]
@@ -1692,15 +1768,18 @@ components:
           items: { type: string }
     WorkspaceProgress:
       type: object
-      required: [total, completed, failed, skipped, pending, percent]
+      required: [total, completed, failed, cancelled, skipped, pending, deliverable, percent, deliverable_percent]
       additionalProperties: false
       properties:
         total: { type: integer, minimum: 0 }
         completed: { type: integer, minimum: 0 }
         failed: { type: integer, minimum: 0 }
+        cancelled: { type: integer, minimum: 0 }
         skipped: { type: integer, minimum: 0 }
         pending: { type: integer, minimum: 0 }
+        deliverable: { type: integer, minimum: 0 }
         percent: { type: integer, minimum: 0, maximum: 100 }
+        deliverable_percent: { type: integer, minimum: 0, maximum: 100 }
     WorkspaceDelivery:
       type: object
       required: [zip_artifact_id, zip_available, included_item_ids, excluded_item_ids, exclusion_reasons]
@@ -1727,10 +1806,11 @@ components:
         requires_resync: { type: boolean }
     WorkflowWorkspace:
       type: object
-      required: [schema_version, snapshot, progress, blockers, available_actions, current_target, items, artifacts, configuration, delivery, sync]
+      required: [schema_version, source_filename, snapshot, progress, blockers, available_actions, current_target, items, artifacts, configuration, provider, delivery, sync]
       additionalProperties: false
       properties:
         schema_version: { type: integer, minimum: 1 }
+        source_filename: { type: string, minLength: 1, maxLength: 256 }
         snapshot: { $ref: '#/components/schemas/WorkflowSnapshot' }
         progress: { $ref: '#/components/schemas/WorkspaceProgress' }
         blockers:
@@ -1756,8 +1836,22 @@ components:
           type: array
           items: { $ref: '#/components/schemas/WorkspaceArtifact' }
         configuration: { $ref: '#/components/schemas/ConfigurationProjection' }
+        provider: { $ref: '#/components/schemas/WorkspaceProvider' }
         delivery: { $ref: '#/components/schemas/WorkspaceDelivery' }
         sync: { $ref: '#/components/schemas/WorkspaceSync' }
+    WorkspaceProvider:
+      type: object
+      required: [provider, status, ready, reason, can_generate, can_start_generation]
+      additionalProperties: false
+      properties:
+        provider: { type: string, minLength: 1, maxLength: 128 }
+        status: { type: string, enum: [UNKNOWN, READY, LOGIN_REQUIRED, EXPIRED, UNAVAILABLE, DISABLED] }
+        ready: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        can_generate: { type: boolean }
+        can_start_generation:
+          description: Whether a foreground generate command may open/login the provider.
+          type: boolean
     WorkflowWorkspaceEnvelope:
       type: object
       required: [request_id, workspace]
@@ -1777,7 +1871,7 @@ components:
         requires_reconcile: { type: boolean }
     ActiveWorkflowListResponse:
       type: object
-      required: [workflows, limit]
+      required: [workflows, limit, truncated]
       additionalProperties: false
       properties:
         workflows:
@@ -1785,9 +1879,10 @@ components:
           maxItems: 200
           items: { $ref: '#/components/schemas/ActiveWorkflowCandidate' }
         limit: { type: integer, minimum: 1, maximum: 200 }
+        truncated: { type: boolean }
     WorkflowHistoryRecord:
       type: object
-      required: [id, workflow_id, source_filename, available_files, completed, failed, total, format, generation_mode, preview, zip_available, zip_artifact_id, failed_items, status, result_status, execution_state, control_state, state_version, created_at, completed_at, updated_at]
+      required: [id, workflow_id, source_filename, available_files, completed, failed, cancelled, skipped, total, pending, format, generation_mode, preview, zip_available, zip_artifact_id, failed_items, status, result_status, execution_state, control_state, state_version, created_at, completed_at, updated_at]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -1796,7 +1891,10 @@ components:
         available_files: { type: integer, minimum: 0 }
         completed: { type: integer, minimum: 0 }
         failed: { type: integer, minimum: 0 }
+        cancelled: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
         total: { type: integer, minimum: 0 }
+        pending: { type: integer, minimum: 0 }
         format: { type: string }
         generation_mode: { type: string }
         preview: { type: boolean }
@@ -2028,11 +2126,15 @@ components:
         expires_at: { type: string, format: date-time }
     ArtifactTicket:
       type: object
-      required: [ticket, expires_at, artifact_id]
+      required: [ticket, expires_at, artifact_id, content_type, content_length, sha256, filename]
       properties:
         ticket: { type: string, readOnly: true }
         artifact_id: { type: string }
         expires_at: { type: string, format: date-time }
+        content_type: { type: [string, 'null'], maxLength: 128 }
+        content_length: { type: [integer, 'null'], minimum: 0 }
+        sha256: { type: [string, 'null'], minLength: 64, maxLength: 64 }
+        filename: { type: [string, 'null'], maxLength: 256 }
     SourceWriterTicket:
       type: object
       required: [grant, source_import_id, generation, expires_at]
@@ -2132,6 +2234,7 @@ components:
             - PROVIDER_UNAVAILABLE
             - UNSUPPORTED_MEDIA_TYPE
             - CONTENT_TOO_LARGE
+            - ITEM_CONTENT_TOO_LARGE
             - INSUFFICIENT_STORAGE
         message: { type: string, maxLength: 2000 }
         retryable: { type: boolean }

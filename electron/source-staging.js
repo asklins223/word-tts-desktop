@@ -4,15 +4,17 @@ const { randomBytes } = require('crypto');
 
 const DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024;
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_MAX_SESSIONS = 8;
 
 /**
  * 拖拽导入的分块暂存区。
  *
  * 渲染层拖入的文档不能再整块读进渲染进程内存（300MB 级文档是明确的支持
  * 目标）。渲染层按块读取 File 并通过 IPC 递给主进程，主进程把块写入受管
- * 暂存文件；complete 时用 O_NOFOLLOW 打开暂存文件并返回与原生对话框路径
- * 相同的一次性 sourceFileId 句柄，后续 `workflow-source-upload` 无需感知
- * 差异。任何一步失败或超时都会删除暂存文件，绝不留下无主临时数据。
+ * 暂存文件；begin 时用独占方式打开并持有文件句柄，complete 时把这个句柄
+ * 移交给与原生对话框路径相同的一次性 sourceFileId，后续
+ * `workflow-source-upload` 无需感知差异。任何一步失败或超时都会删除暂存
+ * 文件，绝不留下无主临时数据。
  */
 function createSourceUploadStaging({
     fs,
@@ -21,11 +23,16 @@ function createSourceUploadStaging({
     maxBytes = 512 * 1024 * 1024,
     chunkSize = DEFAULT_CHUNK_SIZE,
     ttlMs = DEFAULT_TTL_MS,
+    maxSessions = DEFAULT_MAX_SESSIONS,
     allowedExtensions = ['.docx', '.xlsx'],
     logger = console,
 }) {
     if (!fs || !path || !stagingDir) throw new TypeError('fs, path and stagingDir are required');
+    if (!Number.isSafeInteger(maxSessions) || maxSessions < 1) {
+        throw new TypeError('maxSessions must be a positive safe integer');
+    }
     const sessions = new Map();
+    let pendingBegins = 0;
 
     const destroySession = async (session, reason) => {
         if (!session) return;
@@ -34,6 +41,8 @@ function createSourceUploadStaging({
             clearTimeout(session.expiryTimer);
             session.expiryTimer = null;
         }
+        try { await session.handle?.close?.(); } catch (_) { /* best effort */ }
+        session.handle = null;
         if (session.stagingPath) {
             try { await fs.promises.unlink(session.stagingPath); } catch (_) { /* best effort */ }
             session.stagingPath = null;
@@ -70,24 +79,38 @@ function createSourceUploadStaging({
             if (!Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
                 throw new Error(`source document size is invalid or exceeds the limit (${size})`);
             }
-            const uploadId = `upload_${randomBytes(12).toString('hex')}`;
-            await fs.promises.mkdir(stagingDir, { recursive: true });
-            const stagingPath = path.join(stagingDir, `${uploadId}${extension}`);
-            // 'wx' 独占创建，防止推测出的路径被预置文件占据。
-            const handle = await fs.promises.open(stagingPath, 'w');
-            await handle.close();
-            const session = {
-                uploadId,
-                senderId,
-                fileName: safeName,
-                sizeBytes: size,
-                stagingPath,
-                bytesWritten: 0,
-                expiryTimer: null,
-            };
-            sessions.set(uploadId, session);
-            armExpiry(session);
-            return { uploadId, fileName: safeName, sizeBytes: size, chunkSize };
+            if (sessions.size + pendingBegins >= maxSessions) {
+                const error = new Error('too many source upload sessions are active');
+                error.code = 'RESOURCE_EXHAUSTED';
+                throw error;
+            }
+            pendingBegins += 1;
+            try {
+                const uploadId = `upload_${randomBytes(12).toString('hex')}`;
+                await fs.promises.mkdir(stagingDir, { recursive: true });
+                const stagingPath = path.join(stagingDir, `${uploadId}${extension}`);
+                // Keep the exclusively-created descriptor for the entire
+                // session. Re-opening by path for every chunk made a
+                // legitimate symlinked user-data directory vulnerable to
+                // O_NOFOLLOW/ELOOP failures and also introduced a replace
+                // window between the path check and the actual write.
+                const handle = await fs.promises.open(stagingPath, 'wx+');
+                const session = {
+                    uploadId,
+                    senderId,
+                    fileName: safeName,
+                    sizeBytes: size,
+                    stagingPath,
+                    handle,
+                    bytesWritten: 0,
+                    expiryTimer: null,
+                };
+                sessions.set(uploadId, session);
+                armExpiry(session);
+                return { uploadId, fileName: safeName, sizeBytes: size, chunkSize };
+            } finally {
+                pendingBegins -= 1;
+            }
         },
 
         async write({ uploadId, offset, bytes }, senderId) {
@@ -107,12 +130,32 @@ function createSourceUploadStaging({
                 await destroySession(session, 'out-of-order-chunk');
                 throw new Error('source upload chunks must arrive in order');
             }
-            // 顺序追加：句柄按 'a' 语义定位到当前长度，避免并发错位。
-            const handle = await fs.promises.open(session.stagingPath, 'r+');
+            // The descriptor was opened exclusively in begin() and is reused
+            // here, so a user-data symlink/replace cannot redirect a later
+            // chunk and a valid migrated data directory cannot trigger ELOOP.
+            const handle = session.handle;
+            if (!handle) {
+                await destroySession(session, 'write-handle-missing');
+                throw new Error('source upload file handle is unavailable');
+            }
             try {
-                await handle.write(chunk, 0, chunk.length, offsetNumber);
-            } finally {
-                await handle.close();
+                let written = 0;
+                while (written < chunk.length) {
+                    const result = await handle.write(
+                        chunk,
+                        written,
+                        chunk.length - written,
+                        offsetNumber + written,
+                    );
+                    const bytesWritten = Number(result?.bytesWritten);
+                    if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) {
+                        throw new Error('source upload write made no progress');
+                    }
+                    written += bytesWritten;
+                }
+            } catch (error) {
+                await destroySession(session, 'write-failed');
+                throw error;
             }
             session.bytesWritten = offsetNumber + chunk.length;
             armExpiry(session);
@@ -127,7 +170,11 @@ function createSourceUploadStaging({
                 await destroySession(session, 'incomplete');
                 throw new Error(`source upload is incomplete: ${session.bytesWritten}/${expected}`);
             }
-            const fileHandle = await fs.promises.open(session.stagingPath, 'r+');
+            const fileHandle = session.handle;
+            if (!fileHandle) {
+                await destroySession(session, 'verify-handle-missing');
+                throw new Error('source upload file handle is unavailable');
+            }
             try {
                 await fileHandle.sync();
                 const stat = await fileHandle.stat();
@@ -141,19 +188,27 @@ function createSourceUploadStaging({
             }
             sessions.delete(session.uploadId);
             if (session.expiryTimer) clearTimeout(session.expiryTimer);
-            const opened = await openStagedHandle({
-                filePath: session.stagingPath,
-                fileName: session.fileName,
-                sizeBytes: session.sizeBytes,
-                fileHandle,
-            });
-            if (!opened?.success) {
+            let opened;
+            try {
+                opened = await openStagedHandle({
+                    filePath: session.stagingPath,
+                    fileName: session.fileName,
+                    sizeBytes: session.sizeBytes,
+                    fileHandle,
+                });
+            } catch (error) {
                 try { await fileHandle.close(); } catch (_) { /* best effort */ }
                 await destroySession(session, 'handle-open-failed');
-                return opened;
+                throw error;
+            }
+            if (!opened?.success || !opened.sourceFileId) {
+                try { await fileHandle.close(); } catch (_) { /* best effort */ }
+                await destroySession(session, 'handle-open-failed');
+                return opened || { success: false, reason: 'handle-open-failed' };
             }
             // 暂存文件的所有权移交给了调用方的 handle 生命周期；
             // session 不再负责删除。
+            session.handle = null;
             session.stagingPath = null;
             return {
                 success: true,
@@ -177,7 +232,20 @@ function createSourceUploadStaging({
             }
             return pending.length;
         },
+
+        async disposeSender(senderId, reason = 'renderer-reloaded') {
+            const pending = [...sessions.values()].filter(session => session.senderId === senderId);
+            for (const session of pending) {
+                await destroySession(session, reason);
+            }
+            return pending.length;
+        },
     });
 }
 
-module.exports = { createSourceUploadStaging, DEFAULT_CHUNK_SIZE, DEFAULT_TTL_MS };
+module.exports = {
+    createSourceUploadStaging,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_MAX_SESSIONS,
+    DEFAULT_TTL_MS,
+};

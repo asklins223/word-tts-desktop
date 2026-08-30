@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 import io
 import json
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +19,14 @@ from workflow.fake_provider import AmbiguousProviderError, FakeProvider
 from workflow.providers import ProviderError, ProviderReceipt
 from workflow.garbage_collector import ArtifactGarbageCollector, GarbageFinding
 from workflow.recovery import RecoveryService
-from workflow.repositories import BudgetExhausted, ConflictError, IdempotencyConflict, LeaseConflict, WorkflowRepository
+from workflow.repositories import (
+    BudgetExhausted,
+    ConflictError,
+    IdempotencyConflict,
+    IdempotencyInProgress,
+    LeaseConflict,
+    WorkflowRepository,
+)
 from workflow.scheduler import PersistentScheduler
 from workflow.security import OneTimeTicketManager, TicketExpired, TicketError
 from workflow.source_imports import SourceImportError, SourceImportService
@@ -115,9 +124,12 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "total": 2,
             "completed": 0,
             "failed": 0,
+            "cancelled": 0,
             "skipped": 0,
             "pending": 2,
+            "deliverable": 0,
             "percent": 0,
+            "deliverable_percent": 0,
         })
         self.assertFalse(next(
             action for action in initial["available_actions"]
@@ -156,6 +168,146 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 item_overrides=[{"item_id": first_item, "patch": {"status": "SKIPPED"}}],
             )
         self.assertEqual(stale.exception.code, "CONFIGURATION_CONFLICT")
+
+    def test_workspace_blocks_generation_on_unverified_artifact_projection(self) -> None:
+        snapshot = self.repository.create_workflow("tts", {"generation_mode": "single_segment"})
+        item_id = self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="sentence",
+            sequence=0,
+            normalized_content="success without a verified artifact",
+            item_identity_key="sentence:0",
+            status="SUCCEEDED",
+        )
+
+        workspace = self.repository.get_workspace(
+            snapshot.workflow_id,
+            capabilities={
+                "provider": {
+                    "provider": "fake",
+                    "status": "READY",
+                    "ready": True,
+                    "can_generate": True,
+                },
+            },
+        )
+
+        self.assertIn(item_id, workspace["delivery"]["excluded_item_ids"])
+        self.assertIn(
+            "ARTIFACT_MISSING_OR_UNVERIFIED",
+            {blocker["code"] for blocker in workspace["blockers"]},
+        )
+        generate = next(
+            action for action in workspace["available_actions"]
+            if action["type"] == "GENERATE"
+        )
+        self.assertFalse(generate["enabled"])
+        self.assertEqual(generate["reason"], "存在尚未核验或状态冲突的条目")
+        blocker = next(
+            blocker for blocker in workspace["blockers"]
+            if blocker["code"] == "ARTIFACT_MISSING_OR_UNVERIFIED"
+        )
+        self.assertEqual(blocker["recovery_action"]["type"], "RECONCILE")
+        self.assertFalse(blocker["recovery_action"]["enabled"])
+        reconcile = next(
+            action for action in workspace["available_actions"]
+            if action["kind"] == "SERVICE" and action["type"] == "RECONCILE"
+        )
+        self.assertFalse(reconcile["enabled"])
+
+    def test_workspace_normalizes_blocked_provider_capability_snapshot(self) -> None:
+        snapshot = self.repository.create_workflow("tts", {"generation_mode": "single_segment"})
+        self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="sentence",
+            sequence=0,
+            normalized_content="provider gate",
+            item_identity_key="sentence:0",
+        )
+
+        workspace = self.repository.get_workspace(
+            snapshot.workflow_id,
+            capabilities={
+                "provider": {
+                    "provider": "fake",
+                    "status": "EXPIRED",
+                    "ready": True,
+                    "can_generate": True,
+                },
+            },
+        )
+
+        self.assertEqual(workspace["provider"]["status"], "EXPIRED")
+        self.assertFalse(workspace["provider"]["ready"])
+        self.assertFalse(workspace["provider"]["can_generate"])
+        generate = next(
+            action for action in workspace["available_actions"]
+            if action["type"] == "GENERATE"
+        )
+        self.assertFalse(generate["enabled"])
+
+    def test_workspace_keeps_login_entry_enabled_without_advertising_provider_ready(self) -> None:
+        snapshot = self.repository.create_workflow("tts", {"generation_mode": "single_segment"})
+        self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="sentence",
+            sequence=0,
+            normalized_content="provider login entry",
+            item_identity_key="sentence:provider-login-entry",
+        )
+
+        workspace = self.repository.get_workspace(
+            snapshot.workflow_id,
+            capabilities={
+                "provider": {
+                    "provider": "xunfei",
+                    "status": "LOGIN_REQUIRED",
+                    "ready": False,
+                    "can_generate": False,
+                    "can_start_generation": True,
+                    "reason": "首次生成时将打开讯飞浏览器，请完成登录",
+                },
+            },
+        )
+
+        self.assertFalse(workspace["provider"]["ready"])
+        self.assertFalse(workspace["provider"]["can_generate"])
+        self.assertTrue(workspace["provider"]["can_start_generation"])
+        generate = next(
+            action for action in workspace["available_actions"]
+            if action["type"] == "GENERATE"
+        )
+        self.assertTrue(generate["enabled"])
+
+    def test_workspace_flags_oversized_item_metadata_instead_of_silently_truncating(self) -> None:
+        snapshot = self.repository.create_workflow("tts", {"generation_mode": "single_segment"})
+        metadata = {
+            key: "source-fact-" + ("x" * 500)
+            for key in (
+                "category", "doc_type", "question_type", "section", "sub_type_code",
+                "material_source", "language", "sheet_name", "sheet_index", "row",
+                "column", "entry_number", "sentence_number", "number", "tags",
+            )
+        }
+        item_id = self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="vocabulary",
+            sequence=0,
+            normalized_content="oversized metadata",
+            item_identity_key="vocabulary:0",
+            metadata=metadata,
+        )
+
+        workspace = self.repository.get_workspace(snapshot.workflow_id)
+        item = next(item for item in workspace["items"] if item["item_id"] == item_id)
+        self.assertLessEqual(
+            len(json.dumps(item["metadata"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+            4096,
+        )
+        self.assertIn(
+            "ITEM_METADATA_TOO_LARGE",
+            {blocker["code"] for blocker in workspace["blockers"]},
+        )
 
     def test_pause_resume_and_restart_takeover_are_fenced_by_server_state(self) -> None:
         workflow_id = self._workflow_with_items()
@@ -257,6 +409,39 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(set(workspace["delivery"]["excluded_item_ids"]), set(item_ids))
         with self.database.read_transaction() as con:
             self.assertEqual(con.execute("SELECT COUNT(*) FROM provider_submissions").fetchone()[0], 0)
+
+    def test_all_skipped_generation_can_close_during_pause_request(self) -> None:
+        snapshot = self.repository.create_workflow("tts", {"generation_mode": "composite_cut"})
+        item_id = self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="sentence",
+            sequence=0,
+            normalized_content="already skipped",
+            item_identity_key="sentence:already-skipped",
+        )
+        patched = self.repository.patch_draft(
+            snapshot.workflow_id,
+            snapshot.state_version,
+            expected_configuration_revision=1,
+            item_overrides=[{"item_id": item_id, "patch": {"status": "SKIPPED"}}],
+        )
+        accepted = self.repository.command(
+            snapshot.workflow_id,
+            "generate",
+            patched.state_version,
+        )
+        pause_requested = self.repository.command(
+            snapshot.workflow_id,
+            "pause",
+            accepted.state_version,
+        )
+
+        completed = self.repository.complete_skipped_workflow(snapshot.workflow_id)
+        self.assertEqual(pause_requested.control_state, "PAUSE_REQUESTED")
+        self.assertEqual(
+            (completed.result_status, completed.execution_state, completed.control_state),
+            ("SUCCEEDED", "TERMINAL", "TERMINATED"),
+        )
 
     def test_tts_plan_materializes_selected_default_and_role_voices(self) -> None:
         snapshot = self.repository.create_workflow(
@@ -513,6 +698,91 @@ class WorkflowRuntimeTests(unittest.TestCase):
             [second.seq],
         )
 
+    def test_event_sequence_is_restored_when_a_duplicate_insert_error_is_caught(self) -> None:
+        first = self.repository.create_workflow("tts", {})
+        second = self.repository.create_workflow("tts", {})
+        events = self.events
+
+        def append_after_caught_error(
+            target_workflow_id: str,
+            competing_workflow_id: str,
+            mutation_id: str,
+            competing_payload: dict[str, object],
+            attempted_payload: dict[str, object],
+        ) -> int:
+            before = self.repository.get_workflow(target_workflow_id).latest_seq
+            original_transaction = self.database.transaction
+
+            class EmptyResult:
+                @staticmethod
+                def fetchone():
+                    return None
+
+            class RacingConnection:
+                def __init__(self, connection):
+                    self.connection = connection
+                    self.injected = False
+
+                def execute(self, sql, params=()):
+                    if (
+                        not self.injected
+                        and "SELECT * FROM workflow_events WHERE mutation_id=?" in sql
+                    ):
+                        self.injected = True
+                        events.append_in_transaction(
+                            self.connection,
+                            competing_workflow_id,
+                            "RACE_EVENT",
+                            competing_payload,
+                            mutation_id=mutation_id,
+                            actor_type="SYSTEM",
+                        )
+                        return EmptyResult()
+                    return self.connection.execute(sql, params)
+
+            @contextmanager
+            def racing_transaction():
+                with original_transaction() as connection:
+                    yield RacingConnection(connection)
+
+            with patch.object(self.database, "transaction", racing_transaction):
+                with self.database.transaction() as connection:
+                    with self.assertRaises(EventStoreError):
+                        events.append_in_transaction(
+                            connection,
+                            target_workflow_id,
+                            "RACE_EVENT",
+                            attempted_payload,
+                            mutation_id=mutation_id,
+                            actor_type="SYSTEM",
+                        )
+                    following = events.append_in_transaction(
+                        connection,
+                        target_workflow_id,
+                        "AFTER_RACE",
+                        {},
+                        actor_type="SYSTEM",
+                    )
+            expected_next = before + (2 if target_workflow_id == competing_workflow_id else 1)
+            self.assertEqual(following.seq, expected_next)
+            return following.seq
+
+        cross_stream_seq = append_after_caught_error(
+            second.workflow_id,
+            first.workflow_id,
+            "mutation-cross-stream-race",
+            {"value": "winner"},
+            {"value": "loser"},
+        )
+        same_stream_seq = append_after_caught_error(
+            second.workflow_id,
+            second.workflow_id,
+            "mutation-payload-race",
+            {"value": "winner"},
+            {"value": "different"},
+        )
+        self.assertEqual(same_stream_seq, cross_stream_seq + 2)
+
     def test_deleted_non_anchor_cursor_is_expired_after_compaction(self) -> None:
         snapshot = self.repository.create_workflow("tts", {})
         first = self.events.append(snapshot.workflow_id, "FIRST", {}, actor_type="SYSTEM")
@@ -564,6 +834,17 @@ class WorkflowRuntimeTests(unittest.TestCase):
         public = service.get_import(created["source_import_id"])
         self.assertEqual(public["source_artifact_id"], ready["source_artifact_id"])
         self.assertEqual(self.repository.get_workflow(snapshot.workflow_id).state_version, snapshot.state_version + 1)
+        workspace = self.repository.get_workspace(snapshot.workflow_id)
+        source_projection = next(
+            artifact for artifact in workspace["artifacts"]
+            if artifact["artifact_id"] == ready["source_artifact_id"]
+        )
+        self.assertEqual(source_projection["format"], "docx")
+        self.assertEqual(source_projection["extension"], ".docx")
+        self.assertEqual(
+            source_projection["mime_type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
         with self.database.read_transaction() as con:
             row = con.execute(
                 "SELECT b.storage_key FROM artifacts a JOIN artifact_blobs b ON b.blob_id=a.blob_id WHERE a.artifact_id=?",
@@ -592,6 +873,41 @@ class WorkflowRuntimeTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "STALE_ATTEMPT")
         self.assertEqual(list(artifacts.staging_root.glob("*.part")), [])
+
+    def test_workspace_source_projection_preserves_xlsx_for_long_filename(self) -> None:
+        snapshot = self.repository.create_workflow("tts", {})
+        artifacts = ArtifactStore(Path(self.temp.name) / "long-xlsx-artifacts")
+        service = SourceImportService(self.database, artifacts)
+        filename = f"{'v' * 300}.xlsx"
+        created = service.create_import(
+            snapshot.workflow_id,
+            metadata={"filename": filename},
+            expected_size_bytes=5,
+        )
+        grant = service.acquire_writer(
+            created["source_import_id"], 1, expected_state_version=created["state_version"]
+        )
+        ready = service.write_generation(
+            created["source_import_id"], 1, io.BytesIO(b"hello"), grant=grant.token, format="bin"
+        )
+
+        workspace = self.repository.get_workspace(snapshot.workflow_id)
+        source_projection = next(
+            artifact for artifact in workspace["artifacts"]
+            if artifact["artifact_id"] == ready["source_artifact_id"]
+        )
+        self.assertEqual(len(source_projection["filename"]), 256)
+        self.assertTrue(source_projection["filename"].endswith(".xlsx"))
+        self.assertEqual(source_projection["format"], "xlsx")
+        self.assertEqual(source_projection["extension"], ".xlsx")
+        self.assertEqual(
+            source_projection["mime_type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        history = self.repository.list_history_records(limit=20)
+        history_record = next(record for record in history if record["workflow_id"] == snapshot.workflow_id)
+        self.assertEqual(len(history_record["source_filename"]), 256)
+        self.assertTrue(history_record["source_filename"].endswith(".xlsx"))
 
     def test_promote_rejects_a_staged_file_outside_managed_staging_root(self) -> None:
         artifacts = ArtifactStore(Path(self.temp.name) / "confined-artifacts")
@@ -704,6 +1020,110 @@ class WorkflowRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(cached, {"accepted": True})
 
+    def test_idempotency_competing_insert_rechecks_and_replays(self) -> None:
+        """A UNIQUE loser must replay the reservation created by the winner."""
+
+        original_transaction = self.database.transaction
+
+        class RacingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+                self.injected = False
+
+            def execute(self, sql, params=()):
+                if (
+                    not self.injected
+                    and "INSERT INTO workflow_idempotency_keys" in sql
+                ):
+                    self.injected = True
+                    # Insert the competing winner through the real connection,
+                    # then make this caller observe the UNIQUE loser.  The
+                    # outer transaction is still alive, so the subsequent
+                    # re-query sees the winner and can replay it.
+                    result = self.connection.execute(sql, params)
+                    self.connection.execute(
+                        "UPDATE workflow_idempotency_keys "
+                        "SET response_status=?, response_json=? WHERE idempotency_id=?",
+                        (202, json.dumps({"accepted": True}), params[0]),
+                    )
+                    raise sqlite3.IntegrityError(
+                        "UNIQUE constraint failed: workflow_idempotency_keys.scope_hash, "
+                        "workflow_idempotency_keys.client_key"
+                    )
+                return self.connection.execute(sql, params)
+
+        @contextmanager
+        def racing_transaction():
+            with original_transaction() as connection:
+                yield RacingConnection(connection)
+
+        with patch.object(self.database, "transaction", racing_transaction):
+            reservation_id, cached = self.repository.begin_idempotency(
+                scope="workflow:race",
+                client_key="race-key-123456",
+                command_name="create",
+                method="POST",
+                resource_id=None,
+                target=None,
+                request={"value": 1},
+            )
+
+        self.assertTrue(reservation_id)
+        self.assertEqual(cached, {"accepted": True})
+
+        # A second attempt now observes the durable winner normally; the
+        # defensive race path did not create a duplicate row.
+        with self.assertRaises(ConflictError):
+            self.repository.begin_idempotency(
+                scope="workflow:race",
+                client_key="race-key-123456",
+                command_name="create",
+                method="POST",
+                resource_id=None,
+                target=None,
+                request={"value": 2},
+            )
+
+    def test_idempotency_second_competing_insert_is_in_progress(self) -> None:
+        original_transaction = self.database.transaction
+
+        class RacingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+                self.insert_attempts = 0
+
+            def execute(self, sql, params=()):
+                if "INSERT INTO workflow_idempotency_keys" in sql:
+                    self.insert_attempts += 1
+                    if self.insert_attempts == 1:
+                        self.connection.execute(sql, params)
+                        self.connection.execute(
+                            "UPDATE workflow_idempotency_keys SET expires_at=? WHERE idempotency_id=?",
+                            ("2000-01-01T00:00:00+00:00", params[0]),
+                        )
+                        raise sqlite3.IntegrityError("UNIQUE constraint failed: competing reservation")
+                    if self.insert_attempts == 2:
+                        self.connection.execute(sql, params)
+                        raise sqlite3.IntegrityError("UNIQUE constraint failed: competing reservation")
+                return self.connection.execute(sql, params)
+
+        @contextmanager
+        def racing_transaction():
+            with original_transaction() as connection:
+                yield RacingConnection(connection)
+
+        with patch.object(self.database, "transaction", racing_transaction):
+            with self.assertRaises(IdempotencyInProgress):
+                self.repository.begin_idempotency(
+                    scope="workflow:expired-race",
+                    client_key="expired-race-key-123456",
+                    command_name="create",
+                    method="POST",
+                    resource_id=None,
+                    target=None,
+                    request={"value": 1},
+                )
+
     def _workflow_with_items(self) -> str:
         snapshot = self.repository.create_workflow("tts", {"mode": "composite_cut"})
         for sequence, content in enumerate(("hello", "world")):
@@ -717,6 +1137,91 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 voice_key="fake",
             )
         return snapshot.workflow_id
+
+    def test_workspace_keeps_non_mp3_tts_artifacts_out_of_delivery(self) -> None:
+        workflow_id = self._workflow_with_items()
+        result = WorkflowEngine(
+            self.repository,
+            ArtifactStore(Path(self.temp.name) / "non-mp3-artifacts"),
+        ).run_tts(workflow_id, FakeProvider(output_format="bin"))
+
+        self.assertEqual(result.status, "SUCCEEDED")
+        workspace = self.repository.get_workspace(workflow_id)
+        self.assertEqual(workspace["progress"]["completed"], 0)
+        self.assertEqual(workspace["progress"]["deliverable"], 0)
+        self.assertEqual(workspace["progress"]["pending"], 2)
+        self.assertEqual(workspace["delivery"]["included_item_ids"], [])
+        self.assertIn(
+            "ARTIFACT_FORMAT_UNSUPPORTED",
+            {blocker["code"] for blocker in workspace["blockers"]},
+        )
+        self.assertEqual(self.repository.list_verified_tts_segments(workflow_id), [])
+
+    def test_workspace_blocks_artifact_blob_metadata_conflict(self) -> None:
+        workflow_id = self._workflow_with_items()
+        result = WorkflowEngine(
+            self.repository,
+            ArtifactStore(Path(self.temp.name) / "metadata-conflict-artifacts"),
+        ).run_tts(workflow_id, FakeProvider(output_format="mp3"))
+        self.assertEqual(result.status, "SUCCEEDED")
+        with self.database.transaction() as con:
+            # Healthy databases reject this mutation at the trigger boundary.
+            # Drop only the guard in this isolated corruption fixture so the
+            # workspace projection can prove it fails closed for legacy or
+            # externally-corrupted rows that predate the guard.
+            con.execute("DROP TRIGGER artifacts_ready_guard_update")
+            con.execute(
+                "UPDATE artifacts SET format='wav' WHERE artifact_id=?",
+                (result.artifact_ids[-1],),
+            )
+
+        workspace = self.repository.get_workspace(workflow_id)
+        self.assertEqual(workspace["progress"]["completed"], 1)
+        self.assertEqual(workspace["progress"]["deliverable"], 1)
+        self.assertEqual(workspace["progress"]["pending"], 1)
+        self.assertIn(
+            "ARTIFACT_METADATA_CONFLICT",
+            {blocker["code"] for blocker in workspace["blockers"]},
+        )
+        self.assertEqual(len(workspace["delivery"]["included_item_ids"]), 1)
+
+    def test_latest_invalid_tts_artifact_does_not_revive_an_older_mp3(self) -> None:
+        workflow_id = self._workflow_with_items()
+        artifact_root = Path(self.temp.name) / "latest-artifact-fence"
+        store = ArtifactStore(artifact_root)
+        result = WorkflowEngine(self.repository, store).run_tts(workflow_id, FakeProvider())
+        self.assertEqual(result.status, "SUCCEEDED")
+
+        first_item_id = self.repository.list_items(workflow_id)[0]["item_id"]
+        staged = store.stage_stream(io.BytesIO(b"not an audio file"))
+        invalid_blob = store.promote(staged, format="wav")
+        self.repository.attach_imported_artifact(
+            workflow_id,
+            artifact_id="artifact-latest-invalid",
+            blob=invalid_blob,
+            artifact_type="tts-segment",
+            producer="corruption-fixture",
+            producer_version="1",
+            item_id=first_item_id,
+        )
+
+        # The second item remains deliverable, but the first item must not
+        # fall back to its older MP3 now that a newer invalid TTS artifact is
+        # the authoritative result for that item.
+        segments = self.repository.list_verified_tts_segments(workflow_id)
+        self.assertEqual({str(row["item_id"]) for row in segments}, {
+            str(self.repository.list_items(workflow_id)[1]["item_id"]),
+        })
+        history = self.repository.list_history_records(limit=20)
+        self.assertEqual(history[0]["available_files"], 1)
+        self.assertEqual(history[0]["completed"], 1)
+        self.assertEqual(history[0]["failed"], 1)
+
+        workspace = self.repository.get_workspace(workflow_id)
+        self.assertEqual(workspace["progress"]["deliverable"], 1)
+        self.assertIn("ARTIFACT_FORMAT_UNSUPPORTED", {
+            blocker["code"] for blocker in workspace["blockers"]
+        })
 
     def test_fake_provider_vertical_chain_persists_receipt_segments_and_artifacts(self) -> None:
         workflow_id = self._workflow_with_items()
@@ -794,6 +1299,9 @@ class WorkflowRuntimeTests(unittest.TestCase):
         workflow_id = self._workflow_with_items()
 
         class ProviderWithSensitiveSummary(FakeProvider):
+            def __init__(self):
+                super().__init__(output_format="mp3")
+
             def submit(self, submission_key, payload):
                 raw = super().submit(submission_key, payload)
                 return ProviderReceipt(
@@ -1115,6 +1623,12 @@ class WorkflowRuntimeTests(unittest.TestCase):
             },
         )
         self.assertEqual(resolved.execution_state, "WAITING_USER")
+        with self.database.read_transaction() as con:
+            intervention_state = con.execute(
+                "SELECT state FROM user_interventions WHERE workflow_id=? AND work_unit_id=?",
+                (workflow_id, intervention["work_unit_id"]),
+            ).fetchone()[0]
+        self.assertEqual(intervention_state, "RESOLVED")
         provider.fail_mode = None
         second = engine.run_tts(workflow_id, provider)
         self.assertEqual(second.status, "SUCCEEDED")

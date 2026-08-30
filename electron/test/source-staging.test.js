@@ -80,9 +80,13 @@ test('complete 校验字节总数，成功后返回一次性句柄且内容逐�
     let verifiedBytes = null;
     const result = await staging.complete({ uploadId }, SENDER, {
         openStagedHandle: async ({ filePath, fileName, sizeBytes, fileHandle }) => {
-            verifiedBytes = await fileHandle.readFile();
-            assert.equal(sizeBytes, 10);
-            assert.equal(fileName, '课件.docx');
+            try {
+                verifiedBytes = await fileHandle.readFile();
+                assert.equal(sizeBytes, 10);
+                assert.equal(fileName, '课件.docx');
+            } finally {
+                await fileHandle.close();
+            }
             return { success: true, sourceFileId: 'sf-test-1', fileName, sizeBytes };
         },
     });
@@ -96,6 +100,46 @@ test('complete 校验字节总数，成功后返回一次性句柄且内容逐�
         () => staging.complete({ uploadId }, SENDER, { openStagedHandle: async () => ({ success: true }) }),
         /missing or expired/,
     );
+});
+
+test('用户数据目录迁移为符号链接时仍可跨分块写入并完成上传', async (t) => {
+    if (process.platform === 'win32') {
+        t.skip('Windows CI may not permit creating directory symlinks');
+        return;
+    }
+    const parent = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wordtts-staging-link-'));
+    const realDir = path.join(parent, 'real-staging');
+    const linkedDir = path.join(parent, 'source-staging');
+    await fs.promises.mkdir(realDir);
+    await fs.promises.symlink(realDir, linkedDir, 'dir');
+    try {
+        const staging = createSourceUploadStaging({
+            fs,
+            path,
+            stagingDir: linkedDir,
+            chunkSize: 4,
+            logger: { debug: () => {} },
+        });
+        const { uploadId } = await beginDocx(staging, 6);
+        await staging.write({ uploadId, offset: 0, bytes: new Uint8Array([1, 2, 3, 4]) }, SENDER);
+        await staging.write({ uploadId, offset: 4, bytes: new Uint8Array([5, 6]) }, SENDER);
+
+        let content = null;
+        const result = await staging.complete({ uploadId }, SENDER, {
+            openStagedHandle: async ({ fileHandle, fileName, sizeBytes }) => {
+                try {
+                    content = await fileHandle.readFile();
+                } finally {
+                    await fileHandle.close();
+                }
+                return { success: true, sourceFileId: 'sf-linked-1', fileName, sizeBytes };
+            },
+        });
+        assert.equal(result.success, true);
+        assert.deepEqual([...content], [1, 2, 3, 4, 5, 6]);
+    } finally {
+        await fs.promises.rm(parent, { recursive: true, force: true });
+    }
 });
 
 test('字节数不足时 complete 拒绝并清理暂存文件', async () => {
@@ -127,6 +171,26 @@ test('openStagedHandle 失败时保持 fail-closed：句柄关闭、暂存文件
     assert.equal(fs.existsSync(path.join(stagingDir, `${uploadId}.docx`)), false);
 });
 
+test('openStagedHandle 抛错时也会关闭句柄并清理暂存文件', async () => {
+    const { staging, stagingDir } = await makeStaging({ chunkSize: 4 });
+    const { uploadId } = await beginDocx(staging, 4);
+    await staging.write({ uploadId, offset: 0, bytes: new Uint8Array([1, 2, 3, 4]) }, SENDER);
+    let closed = false;
+    await assert.rejects(
+        () => staging.complete({ uploadId }, SENDER, {
+            openStagedHandle: async ({ fileHandle }) => {
+                const original = fileHandle.close.bind(fileHandle);
+                fileHandle.close = async () => { closed = true; return original(); };
+                throw new Error('registration failed');
+            },
+        }),
+        /registration failed/,
+    );
+    assert.equal(closed, true);
+    assert.equal(fs.existsSync(path.join(stagingDir, `${uploadId}.docx`)), false);
+    assert.equal(staging.activeCount, 0);
+});
+
 test('abort 与 TTL 过期都会删除暂存文件', async () => {
     const { staging, stagingDir } = await makeStaging({ chunkSize: 4, ttlMs: 30 });
     const aborted = await beginDocx(staging, 4);
@@ -155,6 +219,18 @@ test('其他 sender 不能读写他人的上传会话', async () => {
         () => staging.complete({ uploadId }, 'sender-2', { openStagedHandle: async () => ({ success: true }) }),
         /belongs to another sender/,
     );
+});
+
+test('暂存区限制并发会话数，并可按 sender 清理', async () => {
+    const { staging, stagingDir } = await makeStaging({ maxSessions: 1 });
+    const first = await beginDocx(staging, 4);
+    await assert.rejects(
+        () => staging.begin({ fileName: 'second.docx', sizeBytes: 4, senderId: SENDER }),
+        error => error.code === 'RESOURCE_EXHAUSTED',
+    );
+    assert.equal(await staging.disposeSender(SENDER, 'renderer-reloaded'), 1);
+    assert.equal(staging.activeCount, 0);
+    assert.equal(fs.existsSync(path.join(stagingDir, `${first.uploadId}.docx`)), false);
 });
 
 test('disposeAll 清理全部未完成会话', async () => {

@@ -66,7 +66,7 @@ export type WorkspaceActionKind = 'SERVICE' | 'UI';
 export type WorkspaceActionType =
   | 'PARSE' | 'SAVE_CONFIGURATION' | 'GENERATE' | 'PAUSE' | 'RESUME'
   | 'CANCEL' | 'RETRY' | 'RECONCILE' | 'RESOLVE' | 'ARCHIVE'
-  | 'ABANDON' | 'RERUN' | 'OPEN_VIEW' | 'DOWNLOAD_ARTIFACT'
+  | 'ABANDON' | 'RERUN' | 'EXPORT_ZIP' | 'OPEN_VIEW' | 'DOWNLOAD_ARTIFACT'
   | 'DOWNLOAD_ZIP' | 'RECONNECT';
 
 export interface WorkspaceAction {
@@ -77,6 +77,7 @@ export interface WorkspaceAction {
   target: JsonObject | null;
   expected_state_version: number | null;
   expected_target_state_version: number | null;
+  expected_group_state_version: number | null;
   safe_to_retry: boolean;
   retry_scope: RetryScope;
 }
@@ -98,6 +99,17 @@ export interface WorkspaceItem {
   item_id: string;
   item_identity_key: string;
   sequence: number;
+  item_type: string;
+  normalized_content: string | null;
+  content_ref: {
+    content_id: string;
+    size_bytes: number;
+    content_hash: string;
+    max_response_bytes: number;
+  } | null;
+  source_locator: string | null;
+  metadata: JsonObject;
+  skip_reason: string | null;
   content_hash: string;
   status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'AMBIGUOUS' | 'CANCELLED' | 'SKIPPED' | 'UNRESOLVED';
   role: string | null;
@@ -109,6 +121,30 @@ export interface WorkspaceItem {
   requires_reconcile: boolean;
   artifact_ids: string[];
   updated_at: string;
+}
+
+export interface WorkspaceProvider {
+  provider: string;
+  status: 'UNKNOWN' | 'READY' | 'LOGIN_REQUIRED' | 'EXPIRED' | 'UNAVAILABLE' | 'DISABLED';
+  ready: boolean;
+  reason: string;
+  can_generate: boolean;
+  /** True when a foreground generate command may open/login the provider. */
+  can_start_generation: boolean;
+}
+
+export interface ItemContentResponse {
+  workflow_id: WorkflowId;
+  item_id: string;
+  content_id: string;
+  state_version: number;
+  item_state_version: number;
+  content_hash: string;
+  size_bytes: number;
+  offset_bytes: number;
+  next_offset_bytes: number;
+  truncated: boolean;
+  content: string;
 }
 
 export interface WorkspaceArtifact {
@@ -159,14 +195,26 @@ export interface ConfigurationProjection {
 
 export interface WorkflowWorkspace {
   schema_version: number;
+  source_filename: string;
   snapshot: WorkflowSnapshot;
-  progress: { total: number; completed: number; failed: number; skipped: number; pending: number; percent: number };
+  progress: {
+    total: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+    skipped: number;
+    pending: number;
+    deliverable: number;
+    percent: number;
+    deliverable_percent: number;
+  };
   blockers: WorkspaceBlocker[];
   available_actions: WorkspaceAction[];
   current_target: { item_id: string; label: string; started_at: string } | null;
   items: WorkspaceItem[];
   artifacts: WorkspaceArtifact[];
   configuration: ConfigurationProjection;
+  provider: WorkspaceProvider;
   delivery: {
     zip_artifact_id: string | null;
     zip_available: boolean;
@@ -183,6 +231,12 @@ export interface ActiveWorkflowCandidate {
   can_takeover: boolean;
   resume_reason: string;
   requires_reconcile: boolean;
+}
+
+export interface ActiveWorkflowPage {
+  workflows: ActiveWorkflowCandidate[];
+  limit: number;
+  truncated: boolean;
 }
 
 export interface WorkflowCommandRequest {
@@ -272,9 +326,11 @@ export interface SourceImportGenerationStatus extends Omit<SourceImportStatus, '
 export interface DesktopWorkflowApi {
   getWorkflow(workflowId: WorkflowId): Promise<WorkflowSnapshot>;
   getWorkspace(workflowId: WorkflowId): Promise<WorkflowWorkspace>;
+  getItemContent(workflowId: WorkflowId, itemId: string, contentId: string, expectedStateVersion?: number): Promise<ItemContentResponse>;
   getConfig(): Promise<JsonObject>;
   listWorkflows(limit?: number): Promise<WorkflowHistoryRecord[]>;
   listActiveWorkflows(limit?: number): Promise<ActiveWorkflowCandidate[]>;
+  listActiveWorkflowPage(limit?: number): Promise<ActiveWorkflowPage>;
   listItems(workflowId: WorkflowId): Promise<Array<JsonObject>>;
   listArtifacts(workflowId: WorkflowId, limit?: number): Promise<ArtifactInfo[]>;
   createWorkflow(input: {
@@ -299,7 +355,7 @@ export interface DesktopWorkflowApi {
     source_workflow_id?: string;
     reason?: string;
   }): Promise<WorkflowSnapshot>;
-  sendCommand(workflowId: WorkflowId, action: 'parse' | 'generate' | 'pause' | 'resume' | 'cancel',
+  sendCommand(workflowId: WorkflowId, action: 'parse' | 'generate' | 'pause' | 'resume' | 'cancel' | 'export-zip',
               input: WorkflowCommandRequest): Promise<CommandResponse>;
   parseWorkflow(workflowId: WorkflowId, input: ParseRequest): Promise<CommandResponse & {
     parse_results?: Array<JsonObject>;
@@ -358,7 +414,10 @@ export interface WorkflowHistoryRecord {
   available_files: number;
   completed: number;
   failed: number;
+  cancelled: number;
+  skipped: number;
   total: number;
+  pending: number;
   format: string;
   generation_mode: string;
   preview: boolean;

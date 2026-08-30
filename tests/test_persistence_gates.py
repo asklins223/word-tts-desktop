@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,6 +67,87 @@ class PersistenceGatesTests(unittest.TestCase):
                 self.assertEqual(con.execute("SELECT COUNT(*) FROM side_effect_intents").fetchone()[0], 0)
             self.assertEqual(intent_log.read_entries(), [])
             database.close()
+
+    def test_side_effect_journal_repairs_only_a_torn_final_line(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-journal-tail-") as tmp:
+            path = Path(tmp) / "side_effect_intents.jsonl"
+            journal = SideEffectIntentLog(path)
+            journal.record(
+                operation_namespace="tts",
+                operation_key="complete-line",
+                payload={"value": "safe"},
+                intent_id="intent-complete",
+            )
+            with path.open("ab") as target:
+                target.write(b'{"entry_type":"state","intent_id":"torn')
+
+            entries = journal.read_entries()
+            self.assertEqual([entry["intent_id"] for entry in entries], ["intent-complete"])
+            self.assertTrue(path.read_bytes().endswith(b"\n"))
+
+            # A malformed line with a durable newline is not a crash-tail and
+            # must still fail closed rather than being silently discarded.
+            with path.open("ab") as target:
+                target.write(b"not-json\n")
+            with self.assertRaises(SideEffectLogError):
+                journal.read_entries()
+
+    def test_side_effect_journal_preserves_a_complete_legacy_line_without_newline(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-journal-legacy-line-") as tmp:
+            path = Path(tmp) / "side_effect_intents.jsonl"
+            journal = SideEffectIntentLog(path)
+            journal.record(
+                operation_namespace="tts",
+                operation_key="legacy-line",
+                payload={"value": "safe"},
+                intent_id="intent-legacy",
+            )
+            path.write_bytes(path.read_bytes().rstrip(b"\n"))
+
+            entries = journal.read_entries()
+            self.assertEqual([entry["intent_id"] for entry in entries], ["intent-legacy"])
+            self.assertTrue(path.read_bytes().endswith(b"\n"))
+
+    def test_side_effect_journal_drops_a_valid_json_but_invalid_schema_tail(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-journal-invalid-tail-") as tmp:
+            path = Path(tmp) / "side_effect_intents.jsonl"
+            journal = SideEffectIntentLog(path)
+            journal.record(
+                operation_namespace="tts",
+                operation_key="complete-line",
+                payload={"value": "safe"},
+                intent_id="intent-complete",
+            )
+            with path.open("ab") as target:
+                target.write(b'{"a":1}')
+
+            entries = journal.read_entries()
+            self.assertEqual([entry["intent_id"] for entry in entries], ["intent-complete"])
+            self.assertEqual(path.read_text(encoding="utf-8").count("{\"a\":1}"), 0)
+
+    def test_side_effect_journal_uses_the_windows_lock_backend_when_fcntl_is_unavailable(self) -> None:
+        class FakeMsvcrt:
+            LK_LOCK = 1
+            LK_RLCK = 2
+            LK_UNLCK = 3
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def locking(self, descriptor, mode, length) -> None:
+                self.calls.append((descriptor, mode, length))
+
+        with tempfile.TemporaryDirectory(prefix="wordtts-journal-lock-") as tmp:
+            path = Path(tmp) / "side_effect_intents.jsonl"
+            path.touch()
+            fake_msvcrt = FakeMsvcrt()
+            with path.open("r+b") as target, patch.dict(
+                sys.modules, {"fcntl": None, "msvcrt": fake_msvcrt}
+            ):
+                SideEffectIntentLog._lock_descriptor(target, exclusive=True)
+                SideEffectIntentLog._unlock_descriptor(target)
+
+            self.assertEqual([call[1:] for call in fake_msvcrt.calls], [(1, 1), (3, 1)])
 
     def test_rejected_tts_plan_marks_pretransaction_journal_as_aborted(self) -> None:
         with tempfile.TemporaryDirectory(prefix="wordtts-journal-abort-") as tmp:

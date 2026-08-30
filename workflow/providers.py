@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -68,8 +69,10 @@ def _safe_provider_details(value: Any) -> dict[str, Any]:
             return {str(k)[:128]: clean(v, key=str(k)) for k, v in list(item.items())[:32]}
         if isinstance(item, (list, tuple)):
             return [clean(v) for v in list(item)[:32]]
-        if item is None or isinstance(item, (bool, int, float)):
+        if item is None or isinstance(item, (bool, int)):
             return item
+        if isinstance(item, float):
+            return item if math.isfinite(item) else None
         return _safe_provider_message(item)
 
     return clean(value)
@@ -347,6 +350,7 @@ class XunfeiTTSAdapter:
         self.allow_real = bool(allow_real)
         self._receipts: dict[str, ProviderReceipt] = {}
         self._submission_payloads: dict[str, dict[str, Any]] = {}
+        self._last_runtime_status: str | None = None
         self.capabilities = ProviderCapabilities(
             self.provider,
             account_scope,
@@ -361,6 +365,95 @@ class XunfeiTTSAdapter:
         snapshot = self.capabilities.as_dict()
         snapshot["real_calls_enabled"] = self.allow_real
         snapshot["backend"] = type(self.backend).__name__ if self.backend is not None else "legacy-xunfei"
+        if self.backend is not None:
+            snapshot.update({
+                "status": "READY",
+                "ready": True,
+                "can_generate": True,
+                "can_start_generation": True,
+                "reason": "本地 Provider 后端已就绪",
+            })
+            return snapshot
+        if not self.allow_real:
+            snapshot.update({
+                "status": "DISABLED",
+                "ready": False,
+                "can_generate": False,
+                "can_start_generation": False,
+                "reason": "Provider 未启用真实调用",
+            })
+            return snapshot
+
+        # ``allow_real`` only means that a browser call is permitted; it is
+        # not proof that Playwright is installed or that the persistent
+        # Xunfei session is logged in.  Keep those facts separate so the
+        # workspace does not advertise READY before the first real boundary.
+        try:
+            import xunfei.runtime as legacy
+        except ImportError:
+            snapshot.update({
+                "status": "UNAVAILABLE",
+                "ready": False,
+                "can_generate": False,
+                "can_start_generation": False,
+                "reason": "讯飞浏览器运行环境不可用",
+            })
+            return snapshot
+        try:
+            runtime_available = bool(legacy.is_available())
+        except Exception:
+            runtime_available = False
+        if not runtime_available:
+            snapshot.update({
+                "status": "UNAVAILABLE",
+                "ready": False,
+                "can_generate": False,
+                "can_start_generation": False,
+                "reason": "讯飞浏览器运行环境不可用",
+            })
+            return snapshot
+
+        # Playwright objects are thread-affine: the synchronous health helper
+        # is only safe on the dedicated browser executor.  The adapter's
+        # snapshot is synchronous, so use the runtime-owned, locked status
+        # view maintained by its lifecycle callbacks instead of probing the
+        # page or reading the private session object from this thread.
+        status_getter = getattr(legacy, "session_status_snapshot", None)
+        session_status = status_getter() if callable(status_getter) else None
+        session_present = isinstance(session_status, Mapping)
+        logged_in = bool(session_status.get("logged_in")) if session_present else False
+        browser_disconnected = bool(session_status.get("browser_disconnected")) if session_present else False
+        session_healthy = bool(
+            session_present
+            and logged_in
+            and not browser_disconnected
+        )
+        if session_healthy:
+            status = "READY"
+        elif self._last_runtime_status in {"EXPIRED", "LOGIN_REQUIRED"}:
+            status = self._last_runtime_status
+        elif not session_present:
+            status = "LOGIN_REQUIRED"
+        elif browser_disconnected or logged_in:
+            status = "EXPIRED"
+        else:
+            status = "LOGIN_REQUIRED"
+        ready = status == "READY"
+        snapshot.update({
+            "status": status,
+            "ready": ready,
+            "can_generate": ready,
+            # Starting a foreground generation is also the user-visible
+            # login/reconnect flow for the legacy browser provider.
+            "can_start_generation": True,
+            "reason": (
+                "讯飞浏览器会话已就绪，可提交生成"
+                if ready
+                else "首次生成时将打开讯飞浏览器，请完成登录"
+                if status == "LOGIN_REQUIRED"
+                else "讯飞浏览器会话已断开，首次生成时将重新连接"
+            ),
+        })
         return snapshot
 
     def submit(self, submission_key: str, payload: Mapping[str, Any]) -> ProviderReceipt:
@@ -374,18 +467,25 @@ class XunfeiTTSAdapter:
             if key not in {"_cancel_check", "_progress_callback"}
         }
         self._submission_payloads[submission_key] = public_payload
-        if self.backend is not None:
-            raw = self.backend.submit(submission_key, public_payload)
-            receipt = self._normalize_backend_receipt(submission_key, raw)
+        try:
+            if self.backend is not None:
+                raw = self.backend.submit(submission_key, public_payload)
+                receipt = self._normalize_backend_receipt(submission_key, raw)
+            else:
+                if not self.allow_real:
+                    raise ProviderCapabilityError("real Xunfei calls are disabled; pass an explicit smoke-test capability")
+                receipt = self._submit_legacy_xunfei(
+                    submission_key,
+                    public_payload,
+                    cancel_check=cancel_check if callable(cancel_check) else None,
+                    progress_callback=progress_callback if callable(progress_callback) else None,
+                )
+        except ProviderError as exc:
+            if exc.code == "PROVIDER_LOGIN_REQUIRED":
+                self._last_runtime_status = "EXPIRED"
+            raise
         else:
-            if not self.allow_real:
-                raise ProviderCapabilityError("real Xunfei calls are disabled; pass an explicit smoke-test capability")
-            receipt = self._submit_legacy_xunfei(
-                submission_key,
-                public_payload,
-                cancel_check=cancel_check if callable(cancel_check) else None,
-                progress_callback=progress_callback if callable(progress_callback) else None,
-            )
+            self._last_runtime_status = "READY"
         self._receipts[submission_key] = receipt
         self.tracker.observe(
             submission_key,

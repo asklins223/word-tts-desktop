@@ -43,6 +43,7 @@ function createWorkflowEventTransport(ipcRenderer) {
         const onError = (_event, message = {}) => {
             if (message.streamId !== streamId) return;
             const error = new Error(message.error?.message || 'workflow SSE failed');
+            if (message.error?.code) error.code = message.error.code;
             if (message.error?.status) error.status = message.error.status;
             if (message.error?.closed) error.closed = true;
             if (errorListeners.size === 0) {

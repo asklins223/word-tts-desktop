@@ -1,0 +1,26 @@
+{
+  "name": "cancelled-no-deliverables",
+  "expected": { "view": "issues", "primary_action": "OPEN_VIEW", "terminal": true, "deliverable_percent": 0 },
+  "schema_version": 1,
+  "source_filename": "cancelled-lesson.docx",
+  "snapshot": { "workflow_id": "fixture-cancelled-no-deliverables", "workflow_group_id": "fixture-group-cancelled", "group_state_version": 1, "parent_workflow_id": null, "result_status": "CANCELLED", "execution_state": "TERMINAL", "control_state": "TERMINATED", "cleanup_state": "SUCCEEDED", "status": "ACTIVE", "state_version": 14, "draft_revision": 1, "current_step_id": "step-tts", "source_artifact_id": "artifact-source-cancelled", "item_count": 3, "artifact_count": 0, "latest_event_id": "event-cancelled-14", "latest_seq": 14, "updated_at": "2026-08-30T00:00:14Z" },
+  "progress": { "total": 3, "completed": 0, "failed": 0, "cancelled": 3, "skipped": 0, "pending": 0, "deliverable": 0, "percent": 100, "deliverable_percent": 0 },
+  "blockers": [],
+  "available_actions": [
+    { "kind": "SERVICE", "type": "RERUN", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-cancelled-no-deliverables" }, "expected_state_version": null, "expected_target_state_version": null, "expected_group_state_version": 1, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "SERVICE", "type": "ARCHIVE", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-cancelled-no-deliverables" }, "expected_state_version": 14, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "SERVICE", "type": "EXPORT_ZIP", "enabled": false, "reason": "没有通过核验的音频可纳入 ZIP", "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-cancelled-no-deliverables" }, "expected_state_version": 14, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": false, "retry_scope": "NONE" },
+    { "kind": "UI", "type": "OPEN_VIEW", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-cancelled-no-deliverables" }, "expected_state_version": null, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": false, "retry_scope": "NONE" }
+  ],
+  "current_target": null,
+  "items": [
+    { "item_id": "item-cancelled-1", "item_identity_key": "fixture-cancelled-no-deliverables:1", "sequence": 0, "item_type": "question", "normalized_content": "取消的第一条", "content_ref": null, "source_locator": "第 1 段", "metadata": { "doc_type": "判断题" }, "skip_reason": null, "content_hash": "0101010101010101010101010101010101010101010101010101010101010101", "status": "CANCELLED", "role": "default", "voice_key": "voice-1", "attempt_count": 0, "error_code": "USER_CANCELLED", "user_message": "用户停止了任务", "retry_scope": "NONE", "requires_reconcile": false, "artifact_ids": [], "updated_at": "2026-08-30T00:00:13Z" },
+    { "item_id": "item-cancelled-2", "item_identity_key": "fixture-cancelled-no-deliverables:2", "sequence": 1, "item_type": "question", "normalized_content": "取消的第二条", "content_ref": null, "source_locator": "第 2 段", "metadata": { "doc_type": "选择题" }, "skip_reason": null, "content_hash": "0202020202020202020202020202020202020202020202020202020202020202", "status": "CANCELLED", "role": "default", "voice_key": "voice-2", "attempt_count": 0, "error_code": "USER_CANCELLED", "user_message": "用户停止了任务", "retry_scope": "NONE", "requires_reconcile": false, "artifact_ids": [], "updated_at": "2026-08-30T00:00:13Z" },
+    { "item_id": "item-cancelled-3", "item_identity_key": "fixture-cancelled-no-deliverables:3", "sequence": 2, "item_type": "question", "normalized_content": "取消的第三条", "content_ref": null, "source_locator": "第 3 段", "metadata": { "doc_type": "填空题" }, "skip_reason": null, "content_hash": "0303030303030303030303030303030303030303030303030303030303030303", "status": "CANCELLED", "role": "default", "voice_key": null, "attempt_count": 0, "error_code": "USER_CANCELLED", "user_message": "用户停止了任务", "retry_scope": "NONE", "requires_reconcile": false, "artifact_ids": [], "updated_at": "2026-08-30T00:00:14Z" }
+  ],
+  "artifacts": [],
+  "configuration": { "configuration_revision": 1, "configuration_hash": "abababababababababababababababababababababababababababababababab", "effective": { "provider": "xunfei", "generation_mode": "composite_cut", "format": "mp3", "quality": "standard", "preview": false, "preview_limit": null, "rate": 0, "pitch": 0, "volume": 0, "default_female_voice": "female", "default_male_voice": "male", "role_voices": {}, "role_configs": {} }, "source_priority": {}, "frozen_fields": ["provider", "format"] },
+  "provider": { "provider": "xunfei", "status": "READY", "ready": true, "reason": "Provider 已就绪", "can_generate": true },
+  "delivery": { "zip_artifact_id": null, "zip_available": false, "included_item_ids": [], "excluded_item_ids": ["item-cancelled-1", "item-cancelled-2", "item-cancelled-3"], "exclusion_reasons": { "item-cancelled-1": "ITEM_CANCELLED", "item-cancelled-2": "ITEM_CANCELLED", "item-cancelled-3": "ITEM_CANCELLED" } },
+  "sync": { "state_version": 14, "last_event_id": "event-cancelled-14", "requires_resync": false }
+}

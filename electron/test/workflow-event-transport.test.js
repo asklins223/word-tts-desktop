@@ -42,7 +42,7 @@ test('事件 transport 会把 listener 注册前收到的错误交付给后续 l
         if (channel === 'workflow-events-ready') {
             ipc.emit('workflow-event-error', {}, {
                 streamId: 'stream-2',
-                error: { message: 'closed', status: 410, closed: true },
+                error: { message: 'closed', code: 'EVENT_GAP', status: 410, closed: true },
             });
             return true;
         }
@@ -56,6 +56,7 @@ test('事件 transport 会把 listener 注册前收到的错误交付给后续 l
 
     assert.equal(errors.length, 1);
     assert.equal(errors[0].message, 'closed');
+    assert.equal(errors[0].code, 'EVENT_GAP');
     assert.equal(errors[0].status, 410);
     assert.equal(errors[0].closed, true);
     await stream.close();

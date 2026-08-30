@@ -11,7 +11,7 @@ from db.migration_runner import (
     load_migrations,
     resolve_target,
 )
-from question_model import sync_sub_type_registry
+from question_model import QUESTION_TYPE_CODES, ensure_source_document, sync_sub_type_registry
 
 import sys
 sys.path.insert(0, os.path.join(
@@ -67,6 +67,34 @@ class BackfillLegacyTest(unittest.TestCase):
         count = self.con.execute(
             "SELECT COUNT(*) FROM legacy_aliases").fetchone()[0]
         self.assertEqual(count, 2)
+
+    def test_backfill_reuses_atomic_source_key_and_slugged_locator(self):
+        source_document_id = ensure_source_document(
+            self.con,
+            "样例",
+            display_name="样例.docx",
+        )
+        self.con.execute(
+            """INSERT INTO question_items(
+                       question_id, source_document_id, type_code,
+                       sub_type_code, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+            (
+                "question:样例:听选信息题目-题目1",
+                source_document_id,
+                QUESTION_TYPE_CODES["信息获取"],
+                "listening_info",
+                "2026-08-30T00:00:00+00:00",
+            ),
+        )
+
+        backfill_progress_file(self.con, self.progress_path)
+        row = self.con.execute(
+            """SELECT target_kind, target_id
+               FROM legacy_aliases
+               WHERE alias_kind='PROGRESS_ITEM'"""
+        ).fetchone()
+        self.assertEqual(tuple(row), ("QUESTION", "question:样例:听选信息题目-题目1"))
 
 
 if __name__ == "__main__":  # pragma: no cover

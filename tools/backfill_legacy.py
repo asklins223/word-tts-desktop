@@ -22,6 +22,26 @@ sys.path.insert(0, PROJECT_ROOT)
 DEFAULT_RUNTIME = os.path.join(PROJECT_ROOT, ".runtime")
 
 
+def _legacy_source_key(progress, progress_path):
+    """Rebuild the same source key used by the atomic parser bridge."""
+    source_name = (
+        progress.get("source_file")
+        or progress.get("source_filename")
+        or progress.get("filename")
+        or progress.get("source_path")
+    )
+    if source_name:
+        # Legacy Windows progress files can be read on a POSIX host.  Strip
+        # both path separator forms before applying the bridge's Path.stem
+        # convention.
+        source_name = os.path.basename(str(source_name).replace("\\", "/"))
+        return os.path.splitext(source_name)[0]
+    # Old records without source metadata cannot be safely matched to a
+    # document identity.  Keep the old progress stem as a deterministic,
+    # non-guessing fallback and let the alias remain WORK_ITEM if it misses.
+    return os.path.splitext(os.path.basename(str(progress_path)))[0]
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -39,6 +59,9 @@ def backfill_progress_file(conn, progress_path):
     """
     with open(progress_path, encoding="utf-8") as fh:
         progress = json.load(fh)
+    from question_model import build_identity
+
+    source_key = _legacy_source_key(progress, progress_path)
     session_id = f"legacy-progress:{os.path.dirname(progress_path)}"
     conn.execute(
         """INSERT OR IGNORE INTO legacy_execution_sessions
@@ -61,8 +84,8 @@ def backfill_progress_file(conn, progress_path):
                WHERE question_id = ? UNION ALL
                SELECT 'STIMULUS', stimulus_id FROM stimuli
                WHERE stimulus_id = ?""",
-            (f"question:{os.path.basename(progress_path)}:{locator}",
-             f"stimulus:{os.path.basename(progress_path)}:{locator}"),
+            (build_identity("question", source_key, locator),
+             build_identity("stimulus", source_key, locator)),
         ).fetchall()
         if rows:
             target_kind, target_id = rows[0]

@@ -1,0 +1,25 @@
+{
+  "name": "paused",
+  "expected": { "view": "generation", "primary_action": "RESUME", "terminal": false, "pause_enabled": false, "resume_enabled": true },
+  "schema_version": 1,
+  "source_filename": "paused-lesson.docx",
+  "snapshot": { "workflow_id": "fixture-paused", "workflow_group_id": "fixture-group-paused", "group_state_version": 1, "parent_workflow_id": null, "result_status": "IN_PROGRESS", "execution_state": "RUNNING", "control_state": "PAUSED", "cleanup_state": "NONE", "status": "ACTIVE", "state_version": 9, "draft_revision": 1, "current_step_id": "step-tts", "source_artifact_id": "artifact-source-paused", "item_count": 2, "artifact_count": 0, "latest_event_id": "event-paused-9", "latest_seq": 9, "updated_at": "2026-08-30T00:00:09Z" },
+  "progress": { "total": 2, "completed": 0, "failed": 0, "cancelled": 0, "skipped": 0, "pending": 2, "deliverable": 0, "percent": 0, "deliverable_percent": 0 },
+  "blockers": [],
+  "available_actions": [
+    { "kind": "SERVICE", "type": "PAUSE", "enabled": false, "reason": "当前没有可暂停的运行任务", "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-paused" }, "expected_state_version": 9, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "SERVICE", "type": "RESUME", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-paused" }, "expected_state_version": 9, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "SERVICE", "type": "CANCEL", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-paused" }, "expected_state_version": 9, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "UI", "type": "OPEN_VIEW", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-paused" }, "expected_state_version": null, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": false, "retry_scope": "NONE" }
+  ],
+  "current_target": null,
+  "items": [
+    { "item_id": "item-paused-1", "item_identity_key": "fixture-paused:1", "sequence": 0, "item_type": "question", "normalized_content": "暂停中的第一条", "content_ref": null, "source_locator": "第 1 段", "metadata": { "doc_type": "判断题" }, "skip_reason": null, "content_hash": "0505050505050505050505050505050505050505050505050505050505050505", "status": "RUNNING", "role": "default", "voice_key": "voice-1", "attempt_count": 1, "error_code": null, "user_message": null, "retry_scope": "NONE", "requires_reconcile": false, "artifact_ids": [], "updated_at": "2026-08-30T00:00:09Z" },
+    { "item_id": "item-paused-2", "item_identity_key": "fixture-paused:2", "sequence": 1, "item_type": "question", "normalized_content": "暂停中的第二条", "content_ref": null, "source_locator": "第 2 段", "metadata": { "doc_type": "选择题" }, "skip_reason": null, "content_hash": "0606060606060606060606060606060606060606060606060606060606060606", "status": "PENDING", "role": "default", "voice_key": null, "attempt_count": 0, "error_code": null, "user_message": null, "retry_scope": "NONE", "requires_reconcile": false, "artifact_ids": [], "updated_at": "2026-08-30T00:00:09Z" }
+  ],
+  "artifacts": [],
+  "configuration": { "configuration_revision": 1, "configuration_hash": "abababababababababababababababababababababababababababababababab", "effective": { "provider": "xunfei", "generation_mode": "composite_cut", "format": "mp3", "quality": "standard", "preview": false, "preview_limit": null, "rate": 0, "pitch": 0, "volume": 0, "default_female_voice": "female", "default_male_voice": "male", "role_voices": {}, "role_configs": {} }, "source_priority": {}, "frozen_fields": ["provider"] },
+  "provider": { "provider": "xunfei", "status": "READY", "ready": true, "reason": "Provider 已就绪", "can_generate": true },
+  "delivery": { "zip_artifact_id": null, "zip_available": false, "included_item_ids": [], "excluded_item_ids": ["item-paused-1", "item-paused-2"], "exclusion_reasons": { "item-paused-1": "NOT_GENERATED", "item-paused-2": "NOT_GENERATED" } },
+  "sync": { "state_version": 9, "last_event_id": "event-paused-9", "requires_resync": false }
+}

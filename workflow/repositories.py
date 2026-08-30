@@ -6,6 +6,7 @@ import json
 import sqlite3
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePath
 from typing import Any, Mapping
 
 from .database import WorkflowDatabase
@@ -56,6 +57,19 @@ class LeaseConflict(ConflictError):
 
 class BudgetExhausted(ConflictError):
     code = "RESOURCE_EXHAUSTED"
+
+
+def _safe_source_filename(value: Any, fallback: str = "未命名文档.docx") -> str:
+    raw = str(value or "").replace("\\", "/")
+    name = PurePath(raw).name
+    name = "".join(char for char in name if ord(char) >= 32 and ord(char) != 127).strip()
+    if len(name) <= 256:
+        return name or fallback
+    suffix = PurePath(name).suffix.lower()
+    if suffix in {".docx", ".xlsx"}:
+        max_stem_length = max(1, 256 - len(suffix))
+        return f"{PurePath(name).stem[:max_stem_length]}{suffix}"
+    return name[:256] or fallback
 
 
 _CONFIGURATION_REVISION_KEY = "_workflow_configuration_revision"
@@ -268,7 +282,8 @@ class WorkflowRepository:
         *,
         limit: int = 100,
         recoverable_only: bool = False,
-    ) -> list[dict[str, Any]]:
+        _include_page: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """Return active workflow facts, optionally limited to recovery candidates.
 
         This endpoint is intentionally a read-only index.  It never claims a
@@ -303,7 +318,7 @@ class WorkflowRepository:
                       AND w.execution_state <> 'TERMINAL'
                       {recovery_filter}
                     ORDER BY w.updated_at DESC, w.workflow_id DESC LIMIT ?""",
-                (limit,),
+                (limit + 1,),
             ).fetchall()
             for row in rows:
                 workflow_id = str(row["workflow_id"])
@@ -347,7 +362,11 @@ class WorkflowRepository:
                     "resume_reason": resume_reason,
                     "requires_reconcile": unresolved,
                 })
-        return candidates
+        truncated = len(candidates) > limit
+        visible = candidates[:limit]
+        if _include_page:
+            return {"workflows": visible, "limit": limit, "truncated": truncated}
+        return visible
 
     def mark_takeover(self, workflow_id: str) -> WorkflowSnapshot | None:
         """Fence a safe restart takeover before a new worker is scheduled."""
@@ -445,11 +464,12 @@ class WorkflowRepository:
             snapshot = _snapshot_from_connection(con, workflow_id)
             if snapshot.execution_state == "TERMINAL":
                 return snapshot
-            if snapshot.control_state != "RUNNING":
-                # A pause or cancel request must never be silently replaced
-                # by a successful all-skipped completion.  The worker may
-                # only close this local path while it still owns the running
-                # control fence.
+            if snapshot.control_state not in {"RUNNING", "PAUSE_REQUESTED"}:
+                # A cancel/paused control fence must never be silently
+                # replaced by a successful all-skipped completion.  A
+                # PAUSE_REQUESTED fence is different: no provider work is
+                # pending on this local path, so closing the already-settled
+                # workflow is safe and avoids a spurious 409 race.
                 raise ConflictError(
                     f"workflow control state is {snapshot.control_state}",
                     code="CONTROL_STATE_CONFLICT",
@@ -2597,6 +2617,18 @@ class WorkflowRepository:
                        WHERE workflow_id=? AND work_unit_id=? AND operation_namespace='tts'""",
                     (intent_state, now, workflow_id, work_unit_id),
                 )
+        if work_unit_id is not None and decision in {"CONFIRMED", "NOT_SUBMITTED"}:
+            # TTS reconciliation is represented by a durable intervention. A
+            # successful or explicitly non-submitted decision closes that
+            # handoff; BLOCKED deliberately remains open for further evidence.
+            con.execute(
+                """UPDATE user_interventions SET state='RESOLVED', resolved_by='desktop',
+                   resolved_at=?, state_version=state_version+1, updated_at=?
+                   WHERE workflow_id=? AND work_unit_id=?
+                     AND intervention_type='RECONCILE_PROVIDER'
+                     AND state IN ('OPEN','CLAIMED')""",
+                (now, now, workflow_id, work_unit_id),
+            )
         return True
 
     def create_item(
@@ -3018,41 +3050,99 @@ class WorkflowRepository:
                             source_filename = str((metadata or {}).get("filename") or "").strip()
                         except (TypeError, json.JSONDecodeError):
                             source_filename = ""
-                source_filename = source_filename[:256] or "未命名文档.docx"
+                source_filename = _safe_source_filename(source_filename)
 
                 artifact_rows = con.execute(
-                    """SELECT a.artifact_id, a.item_id, a.artifact_type, a.format, a.size_bytes
-                       FROM artifacts a
-                       JOIN artifact_blobs b ON b.blob_id=a.blob_id
-                       JOIN work_items wi ON wi.workflow_id=a.workflow_id AND wi.item_id=a.item_id
-                       WHERE a.workflow_id=? AND a.lifecycle_state='READY'
-                         AND a.verified=1
-                         AND a.artifact_type='tts-segment'
-                         AND b.lifecycle_state='READY'
-                         AND wi.status='SUCCEEDED'
-                       ORDER BY a.created_at, a.artifact_id""",
+                    """SELECT artifact_id, item_id, artifact_type, format, size_bytes,
+                              sequence, sha256
+                       FROM (
+                           SELECT a.artifact_id, a.item_id, a.artifact_type, a.format,
+                                  a.size_bytes, a.sha256, wi.sequence,
+                                  a.lifecycle_state AS artifact_lifecycle_state,
+                                  a.verified AS artifact_verified, b.format AS blob_format,
+                                  b.sha256 AS blob_sha256, b.size_bytes AS blob_size_bytes,
+                                  b.lifecycle_state AS blob_lifecycle_state, wi.status AS item_status,
+                                  a.created_at,
+                                  ROW_NUMBER() OVER (
+                                      PARTITION BY a.item_id
+                                      ORDER BY a.created_at DESC, a.artifact_id DESC
+                                  ) AS row_number
+                           FROM artifacts a
+                           JOIN artifact_blobs b ON b.blob_id=a.blob_id
+                           JOIN work_items wi ON wi.workflow_id=a.workflow_id AND wi.item_id=a.item_id
+                           WHERE a.workflow_id=? AND a.artifact_type='tts-segment'
+                       )
+                       WHERE row_number=1
+                         AND artifact_lifecycle_state='READY' AND artifact_verified=1
+                         AND blob_lifecycle_state='READY' AND item_status='SUCCEEDED'
+                         AND LOWER(TRIM(format))='mp3'
+                         AND LOWER(TRIM(blob_format))='mp3'
+                         AND sha256=blob_sha256
+                         AND size_bytes=blob_size_bytes
+                       ORDER BY sequence, item_id""",
                     (workflow_id,),
                 ).fetchall()
-                zip_row = con.execute(
-                    """SELECT artifact_id FROM artifacts
-                       WHERE workflow_id=? AND lifecycle_state='READY' AND verified=1
-                         AND artifact_type='export-zip'
-                       ORDER BY created_at DESC, artifact_id DESC LIMIT 1""",
-                    (workflow_id,),
-                ).fetchone()
                 item_rows = con.execute(
                     """SELECT item_id, item_identity_key, item_type, status, normalized_content
                        FROM work_items WHERE workflow_id=? ORDER BY sequence, item_id""",
                     (workflow_id,),
                 ).fetchall()
+                # History may be rendered without hydrating a workspace, so
+                # it must apply the same current-scope check as the workspace
+                # projection.  A latest valid ZIP from an earlier partial run
+                # is not a current delivery once a newer segment is present.
+                expected_full_zip_id = None
+                if artifact_rows:
+                    export_basis = [
+                        {
+                            "item_id": str(artifact["item_id"]),
+                            "sequence": int(artifact["sequence"]),
+                            "artifact_id": str(artifact["artifact_id"]),
+                            "sha256": str(artifact["sha256"]),
+                        }
+                        for artifact in artifact_rows
+                        if artifact["item_id"] is not None
+                    ]
+                    if export_basis:
+                        export_hash = content_hash({
+                            "workflow_id": workflow_id,
+                            "segments": export_basis,
+                            "requested_item_ids": None,
+                        })
+                        expected_full_zip_id = f"artifact-export-{export_hash[:32]}"
+                zip_row = None
+                if expected_full_zip_id:
+                    zip_row = con.execute(
+                        """SELECT a.artifact_id FROM artifacts a
+                           JOIN artifact_blobs b ON b.blob_id=a.blob_id
+                           WHERE a.workflow_id=? AND a.artifact_id=?
+                             AND a.lifecycle_state='READY' AND a.verified=1
+                             AND a.artifact_type='export-zip'
+                             AND b.lifecycle_state='READY'
+                             AND LOWER(TRIM(a.format))='zip'
+                             AND LOWER(TRIM(b.format))='zip'
+                             AND a.sha256=b.sha256
+                             AND a.size_bytes=b.size_bytes""",
+                        (workflow_id, expected_full_zip_id),
+                    ).fetchone()
                 available_item_ids = {str(item["item_id"]) for item in artifact_rows if item["item_id"]}
                 failed_items = []
+                failed_count = 0
+                cancelled_count = 0
+                skipped_count = 0
                 for item in item_rows:
                     item_id = str(item["item_id"])
                     status = str(item["status"])
-                    if status in {"FAILED", "AMBIGUOUS", "UNRESOLVED", "CANCELLED", "SKIPPED"} or (
+                    if status == "CANCELLED":
+                        cancelled_count += 1
+                        continue
+                    if status == "SKIPPED":
+                        skipped_count += 1
+                        continue
+                    if status in {"FAILED", "AMBIGUOUS", "UNRESOLVED"} or (
                         snapshot.execution_state == "TERMINAL" and item_id not in available_item_ids
                     ):
+                        failed_count += 1
                         failed_items.append({
                             "item_id": item_id,
                             "id": str(item["item_identity_key"]),
@@ -3067,8 +3157,11 @@ class WorkflowRepository:
                     "source_filename": source_filename,
                     "available_files": len(artifact_rows),
                     "completed": len(available_item_ids),
-                    "failed": len(failed_items),
+                    "failed": failed_count,
+                    "cancelled": cancelled_count,
+                    "skipped": skipped_count,
                     "total": len(item_rows),
+                    "pending": max(0, len(item_rows) - len(available_item_ids) - failed_count - cancelled_count - skipped_count),
                     "format": first_format,
                     "generation_mode": str(configuration.get("generation_mode") or "composite_cut"),
                     "preview": bool(configuration.get("preview", False)),
@@ -3168,8 +3261,12 @@ class WorkflowRepository:
                 """SELECT item_id, sequence, item_identity_key, artifact_id, sha256,
                           size_bytes, format, storage_key
                    FROM (
-                       SELECT a.item_id, i.sequence, i.item_identity_key, a.artifact_id,
-                              a.sha256, a.size_bytes, b.format, b.storage_key,
+                       SELECT a.item_id, i.sequence, i.item_identity_key, i.status AS item_status, a.artifact_id,
+                              a.sha256, a.size_bytes, a.format, b.format AS blob_format,
+                              b.sha256 AS blob_sha256, b.size_bytes AS blob_size_bytes,
+                              b.storage_key, a.lifecycle_state AS artifact_lifecycle_state,
+                              a.verified AS artifact_verified,
+                              b.lifecycle_state AS blob_lifecycle_state,
                               ROW_NUMBER() OVER (
                                   PARTITION BY a.item_id
                                   ORDER BY a.created_at DESC, a.artifact_id DESC
@@ -3178,10 +3275,14 @@ class WorkflowRepository:
                        JOIN artifact_blobs b ON b.blob_id=a.blob_id
                        JOIN work_items i ON i.workflow_id=a.workflow_id AND i.item_id=a.item_id
                        WHERE a.workflow_id=? AND a.artifact_type='tts-segment'
-                         AND a.lifecycle_state='READY' AND a.verified=1
-                         AND b.lifecycle_state='READY' AND i.status='SUCCEEDED'
                    )
                    WHERE row_number=1
+                     AND artifact_lifecycle_state='READY' AND artifact_verified=1
+                     AND blob_lifecycle_state='READY' AND item_status='SUCCEEDED'
+                     AND LOWER(TRIM(format))='mp3'
+                     AND LOWER(TRIM(blob_format))='mp3'
+                     AND sha256=blob_sha256
+                     AND size_bytes=blob_size_bytes
                    ORDER BY sequence, item_id
                    LIMIT ?""",
                 (workflow_id, limit),
@@ -3194,6 +3295,7 @@ class WorkflowRepository:
         with self.database.read_transaction() as con:
             row = con.execute(
                 """SELECT a.*, b.storage_key, b.format AS blob_format,
+                          b.sha256 AS blob_sha256, b.size_bytes AS blob_size_bytes,
                           b.lifecycle_state AS blob_lifecycle_state
                    FROM artifacts a JOIN artifact_blobs b ON b.blob_id=a.blob_id
                    WHERE a.artifact_id=? AND a.verified=1""",
@@ -3203,13 +3305,31 @@ class WorkflowRepository:
                 raise NotFoundError(f"artifact does not exist: {artifact_id}")
             if row["lifecycle_state"] != "READY" or row["blob_lifecycle_state"] != "READY":
                 raise RepositoryError("artifact is not ready", code="ARTIFACT_INVALID")
+            # A READY flag alone is not enough to authorize a read.  The
+            # Artifact row and its content-addressed Blob must still describe
+            # the same byte object; otherwise a historical/corrupt row could
+            # make a service read under the wrong format or fingerprint.
+            from .workspace import artifact_blob_facts_match
+
+            if not artifact_blob_facts_match(
+                artifact_format=row["format"],
+                blob_format=row["blob_format"],
+                artifact_sha256=row["sha256"],
+                blob_sha256=row["blob_sha256"],
+                artifact_size_bytes=row["size_bytes"],
+                blob_size_bytes=row["blob_size_bytes"],
+            ):
+                raise RepositoryError(
+                    "artifact and Blob metadata conflict",
+                    code="ARTIFACT_INVALID",
+                )
             return {
                 "artifact_id": str(row["artifact_id"]),
                 "workflow_id": str(row["workflow_id"]),
                 "storage_key": str(row["storage_key"]),
-                "format": str(row["blob_format"] or row["format"] or "bin"),
-                "sha256": str(row["sha256"] or ""),
-                "size_bytes": int(row["size_bytes"] or 0),
+                "format": str(row["blob_format"]),
+                "sha256": str(row["blob_sha256"]),
+                "size_bytes": int(row["blob_size_bytes"]),
             }
 
     def list_work_unit_items(self, work_unit_id: str) -> list[dict[str, Any]]:
@@ -4023,7 +4143,7 @@ class WorkflowRepository:
                 """UPDATE work_items SET status=?, state_version=state_version+1, updated_at=?
                    WHERE workflow_id=? AND item_id IN (
                        SELECT item_id FROM work_unit_items WHERE workflow_id=? AND work_unit_id=?
-                   )""",
+                   ) AND status <> 'SKIPPED'""",
                 ("AMBIGUOUS" if ambiguous else "FAILED", now,
                  plan["workflow_id"], plan["workflow_id"], plan["work_unit_id"]),
             )
@@ -4826,41 +4946,47 @@ class WorkflowRepository:
             target_json=target_json,
             request=request,
         )
+
+        def replay_existing(row: sqlite3.Row | None, *, purge_expired: bool) -> tuple[str, dict[str, Any] | None] | None:
+            if row is None:
+                return None
+            if purge_expired and _is_expired(row["expires_at"]):
+                con.execute(
+                    "DELETE FROM workflow_idempotency_keys WHERE idempotency_id=?",
+                    (row["idempotency_id"],),
+                )
+                return None
+            # The metadata columns are part of the idempotency identity,
+            # not merely audit fields.  Without these checks a client key
+            # reused for two commands in the same scope could replay the
+            # first command's response for the second one.
+            metadata_matches = (
+                str(row["command_name"]) == str(command_name)
+                and str(row["method"]) == str(method)
+                and row["resource_id"] == resource_id
+                and str(row["target_json"] or "{}") == target_json
+            )
+            # Databases created before the composite fingerprint was
+            # introduced contain a body-only hash. Preserve those safe
+            # replays, but only after the durable metadata comparison.
+            legacy_hash = content_hash(request)
+            hash_matches = row["request_hash"] in {request_hash, legacy_hash}
+            if not metadata_matches or not hash_matches:
+                raise IdempotencyConflict("same idempotency key was used for a different request")
+            if row["response_json"]:
+                return str(row["idempotency_id"]), json.loads(row["response_json"])
+            raise IdempotencyInProgress(
+                "the same idempotency request is still in progress; retry after it completes"
+            )
+
         with self.database.transaction() as con:
             row = con.execute(
                 "SELECT * FROM workflow_idempotency_keys WHERE scope_hash=? AND client_key=?",
                 (scope_hash, client_key),
             ).fetchone()
-            if row is not None:
-                if _is_expired(row["expires_at"]):
-                    con.execute(
-                        "DELETE FROM workflow_idempotency_keys WHERE idempotency_id=?",
-                        (row["idempotency_id"],),
-                    )
-                    row = None
-            if row is not None:
-                # The metadata columns are part of the idempotency identity,
-                # not merely audit fields.  Without these checks a client key
-                # reused for two commands in the same scope could replay the
-                # first command's response for the second one.
-                metadata_matches = (
-                    str(row["command_name"]) == str(command_name)
-                    and str(row["method"]) == str(method)
-                    and row["resource_id"] == resource_id
-                    and str(row["target_json"] or "{}") == target_json
-                )
-                # Databases created before the composite fingerprint was
-                # introduced contain a body-only hash.  Preserve those safe
-                # replays, but only after the durable metadata comparison.
-                legacy_hash = content_hash(request)
-                hash_matches = row["request_hash"] in {request_hash, legacy_hash}
-                if not metadata_matches or not hash_matches:
-                    raise IdempotencyConflict("same idempotency key was used for a different request")
-                if row["response_json"]:
-                    return str(row["idempotency_id"]), json.loads(row["response_json"])
-                raise IdempotencyInProgress(
-                    "the same idempotency request is still in progress; retry after it completes"
-                )
+            existing = replay_existing(row, purge_expired=True)
+            if existing is not None:
+                return existing
             idem_id = new_id("idempotency")
             # A route may reserve an idempotency key before its domain lookup
             # returns NOT_FOUND. Keep the association when the workflow
@@ -4874,15 +5000,48 @@ class WorkflowRepository:
                 ).fetchone()
                 if exists is None:
                     stored_workflow_id = None
-            con.execute(
-                """INSERT INTO workflow_idempotency_keys(
-                    idempotency_id, scope_hash, client_key, command_name, method,
-                    resource_id, target_json, request_hash, workflow_id,
-                    response_status, response_json, expires_at, created_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (idem_id, scope_hash, client_key, command_name, method, resource_id,
-                 target_json, request_hash, stored_workflow_id, None, None, _expiry(ttl_seconds), utc_now()),
+            values = (
+                idem_id, scope_hash, client_key, command_name, method, resource_id,
+                target_json, request_hash, stored_workflow_id, None, None, _expiry(ttl_seconds), utc_now(),
             )
+            try:
+                con.execute(
+                    """INSERT INTO workflow_idempotency_keys(
+                        idempotency_id, scope_hash, client_key, command_name, method,
+                        resource_id, target_json, request_hash, workflow_id,
+                        response_status, response_json, expires_at, created_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+            except sqlite3.IntegrityError:
+                # BEGIN IMMEDIATE normally serializes this path, but a legacy
+                # caller or another process can still race the SELECT/INSERT
+                # window. Turn the UNIQUE loser into the same safe replay or
+                # in-progress result instead of leaking a 500.
+                competing = con.execute(
+                    "SELECT * FROM workflow_idempotency_keys WHERE scope_hash=? AND client_key=?",
+                    (scope_hash, client_key),
+                ).fetchone()
+                existing = replay_existing(competing, purge_expired=True)
+                if existing is not None:
+                    return existing
+                # The only reason the row can disappear here is an expired
+                # reservation observed during the defensive recheck. Retry
+                # the insert once; if another reservation wins that race, it
+                # is an in-progress request rather than a persistence fault.
+                try:
+                    con.execute(
+                        """INSERT INTO workflow_idempotency_keys(
+                            idempotency_id, scope_hash, client_key, command_name, method,
+                            resource_id, target_json, request_hash, workflow_id,
+                            response_status, response_json, expires_at, created_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        values,
+                    )
+                except sqlite3.IntegrityError as retry_exc:
+                    raise IdempotencyInProgress(
+                        "the same idempotency request is still in progress; retry after it completes"
+                    ) from retry_exc
             return idem_id, None
 
     def abandon_idempotency(self, *, client_key: str, resource_id: str | None = None) -> int:

@@ -39,11 +39,17 @@ function toBytes(value) {
     throw new TypeError('source content must be a byte buffer or ReadableStream');
 }
 
-function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, openArtifactStream }) {
+function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, cancelSourceUpload, openArtifactStream }) {
     if (typeof request !== 'function') throw new TypeError('workflow request transport is required');
 
-    async function call(method, pathname, body, headers = {}) {
-        const response = await request({ method, pathname, body, headers });
+    async function call(method, pathname, body, headers = {}, options = {}) {
+        const response = await request({
+            method,
+            pathname,
+            body,
+            headers,
+            signal: options?.signal || null,
+        });
         return unwrapResponse(response, 'workflow request');
     }
 
@@ -60,10 +66,10 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
         return response?.body;
     }
 
-    async function mutate(method, pathname, body, fixedIdempotencyKey = null) {
+    async function mutate(method, pathname, body, fixedIdempotencyKey = null, options = {}) {
         return call(method, pathname, body, {
             'X-Idempotency-Key': fixedIdempotencyKey || idempotencyKey(),
-        });
+        }, options);
     }
 
     return Object.freeze({
@@ -78,6 +84,23 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
         async getWorkspace(workflowId) {
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}/workspace`);
             return response?.workspace || null;
+        },
+        async getItemContent(workflowId, itemId, contentId, expectedStateVersion, options = {}) {
+            const params = new URLSearchParams();
+            if (expectedStateVersion !== undefined && expectedStateVersion !== null) {
+                params.set('expected_state_version', String(expectedStateVersion));
+            }
+            if (options?.offsetBytes !== undefined && options?.offsetBytes !== null) {
+                params.set('offset_bytes', String(options.offsetBytes));
+            }
+            if (options?.maxResponseBytes !== undefined && options?.maxResponseBytes !== null) {
+                params.set('max_response_bytes', String(options.maxResponseBytes));
+            }
+            const query = params.toString() ? `?${params.toString()}` : '';
+            return call(
+                'GET',
+                `/api/v1/workflows/${encode(workflowId)}/items/${encode(itemId)}/content/${encode(contentId)}${query}`,
+            );
         },
         async getConfig() {
             return call('GET', '/api/v1/config');
@@ -125,8 +148,16 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
             return Array.isArray(response?.workflows) ? response.workflows : [];
         },
         async listActiveWorkflows(limit = 100) {
+            const page = await this.listActiveWorkflowPage(limit);
+            return page.workflows;
+        },
+        async listActiveWorkflowPage(limit = 100) {
             const response = await call('GET', `/api/v1/workflows/active?limit=${encode(limit)}`);
-            return Array.isArray(response?.workflows) ? response.workflows : [];
+            return {
+                workflows: Array.isArray(response?.workflows) ? response.workflows : [],
+                limit: Number(response?.limit) || Math.min(Math.max(1, Number(limit) || 100), 200),
+                truncated: response?.truncated === true,
+            };
         },
         async listItems(workflowId) {
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}/items`);
@@ -140,8 +171,14 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
             const response = await mutate('PATCH', `/api/v1/workflows/${encode(workflowId)}`, input);
             return response.workflow;
         },
-        async patchWorkspace(workflowId, input) {
-            const response = await mutate('PATCH', `/api/v1/workflows/${encode(workflowId)}/workspace`, input);
+        async patchWorkspace(workflowId, input, options = {}) {
+            const response = await mutate(
+                'PATCH',
+                `/api/v1/workflows/${encode(workflowId)}/workspace`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
             return response?.workspace || null;
         },
         async holdRetry(workflowId, input) {
@@ -153,6 +190,7 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
                 `/api/v1/workflows/${encode(workflowId)}/${encode(action)}`,
                 input,
                 options?.idempotencyKey || null,
+                options,
             );
         },
         async parseWorkflow(workflowId, input) {
@@ -164,6 +202,7 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
                 `/api/v1/workflows/${encode(workflowId)}/generate`,
                 input,
                 options?.idempotencyKey || null,
+                options,
             );
         },
         async createExportZip(workflowId, input) {
@@ -179,14 +218,26 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
         async reconcile(workflowId, input) {
             return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/reconcile`, input);
         },
-        async rerun(workflowId, input) {
-            const response = await mutate('POST', `/api/v1/workflows/${encode(workflowId)}/reruns`, input);
+        async rerun(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/reruns`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
             return response.workflow;
         },
-        async resolve(input) {
+        async resolve(input, options = {}) {
             if (!input?.attempt_id) throw new Error('resolve requires the source attempt id');
             const { attempt_id: _attemptId, ...body } = input;
-            return mutate('POST', `/api/v1/attempts/${encode(_attemptId)}/resolve`, body);
+            return mutate(
+                'POST',
+                `/api/v1/attempts/${encode(_attemptId)}/resolve`,
+                body,
+                options?.idempotencyKey || null,
+                options,
+            );
         },
         async openWorkflowEvents(workflowId, lastEventId) {
             if (typeof openEvents !== 'function') throw new Error('workflow SSE transport is unavailable');
@@ -197,14 +248,40 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
         async createSourceImport(workflowId, input) {
             return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/source-imports`, input);
         },
-        async writeSourceImport(importId, generation, content) {
-            const current = await call('GET', `/api/v1/source-imports/${encode(importId)}/generations/${encode(generation)}`);
+        async writeSourceImport(importId, generation, content, options = {}) {
+            const signal = options?.signal || null;
+            if (signal?.aborted) {
+                const error = new Error('source import was cancelled');
+                error.name = 'AbortError';
+                error.code = 'USER_CANCELLED';
+                throw error;
+            }
+            const current = await call(
+                'GET',
+                `/api/v1/source-imports/${encode(importId)}/generations/${encode(generation)}`,
+                null,
+                {},
+                { signal },
+            );
+            if (signal?.aborted) {
+                const error = new Error('source import was cancelled');
+                error.name = 'AbortError';
+                error.code = 'USER_CANCELLED';
+                throw error;
+            }
             const ticket = await call(
                 'POST',
                 `/api/v1/source-imports/${encode(importId)}/generations/${encode(generation)}/writer-tickets`,
                 { expected_state_version: current.state_version },
                 { 'X-Idempotency-Key': idempotencyKey() },
+                { signal },
             );
+            if (signal?.aborted) {
+                const error = new Error('source import was cancelled');
+                error.name = 'AbortError';
+                error.code = 'USER_CANCELLED';
+                throw error;
+            }
             const headers = {
                 'X-Idempotency-Key': idempotencyKey(),
                 'X-Staging-Generation': String(generation),
@@ -213,22 +290,50 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
                 'Content-Type': 'application/octet-stream',
             };
             if (content && typeof content === 'object' && content.sourceFileId && typeof uploadSourceFile === 'function') {
-                const response = await uploadSourceFile({
-                    pathname: `/api/v1/source-imports/${encode(importId)}/content`,
-                    headers,
-                    sourceFileId: String(content.sourceFileId),
-                });
-                return unwrapResponse(response, 'workflow source upload');
+                const uploadId = String(options?.uploadId || `source-upload-${randomUUID()}`);
+                const abort = () => {
+                    if (typeof cancelSourceUpload === 'function') {
+                        void cancelSourceUpload({ uploadId }).catch(() => {});
+                    }
+                };
+                signal?.addEventListener?.('abort', abort, { once: true });
+                try {
+                    const response = await uploadSourceFile({
+                        pathname: `/api/v1/source-imports/${encode(importId)}/content`,
+                        headers,
+                        sourceFileId: String(content.sourceFileId),
+                        uploadId,
+                        onProgress: options?.onProgress,
+                    });
+                    if (signal?.aborted) {
+                        const error = new Error('source import was cancelled');
+                        error.name = 'AbortError';
+                        error.code = 'USER_CANCELLED';
+                        throw error;
+                    }
+                    return unwrapResponse(response, 'workflow source upload');
+                } finally {
+                    signal?.removeEventListener?.('abort', abort);
+                }
             }
             if (typeof upload === 'function') {
                 const response = await upload({
                     pathname: `/api/v1/source-imports/${encode(importId)}/content`,
                     headers,
                     content,
+                    signal,
+                    onProgress: options?.onProgress,
                 });
                 return unwrapResponse(response, 'workflow source upload');
             }
-            return call('PUT', `/api/v1/source-imports/${encode(importId)}/content`, await toBytes(content), headers);
+            const bytes = await toBytes(content);
+            if (signal?.aborted) {
+                const error = new Error('source import was cancelled');
+                error.name = 'AbortError';
+                error.code = 'USER_CANCELLED';
+                throw error;
+            }
+            return call('PUT', `/api/v1/source-imports/${encode(importId)}/content`, bytes, headers, { signal });
         },
         async getSourceImport(importId) {
             return call('GET', `/api/v1/source-imports/${encode(importId)}`);
@@ -236,24 +341,50 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, open
         async getSourceImportGeneration(importId, generation) {
             return call('GET', `/api/v1/source-imports/${encode(importId)}/generations/${encode(generation)}`);
         },
+        async abortSourceImport(importId, input, options = {}) {
+            return mutate(
+                'POST',
+                `/api/v1/source-imports/${encode(importId)}/abort`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
         async openArtifact(artifactId) {
             if (typeof openArtifactStream === 'function') {
                 return openArtifactStream({ artifactId });
             }
             const ticket = await call('POST', `/api/v1/artifacts/${encode(artifactId)}/content-tickets`);
-            const response = await call(
-                'GET',
-                `/api/v1/artifacts/${encode(artifactId)}/content`,
-                undefined,
-                { 'X-Artifact-Ticket': ticket.ticket },
-            );
-            const bytes = response instanceof Uint8Array ? response : new Uint8Array(response || []);
-            return new ReadableStream({
+            const rawResponse = await request({
+                method: 'GET',
+                pathname: `/api/v1/artifacts/${encode(artifactId)}/content`,
+                headers: { 'X-Artifact-Ticket': ticket.ticket },
+            });
+            const response = unwrapResponse(rawResponse, 'workflow artifact content');
+            const headers = rawResponse?.headers || {};
+            const rawSha256 = String(headers['x-artifact-sha256'] || headers.etag || '')
+                .replace(/^W\//i, '').replace(/^"|"$/g, '').trim();
+            const rawLength = Number(headers['content-length']);
+            let filename = ticket.filename || null;
+            const encodedFilename = String(headers['x-artifact-filename'] || '').trim();
+            if (encodedFilename) {
+                try { filename = decodeURIComponent(encodedFilename); } catch (_) { /* use ticket fallback */ }
+            }
+            const stream = new ReadableStream({
                 start(controller) {
-                    controller.enqueue(bytes);
-                    controller.close();
+                    Promise.resolve(toBytes(response)).then((bytes) => {
+                        controller.enqueue(bytes);
+                        controller.close();
+                    }, (error) => controller.error(error));
                 },
             });
+            stream.metadata = {
+                content_type: String(headers['content-type'] || '').split(';', 1)[0] || ticket.content_type || null,
+                content_length: Number.isSafeInteger(rawLength) && rawLength >= 0 ? rawLength : ticket.content_length ?? null,
+                sha256: /^[0-9a-f]{64}$/i.test(rawSha256) ? rawSha256.toLowerCase() : ticket.sha256 || null,
+                filename,
+            };
+            return stream;
         },
     });
 }

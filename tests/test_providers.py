@@ -32,7 +32,10 @@ class _Backend:
             "account_scope": "test-account",
             "provider_job_id": "formal-1",
             "canonical_key": "canonical-1",
-            "output": b"provider-audio",
+            # The adapter advertises MP3-only output.  Keep this seam honest
+            # so the engine's publication gate exercises a valid provider
+            # payload instead of accepting arbitrary bytes.
+            "output": b"\xff\xfb\x90\x64provider-audio",
             "temporary_works_id": "temp-1",
             "formal_works_id": "formal-1",
             "summary": {"authorization": "should-not-be-used-by-repo"},
@@ -55,6 +58,27 @@ class ProviderTests(unittest.TestCase):
     def test_real_provider_is_enabled_by_default(self) -> None:
         provider = XunfeiTTSAdapter(account_scope="test-account")
         self.assertTrue(provider.allow_real)
+
+    def test_capability_snapshot_separates_login_start_from_ready_generation(self) -> None:
+        import xunfei.runtime as legacy
+
+        provider = XunfeiTTSAdapter(account_scope="test-account", allow_real=True)
+        with mock.patch.object(legacy, "is_available", return_value=True), mock.patch.object(legacy, "_session", None):
+            snapshot = provider.capability_snapshot()
+        self.assertEqual(snapshot["status"], "LOGIN_REQUIRED")
+        self.assertFalse(snapshot["ready"])
+        self.assertFalse(snapshot["can_generate"])
+        self.assertTrue(snapshot["can_start_generation"])
+
+        with mock.patch.object(legacy, "is_available", return_value=False):
+            unavailable_snapshot = provider.capability_snapshot()
+        self.assertEqual(unavailable_snapshot["status"], "UNAVAILABLE")
+        self.assertFalse(unavailable_snapshot["can_start_generation"])
+
+        disabled = XunfeiTTSAdapter(account_scope="test-account", allow_real=False)
+        disabled_snapshot = disabled.capability_snapshot()
+        self.assertEqual(disabled_snapshot["status"], "DISABLED")
+        self.assertFalse(disabled_snapshot["can_start_generation"])
 
     def test_legacy_provider_errors_are_stable_and_safe(self) -> None:
         quota = _normalize_legacy_error(
@@ -185,7 +209,10 @@ class ProviderTests(unittest.TestCase):
             result = WorkflowEngine(repository, ArtifactStore(root / "artifacts")).run_tts(workflow.workflow_id, provider)
             self.assertEqual(result.status, "SUCCEEDED")
             self.assertEqual(backend.calls, 1)
-            self.assertEqual(provider.capability_snapshot()["capability_version"], "xunfei-adapter-1")
+            capability_snapshot = provider.capability_snapshot()
+            self.assertEqual(capability_snapshot["capability_version"], "xunfei-adapter-1")
+            self.assertEqual(capability_snapshot["status"], "READY")
+            self.assertTrue(capability_snapshot["can_generate"])
             database.close()
         finally:
             temp.cleanup()

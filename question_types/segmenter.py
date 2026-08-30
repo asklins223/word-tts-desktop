@@ -48,7 +48,7 @@ def parse_document_once(filepath):
     from . import PARSER_MAP, detect_doc_type, detect_types_in_content
 
     # xlsx 词汇走专用分支（与 auto 路径一致，不经过 Word 结构读取）
-    if filepath.lower().endswith(".xlsx"):
+    if str(filepath).lower().endswith(".xlsx"):
         doc_type = detect_doc_type(os.path.basename(filepath))
         if doc_type is None:
             return [], "未识别到任何题型内容"

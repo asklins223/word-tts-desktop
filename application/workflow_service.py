@@ -147,22 +147,22 @@ class WorkflowApplicationService:
                     source_basis=source["sha256"][:32],
                     source_filename=filename,
                 )
+
+                # 方案 6.4 桥接：必须在临时源文件仍然存在时执行。桥接会
+                # 重新读取同一份源文档，失败仍然不阻断 workflow 主链路。
+                from application.atomic_bridge import bridge_parse_to_atomic_model
+
+                self._atomic_bridge = bridge_parse_to_atomic_model(
+                    self.repository.database,
+                    source_path=temp_path,
+                    filename=filename,
+                    source_sha256=parsed.source_sha256,
+                    workflow_id=workflow_id,
+                )
             except ArtifactStoreError:
                 raise
             except OSError as exc:
                 raise WorkflowApplicationError("PERSISTENCE_ERROR", "managed source could not be prepared for parsing") from exc
-
-        # 方案 6.4 桥接：workflow 主链路的解析同步落原子模型（旁路写入，
-        # 失败不阻断主流程；幂等重放由 persist_parse 保证）
-        from application.atomic_bridge import bridge_parse_to_atomic_model
-
-        self._atomic_bridge = bridge_parse_to_atomic_model(
-            self.repository.database,
-            source_path=temp_path,
-            filename=filename,
-            source_sha256=parsed.source_sha256,
-            workflow_id=workflow_id,
-        )
 
         serialized = canonical_json(parsed.as_dict()).encode("utf-8")
         try:
@@ -315,6 +315,7 @@ class WorkflowApplicationService:
         generation_mode: str | None = None,
         provider: str | None = None,
         account_scope: str | None = None,
+        allow_interactive_provider: bool = True,
         cancel_check: Callable[[], bool] | None = None,
         pause_check: Callable[[], bool] | None = None,
         item_ids: Sequence[str] | None = None,
@@ -333,7 +334,10 @@ class WorkflowApplicationService:
         if all_skipped:
             return self._complete_skipped_result(workflow_id)
         adapter = self.provider(provider_name, scope)
-        self._ensure_provider_ready(adapter)
+        self._ensure_provider_ready(
+            adapter,
+            allow_interactive=allow_interactive_provider,
+        )
         return self.engine.run_tts(
             workflow_id,
             adapter,
@@ -472,6 +476,16 @@ class WorkflowApplicationService:
             "requested_item_ids": sorted(requested_ids) if requested_ids is not None else None,
         })
         artifact_id = f"artifact-export-{export_hash[:32]}"
+        # Keep enough scope information on the immutable export Artifact for
+        # the workspace projection to distinguish an intentional subset from
+        # a full export that was created while some items were still missing.
+        # The latter must not become the apparent current ZIP after a retry
+        # publishes a newer segment.
+        export_producer_version = (
+            "2:full"
+            if requested_ids is None
+            else ("2:subset-ready" if requested_set == included_set else "2:subset-partial")
+        )
         existing = next(
             (
                 artifact for artifact in self.repository.list_artifacts(workflow_id, limit=2000)
@@ -483,6 +497,24 @@ class WorkflowApplicationService:
             None,
         )
         if existing is not None:
+            try:
+                existing_storage = self.repository.get_artifact_storage(
+                    artifact_id,
+                    workflow_id=workflow_id,
+                )
+            except (NotFoundError, RepositoryError) as exc:
+                # Deterministic export ids cannot be silently rebound to a
+                # different Blob.  Refuse a corrupt historical row instead of
+                # returning a false-success download response.
+                raise WorkflowApplicationError(
+                    "ARTIFACT_INVALID",
+                    "已有 ZIP 产物的存储元数据未通过核验，请重新生成工作流",
+                ) from exc
+            if str(existing_storage.get("format") or "").lower().lstrip(".") != "zip":
+                raise WorkflowApplicationError(
+                    "ARTIFACT_INVALID",
+                    "已有 ZIP 产物的格式未通过核验，请重新生成工作流",
+                )
             return {
                 **existing,
                 "included_count": len(segments),
@@ -529,6 +561,7 @@ class WorkflowApplicationService:
                 workflow_id,
                 artifact_id=artifact_id,
                 blob=blob,
+                producer_version=export_producer_version,
                 parent_artifact_ids=[str(segment["artifact_id"]) for segment in segments],
             )
             return {
@@ -540,7 +573,7 @@ class WorkflowApplicationService:
                 "size_bytes": blob.size_bytes,
                 "format": blob.format,
                 "producer": "workflow-export",
-                "producer_version": "1",
+                "producer_version": export_producer_version,
                 "verified": True,
                 "included_count": len(segments),
                 "included_item_ids": included_item_ids,
@@ -657,9 +690,14 @@ class WorkflowApplicationService:
     @staticmethod
     def _safe_filename(value: str) -> str:
         name = Path(str(value or "source.docx")).name
-        if Path(name).suffix.lower() not in {".docx", ".xlsx"}:
+        suffix = Path(name).suffix.lower()
+        if suffix not in {".docx", ".xlsx"}:
             raise WorkflowApplicationError("UNSUPPORTED_MEDIA_TYPE", "only .docx and .xlsx sources are supported")
-        return name[:256]
+        # Keep the extension after bounding the user-controlled filename;
+        # otherwise a long stem could silently turn a valid source into an
+        # extensionless file and make later parser routing ambiguous.
+        max_stem_length = max(1, 256 - len(suffix))
+        return f"{Path(name).stem[:max_stem_length]}{suffix}"
 
     @staticmethod
     def _content_length(content: Any) -> int | None:
@@ -674,9 +712,45 @@ class WorkflowApplicationService:
         return content
 
     @staticmethod
-    def _ensure_provider_ready(provider: TTSProviderPort) -> None:
+    def _ensure_provider_ready(
+        provider: TTSProviderPort,
+        *,
+        allow_interactive: bool = True,
+    ) -> None:
         if getattr(provider, "backend", object()) is None and not bool(getattr(provider, "allow_real", True)):
             raise ProviderCapabilityError("provider is not enabled for real external calls")
+        snapshot_getter = getattr(provider, "capability_snapshot", None)
+        if not callable(snapshot_getter):
+            return
+        try:
+            snapshot = snapshot_getter()
+        except ProviderCapabilityError:
+            raise
+        except Exception as exc:
+            raise ProviderCapabilityError("provider capability could not be confirmed") from exc
+        if not isinstance(snapshot, Mapping):
+            return
+        status = str(snapshot.get("status") or "").upper()
+        if status in {"UNAVAILABLE", "DISABLED"}:
+            raise ProviderCapabilityError(
+                str(snapshot.get("reason") or "provider is not available for real external calls")
+            )
+        if status == "READY" and (
+            snapshot.get("ready") is not True
+            or snapshot.get("can_generate") is not True
+        ):
+            raise ProviderCapabilityError(
+                str(snapshot.get("reason") or "provider readiness is inconsistent")
+            )
+        if status in {"UNKNOWN", "LOGIN_REQUIRED", "EXPIRED"}:
+            if not allow_interactive:
+                raise ProviderCapabilityError(
+                    str(snapshot.get("reason") or "provider is not ready for unattended generation")
+                )
+            if not bool(snapshot.get("can_start_generation")):
+                raise ProviderCapabilityError(
+                    str(snapshot.get("reason") or "provider capability has not been confirmed")
+                )
 
 
 __all__ = ["WorkflowApplicationError", "WorkflowApplicationService"]

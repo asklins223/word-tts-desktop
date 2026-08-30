@@ -12,7 +12,11 @@ const { createWorkflowArtifactTransport } = require('./workflow-artifact-transpo
 
 const workflow = createWorkflowApi({
     request: (input) => ipcRenderer.invoke('workflow-request', input),
-    uploadSourceFile: (input) => ipcRenderer.invoke('workflow-source-upload', input),
+    // The progress callback is a renderer-only function and must not cross
+    // Electron's structured-clone boundary.  The main process emits progress
+    // on the dedicated channel exposed below.
+    uploadSourceFile: ({ onProgress: _onProgress, ...input }) => ipcRenderer.invoke('workflow-source-upload', input),
+    cancelSourceUpload: (input) => ipcRenderer.invoke('workflow-source-upload-cancel', input),
     openEvents: createWorkflowEventTransport(ipcRenderer),
     openArtifactStream: createWorkflowArtifactTransport(ipcRenderer),
 });
@@ -23,11 +27,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // method remains as a compatibility fallback for older renderer callers.
     selectFile: () => ipcRenderer.invoke('select-source-file'),
     selectFileStream: () => ipcRenderer.invoke('select-source-file-stream'),
+    releaseSourceFile: (sourceFileId) => ipcRenderer.invoke('release-source-file', { sourceFileId }),
     saveFile: (bytes, suggestedName) => ipcRenderer.invoke('save-artifact-file', bytes, suggestedName),
     saveArtifactStream: (artifactId, suggestedName) => ipcRenderer.invoke(
         'save-artifact-stream',
         { artifactId, suggestedName },
     ),
+    startArtifactDownload: (artifactId, suggestedName, transferId) => ipcRenderer.invoke(
+        'save-artifact-stream-start',
+        { artifactId, suggestedName, transferId },
+    ),
+    cancelArtifactDownload: (transferId) => ipcRenderer.invoke(
+        'cancel-artifact-download',
+        { transferId },
+    ),
+    onArtifactDownloadProgress: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const handler = (_event, progress) => callback(progress);
+        ipcRenderer.on('artifact-download-progress', handler);
+        return () => ipcRenderer.removeListener('artifact-download-progress', handler);
+    },
+    onSourceUploadProgress: (callback) => {
+        if (typeof callback !== 'function') return () => {};
+        const handler = (_event, progress) => callback(progress);
+        ipcRenderer.on('source-upload-progress', handler);
+        return () => ipcRenderer.removeListener('source-upload-progress', handler);
+    },
     // 拖拽导入：渲染层只暴露 File -> 本地路径 的映射与分块暂存 API，
     // 文件内容按块经 IPC 进入主进程落盘，渲染进程不再整块持有文档。
     getPathForFile: (file) => {

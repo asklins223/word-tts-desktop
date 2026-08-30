@@ -2,7 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsNative = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { Readable } = require('node:stream');
 const { createNativeFileDialogs } = require('../file-dialogs');
 
 function createHarness(overrides = {}) {
@@ -47,6 +50,8 @@ function createHarness(overrides = {}) {
         isTrustedSender: overrides.isTrustedSender || (() => true),
         logger: { log() {}, error() {} },
         maxContentBytes: overrides.maxContentBytes,
+        maxSourceBytes: overrides.maxSourceBytes,
+        maxStreamBytes: overrides.maxStreamBytes,
     });
     return { service, owner, event, calls };
 }
@@ -88,6 +93,58 @@ test('原生源文件选择返回受控流句柄和大小，不读取整份文�
     assert.ok(result.handle);
     await result.handle.close();
     assert.equal(closed, 1);
+
+    const separateBounds = createHarness({
+        maxContentBytes: 4,
+        maxSourceBytes: 16,
+        fs: {
+            constants: { O_RDONLY: 0, O_NOFOLLOW: 0 },
+            promises: {
+                open: async () => ({
+                    stat: async () => ({ isFile: () => true, size: 8 }),
+                    close: async () => {},
+                }),
+            },
+        },
+    });
+    const sourceWithinStreamBound = await separateBounds.service.selectFileSource(separateBounds.event);
+    assert.equal(sourceWithinStreamBound.success, true);
+    await sourceWithinStreamBound.handle.close();
+
+    const sourceTooLarge = createHarness({
+        maxSourceBytes: 4,
+        fs: {
+            constants: { O_RDONLY: 0, O_NOFOLLOW: 0 },
+            promises: {
+                open: async () => ({
+                    stat: async () => ({ isFile: () => true, size: 8 }),
+                    close: async () => {},
+                }),
+            },
+        },
+    });
+    assert.deepEqual(await sourceTooLarge.service.selectFileSource(sourceTooLarge.event), {
+        success: false,
+        reason: 'file-too-large',
+    });
+
+    const bounded = createHarness({
+        maxContentBytes: 4,
+        fs: {
+            constants: { O_RDONLY: 0, O_NOFOLLOW: 0 },
+            promises: {
+                open: async () => ({
+                    stat: async () => ({ isFile: () => true, size: 8 }),
+                    readFile: async () => { throw new Error('must not read oversized compatibility input'); },
+                    close: async () => {},
+                }),
+            },
+        },
+    });
+    assert.deepEqual(await bounded.service.selectFileContent(bounded.event), {
+        success: false,
+        reason: 'file-too-large',
+    });
 });
 
 test('原生文件框打开前会恢复并显示当前窗口', async () => {
@@ -102,6 +159,17 @@ test('原生文件框打开前会恢复并显示当前窗口', async () => {
     assert.equal(calls.restore, 1);
     assert.equal(calls.show, 1);
     assert.equal(calls.focus, 1);
+});
+
+test('原生文件框即使返回过滤器之外的路径也会拒绝导入', async () => {
+    const { service, event } = createHarness({
+        dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ['/safe/notes.pdf'] }) },
+    });
+
+    assert.deepEqual(await service.selectFile(event), {
+        success: false,
+        reason: 'unsupported-file-type',
+    });
 });
 
 test('选择 Word 的取消、无窗口与系统异常均返回结构化原因', async (t) => {
@@ -177,12 +245,88 @@ test('保存内存字节先 fsync 临时文件再原子替换目标文件', asyn
     assert.deepEqual(unlinks, []);
 });
 
+test('临时文件名偶发冲突时会重试而不是直接返回 write-error', async () => {
+    let attempts = 0;
+    const writes = [];
+    const { service, event } = createHarness({
+        fs: {
+            promises: {
+                writeFile: async (...args) => {
+                    attempts += 1;
+                    writes.push(args);
+                    if (attempts === 1) {
+                        const error = new Error('temporary name already exists');
+                        error.code = 'EEXIST';
+                        throw error;
+                    }
+                },
+                open: async () => ({ sync: async () => {}, close: async () => {} }),
+                rename: async () => {},
+                unlink: async () => {},
+            },
+        },
+    });
+
+    const result = await service.saveFileContent(event, new Uint8Array([1, 2, 3]), 'lesson.mp3');
+
+    assert.deepEqual(result, { success: true });
+    assert.equal(attempts, 2);
+    assert.notEqual(writes[0][0], writes[1][0]);
+});
+
 test('保存内存字节超过上限时不会弹出保存框', async () => {
     const { service, event, calls } = createHarness({ maxContentBytes: 2 });
     const result = await service.saveFileContent(event, Buffer.from([1, 2, 3]), 'lesson.mp3');
 
     assert.deepEqual(result, { success: false, reason: 'file-too-large' });
     assert.equal(calls.save.length, 0);
+});
+
+test('流式保存按块报告进度，并在取消时清理临时文件且不替换目标', async () => {
+    const directory = fsNative.mkdtempSync(path.join(os.tmpdir(), 'wordtts-stream-test-'));
+    const targetPath = path.join(directory, 'lesson.mp3');
+    const progress = [];
+    try {
+        const { service, event } = createHarness({
+            fs: fsNative,
+            dialog: { showSaveDialog: async () => ({ canceled: false, filePath: targetPath }) },
+            maxContentBytes: 4,
+            maxStreamBytes: 16 * 1024,
+        });
+        const controller = new AbortController();
+        const source = Readable.from([
+            Buffer.alloc(4 * 1024, 1),
+            Buffer.alloc(4 * 1024, 2),
+            Buffer.alloc(4 * 1024, 3),
+        ]);
+        source.statusCode = 200;
+        source.headers = {};
+        const resultPromise = service.saveFileStream(
+            event,
+            async () => source,
+            'lesson.mp3',
+            {
+                signal: controller.signal,
+                onProgress: (value) => {
+                    progress.push(value);
+                    if (value.receivedBytes >= 4 * 1024) controller.abort();
+                },
+            },
+        );
+        const result = await resultPromise;
+
+        assert.deepEqual(result, {
+            success: false,
+            reason: 'user-cancelled',
+            error: 'The operation was aborted',
+        });
+        assert.equal(progress[0].receivedBytes, 4 * 1024);
+        assert.equal(progress.at(-1).totalBytes, null);
+        assert.equal(fsNative.existsSync(targetPath), false);
+        assert.deepEqual(fsNative.readdirSync(directory), []);
+    } finally {
+        fsNative.rmSync(directory, { recursive: true, force: true });
+    }
 });
 
 test('保存文件的所有失败分支都返回非空结构化原因', async (t) => {

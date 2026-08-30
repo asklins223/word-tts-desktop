@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from workflow.artifact_store import ArtifactStore
-from workflow.audio import AudioError, AudioProcessor, AudioVerifier, SegmentBoundary, validate_segment_boundaries
+from workflow.audio import AudioError, AudioProcessor, AudioVerifier, SegmentBoundary, looks_like_mp3_bytes, validate_segment_boundaries
 from workflow.parser import LegacyWordParser, ParserError, document_hash, iter_json_items
 
 
@@ -63,6 +63,12 @@ class ParserAudioTests(unittest.TestCase):
             self.assertEqual(blob.format, "mp3")
             with self.assertRaises(AudioError):
                 processor.process(io.BytesIO(b""), format="mp3")
+
+    def test_mp3_publication_check_is_bounded_and_rejects_plain_bytes(self) -> None:
+        self.assertFalse(looks_like_mp3_bytes(b"ID3\x04\x00\x00payload"))
+        self.assertTrue(looks_like_mp3_bytes(b"\xff\xfb\x90\x64payload"))
+        self.assertFalse(looks_like_mp3_bytes(b"\xff\xe0\x90\x64payload"))
+        self.assertFalse(looks_like_mp3_bytes(b"plain provider bytes"))
 
     def test_segment_boundary_validation_rejects_overlap_gap_and_bad_indexes(self) -> None:
         valid = validate_segment_boundaries(

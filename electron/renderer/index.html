@@ -3,11 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="light dark">
+    <!-- Keep the local renderer isolated: backend traffic is capability-proxied
+         through preload, while the browser preview still needs blob/data media. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://openstorage.xfyousheng.com https://pygfile.peiyinge.com; media-src 'self' blob: data: https://pygfile.peiyinge.com http://ceph.xfyousheng.com; font-src 'self' data:; connect-src 'self'">
     <title>小猪wordTTS · 文档配音工作台</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <!--
+      THESIS: 文档配音工作台是一张轻盈、可恢复的任务桌面，而不是一次性表单。
+      OWN-WORLD: 教材排版的清晰层级与声音信号的节奏共同构成蓝紫工作台。
+      STORY: 导入源文档 → 核对内容 → 配置声音 → 生成任务 → 交付音频。
+      FIRST VIEWPORT: 左侧流程轨道、顶部任务上下文、中央单一主动作与可见状态证据。
+      FORM: 白色纸面、蓝紫墨色、薄边界、圆角工作面；音频波形只出现在生成与交付。
+      unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+    -->
     <div id="app">
         <aside id="sidebar" aria-label="任务导航">
             <div class="sidebar-brand">
@@ -19,8 +30,8 @@
             </div>
 
             <div class="workflow-label">任务流程</div>
-            <nav id="stepper" role="list" aria-label="音频生成进度">
-                <div class="step-indicator" data-step="1" role="listitem">
+            <nav id="stepper" aria-label="音频生成进度">
+                <div class="step-indicator" data-step="1" data-workspace="import" role="button" tabindex="0" aria-label="导入文档">
                     <div class="step-circle"><span class="step-num">1</span></div>
                     <div class="step-copy">
                         <span class="step-label">导入文档</span>
@@ -28,27 +39,35 @@
                     </div>
                 </div>
                 <div class="step-line" data-line="1"></div>
-                <div class="step-indicator" data-step="2" role="listitem">
+                <div class="step-indicator" data-step="2" data-workspace="review" role="button" tabindex="0" aria-label="核对内容">
                     <div class="step-circle"><span class="step-num">2</span></div>
                     <div class="step-copy">
-                        <span class="step-label">核对与设置</span>
-                        <span class="step-meta">确认内容与输出</span>
+                        <span class="step-label">核对内容</span>
+                        <span class="step-meta">确认解析结构</span>
                     </div>
                 </div>
-                <div class="step-line" data-line="2"></div>
-                <div class="step-indicator" data-step="3" role="listitem">
+                <div class="step-line" data-line="review-voice"></div>
+                <div class="step-indicator" data-step="2" data-workspace="voice" role="button" tabindex="0" aria-label="配置声音">
                     <div class="step-circle"><span class="step-num">3</span></div>
                     <div class="step-copy">
-                        <span class="step-label">生成音频</span>
-                        <span class="step-meta">自动处理文档内容</span>
+                        <span class="step-label">配置声音</span>
+                        <span class="step-meta">选择音色与输出</span>
                     </div>
                 </div>
-                <div class="step-line" data-line="3"></div>
-                <div class="step-indicator" data-step="4" role="listitem">
+                <div class="step-line" data-line="voice-generation"></div>
+                <div class="step-indicator" data-step="3" data-workspace="generation" role="button" tabindex="0" aria-label="生成任务">
                     <div class="step-circle"><span class="step-num">4</span></div>
                     <div class="step-copy">
-                        <span class="step-label">试听与下载</span>
-                        <span class="step-meta">检查并保存文件</span>
+                        <span class="step-label">生成任务</span>
+                        <span class="step-meta">实时跟踪处理</span>
+                    </div>
+                </div>
+                <div class="step-line" data-line="generation-delivery"></div>
+                <div class="step-indicator" data-step="4" data-workspace="delivery" role="button" tabindex="0" aria-label="交付中心">
+                    <div class="step-circle"><span class="step-num">5</span></div>
+                    <div class="step-copy">
+                        <span class="step-label">交付中心</span>
+                        <span class="step-meta">试听、核验与下载</span>
                     </div>
                 </div>
             </nav>
@@ -63,11 +82,15 @@
                     </span>
                     <span class="history-nav-count" id="history-nav-count">0</span>
                 </button>
+                <div class="active-task-hint" id="active-task-hint" hidden>
+                    <span class="active-task-hint-dot" aria-hidden="true"></span>
+                    <span id="active-task-hint-text">有任务需要处理</span>
+                </div>
             </div>
 
             <div class="sidebar-footnote">
                 <span class="privacy-icon" aria-hidden="true">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                 </span>
                 <span><strong>本地任务空间</strong><small>文档本机保存</small></span>
             </div>
@@ -80,27 +103,37 @@
                     <span class="toolbar-divider" aria-hidden="true"></span>
                     <span id="toolbar-step">01 / 导入文档</span>
                     <span class="toolbar-document" id="toolbar-document" hidden></span>
+                    <span class="task-status-badge is-neutral" id="task-status-badge">待导入</span>
+                    <span class="toolbar-counts" id="toolbar-counts" aria-live="polite"></span>
                 </div>
                 <div class="toolbar-right">
                     <span class="service-state" id="service-state" role="status" aria-live="polite"><span class="service-dot"></span><span class="service-label">正在连接服务</span></span>
                     <button type="button" class="btn-ghost btn-restart" id="retry-service-btn" hidden>重试连接</button>
+                    <button type="button" class="btn-icon theme-toggle" id="theme-toggle" aria-label="切换深色模式" title="切换深色模式">
+                        <svg class="theme-icon theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                        <svg class="theme-icon theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    </button>
                     <button type="button" id="restart-btn" class="btn-ghost btn-restart" title="清空当前任务并重新开始">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
                         新建任务
                     </button>
                 </div>
             </header>
 
             <main id="content">
+                <div class="workspace-status-banner" id="workspace-status-banner" role="status" aria-live="polite" hidden>
+                    <span class="workspace-status-mark" aria-hidden="true"></span>
+                    <div><strong id="workspace-status-title">任务状态</strong><p id="workspace-status-message"></p></div>
+                    <button type="button" class="btn-ghost btn-sm" id="workspace-status-action" hidden>处理</button>
+                </div>
                 <!-- Step 1: 导入文档 -->
                 <section class="step-page active" id="page-1" aria-labelledby="upload-title">
                     <div class="page-scroll">
                         <div class="upload-workspace">
                             <div class="page-heading page-heading-wide">
                                 <div>
-                                    <span class="eyebrow">新建配音任务</span>
                                     <h1 id="upload-title" tabindex="-1">把文档变成可直接交付的音频</h1>
-                                    <p>导入教学文档，系统会自动识别内容结构、分配男女声，并按题型整理音频。</p>
+                                    <p>导入一份 .docx 或 .xlsx 教学文档，先核对解析结构，再生成可试听、可交付的音频。</p>
                                 </div>
                             </div>
 
@@ -109,20 +142,20 @@
                                     <div class="card-heading-row">
                                         <div>
                                             <span class="upload-heading-icon" aria-hidden="true">
-                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                                             </span>
-                                            <div><h2>导入源文档</h2><p>选择一个新版本 Word 文档</p></div>
+                                            <div><h2>导入源文档</h2><p>选择一份 Word 或 Excel 文档开始创建任务</p></div>
                                         </div>
                                         <span class="accepted-format">.docx / .xlsx</span>
                                     </div>
 
-                                    <div class="upload-zone-large" id="upload-zone" role="button" tabindex="0" aria-label="选择或拖入 Word 文档">
+                                    <div class="upload-zone-large" id="upload-zone" role="button" tabindex="0" aria-label="选择或拖入 Word 或 Excel 文档">
                                         <div class="upload-visual" aria-hidden="true">
                                             <div class="upload-file-icon">
-                                                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h8M8 17h5"/></svg>
+                                                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h8M8 17h5"/></svg>
                                             </div>
                                             <span class="upload-arrow">
-                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
                                             </span>
                                         </div>
                                         <div class="upload-text-large">拖拽文档到这里，或点击选择</div>
@@ -130,28 +163,32 @@
                                         <span class="upload-cta">选择文档</span>
                                     </div>
                                     <div class="upload-feedback" id="upload-feedback" role="status" aria-live="polite" hidden></div>
+                                    <div class="upload-progress" id="upload-progress" hidden>
+                                        <div class="upload-progress-heading"><span id="upload-progress-label">准备导入</span><strong id="upload-progress-value">0%</strong></div>
+                                        <progress id="upload-progress-bar" max="100" value="0" aria-label="文档导入进度"></progress>
+                                    </div>
+                                    <button type="button" class="btn-ghost btn-sm upload-cancel-btn" id="cancel-import-btn" hidden>停止导入</button>
                                 </div>
 
                                 <aside class="surface-card checklist-card">
-                                    <span class="eyebrow">文档规则</span>
                                     <h2>导入前快速确认</h2>
                                     <ul class="checklist">
                                         <li>
-                                            <span class="check-icon">✓</span>
-                                            <div><strong>使用 .docx 或 .xlsx 格式</strong><small>暂不支持旧版 .doc 文档</small></div>
+                                            <span class="check-icon" aria-hidden="true"></span>
+                                            <div><strong>使用 .docx 或 .xlsx 格式</strong><small>词汇题目可从 Excel 文档导入</small></div>
                                         </li>
                                         <li>
-                                            <span class="check-icon">✓</span>
+                                            <span class="check-icon" aria-hidden="true"></span>
                                             <div><strong>保留原文结构</strong><small>换行内容按原文提交给讯飞</small></div>
                                         </li>
                                         <li>
-                                            <span class="check-icon">✓</span>
+                                            <span class="check-icon" aria-hidden="true"></span>
                                             <div><strong>按标记自动分配音色</strong><small>w / W 为女声，m / M 为男声</small></div>
                                         </li>
                                     </ul>
                                     <div class="default-profile">
                                         <div class="profile-icon" aria-hidden="true">
-                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
                                         </div>
                                         <div><small>推荐设置</small><strong>自然语速 · MP3 · 128 kbps</strong></div>
                                     </div>
@@ -162,19 +199,42 @@
                 </section>
 
                 <!-- Step 2: 声音配置 -->
-                <section class="step-page" id="page-2" aria-labelledby="config-title">
+                <section class="step-page" id="page-2" aria-label="内容核对与声音配置">
                     <div class="page-scroll">
                         <div class="config-container">
+                            <div class="workspace-view content-review-view" id="content-review-view" hidden>
+                                <div class="page-heading config-page-heading">
+                                    <div>
+                                        <h1 id="review-title" tabindex="-1">核对解析内容</h1>
+                                        <p>这里展示服务端解析出的内容结构。生成前可以直接修订正文，或跳过不需要配音的条目。</p>
+                                    </div>
+                                    <span class="review-readonly-badge">生成前可编辑</span>
+                                </div>
+                                <div class="review-layout">
+                                    <section class="surface-card review-summary-card" aria-labelledby="review-summary-title">
+                                        <div class="review-summary-top"><div class="section-heading-copy"><h2 id="review-summary-title">这份文档会生成什么</h2></div><span class="review-count" id="review-summary">等待解析</span></div>
+                                        <div class="review-outline" id="review-outline" aria-label="文档内容结构"></div>
+                                        <div class="review-note"><span class="note-mark" aria-hidden="true">i</span><span>内容核对阶段不会加载波形或触发声音请求，避免把试听和事实核对混在一起。</span></div>
+                                    </section>
+                                    <section class="surface-card review-items-card" aria-labelledby="review-items-title">
+                                        <div class="section-heading-row"><div class="section-heading-copy"><h2 id="review-items-title">解析出的内容</h2></div><span class="review-item-count" id="review-item-count">0 条</span></div>
+                                        <div class="review-items" id="review-items" role="list" aria-label="解析条目列表"></div>
+                                        <div class="empty-state review-empty" id="review-empty" hidden><strong>暂时没有可展示的条目</strong><p>请重新解析文档，或检查源文件是否包含可读文本。</p></div>
+                                    </section>
+                                </div>
+                                <div class="review-actions"><button type="button" class="btn-ghost" id="review-reprocess-btn">重新导入</button><button type="button" class="btn-primary" id="review-next-btn">确认内容，配置声音</button></div>
+                            </div>
+
+                            <div class="workspace-view voice-config-view" id="voice-config-view">
                             <div class="page-heading config-page-heading">
                                 <div>
-                                    <span class="eyebrow">核对与生成</span>
                                     <h1 id="config-title" tabindex="-1">核对内容并设置输出</h1>
                                     <p>先确认解析数量和声音分配，再调整讯飞三项声音参数与输出选项。</p>
                                 </div>
                                 <button type="button" class="source-file-chip" id="change-file-btn" title="更换源文档">
-                                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                                     <span><small id="source-file-meta">当前文档</small><strong id="source-file-name">已导入的文档</strong></span>
-                                    <svg class="chip-action" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 0 15 6.7L21 16"/><path d="M21 21v-5h-5"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M8 8H3V3"/></svg>
+                                    <svg class="chip-action" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 0 15 6.7L21 16"/><path d="M21 21v-5h-5"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M8 8H3V3"/></svg>
                                 </button>
                             </div>
 
@@ -182,9 +242,9 @@
                                 <div class="config-main">
                                     <section class="surface-card config-section preset-section">
                                         <div class="section-heading-row">
-                                            <div>
-                                                <span class="section-index">方案</span>
-                                                <div><h2>配置方案</h2><p>加载常用设置，或保存当前参数供下次使用。</p></div>
+                                            <div class="section-heading-copy">
+                                                <h2>配置方案</h2>
+                                                <p>加载常用设置，或保存当前参数供下次使用。</p>
                                             </div>
                                         </div>
                                         <div class="preset-bar">
@@ -193,24 +253,24 @@
                                                 <option value="">选择已保存的配置</option>
                                             </select>
                                             <button type="button" class="btn-secondary btn-sm" id="apply-preset-btn" title="应用到当前表单">
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
                                                 应用
                                             </button>
                                             <button type="button" class="btn-ghost btn-sm" id="save-preset-btn" title="保存当前配置">
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                                                 保存
                                             </button>
                                             <button type="button" class="btn-icon btn-danger-ghost" id="delete-preset-btn" title="删除选中配置" aria-label="删除选中的配置">
-                                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                                             </button>
                                         </div>
                                     </section>
 
                                     <section class="surface-card config-section voice-workspace-section">
                                         <div class="section-heading-row">
-                                            <div>
-                                                <span class="section-index">01</span>
-                                                <div><h2>音色分配</h2><p>点击卡片选择音色，卡片右侧可直接试听；每个音色都保存独立的语速、语调和音量。</p></div>
+                                            <div class="section-heading-copy">
+                                                <h2>音色分配</h2>
+                                                <p>点击卡片选择音色，卡片右侧可直接试听；每个音色都保存独立的语速、语调和音量。</p>
                                             </div>
                                             <span class="auto-badge"><span></span>讯飞音色目录</span>
                                         </div>
@@ -220,7 +280,7 @@
                                                     <strong>本题角色</strong>
                                                     <span id="voice-role-count">2 个默认角色</span>
                                                 </div>
-                                                <div class="voice-role-list" id="voice-role-list" role="listbox" aria-label="选择要配置的角色"></div>
+                                                <div class="voice-role-list" id="voice-role-list" role="group" aria-label="选择要配置的角色"></div>
                                                 <p class="voice-role-note">无角色标识的内容使用默认女声；单词和例句始终使用默认女声。</p>
                                             </aside>
 
@@ -232,7 +292,7 @@
                                                         <input type="search" id="voice-search-input" placeholder="搜索音色 / 标签" autocomplete="off">
                                                     </label>
                                                 </div>
-                                                <div class="voice-filter-row" id="voice-filter-row" role="tablist" aria-label="音色分类"></div>
+                                                <div class="voice-filter-row" id="voice-filter-row" role="group" aria-label="音色分类"></div>
                                                 <div class="voice-browser-layout">
                                                     <div class="voice-browser-grid" id="voice-browser-grid" role="list" aria-label="音色列表"></div>
                                                     <div class="voice-browser-empty" id="voice-browser-empty" hidden>没有匹配的音色，请换个关键词或分类。</div>
@@ -296,9 +356,9 @@
 
                                     <section class="surface-card config-section">
                                         <div class="section-heading-row">
-                                            <div>
-                                                <span class="section-index">02</span>
-                                                <div><h2>生成方式</h2><p>选择讯飞提交方式；默认一次生成后按停顿切回单段音频。</p></div>
+                                            <div class="section-heading-copy">
+                                                <h2>生成方式</h2>
+                                                <p>选择讯飞提交方式；默认一次生成后按停顿切回单段音频。</p>
                                             </div>
                                         </div>
                                         <div class="generation-mode-options" role="radiogroup" aria-label="音频生成方式">
@@ -326,9 +386,9 @@
 
                                     <section class="surface-card config-section">
                                         <div class="section-heading-row">
-                                            <div>
-                                                <span class="section-index">03</span>
-                                                <div><h2>输出文件</h2><p>选择兼容性与文件体积之间的平衡。</p></div>
+                                            <div class="section-heading-copy">
+                                                <h2>输出文件</h2>
+                                                <p>选择兼容性与文件体积之间的平衡。</p>
                                             </div>
                                         </div>
                                         <div class="config-grid output-grid">
@@ -356,7 +416,7 @@
                                     <div class="surface-card output-summary-card">
                                         <div class="summary-card-head">
                                             <span class="summary-icon" aria-hidden="true">
-                                                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                                                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
                                             </span>
                                             <div><small>本次输出</small><strong>生成设置摘要</strong></div>
                                         </div>
@@ -368,29 +428,35 @@
                                             <div><span class="summary-key">输出</span><strong class="summary-value" id="summary-output">MP3 · 128 kbps</strong></div>
                                             <div><span class="summary-key">生成范围</span><strong class="summary-value" id="summary-scope">完整文档</strong></div>
                                         </div>
+                                        <div class="provider-status" id="provider-status" role="status" aria-live="polite">
+                                            <span class="provider-status-dot" aria-hidden="true"></span>
+                                            <span><strong>讯飞服务</strong><small id="provider-status-text">正在检查可用性</small></span>
+                                            <button type="button" class="btn-ghost btn-sm provider-action-btn" id="provider-action-btn" hidden>重新检测</button>
+                                        </div>
                                         <label class="preview-option preview-option-promoted">
                                             <input type="checkbox" id="preview">
                                             <span class="toggle-control"></span>
                                             <span><strong>先试听 3 条</strong><small>快速确认声音与输出，再决定是否生成全文</small></span>
                                         </label>
                                         <div class="summary-note">
-                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
                                             生成期间请保持应用开启
                                         </div>
                                         <button type="button" class="btn-primary btn-generate" id="start-generate-btn">
-                                            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
                                             <span id="generate-button-label">开始生成音频</span>
                                         </button>
                                         <button type="button" class="btn-ghost btn-defaults" id="skip-config-btn">
-                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
                                             恢复推荐设置
                                         </button>
                                         <button type="button" class="btn-text" id="back-to-upload-btn">
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
                                             更换文档
                                         </button>
                                     </div>
                                 </aside>
+                            </div>
                             </div>
                         </div>
                     </div>
@@ -414,7 +480,7 @@
                                     <header class="generation-console-header">
                                         <div class="generation-console-heading">
                                             <span class="generation-console-icon" aria-hidden="true">
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 7v10"/><path d="M20 10v4"/></svg>
+                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 7v10"/><path d="M20 10v4"/></svg>
                                             </span>
                                             <div>
                                                 <h2 id="generation-console-title">批量生成音频</h2>
@@ -447,12 +513,15 @@
                                                 <span id="progress-mode-detail">全部生成后切割 · 按停顿恢复单段</span>
                                             </div>
                                             <div class="progress-bar-track" role="progressbar" aria-label="生成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                                                <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
+                                                <div class="progress-bar-fill" id="progress-bar" style="--progress-scale: 0"></div>
                                             </div>
                                             <div class="generation-metrics" aria-label="任务处理统计">
                                                 <div><span id="progress-completed-label">已完成</span><strong id="progress-completed">0</strong></div>
                                                 <div><span>待处理</span><strong id="progress-remaining">—</strong></div>
                                                 <div><span>失败</span><strong id="progress-failed">0</strong></div>
+                                                <div><span>已取消</span><strong id="progress-cancelled">0</strong></div>
+                                                <div><span>已跳过</span><strong id="progress-skipped">0</strong></div>
+                                                <div><span>可交付</span><strong id="progress-deliverable">0 / 0</strong></div>
                                             </div>
                                         </section>
 
@@ -466,7 +535,7 @@
                                                             <span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span><span class="eq-bar"></span>
                                                         </div>
                                                         <div class="gen-done-icon">
-                                                            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                                            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -484,11 +553,14 @@
                                             <span>内容分类</span>
                                             <div class="type-stats" id="type-stats"></div>
                                         </div>
-                                        <button type="button" class="btn-ghost btn-sm generation-cancel-btn" id="cancel-generation-btn" hidden>
-                                            停止生成
-                                        </button>
+                                        <div class="generation-control-actions" role="group" aria-label="生成任务控制">
+                                            <button type="button" class="btn-ghost btn-sm generation-control-btn" id="pause-generation-btn" hidden>暂停任务</button>
+                                            <button type="button" class="btn-secondary btn-sm generation-control-btn" id="resume-generation-btn" hidden>恢复任务</button>
+                                            <button type="button" class="btn-ghost btn-sm generation-control-btn" id="reconcile-generation-btn" hidden>发起对账</button>
+                                            <button type="button" class="btn-ghost btn-sm generation-cancel-btn" id="cancel-generation-btn" hidden>停止生成</button>
+                                        </div>
                                         <div class="processing-tip">
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
                                             完成后可进入下一步试听并统一保存
                                         </div>
                                     </div>
@@ -497,7 +569,7 @@
                                         <p id="generation-error-message">生成任务未能继续，请重试或返回调整设置。</p>
                                         <div>
                                             <button type="button" class="btn-primary btn-sm" id="retry-generation-btn">
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 1-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 1-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
                                                 重试生成
                                             </button>
                                             <button type="button" class="btn-ghost btn-sm" id="resolve-not-submitted-btn" hidden>确认未提交后重试</button>
@@ -555,8 +627,8 @@
                                     <div class="result-header">
                                         <div class="result-heading-copy">
                                             <div class="result-success-icon">
-                                                <svg class="result-check-mark" width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                                                <svg class="result-error-mark" width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                                <svg class="result-check-mark" width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                                                <svg class="result-error-mark" width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                                             </div>
                                             <div>
                                                 <span class="eyebrow" id="result-eyebrow">任务已完成</span>
@@ -576,6 +648,11 @@
                                             <strong id="result-failed-count">0</strong>
                                             <small id="result-secondary-caption">待处理内容</small>
                                         </div>
+                                        <div class="result-metric result-metric-cancelled">
+                                            <span>已取消</span>
+                                            <strong id="result-cancelled-count">0</strong>
+                                            <small>未纳入交付</small>
+                                        </div>
                                         <div class="result-metric">
                                             <span>输出格式</span>
                                             <strong id="result-format-value">MP3</strong>
@@ -583,13 +660,14 @@
                                         </div>
                                     </div>
                                     <div class="result-header-actions">
-                                        <button type="button" class="btn-ghost" id="back-to-history-btn" hidden>← 返回历史记录</button>
+                                        <button type="button" class="btn-ghost" id="back-to-history-btn" hidden>返回历史记录</button>
                                         <button type="button" class="btn-primary" id="generate-full-btn" hidden>
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
                                             继续生成完整文档
                                         </button>
+                                        <button type="button" class="btn-ghost" id="rerun-task-btn" hidden>重新运行此任务</button>
                                         <button type="button" class="btn-secondary" id="new-file-btn">
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0-2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+                                            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0-2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
                                             处理新文档
                                         </button>
                                     </div>
@@ -598,24 +676,32 @@
                                     <div class="zip-visual" aria-hidden="true">
                                         <span></span><span></span>
                                         <div class="zip-icon">
-                                            <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
+                                            <svg aria-hidden="true" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
                                         </div>
                                     </div>
                                     <div class="zip-info">
-                                        <span class="zip-kicker">推荐交付方式</span>
+                                        <span class="zip-kicker">交付包</span>
                                         <div class="zip-name">下载全部音频</div>
                                         <div class="zip-desc" id="zip-desc">ZIP 压缩包包含本次任务的所有文件</div>
+                                        <div class="delivery-scope" id="delivery-scope">等待交付范围核验</div>
+                                        <div class="delivery-exclusion-note" id="delivery-exclusion-note" hidden></div>
+                                        <ul class="delivery-exclusion-list" id="delivery-exclusion-list" hidden aria-label="未纳入交付的条目"></ul>
+                                        <div class="artifact-transfer" id="artifact-transfer" hidden role="status" aria-live="polite">
+                                            <div class="artifact-transfer-heading"><span id="artifact-transfer-label">准备下载</span><strong id="artifact-transfer-value">0%</strong></div>
+                                            <progress id="artifact-transfer-bar" max="100" value="0" aria-label="交付文件传输进度"></progress>
+                                            <button type="button" class="btn-ghost btn-sm" id="cancel-artifact-transfer-btn">取消下载</button>
+                                        </div>
                                     </div>
                                     <button type="button" class="btn-primary btn-download" id="download-zip-btn">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                        下载 ZIP
+                                        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        准备交付包
                                     </button>
                                 </div>
                             </div>
 
                             <div class="result-warning" id="result-warning" role="status" hidden>
                                 <div class="result-warning-main">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                                    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                                     <div class="result-warning-copy">
                                         <p id="result-warning-text">部分内容未能生成，你可以调整设置后再次尝试。</p>
                                         <ul class="result-failure-list" id="result-failure-list" hidden></ul>
@@ -666,7 +752,7 @@
                                     <p>查看本机生成任务的状态、试听和下载已验证的音频。</p>
                                 </div>
                                 <div class="history-heading-actions">
-                                    <button type="button" class="btn-ghost" id="history-back-btn">← 返回当前任务</button>
+                                    <button type="button" class="btn-ghost" id="history-back-btn">返回当前任务</button>
                                     <div class="history-limit-card" aria-label="历史记录容量">
                                         <strong id="history-count">0 / 20</strong>
                                         <small>列表最多显示最近 20 条，历史事实不会自动删除</small>
@@ -722,6 +808,10 @@
     <script src="vendor/wavesurfer.min.js"></script>
     <script src="ui-components.js"></script>
     <script src="workflow-store.js"></script>
+    <script src="workflow-view-utils.js"></script>
+    <script src="workflow-reducer.js"></script>
+    <script src="workflow-adapter.js"></script>
+    <script src="workflow-command-coordinator.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

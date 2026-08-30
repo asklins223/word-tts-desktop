@@ -6,7 +6,9 @@
 """
 
 from .model import (
+    FAMILY_REGISTRY,
     FAMILY_SUB_TYPES,
+    QuestionFamily,
     IDENTITY_VERSION,
     QUESTION_TYPE_CODES,
     SUB_TYPE_REGISTRY,
@@ -59,9 +61,11 @@ __all__ = [
     "DECISION_NEW",
     "DECISION_REMOVED",
     "IDENTITY_VERSION",
+    "FAMILY_REGISTRY",
     "QUESTION_TYPE_CODES",
     "SUB_TYPE_REGISTRY",
     "FAMILY_SUB_TYPES",
+    "QuestionFamily",
     "QuestionSubType",
     "SCHEMA_VERSION",
     "AdjudicatedParse",

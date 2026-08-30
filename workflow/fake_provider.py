@@ -1,4 +1,4 @@
-"""Deterministic Provider port used before a real external account is enabled."""
+"""Deterministic MP3 Provider port used before a real external account is enabled."""
 
 from __future__ import annotations
 
@@ -24,16 +24,35 @@ class FakeReceipt:
     payload_hash: str
     output: bytes
     segments: Mapping[str, bytes] | None = None
-    output_format: str = "bin"
+    output_format: str = "mp3"
 
 
 class FakeProvider:
-    def __init__(self, *, account_scope: str = "fake-account") -> None:
+    def __init__(self, *, account_scope: str = "fake-account", output_format: str = "mp3") -> None:
         self.provider = "fake"
         self.account_scope = account_scope
+        self.output_format = str(output_format or "mp3").lower().lstrip(".")
         self.fail_mode: str | None = None
         self.submit_calls = 0
         self._receipts: dict[str, FakeReceipt] = {}
+
+    def capability_snapshot(self) -> dict[str, Any]:
+        """Expose the same output-format fact that a real Provider exposes."""
+
+        return {
+            "provider": self.provider,
+            "account_scope": self.account_scope,
+            "capability_version": "fake-provider-1",
+            "generation_modes": ["composite_cut", "single_segment"],
+            "formats": [self.output_format],
+            "supports_query": True,
+            "supports_resume": True,
+            "status": "READY",
+            "ready": True,
+            "can_generate": True,
+            "can_start_generation": True,
+            "reason": "测试 Provider 已就绪",
+        }
 
     def submit(self, submission_key: str, payload: Mapping[str, Any]) -> FakeReceipt:
         existing = self._receipts.get(submission_key)
@@ -44,8 +63,12 @@ class FakeProvider:
         if self.fail_mode == "before":
             raise FakeProviderError("simulated failure before submission")
         plan = payload.get("plan") if isinstance(payload.get("plan"), list) else []
+        # Use a recognizable MPEG Layer III frame header rather than an
+        # arbitrary ``ID3`` prefix.  The latter is only a metadata marker and
+        # made fake payloads bypass the engine's MP3 publication gate.
+        prefix = b"\xff\xfb\x90\x64" if self.output_format == "mp3" else b""
         segments = {
-            str(item.get("item_id")): (
+            str(item.get("item_id")): prefix + (
                 "fake-audio:" + payload_hash + ":item:" + str(item.get("item_id"))
             ).encode("utf-8")
             for item in plan
@@ -61,9 +84,9 @@ class FakeProvider:
             # database.
             f"fake-job-{hashlib.sha256(submission_key.encode('utf-8')).hexdigest()[:24]}",
             payload_hash,
-            ("fake-audio:" + payload_hash).encode("ascii"),
+            prefix + ("fake-audio:" + payload_hash).encode("ascii"),
             segments,
-            "bin",
+            self.output_format,
         )
         self._receipts[submission_key] = receipt
         if self.fail_mode == "after":

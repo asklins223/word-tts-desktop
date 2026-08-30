@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from api.workflow_routes import WorkflowRuntime, _release_failed_idempotency, install_workflow_api
+from api.workflow_routes import WorkflowRuntime, _artifact_row_is_readable, _release_failed_idempotency, install_workflow_api
 from db.migration_runner import MigrationError
 from workflow.fake_provider import FakeProvider
 from workflow.parser import LegacyWordParser
@@ -34,6 +36,9 @@ class WorkflowApiTests(unittest.TestCase):
         self.runtime.database.close()
         self.temp.cleanup()
 
+    def test_generation_dispatch_guard_is_event_loop_aware(self) -> None:
+        self.assertIsInstance(self.runtime.generation_dispatch_guard, asyncio.Lock)
+
     @staticmethod
     def _headers(key: str) -> dict[str, str]:
         return {
@@ -49,6 +54,41 @@ class WorkflowApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()["workflow"]
+
+    def _save_generation_configuration(self, workflow_id: str, configuration: dict[str, object]) -> dict:
+        workspace_response = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        )
+        self.assertEqual(workspace_response.status_code, 200, workspace_response.text)
+        workspace = workspace_response.json()["workspace"]
+        response = self.client.patch(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers=self._headers(f"save-config-{workflow_id}"),
+            json={
+                "expected_state_version": workspace["snapshot"]["state_version"],
+                "configuration_revision": workspace["configuration"]["configuration_revision"],
+                "configuration": configuration,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["workspace"]
+
+    def test_artifact_content_gate_requires_matching_facts_and_mp3_for_tts(self) -> None:
+        base = {
+            "artifact_format": "mp3",
+            "blob_format": "mp3",
+            "artifact_sha256": "a" * 64,
+            "blob_sha256": "a" * 64,
+            "artifact_size_bytes": 10,
+            "blob_size_bytes": 10,
+            "artifact_type": "tts-segment",
+        }
+        self.assertTrue(_artifact_row_is_readable(base))
+        self.assertFalse(_artifact_row_is_readable({**base, "artifact_format": "wav", "blob_format": "wav"}))
+        self.assertFalse(_artifact_row_is_readable({**base, "blob_sha256": "b" * 64}))
+        self.assertFalse(_artifact_row_is_readable({**base, "artifact_size_bytes": 0, "blob_size_bytes": 0}))
+        self.assertTrue(_artifact_row_is_readable({**base, "artifact_type": "source", "artifact_format": "bin", "blob_format": "bin"}))
 
     def test_capability_validation_and_idempotency_are_structured(self) -> None:
         unauthorized = self.client.get(
@@ -419,7 +459,7 @@ class WorkflowApiTests(unittest.TestCase):
         source = self.client.post(
             f"/api/v1/workflows/{workflow_id}/source-imports",
             headers=self._headers("create-source-import-key"),
-            json={"metadata": {"filename": "hello.docx"}, "content_type": "application/octet-stream"},
+            json={"metadata": {"filename": "英语听力.docx"}, "content_type": "application/octet-stream"},
         )
         self.assertEqual(source.status_code, 201, source.text)
         source_body = source.json()
@@ -477,6 +517,9 @@ class WorkflowApiTests(unittest.TestCase):
             headers={"X-Desktop-Capability": "test-capability"},
         )
         self.assertEqual(ticket.status_code, 201, ticket.text)
+        self.assertEqual(ticket.json()["content_type"], "application/octet-stream")
+        self.assertEqual(ticket.json()["content_length"], len(b"hello workflow"))
+        self.assertEqual(ticket.json()["filename"], "英语听力.docx")
         content = self.client.get(
             f"/api/v1/artifacts/{artifact_id}/content",
             headers={
@@ -486,6 +529,7 @@ class WorkflowApiTests(unittest.TestCase):
         )
         self.assertEqual(content.status_code, 200, content.text)
         self.assertEqual(content.content, b"hello workflow")
+        self.assertEqual(content.headers["x-artifact-filename"], quote("英语听力.docx", safe=""))
 
         replay = self.client.get(
             f"/api/v1/artifacts/{artifact_id}/content",
@@ -510,6 +554,45 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(response.json()["error_code"], "EXTERNAL_CAPABILITY_REQUIRED")
         self.assertFalse(response.json()["side_effect_occurred"])
 
+    def test_generate_uses_submitted_configuration_and_schedules_same_values(self) -> None:
+        provider = FakeProvider()
+        self.runtime.providers.register(provider)
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        self.runtime.repository.create_item(
+            workflow_id,
+            item_type="sentence",
+            sequence=0,
+            normalized_content="configuration override",
+            item_identity_key="sentence:configuration-override",
+        )
+        workspace = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        ).json()["workspace"]
+
+        with patch("api.workflow_routes._schedule_generation_task", return_value=None) as schedule:
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/generate",
+                headers=self._headers("generate-config-override-key"),
+                json={
+                    "expected_state_version": workspace["snapshot"]["state_version"],
+                    "configuration_revision": workspace["configuration"]["configuration_revision"],
+                    "generation_mode": "single_segment",
+                    "provider": "fake",
+                    "account_scope": provider.account_scope,
+                },
+            )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(schedule.call_args.kwargs["generation_mode"], "single_segment")
+        self.assertEqual(schedule.call_args.kwargs["provider"], "fake")
+        self.assertEqual(schedule.call_args.kwargs["account_scope"], provider.account_scope)
+        saved = self.runtime.repository.get_configuration(workflow_id)
+        self.assertEqual(saved["generation_mode"], "single_segment")
+        self.assertEqual(saved["provider"], "fake")
+        self.assertEqual(saved["account_scope"], provider.account_scope)
+
     def test_generation_enqueue_failure_does_not_leave_a_running_zombie(self) -> None:
         provider = FakeProvider()
         self.runtime.providers.register(provider)
@@ -520,6 +603,10 @@ class WorkflowApiTests(unittest.TestCase):
             sequence=0,
             normalized_content="enqueue failure",
             item_identity_key="sentence:enqueue-failure",
+        )
+        saved_workspace = self._save_generation_configuration(
+            workflow["workflow_id"],
+            {"provider": "fake", "account_scope": provider.account_scope},
         )
         with patch(
             "api.workflow_routes._schedule_generation_task",
@@ -533,7 +620,7 @@ class WorkflowApiTests(unittest.TestCase):
                 f"/api/v1/workflows/{workflow['workflow_id']}/generate",
                 headers=self._headers("enqueue-failure-key"),
                 json={
-                    "expected_state_version": workflow["state_version"],
+                    "expected_state_version": saved_workspace["snapshot"]["state_version"],
                     "provider": "fake",
                     "account_scope": provider.account_scope,
                 },
@@ -563,6 +650,11 @@ class WorkflowApiTests(unittest.TestCase):
         initial_workspace = initial.json()["workspace"]
         self.assertEqual(initial_workspace["configuration"]["configuration_revision"], 1)
         self.assertEqual(initial_workspace["progress"]["pending"], 1)
+        self.assertIn(initial_workspace["provider"]["status"], {"LOGIN_REQUIRED", "READY", "UNAVAILABLE"})
+        self.assertEqual(
+            initial_workspace["provider"]["can_start_generation"],
+            initial_workspace["provider"]["status"] != "UNAVAILABLE",
+        )
         self.assertTrue(any(
             action["kind"] == "SERVICE" and action["type"] == "GENERATE" and action["enabled"]
             for action in initial_workspace["available_actions"]
@@ -637,6 +729,52 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(current.status_code, 200, current.text)
         self.assertEqual(current.json()["workflow"]["result_status"], "SUCCEEDED")
 
+    def test_large_item_content_is_read_in_bounded_utf8_chunks(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        content = "词汇 example\n" * 12000
+        item_id = self.runtime.repository.create_item(
+            workflow_id,
+            item_type="vocabulary",
+            sequence=0,
+            normalized_content=content,
+            item_identity_key="vocabulary:large-content",
+            metadata={"sheet_name": "Unit 6", "row": 12},
+        )
+        workspace_response = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        )
+        self.assertEqual(workspace_response.status_code, 200, workspace_response.text)
+        item = workspace_response.json()["workspace"]["items"][0]
+        self.assertIsNone(item["normalized_content"])
+        content_ref = item["content_ref"]
+        self.assertGreater(content_ref["size_bytes"], content_ref["max_response_bytes"])
+
+        pieces = []
+        offset = 0
+        for _ in range(64):
+            response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/items/{item_id}/content/{content_ref['content_id']}",
+                params={
+                    "expected_state_version": workspace_response.json()["workspace"]["snapshot"]["state_version"],
+                    "offset_bytes": offset,
+                    "max_response_bytes": 8192,
+                },
+                headers={"X-Desktop-Capability": "test-capability"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()
+            pieces.append(payload["content"])
+            if not payload["truncated"]:
+                break
+            next_offset = payload["next_offset_bytes"]
+            self.assertGreater(next_offset, offset)
+            offset = next_offset
+        else:
+            self.fail("large content did not finish within the bounded chunk count")
+        self.assertEqual("".join(pieces), content)
+
     def test_cancel_signal_releases_generation_slot_after_cooperative_browser_stop(self) -> None:
         class CooperativeProvider:
             provider = "xunfei"
@@ -672,6 +810,10 @@ class WorkflowApiTests(unittest.TestCase):
             normalized_content="hello",
             item_identity_key="sentence:0",
         )
+        saved_workspace = self._save_generation_configuration(
+            workflow["workflow_id"],
+            {"provider": "xunfei", "account_scope": provider.account_scope},
+        )
 
         # Keep one ASGI portal alive across requests.  A plain TestClient
         # request closes its portal immediately and correctly waits for
@@ -682,7 +824,7 @@ class WorkflowApiTests(unittest.TestCase):
                 f"/api/v1/workflows/{workflow['workflow_id']}/generate",
                 headers=self._headers("cooperative-generate-key"),
                 json={
-                    "expected_state_version": workflow["state_version"],
+                    "expected_state_version": saved_workspace["snapshot"]["state_version"],
                     "provider": "xunfei",
                     "account_scope": provider.account_scope,
                 },

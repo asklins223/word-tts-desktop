@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable, Mapping
 
 from .artifact_store import ArtifactStore, ArtifactStoreError
+from .audio import looks_like_mp3_bytes
 from .domain import DomainError, content_hash
 from .fake_provider import AmbiguousProviderError, FakeProviderError
 from .providers import ProviderError, TTSProviderPort
@@ -212,27 +213,13 @@ class WorkflowEngine:
             # submit already-delivered items again if a targeted retry or a
             # crash happened before the worker could finish.  Keep the fully
             # delivered case intact so the normal submission-key reuse path
-            # can return the existing successful plan.
+            # can return an existing plan only when its current input/profile
+            # hash matches the saved workspace configuration.
             delivered_ids = {
                 str(row["item_id"])
                 for row in self.repository.list_verified_tts_segments(workflow_id)
                 if row.get("item_id") is not None
             }
-            if delivered_ids and len(delivered_ids) >= len(all_items):
-                completed_plan = self.repository.get_latest_successful_tts_plan(workflow_id)
-                if completed_plan is not None:
-                    return TTSRunResult(
-                        workflow_id,
-                        str(completed_plan["step_id"]),
-                        str(completed_plan["attempt_id"]),
-                        str(completed_plan["work_unit_id"]),
-                        str(completed_plan["submission_id"]),
-                        None,
-                        tuple(self.repository.list_work_unit_artifacts(completed_plan["work_unit_id"])),
-                        "SUCCEEDED",
-                        None,
-                        True,
-                    )
             if delivered_ids and len(delivered_ids) < len(all_items):
                 all_items = [item for item in all_items if str(item["item_id"]) not in delivered_ids]
         if not all_items:
@@ -981,6 +968,25 @@ class WorkflowEngine:
                 code="SEGMENT_BOUNDARIES_UNVERIFIED",
                 ambiguous=False,
             )
+
+        if output_format == "mp3":
+            if not looks_like_mp3_bytes(output):
+                raise ProviderError(
+                    "provider returned bytes that are not recognizable as MP3",
+                    code="ARTIFACT_INVALID",
+                    ambiguous=False,
+                )
+            invalid_item_ids = [
+                item_id for item_id, value in normalized_segments.items()
+                if not looks_like_mp3_bytes(value)
+            ]
+            if invalid_item_ids:
+                raise ProviderError(
+                    "provider returned item bytes that are not recognizable as MP3",
+                    code="ARTIFACT_INVALID",
+                    details={"item_ids": invalid_item_ids},
+                    ambiguous=False,
+                )
 
         specs: list[dict[str, Any]] = []
         staged = self.artifact_store.stage_stream(io.BytesIO(output))

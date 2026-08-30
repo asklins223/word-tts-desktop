@@ -52,6 +52,19 @@ EXPECTED_TABLES_EXTERNAL = {
     "external_records", "external_operations", "external_record_bindings",
     "external_record_leases",
 }
+EXPECTED_TABLES_ATOMIC = {
+    "question_sub_types", "source_documents", "document_revisions",
+    "document_revision_members", "major_sections", "question_groups",
+    "question_items", "question_revisions", "question_parts", "stimuli",
+    "stimulus_revisions", "question_stimuli", "content_units",
+    "content_unit_revisions", "operation_plans", "operation_scopes",
+    "operation_scope_members", "operation_tasks", "operation_task_targets",
+    "operation_task_dependencies", "revision_match_decisions", "legacy_aliases",
+    "legacy_execution_sessions",
+}
+EXPECTED_TABLES_EXTERNAL_TARGETS = {
+    "external_record_targets", "external_operation_targets",
+}
 
 EXPECTED_INDEXES = {
     "ux_workflow_scope_step_key", "ux_item_scope_step_key", "ux_active_assignment",
@@ -60,6 +73,23 @@ EXPECTED_INDEXES = {
     "ix_events_workflow_event_id", "ix_source_import_status",
     "ix_source_generation_status", "ix_artifacts_workflow_state", "ix_leases_expiry",
     "ix_retry_budgets_next_action", "ix_idempotency_expiry",
+}
+EXPECTED_INDEXES_ATOMIC = {
+    "idx_document_revision_members_entity", "idx_document_revisions_source",
+    "idx_major_sections_revision", "idx_question_items_source",
+    "idx_question_revisions_question", "idx_question_revisions_revision_doc",
+    "idx_stimuli_source", "idx_stimulus_revisions_doc",
+    "idx_question_stimuli_stimulus", "idx_content_units_source",
+    "idx_content_unit_revisions_doc", "idx_operation_scopes_plan",
+    "idx_operation_scope_members_scope", "idx_operation_tasks_plan",
+    "idx_operation_task_targets_operation", "idx_operation_task_deps_upstream",
+    "idx_legacy_aliases_value", "idx_question_items_sub_type",
+    "idx_stimuli_sub_type", "idx_content_units_sub_type",
+}
+EXPECTED_INDEXES_EXTERNAL_TARGETS = {
+    "idx_external_operations_step", "idx_external_operations_attempt",
+    "idx_external_record_targets_target", "ux_external_record_targets_dedupe",
+    "idx_external_operation_targets_target", "ux_external_operation_targets_dedupe",
 }
 
 EXPECTED_TRIGGERS = {
@@ -78,6 +108,20 @@ EXPECTED_TRIGGERS = {
     "provider_receipt_binding_scope_guard", "provider_receipt_binding_scope_guard_update",
     "snapshot_anchor_scope_guard", "snapshot_anchor_scope_guard_update",
 }
+EXPECTED_TRIGGERS_EXTERNAL = {
+    "external_record_current_scope_guard", "external_operation_scope_guard",
+    "external_record_binding_scope_guard",
+    "external_record_current_scope_guard_update", "external_operation_scope_guard_update",
+    "external_record_binding_scope_guard_update",
+}
+EXPECTED_TRIGGERS_EXTERNAL_TARGETS = {
+    "trg_ext_record_target_question", "trg_ext_record_target_stimulus",
+    "trg_ext_record_target_content_unit", "trg_ext_record_target_group",
+    "trg_ext_record_target_major_section", "trg_ext_record_target_scope",
+    "trg_ext_operation_target_question", "trg_ext_operation_target_stimulus",
+    "trg_ext_operation_target_content_unit", "trg_ext_operation_target_group",
+    "trg_ext_operation_target_major_section", "trg_ext_operation_target_scope",
+}
 
 EXPECTED_COLUMNS = {
     "source_imports": {"current_generation", "current_status", "current_artifact_id"},
@@ -92,6 +136,9 @@ EXPECTED_COLUMNS = {
     "provider_receipts": {"state_version"},
     "provider_submissions": {"state_version"},
     "external_operations": {"state_version"},
+}
+EXPECTED_COLUMNS_BY_TARGET = {
+    7: {"external_operations": {"workflow_step_id", "attempt_id"}},
 }
 
 
@@ -344,14 +391,25 @@ def check_db(path: Path, *, target: int, migrations: Sequence[Migration], run_fi
             print(f"[schema] expected schema version {target}, found {current}", file=sys.stderr)
             return 2
         tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        expected = EXPECTED_TABLES_2A | (EXPECTED_TABLES_EXTERNAL if target >= 5 else set())
+        expected = set(EXPECTED_TABLES_2A)
+        if target >= 5:
+            expected |= EXPECTED_TABLES_EXTERNAL
+        if target >= 6:
+            expected |= EXPECTED_TABLES_ATOMIC
+        if target >= 7:
+            expected |= EXPECTED_TABLES_EXTERNAL_TARGETS
         missing = sorted(expected - tables)
-        unexpected_external = sorted(EXPECTED_TABLES_EXTERNAL - tables) if target >= 5 else []
-        if missing or unexpected_external:
-            print(f"[schema] missing tables: {missing}; external: {unexpected_external}", file=sys.stderr)
+        if missing:
+            print(f"[schema] missing tables: {missing}", file=sys.stderr)
             return 3
         indexes = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
-        expected_indexes = EXPECTED_INDEXES | ({"ux_external_active_operation"} if target >= 5 else set())
+        expected_indexes = set(EXPECTED_INDEXES)
+        if target >= 5:
+            expected_indexes.add("ux_external_active_operation")
+        if target >= 6:
+            expected_indexes |= EXPECTED_INDEXES_ATOMIC
+        if target >= 7:
+            expected_indexes |= EXPECTED_INDEXES_EXTERNAL_TARGETS
         missing_indexes = sorted(expected_indexes - indexes)
         if missing_indexes:
             print(f"[schema] missing indexes: {missing_indexes}", file=sys.stderr)
@@ -359,16 +417,18 @@ def check_db(path: Path, *, target: int, migrations: Sequence[Migration], run_fi
         triggers = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
         missing_triggers = sorted(EXPECTED_TRIGGERS - triggers)
         if target >= 5:
-            missing_triggers += sorted({
-                "external_record_current_scope_guard", "external_operation_scope_guard",
-                "external_record_binding_scope_guard",
-                "external_record_current_scope_guard_update", "external_operation_scope_guard_update",
-                "external_record_binding_scope_guard_update",
-            } - triggers)
+            missing_triggers += sorted(EXPECTED_TRIGGERS_EXTERNAL - triggers)
+        if target >= 7:
+            missing_triggers += sorted(EXPECTED_TRIGGERS_EXTERNAL_TARGETS - triggers)
         if missing_triggers:
             print(f"[schema] missing triggers: {missing_triggers}", file=sys.stderr)
             return 5
-        for table, columns in EXPECTED_COLUMNS.items():
+        expected_columns = {table: set(columns) for table, columns in EXPECTED_COLUMNS.items()}
+        for minimum_target, columns_by_table in EXPECTED_COLUMNS_BY_TARGET.items():
+            if target >= minimum_target:
+                for table, columns in columns_by_table.items():
+                    expected_columns.setdefault(table, set()).update(columns)
+        for table, columns in expected_columns.items():
             if table in EXPECTED_TABLES_EXTERNAL and target < 5:
                 continue
             missing_columns = sorted(columns - _table_columns(con, table))

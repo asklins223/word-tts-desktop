@@ -20,6 +20,58 @@ from pathlib import Path
 from typing import Any
 
 BRIDGE_VERSION = "atomic-model/v1"
+ATOMIC_MODEL_REQUIRED_TABLES = frozenset({
+    "question_items",
+    "operation_plans",
+    "legacy_execution_sessions",
+})
+
+
+def _atomic_model_available(database) -> bool:
+    """Return whether the optional v0006 atomic model is installed.
+
+    The default 2a runtime intentionally stops at v0004.  The bridge is an
+    optional side path for that runtime, so a missing v0006 table must be
+    reported as an explicit capability result rather than discovered halfway
+    through a write transaction as ``no such table``.
+    """
+
+    try:
+        with database.read_transaction() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ({})".format(
+                    ",".join("?" for _ in ATOMIC_MODEL_REQUIRED_TABLES)
+                ),
+                tuple(ATOMIC_MODEL_REQUIRED_TABLES),
+            ).fetchall()
+        return {str(row[0]) for row in rows} == set(ATOMIC_MODEL_REQUIRED_TABLES)
+    except Exception:
+        return False
+
+
+def _explicit_type_code(results: list[dict[str, Any]], filename: str) -> str | None:
+    """Return a uniquely detected type instead of guessing from result order.
+
+    ``parse_document_auto`` already uses ``detect_types_in_content`` for Word
+    documents.  A single returned result is therefore an unambiguous content
+    detection; multiple results are deliberately left without an explicit
+    owner so the adjudicator can preserve a real mixed-document conflict.  A
+    filename marker is a stronger explicit signal and may select one owner in
+    a mixed document.
+    """
+    from question_model import QUESTION_TYPE_CODES
+    from question_types import detect_doc_type
+
+    candidate_type_codes = {
+        QUESTION_TYPE_CODES.get(str(result.get("doc_type") or ""))
+        for result in results
+    }
+    candidate_type_codes.discard(None)
+    detected_name = detect_doc_type(os.path.basename(str(filename)))
+    if detected_name is None and len(results) == 1:
+        detected_name = results[0].get("doc_type")
+    detected_code = QUESTION_TYPE_CODES.get(str(detected_name or ""))
+    return detected_code if detected_code in candidate_type_codes else None
 
 
 def bridge_parse_to_atomic_model(
@@ -47,6 +99,12 @@ def bridge_parse_to_atomic_model(
     from wordtts.config import PARSER_VERSION
 
     try:
+        if not _atomic_model_available(database):
+            return {
+                "bridged": False,
+                "reason": "atomic model schema is not installed",
+                "error": "atomic model schema is not installed (requires migration v0006)",
+            }
         results, _ = parse_document_auto(str(source_path))
         if not results:
             # 无可解析内容（含源文件不可读）：不建文档身份，不桥接
@@ -60,10 +118,16 @@ def bridge_parse_to_atomic_model(
 
         if candidates:
             adjudicated = adjudicate(
-                candidates, explicit_type_code=candidates[0].type_code)
+                candidates,
+                explicit_type_code=_explicit_type_code(results, filename),
+            )
 
-        conn = database.connect(write=True)
-        try:
+        # The atomic-model helpers intentionally accept a connection and do
+        # not commit themselves.  Keep the whole bridge (registry, document
+        # revision, operation plan, audio tasks and session marker) inside the
+        # same pessimistic transaction as the workflow database instead of
+        # relying on sqlite's autocommit mode.
+        with database.transaction() as conn:
             sync_sub_type_registry(conn)
             persisted = persist_parse(
                 conn,
@@ -90,9 +154,6 @@ def bridge_parse_to_atomic_model(
                 (f"legacy:{workflow_id}", f"workflow:{workflow_id}",
                  BRIDGE_VERSION, now),
             )
-            conn.commit()
-        finally:
-            conn.close()
         return {
             "bridged": True,
             "document_revision_id": persisted["document_revision_id"],

@@ -44,9 +44,21 @@ let persistentUserDataError = null;
 const pendingAppNotices = new Map();
 const workflowSseStreams = new Map();
 const workflowArtifactStreams = new Map();
+let pendingWorkflowArtifactStreams = 0;
+const workflowArtifactDownloads = new Map();
 const workflowSourceFiles = new Map();
+const workflowSourceUploads = new Map();
+const cancelledWorkflowSourceUploads = new Set();
 let sourceUploadStaging = null;
 const SOURCE_FILE_TOKEN_TTL_MS = 5 * 60 * 1000;
+const MAX_WORKFLOW_ARTIFACT_STREAMS = 4;
+const MAX_WORKFLOW_ARTIFACT_DOWNLOADS = 4;
+// A renderer acknowledgement can be delayed by a busy main/UI thread while
+// the stream is still healthy.  Keep the watchdog bounded, but allow a long
+// pause between chunks for large local playback/downloads.
+const WORKFLOW_ARTIFACT_STREAM_IDLE_TIMEOUT_MS = 90_000;
+const MAX_PENDING_WORKFLOW_EVENT_FRAMES = 512;
+let rendererLifecycleEpoch = 0;
 const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
 // 正式 App 默认启用真实讯飞 Provider；只有打包/启动 smoke 明确使用
@@ -56,6 +68,8 @@ const realProviderEnabled = !isSmokeTest;
 // 必须和 wordtts 包（wordtts/config.py）保持一致。启动时拒绝混用旧
 // PyInstaller 后端，避免打包客户端表面启动成功、实际退回逐条生成的隐性性能问题。
 const EXPECTED_BACKEND_CONTRACT_VERSION = 5;
+// The renderer has one supported entry point so every UI change follows the
+// same code path and cannot drift between parallel shells.
 const RENDERER_ENTRY_PATH = path.join(__dirname, 'renderer', 'index.html');
 const RENDERER_ENTRY_URL = pathToFileURL(RENDERER_ENTRY_PATH).href;
 const SMOKE_LOG_PATH = isSmokeTest
@@ -565,6 +579,11 @@ function createWindow() {
         rendererReady = true;
         flushAppNotices();
     });
+    win.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+        if (!isMainFrame) return;
+        rendererLifecycleEpoch += 1;
+        closeWorkflowStreamsForSender(win.webContents.id, 'renderer-reload');
+    });
     win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
         if (!isMainFrame || code === -3) return;
         smokeLog(`renderer did-fail-load: ${code} ${description} ${url || ''}`);
@@ -573,6 +592,7 @@ function createWindow() {
     });
     win.webContents.on('render-process-gone', (_event, details) => {
         smokeLog(`renderer process gone: ${JSON.stringify(details)}`);
+        closeWorkflowStreamsForSender(win.webContents.id, 'renderer-process-gone');
         if (mainWindow === win) rendererReady = false;
         if (details.reason === 'clean-exit') return;
         showRendererFatalError('界面进程异常退出', `退出原因：${details.reason}`);
@@ -583,6 +603,7 @@ function createWindow() {
     }
 
     win.on('closed', () => {
+        closeWorkflowStreamsForSender(win.webContents.id, 'window-closed');
         if (mainWindow !== win) return;
         rendererReady = false;
         mainWindow = null;
@@ -640,8 +661,11 @@ function exitSmokeTest(code, win = null) {
         smokeWatchdog = null;
     }
     smokeLog(`exit requested: ${code}`);
+    // 先销毁渲染器，停止它在启动 hydrate 阶段发起的新请求；再停后端。
+    // 如果顺序反过来，活动任务列表等后台请求会在后端关闭时收到
+    // ECONNRESET，虽然不影响 smoke 退出码，却会把一次正常收尾污染成故障日志。
+    if (win && !win.isDestroyed()) win.destroy();
     stopPythonServerAsync().then(() => {
-        if (win && !win.isDestroyed()) win.destroy();
         app.exit(code);
     });
 }
@@ -710,6 +734,70 @@ function closeWorkflowSourceFile(state) {
 function closeWorkflowSourceFiles() {
     workflowSourceFiles.forEach(closeWorkflowSourceFile);
     workflowSourceFiles.clear();
+}
+
+function cancelWorkflowSourceUploads() {
+    workflowSourceUploads.forEach((state) => state.controller?.abort?.());
+    workflowSourceUploads.clear();
+    cancelledWorkflowSourceUploads.clear();
+}
+
+function closeWorkflowStreamsForSender(senderId, reason = 'renderer-reloaded') {
+    for (const [streamId, state] of workflowSseStreams) {
+        if (state.senderId !== senderId) continue;
+        workflowSseStreams.delete(streamId);
+        state.pendingFrames?.splice(0);
+        state.pendingErrors?.splice(0);
+        state.stream?.close();
+    }
+    for (const [streamId, state] of workflowArtifactStreams) {
+        if (state.senderId !== senderId) continue;
+        workflowArtifactStreams.delete(streamId);
+        state.closed = true;
+        state.waitingForAck = false;
+        if (state.idleTimer) clearTimeout(state.idleTimer);
+        state.idleTimer = null;
+        state.stream?.destroy(new Error(`workflow artifact stream closed: ${reason}`));
+    }
+    for (const [transferId, state] of workflowArtifactDownloads) {
+        if (state.senderId !== senderId) continue;
+        workflowArtifactDownloads.delete(transferId);
+        state.controller?.abort?.();
+    }
+    for (const [uploadId, state] of workflowSourceUploads) {
+        if (state.senderId !== senderId) continue;
+        workflowSourceUploads.delete(uploadId);
+        state.controller?.abort?.();
+    }
+    for (const [sourceFileId, state] of workflowSourceFiles) {
+        if (state.senderId !== senderId) continue;
+        workflowSourceFiles.delete(sourceFileId);
+        closeWorkflowSourceFile(state);
+    }
+    void sourceUploadStaging?.disposeSender?.(senderId, reason);
+}
+
+function sendArtifactDownloadProgress(event, transferId, payload) {
+    if (event?.sender?.isDestroyed?.()) return;
+    event.sender.send('artifact-download-progress', {
+        transferId,
+        ...payload,
+    });
+}
+
+function sendSourceUploadProgress(event, uploadId, payload) {
+    if (event?.sender?.isDestroyed?.()) return;
+    event.sender.send('source-upload-progress', {
+        uploadId,
+        ...payload,
+    });
+}
+
+function artifactDownloadError(error) {
+    return {
+        message: String(error?.message || 'Artifact 下载失败').slice(0, 500),
+        code: String(error?.code || 'DOWNLOAD_ERROR').slice(0, 128),
+    };
 }
 
 function registerIpcHandlers() {
@@ -805,6 +893,15 @@ function registerIpcHandlers() {
                 headers: input.headers || {},
             });
         } catch (error) {
+            if (isSmokeTest && smokeExitRequested && ['ECONNRESET', 'ECONNREFUSED', 'EPIPE'].includes(error?.code)) {
+                // 渲染器在销毁过程中可能完成一个已经发出的请求；冒烟收尾
+                // 已经明确停止后端，这类连接错误不是被测功能的失败，也不应
+                // 以 rejected IPC handler 的形式污染测试日志。
+                return {
+                    status: 499,
+                    body: { code: 'SMOKE_SHUTDOWN', message: 'smoke test is shutting down' },
+                };
+            }
             if (process.env.WORDTTS_DEBUG_LOGS === '1' || process.argv.includes('--dev')) {
                 console.error(`[main] workflow request failed ${input.method || 'GET'} ${input.pathname || ''}: ${error.stack || error.message}`);
             }
@@ -866,6 +963,18 @@ function registerIpcHandlers() {
         };
     });
 
+    ipcMain.handle('release-source-file', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const sourceFileId = String(input.sourceFileId || '');
+        if (!sourceFileId) return { success: false, reason: 'content-invalid' };
+        const state = workflowSourceFiles.get(sourceFileId);
+        if (!state) return { success: true, alreadyReleased: true };
+        if (state.senderId !== event.sender.id) return { success: false, reason: 'untrusted-sender' };
+        workflowSourceFiles.delete(sourceFileId);
+        closeWorkflowSourceFile(state);
+        return { success: true };
+    });
+
     ipcMain.handle('workflow-source-upload', async (event, input = {}) => {
         if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow source sender');
         const sourceFileId = String(input.sourceFileId || '');
@@ -901,8 +1010,30 @@ function registerIpcHandlers() {
         // IPC call cannot reuse the same descriptor or submit the body twice.
         workflowSourceFiles.delete(sourceFileId);
         if (state.expiryTimer) clearTimeout(state.expiryTimer);
+        const uploadId = String(input.uploadId || '');
+        if (!uploadId) {
+            closeWorkflowSourceFile(state);
+            throw new Error('source upload id is required');
+        }
+        if (cancelledWorkflowSourceUploads.delete(uploadId)) {
+            closeWorkflowSourceFile(state);
+            const error = new Error('workflow source upload was cancelled');
+            error.name = 'AbortError';
+            error.code = 'USER_CANCELLED';
+            throw error;
+        }
+        const uploadController = new AbortController();
+        workflowSourceUploads.set(uploadId, {
+            controller: uploadController,
+            senderId: event.sender.id,
+        });
         let stream = null;
         try {
+            sendSourceUploadProgress(event, uploadId, {
+                state: 'starting',
+                receivedBytes: 0,
+                totalBytes: state.sizeBytes,
+            });
             const handle = state.handle;
             const streamOptions = {
                 autoClose: false,
@@ -916,7 +1047,7 @@ function registerIpcHandlers() {
             } else {
                 throw new Error('source file stream is unavailable');
             }
-            return await requestWorkflowUpload({
+            const response = await requestWorkflowUpload({
                 http,
                 baseUrl: serverUrl,
                 capability: serverToken,
@@ -925,15 +1056,51 @@ function registerIpcHandlers() {
                 headers,
                 bodyStream: stream,
                 contentLength: state.sizeBytes,
+                signal: uploadController.signal,
+                onProgress: ({ receivedBytes, totalBytes }) => sendSourceUploadProgress(
+                    event,
+                    uploadId,
+                    { state: 'transferring', receivedBytes, totalBytes },
+                ),
             });
+            sendSourceUploadProgress(event, uploadId, {
+                state: 'completed',
+                receivedBytes: state.sizeBytes,
+                totalBytes: state.sizeBytes,
+            });
+            return response;
+        } catch (error) {
+            sendSourceUploadProgress(event, uploadId, {
+                state: uploadController.signal.aborted || error?.name === 'AbortError' ? 'cancelled' : 'failed',
+                error: artifactDownloadError(error),
+            });
+            throw error;
         } finally {
+            workflowSourceUploads.delete(uploadId);
             stream?.destroy?.();
             try { await state.handle?.close?.(); } catch (_) { /* best effort cleanup */ }
         }
     });
 
+    ipcMain.handle('workflow-source-upload-cancel', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow source cancel sender');
+        const uploadId = String(input.uploadId || '');
+        const state = workflowSourceUploads.get(uploadId);
+        if (!uploadId || !state || state.senderId !== event.sender.id) {
+            if (uploadId) {
+                cancelledWorkflowSourceUploads.add(uploadId);
+                const timer = setTimeout(() => cancelledWorkflowSourceUploads.delete(uploadId), 60_000);
+                timer.unref?.();
+            }
+            return { success: true, alreadyFinished: true };
+        }
+        state.controller.abort();
+        return { success: true };
+    });
+
     ipcMain.handle('workflow-events-open', async (event, input = {}) => {
         if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow stream sender');
+        const senderEpoch = rendererLifecycleEpoch;
         const workflowId = String(input.workflowId || '');
         if (!workflowId) throw new Error('workflow id is required');
         const ticketResponse = await requestWorkflow({
@@ -946,6 +1113,9 @@ function registerIpcHandlers() {
         });
         const ticket = ticketResponse.body?.ticket;
         if (!ticket) throw new Error('workflow event ticket was not issued');
+        if (senderEpoch !== rendererLifecycleEpoch || event.sender.isDestroyed?.()) {
+            throw new Error('renderer was reloaded while opening workflow event stream');
+        }
         const streamId = newStreamId();
         const pendingFrames = [];
         const pendingErrors = [];
@@ -955,6 +1125,7 @@ function registerIpcHandlers() {
             ready: false,
             pendingFrames,
             pendingErrors,
+            pendingOverflow: false,
         };
         workflowSseStreams.set(streamId, streamState);
         try {
@@ -972,6 +1143,12 @@ function registerIpcHandlers() {
                     const item = workflowSseStreams.get(streamId);
                     if (!item) return;
                     if (!item.ready) {
+                        if (item.pendingOverflow) return;
+                        if (item.pendingFrames.length >= MAX_PENDING_WORKFLOW_EVENT_FRAMES) {
+                            item.pendingFrames.splice(0);
+                            item.pendingOverflow = true;
+                            return;
+                        }
                         pendingFrames.push(frame);
                         return;
                     }
@@ -983,6 +1160,7 @@ function registerIpcHandlers() {
                         streamId,
                         error: {
                             message: error?.message || 'workflow SSE failed',
+                            code: error?.code || null,
                             status: error?.status || null,
                             closed: Boolean(error?.closed),
                         },
@@ -990,7 +1168,7 @@ function registerIpcHandlers() {
                     const item = workflowSseStreams.get(streamId);
                     if (!item) return;
                     if (!item.ready) {
-                        pendingErrors.push(payload);
+                        if (pendingErrors.length === 0) pendingErrors.push(payload);
                         return;
                     }
                     workflowSseStreams.delete(streamId);
@@ -1010,6 +1188,24 @@ function registerIpcHandlers() {
         const item = workflowSseStreams.get(streamId);
         if (!item || item.senderId !== event.sender.id) return false;
         item.ready = true;
+        if (item.pendingOverflow) {
+            workflowSseStreams.delete(streamId);
+            item.pendingFrames.splice(0);
+            item.pendingErrors.splice(0);
+            item.stream?.close();
+            if (!event.sender.isDestroyed?.()) {
+                event.sender.send('workflow-event-error', {
+                    streamId,
+                    error: {
+                        message: 'workflow event buffer exceeded its limit; a fresh snapshot is required',
+                        code: 'EVENT_GAP',
+                        status: 409,
+                        closed: true,
+                    },
+                });
+            }
+            return true;
+        }
         item.pendingFrames.splice(0).forEach((frame) => {
             if (!event.sender.isDestroyed?.()) event.sender.send('workflow-event', { streamId, frame });
         });
@@ -1026,6 +1222,8 @@ function registerIpcHandlers() {
         const item = workflowSseStreams.get(String(input.streamId || ''));
         if (!item || item.senderId !== event.sender.id) return false;
         workflowSseStreams.delete(String(input.streamId));
+        item.pendingFrames?.splice(0);
+        item.pendingErrors?.splice(0);
         item.stream?.close();
         return true;
     });
@@ -1035,49 +1233,132 @@ function registerIpcHandlers() {
     // entire Blob through the 16 MiB structured-response limit.
     ipcMain.handle('workflow-artifact-open', async (event, input = {}) => {
         if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow artifact sender');
+        const senderEpoch = rendererLifecycleEpoch;
         const artifactId = String(input.artifactId || '');
         const requestId = String(input.requestId || '');
         if (!artifactId || !requestId) throw new Error('artifact id and request id are required');
-        const ticketResponse = await requestWorkflow({
+        if (workflowArtifactStreams.size + pendingWorkflowArtifactStreams >= MAX_WORKFLOW_ARTIFACT_STREAMS) {
+            const error = new Error('too many artifact streams are active');
+            error.code = 'RESOURCE_EXHAUSTED';
+            throw error;
+        }
+        pendingWorkflowArtifactStreams += 1;
+        try {
+            const ticketResponse = await requestWorkflow({
             http,
             baseUrl: serverUrl,
             capability: serverToken,
             method: 'POST',
             pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content-tickets`,
-        });
-        const ticket = ticketResponse.body?.ticket;
-        if (ticketResponse.status < 200 || ticketResponse.status >= 300 || !ticket) {
-            const error = new Error(ticketResponse.body?.message || `artifact ticket failed: HTTP ${ticketResponse.status}`);
-            error.status = ticketResponse.status;
-            throw error;
-        }
-        const streamId = newStreamId();
-        const stream = await requestWorkflowStream({
+            });
+            const ticket = ticketResponse.body?.ticket;
+            if (ticketResponse.status < 200 || ticketResponse.status >= 300 || !ticket) {
+                const error = new Error(ticketResponse.body?.message || `artifact ticket failed: HTTP ${ticketResponse.status}`);
+                error.status = ticketResponse.status;
+                throw error;
+            }
+            const streamId = newStreamId();
+            const stream = await requestWorkflowStream({
             http,
             baseUrl: serverUrl,
             capability: serverToken,
             method: 'GET',
             pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`,
             headers: { 'X-Artifact-Ticket': ticket },
-        });
-        const state = { stream, senderId: event.sender.id, requestId };
-        workflowArtifactStreams.set(streamId, state);
-        const remove = () => {
+            });
+            if (senderEpoch !== rendererLifecycleEpoch || event.sender.isDestroyed?.()) {
+                stream.destroy(new Error('renderer was reloaded while opening artifact stream'));
+                throw new Error('renderer was reloaded while opening artifact stream');
+            }
+            const state = {
+            stream,
+            senderId: event.sender.id,
+            requestId,
+            waitingForAck: false,
+            closed: false,
+            idleTimer: null,
+            touch: null,
+            };
+            workflowArtifactStreams.set(streamId, state);
+            const remove = () => {
             if (workflowArtifactStreams.get(streamId) === state) workflowArtifactStreams.delete(streamId);
-        };
-        stream.on('data', (chunk) => {
-            if (workflowArtifactStreams.get(streamId) !== state || event.sender.isDestroyed?.()) return;
-            event.sender.send('workflow-artifact-data', {
+            state.closed = true;
+            if (state.idleTimer) clearTimeout(state.idleTimer);
+            state.idleTimer = null;
+            };
+            const touch = () => {
+            if (state.closed) return;
+            if (state.idleTimer) clearTimeout(state.idleTimer);
+            state.idleTimer = setTimeout(() => {
+                if (workflowArtifactStreams.get(streamId) !== state || state.closed) return;
+                if (!event.sender.isDestroyed?.()) {
+                    event.sender.send('workflow-artifact-error', {
+                        streamId,
+                        requestId,
+                        error: { code: 'STREAM_IDLE_TIMEOUT', message: '试听流长时间未被消费，已自动关闭' },
+                    });
+                }
+                remove();
+                state.stream?.destroy(new Error('workflow artifact stream idle timeout'));
+            }, WORKFLOW_ARTIFACT_STREAM_IDLE_TIMEOUT_MS);
+            };
+            state.touch = touch;
+            touch();
+            const headers = stream.headers || {};
+            const rawDisposition = String(headers['content-disposition'] || '');
+            const encodedFilename = rawDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1] || '';
+            let filename = String(headers['x-artifact-filename'] || '').trim();
+            if (filename) {
+                try { filename = decodeURIComponent(filename); } catch (_) { filename = ''; }
+            }
+            if (!filename && encodedFilename) {
+                try { filename = decodeURIComponent(encodedFilename); } catch (_) { filename = ''; }
+            }
+            const rawSha256 = String(headers['x-artifact-sha256'] || headers.etag || '')
+            .replace(/^W\//i, '').replace(/^"|"$/g, '').trim();
+            const rawLength = Number(headers['content-length']);
+            if (!event.sender.isDestroyed?.()) {
+            event.sender.send('workflow-artifact-meta', {
                 streamId,
                 requestId,
-                data: new Uint8Array(Buffer.from(chunk)),
+                metadata: {
+                    content_type: String(headers['content-type'] || '').split(';', 1)[0] || null,
+                    content_length: Number.isSafeInteger(rawLength) && rawLength >= 0 ? rawLength : null,
+                    sha256: /^[0-9a-f]{64}$/i.test(rawSha256) ? rawSha256.toLowerCase() : null,
+                    filename: filename || null,
+                },
             });
-        });
-        stream.once('end', () => {
+            }
+            stream.on('data', (chunk) => {
+            if (
+                workflowArtifactStreams.get(streamId) !== state
+                || state.closed
+                || event.sender.isDestroyed?.()
+            ) return;
+            // IPC has no built-in backpressure.  Pause after each chunk and
+            // resume only when the renderer's ReadableStream asks for more;
+            // this bounds the cross-process queue to one artifact chunk.
+            state.waitingForAck = true;
+            touch();
+            stream.pause();
+            try {
+                event.sender.send('workflow-artifact-data', {
+                    streamId,
+                    requestId,
+                    data: new Uint8Array(Buffer.from(chunk)),
+                });
+            } catch (error) {
+                remove();
+                stream.destroy(error);
+            }
+            });
+            stream.once('end', () => {
+            if (workflowArtifactStreams.get(streamId) !== state || state.closed) return;
             remove();
             if (!event.sender.isDestroyed?.()) event.sender.send('workflow-artifact-end', { streamId, requestId });
-        });
-        stream.once('error', (error) => {
+            });
+            stream.once('error', (error) => {
+            if (workflowArtifactStreams.get(streamId) !== state || state.closed) return;
             remove();
             if (!event.sender.isDestroyed?.()) {
                 event.sender.send('workflow-artifact-error', {
@@ -1086,8 +1367,26 @@ function registerIpcHandlers() {
                     error: { message: error?.message || 'workflow artifact stream failed' },
                 });
             }
-        });
-        return streamId;
+            });
+            return streamId;
+        } finally {
+            pendingWorkflowArtifactStreams -= 1;
+        }
+    });
+
+    ipcMain.handle('workflow-artifact-ack', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return false;
+        const streamId = String(input.streamId || '');
+        const state = workflowArtifactStreams.get(streamId);
+        if (!state || state.senderId !== event.sender.id || state.closed) return false;
+        if (state.waitingForAck) {
+            state.waitingForAck = false;
+            // An acknowledgement is proof that the renderer is alive and
+            // consuming the stream, so it also resets the idle watchdog.
+            state.stream?.resume();
+        }
+        state.touch?.();
+        return true;
     });
 
     ipcMain.handle('workflow-artifact-close', async (event, input = {}) => {
@@ -1096,6 +1395,8 @@ function registerIpcHandlers() {
         const state = workflowArtifactStreams.get(streamId);
         if (!state || state.senderId !== event.sender.id) return false;
         workflowArtifactStreams.delete(streamId);
+        state.closed = true;
+        state.waitingForAck = false;
         state.stream?.destroy();
         return true;
     });
@@ -1133,6 +1434,117 @@ function registerIpcHandlers() {
                 headers: { 'X-Artifact-Ticket': ticket },
             });
         }, input.suggestedName);
+    });
+
+    ipcMain.handle('save-artifact-stream-start', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const artifactId = String(input.artifactId || '');
+        const transferId = String(input.transferId || newStreamId());
+        if (!artifactId) return { success: false, reason: 'content-invalid', error: 'Artifact 标识缺失' };
+        if (workflowArtifactDownloads.has(transferId)) {
+            return { success: false, reason: 'transfer-already-running' };
+        }
+        if (workflowArtifactDownloads.size >= MAX_WORKFLOW_ARTIFACT_DOWNLOADS) {
+            return {
+                success: false,
+                reason: 'resource-exhausted',
+                code: 'RESOURCE_EXHAUSTED',
+                error: '同时进行的 Artifact 下载数量已达到上限',
+            };
+        }
+        const state = {
+            controller: new AbortController(),
+            senderId: event.sender.id,
+            receivedBytes: 0,
+            totalBytes: null,
+        };
+        workflowArtifactDownloads.set(transferId, state);
+        void (async () => {
+            sendArtifactDownloadProgress(event, transferId, { state: 'starting', receivedBytes: 0, totalBytes: null });
+            try {
+                const result = await nativeFileDialogs.saveFileStream(
+                    event,
+                    async ({ signal } = {}) => {
+                        const requestSignal = signal || state.controller.signal;
+                        const ticketResponse = await requestWorkflow({
+                            http,
+                            baseUrl: serverUrl,
+                            capability: serverToken,
+                            method: 'POST',
+                            pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content-tickets`,
+                            signal: requestSignal,
+                        });
+                        const ticket = ticketResponse.body?.ticket;
+                        if (ticketResponse.status < 200 || ticketResponse.status >= 300 || !ticket) {
+                            const error = new Error(ticketResponse.body?.message || `artifact ticket failed: HTTP ${ticketResponse.status}`);
+                            error.status = ticketResponse.status;
+                            throw error;
+                        }
+                        return requestWorkflowStream({
+                            http,
+                            baseUrl: serverUrl,
+                            capability: serverToken,
+                            method: 'GET',
+                            pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`,
+                            headers: { 'X-Artifact-Ticket': ticket },
+                            signal: requestSignal,
+                        });
+                    },
+                    input.suggestedName,
+                    {
+                        signal: state.controller.signal,
+                        onProgress: ({ receivedBytes, totalBytes }) => sendArtifactDownloadProgress(
+                            event,
+                            transferId,
+                            {
+                                state: 'transferring',
+                                receivedBytes: state.receivedBytes = Number(receivedBytes) || 0,
+                                totalBytes: state.totalBytes = Number.isFinite(Number(totalBytes))
+                                    ? Number(totalBytes)
+                                    : null,
+                            },
+                        ),
+                    },
+                );
+                const cancelled = result?.reason === 'user-cancelled' || state.controller.signal.aborted;
+                sendArtifactDownloadProgress(event, transferId, cancelled
+                    ? { state: 'cancelled', receivedBytes: state.receivedBytes, totalBytes: state.totalBytes }
+                    : {
+                        state: result?.success ? 'completed' : 'failed',
+                        receivedBytes: state.receivedBytes,
+                        totalBytes: state.totalBytes,
+                        result: result || null,
+                    });
+            } catch (error) {
+                sendArtifactDownloadProgress(event, transferId, state.controller.signal.aborted
+                    ? {
+                        state: 'cancelled',
+                        receivedBytes: state.receivedBytes,
+                        totalBytes: state.totalBytes,
+                        error: artifactDownloadError(error),
+                    }
+                    : {
+                        state: 'failed',
+                        receivedBytes: state.receivedBytes,
+                        totalBytes: state.totalBytes,
+                        error: artifactDownloadError(error),
+                    });
+            } finally {
+                workflowArtifactDownloads.delete(transferId);
+            }
+        })();
+        return { success: true, transferId };
+    });
+
+    ipcMain.handle('cancel-artifact-download', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const transferId = String(input.transferId || '');
+        const state = workflowArtifactDownloads.get(transferId);
+        if (!state || state.senderId !== event.sender.id) {
+            return { success: true, alreadyFinished: true };
+        }
+        state.controller.abort();
+        return { success: true };
     });
 
     // 检查服务器是否就绪
@@ -1262,6 +1674,9 @@ app.on('will-quit', (event) => {
     workflowSseStreams.clear();
     workflowArtifactStreams.forEach(({ stream }) => stream.destroy());
     workflowArtifactStreams.clear();
+    workflowArtifactDownloads.forEach(({ controller }) => controller.abort());
+    workflowArtifactDownloads.clear();
+    cancelWorkflowSourceUploads();
     closeWorkflowSourceFiles();
     void sourceUploadStaging?.disposeAll('app-quit');
     if (!pythonProcess || quitCleanupStarted) return;
