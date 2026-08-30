@@ -12,6 +12,7 @@ from typing import Any, BinaryIO, Iterable, Mapping
 from .artifact_store import ArtifactStore, ArtifactStoreError, BlobInfo, StagedFile
 from .data_safety import redact_public_json
 from .domain import canonical_json, content_hash, new_id, utc_now
+from .event_store import EventStore
 from .repositories import ConflictError, NotFoundError, RepositoryError
 from .security import OneTimeTicketManager, TicketError
 
@@ -74,10 +75,12 @@ class SourceImportService:
         artifact_store: ArtifactStore,
         *,
         ticket_manager: OneTimeTicketManager | None = None,
+        event_store: EventStore | None = None,
         max_ttl_seconds: int = 3600,
     ) -> None:
         self.database = database
         self.artifact_store = artifact_store
+        self.events = event_store or EventStore(database)
         self.tickets = ticket_manager or OneTimeTicketManager(max_ttl_seconds=max_ttl_seconds)
         self.max_ttl_seconds = max(1, int(max_ttl_seconds))
         self._grants: dict[str, WriterGrant] = {}
@@ -149,6 +152,7 @@ class SourceImportService:
         expected_size_bytes: int | None = None,
         expected_sha256: str | None = None,
         ttl_seconds: int = 3600,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         generation_id = new_id("generation")
         now = utc_now()
@@ -214,6 +218,35 @@ class SourceImportService:
                 "SELECT * FROM source_import_generations WHERE source_import_generation_id=?",
                 (generation_id,),
             ).fetchone()
+            if result is None:
+                raise SourceImportError("created source generation is missing")
+            current_parent = con.execute(
+                "SELECT * FROM source_imports WHERE source_import_id=?",
+                (source_import_id,),
+            ).fetchone()
+            if current_parent is None:
+                raise SourceImportError("created source import is missing")
+            # Keep the exact public response in the same transaction as the
+            # generation event.  The parent projection may later point at a
+            # newer generation, so rebuilding it from get_import() during
+            # idempotent recovery would return a different result.
+            response = self._public_import(current_parent, result)
+            if request_id:
+                self.events.append_in_transaction(
+                    con,
+                    str(parent["workflow_id"]),
+                    "SOURCE_GENERATION_CREATED",
+                    {
+                        "source_import_id": str(source_import_id),
+                        "generation": generation,
+                        "source_import_generation_id": generation_id,
+                        "previous_generation": int(parent["current_generation"]),
+                        "response": response,
+                    },
+                    request_id=request_id,
+                    actor_type="USER",
+                    actor_id="desktop",
+                )
             return _public_generation(result)
 
     def acquire_writer(
@@ -501,20 +534,45 @@ class SourceImportService:
             ).fetchone()
             if generation is None:
                 raise SourceImportError("current source generation is missing")
-            return {
-                "source_import_id": source_import_id,
-                "workflow_id": parent["workflow_id"],
-                "staging_generation": int(parent["current_generation"]),
-                "status": parent["current_status"],
-                "state_version": int(generation["state_version"]),
-                "received_size_bytes": int(generation["received_size_bytes"]),
-                "actual_size_bytes": generation["actual_size_bytes"],
-                "actual_sha256": generation["actual_sha256"],
-                "source_artifact_id": generation["source_artifact_id"],
-                "error_code": parent["error_code"],
-                "expires_at": parent["expires_at"],
-                "updated_at": parent["updated_at"],
-            }
+            return self._public_import(parent, generation)
+
+    def get_import_by_request_key(self, workflow_id: str, request_key: str) -> dict[str, Any] | None:
+        """Find the source import created by a stable API request key."""
+
+        with self.database.read_transaction() as con:
+            parent = con.execute(
+                """SELECT * FROM source_imports
+                   WHERE workflow_id=? AND request_key=?""",
+                (workflow_id, request_key),
+            ).fetchone()
+            if parent is None:
+                return None
+            generation = con.execute(
+                """SELECT * FROM source_import_generations
+                   WHERE source_import_id=? AND generation=?""",
+                (parent["source_import_id"], parent["current_generation"]),
+            ).fetchone()
+            if generation is None:
+                raise SourceImportError("current source generation is missing")
+            return self._public_import(parent, generation)
+
+    @staticmethod
+    def _public_import(parent: sqlite3.Row, generation: sqlite3.Row) -> dict[str, Any]:
+        source_import_id = str(parent["source_import_id"])
+        return {
+            "source_import_id": source_import_id,
+            "workflow_id": parent["workflow_id"],
+            "staging_generation": int(parent["current_generation"]),
+            "status": parent["current_status"],
+            "state_version": int(generation["state_version"]),
+            "received_size_bytes": int(generation["received_size_bytes"]),
+            "actual_size_bytes": generation["actual_size_bytes"],
+            "actual_sha256": generation["actual_sha256"],
+            "source_artifact_id": generation["source_artifact_id"],
+            "error_code": parent["error_code"],
+            "expires_at": parent["expires_at"],
+            "updated_at": parent["updated_at"],
+        }
 
     def get_generation(self, source_import_id: str, generation: int) -> dict[str, Any]:
         with self.database.read_transaction() as con:

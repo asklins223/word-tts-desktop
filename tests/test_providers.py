@@ -19,6 +19,7 @@ from workflow.providers import (
     _normalize_legacy_error,
 )
 from workflow.repositories import WorkflowRepository
+from xunfei.errors import XunfeiCancelled
 
 
 class _Backend:
@@ -65,6 +66,9 @@ class ProviderTests(unittest.TestCase):
         provider = XunfeiTTSAdapter(account_scope="test-account", allow_real=True)
         with mock.patch.object(legacy, "is_available", return_value=True), mock.patch.object(legacy, "_session", None):
             snapshot = provider.capability_snapshot()
+        self.assertFalse(snapshot["supports_query"])
+        self.assertFalse(snapshot["supports_resume"])
+        self.assertFalse(callable(getattr(provider, "query", None)))
         self.assertEqual(snapshot["status"], "LOGIN_REQUIRED")
         self.assertFalse(snapshot["ready"])
         self.assertFalse(snapshot["can_generate"])
@@ -91,8 +95,8 @@ class ProviderTests(unittest.TestCase):
         ambiguous = _normalize_legacy_error(
             type("XunfeiSubmissionAmbiguous", (RuntimeError,), {"works_name": "wordtts-demo"})("提交后无法定位作品"),
         )
-        self.assertEqual(ambiguous.code, "SUBMISSION_AMBIGUOUS")
-        self.assertTrue(ambiguous.ambiguous)
+        self.assertEqual(ambiguous.code, "LOCAL_SUBMISSION_NOT_CONFIRMED")
+        self.assertFalse(ambiguous.ambiguous)
         self.assertEqual(ambiguous.details["works_name"], "wordtts-demo")
 
         # A plain XunfeiError is raised while preparing the editor, before
@@ -111,7 +115,7 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn("secret-value", str(error))
         self.assertEqual(error.details["cookie"], "[REDACTED]")
 
-    def test_legacy_work_name_is_deterministic_for_reconciliation(self) -> None:
+    def test_legacy_work_name_is_deterministic_for_submission(self) -> None:
         provider = XunfeiTTSAdapter(account_scope="test-account", allow_real=True)
         payload = {"plan": [{"content": "hello", "voice_key": "amanda"}]}
         first = provider._legacy_works("submission-key", payload)
@@ -159,10 +163,20 @@ class ProviderTests(unittest.TestCase):
                 mock.patch("workflow.providers._run_sync", side_effect=RuntimeError("Target page, context or browser has been closed")):
             with self.assertRaises(ProviderError) as context:
                 provider._submit_legacy_xunfei("submission-key", payload)
-        self.assertEqual(context.exception.code, "TRANSIENT_PROVIDER_ERROR")
+        self.assertEqual(context.exception.code, "LOCAL_SUBMISSION_NOT_CONFIRMED")
         self.assertFalse(context.exception.ambiguous)
         self.assertTrue(context.exception.details["browser_disconnected"])
         self.assertTrue(context.exception.details["cancelled_before_confirmation"])
+
+    def test_legacy_submission_propagates_cancel_instead_of_normalizing_to_retry(self) -> None:
+        import xunfei.runtime as legacy
+
+        provider = XunfeiTTSAdapter(account_scope="test-account", allow_real=True)
+        payload = {"plan": [{"item_id": "item-1", "content": "hello", "voice_key": "amanda"}]}
+        with mock.patch.object(legacy, "_session", None), \
+                mock.patch("workflow.providers._run_sync", side_effect=XunfeiCancelled("stopped")):
+            with self.assertRaises(XunfeiCancelled):
+                provider._submit_legacy_xunfei("submission-key", payload)
 
     def test_legacy_audio_export_honors_persisted_quality(self) -> None:
         audio = _ExportableAudio()

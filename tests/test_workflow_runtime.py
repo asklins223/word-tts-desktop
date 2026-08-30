@@ -25,6 +25,7 @@ from workflow.repositories import (
     IdempotencyConflict,
     IdempotencyInProgress,
     LeaseConflict,
+    RepositoryError,
     WorkflowRepository,
 )
 from workflow.scheduler import PersistentScheduler
@@ -207,13 +208,13 @@ class WorkflowRuntimeTests(unittest.TestCase):
             blocker for blocker in workspace["blockers"]
             if blocker["code"] == "ARTIFACT_MISSING_OR_UNVERIFIED"
         )
-        self.assertEqual(blocker["recovery_action"]["type"], "RECONCILE")
-        self.assertFalse(blocker["recovery_action"]["enabled"])
-        reconcile = next(
+        self.assertEqual(blocker["recovery_action"]["type"], "RETRY")
+        self.assertTrue(blocker["recovery_action"]["enabled"])
+        retry = next(
             action for action in workspace["available_actions"]
-            if action["kind"] == "SERVICE" and action["type"] == "RECONCILE"
+            if action["kind"] == "SERVICE" and action["type"] == "RETRY"
         )
-        self.assertFalse(reconcile["enabled"])
+        self.assertTrue(retry["enabled"])
 
     def test_workspace_normalizes_blocked_provider_capability_snapshot(self) -> None:
         snapshot = self.repository.create_workflow("tts", {"generation_mode": "single_segment"})
@@ -356,6 +357,58 @@ class WorkflowRuntimeTests(unittest.TestCase):
             if item["workflow"]["workflow_id"] == accepted.workflow_id
         )
         self.assertTrue(candidate["can_takeover"])
+
+    def test_prepared_tts_workflow_cannot_be_submitted_again_from_workspace(self) -> None:
+        """已落库的 TTS 计划处于 PREPARING 时，工作区不能再次创建生成请求。"""
+        workflow_id = self._workflow_with_items()
+        items = self.repository.list_items(workflow_id)
+        plan_items = [
+            {
+                "ordinal": ordinal,
+                "item_id": str(item["item_id"]),
+                "identity_key": str(item["item_identity_key"]),
+                "content": str(item["normalized_content"]),
+                "content_hash": str(item["content_hash"]),
+                "role": item["role"],
+                "voice_key": item["voice_key"],
+            }
+            for ordinal, item in enumerate(items)
+        ]
+        _lease_id, fencing_token, _ = self.repository.acquire_lease(
+            workflow_id, "provider", "fake:fake-account", "workspace-preparing-owner"
+        )
+        self.repository.prepare_tts_plan(
+            workflow_id,
+            provider="fake",
+            provider_account_scope="fake-account",
+            unit_type="composite",
+            tts_submission_key="workspace-preparing-submission",
+            ordered_plan=plan_items,
+            input_hash=content_hash({"items": plan_items}),
+            submission_profile_hash=content_hash({"format": "mp3"}),
+            capability_snapshot={},
+            lease_fencing_token=fencing_token,
+        )
+
+        workspace = self.repository.get_workspace(
+            workflow_id,
+            capabilities={
+                "provider": {
+                    "provider": "fake",
+                    "status": "READY",
+                    "ready": True,
+                    "can_generate": True,
+                },
+            },
+        )
+        self.assertEqual(workspace["snapshot"]["execution_state"], "PREPARING")
+        self.assertTrue(workspace["configuration"]["frozen_fields"])
+        generate = next(
+            action for action in workspace["available_actions"]
+            if action["kind"] == "SERVICE" and action["type"] == "GENERATE"
+        )
+        self.assertFalse(generate["enabled"])
+        self.assertEqual(generate["reason"], "生成任务已接受，正在准备执行")
 
     def test_all_skipped_generation_closes_locally_without_provider_submission(self) -> None:
         snapshot = self.repository.create_workflow("tts", {"generation_mode": "composite_cut"})
@@ -607,6 +660,8 @@ class WorkflowRuntimeTests(unittest.TestCase):
             (finalized.result_status, finalized.execution_state, finalized.control_state, finalized.cleanup_state),
             ("CANCELLED", "TERMINAL", "TERMINATED", "SUCCEEDED"),
         )
+        self.assertEqual(finalized.last_error_code, "WORKFLOW_CANCELLED")
+        self.assertEqual(finalized.last_error_message, "test-cancel")
         with self.database.read_transaction() as con:
             item_statuses = [row[0] for row in con.execute(
                 "SELECT status FROM work_items WHERE workflow_id=? ORDER BY sequence",
@@ -619,29 +674,52 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(item_statuses, ["CANCELLED", "CANCELLED"])
         self.assertEqual(event_type, "WORKFLOW_CANCELLED")
 
-    def test_cancel_cleanup_releases_local_resources_but_keeps_ambiguous_side_effect_blocked(self) -> None:
+    def test_cancel_cleanup_terminalizes_even_when_submission_was_unresolved(self) -> None:
         workflow_id = self._workflow_with_items()
         provider = FakeProvider()
         provider.fail_mode = "after"
         engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "cancel-artifacts"))
         first = engine.run_tts(workflow_id, provider)
-        self.assertEqual(first.status, "AMBIGUOUS")
+        self.assertEqual(first.status, "WAITING_RETRY")
 
         snapshot = self.repository.get_workflow(workflow_id)
         self.repository.command(workflow_id, "cancel", snapshot.state_version, reason="test-cancel-ambiguous")
-        finalized = self.repository.finalize_generation_cleanup(workflow_id, reason="test-cancel-ambiguous")
+        finalized = self.repository.finalize_generation_cleanup(
+            workflow_id, reason="test-cancel-ambiguous", force_cancel=True,
+        )
 
         self.assertEqual(finalized.cleanup_state, "SUCCEEDED")
-        self.assertEqual((finalized.result_status, finalized.control_state), ("IN_PROGRESS", "TERMINATING"))
-        # The unresolved provider side effect keeps the workflow blocked even
-        # though the local generation resource has already been cleaned up.
-        self.assertEqual(finalized.execution_state, "BLOCKED")
+        self.assertEqual(
+            (finalized.result_status, finalized.execution_state, finalized.control_state),
+            ("CANCELLED", "TERMINAL", "TERMINATED"),
+        )
+        self.assertEqual(finalized.last_error_code, "WORKFLOW_CANCELLED")
+        self.assertEqual(finalized.last_error_message, "test-cancel-ambiguous")
         with self.database.read_transaction() as con:
             submission_state = con.execute(
                 "SELECT side_effect_state FROM provider_submissions WHERE workflow_group_id=?",
                 (finalized.workflow_group_id,),
             ).fetchone()[0]
-        self.assertEqual(submission_state, "AMBIGUOUS")
+        self.assertEqual(submission_state, "REJECTED")
+
+    def test_cancel_cleanup_repairs_legacy_terminated_control_state(self) -> None:
+        workflow_id = self._workflow_with_items()
+        with self.database.transaction() as con:
+            con.execute(
+                """UPDATE workflows
+                   SET execution_state='RUNNING', control_state='TERMINATED'
+                   WHERE workflow_id=?""",
+                (workflow_id,),
+            )
+
+        finalized = self.repository.finalize_generation_cleanup(
+            workflow_id, reason="repair-legacy-terminated-state", force_cancel=True,
+        )
+
+        self.assertEqual(
+            (finalized.result_status, finalized.execution_state, finalized.control_state),
+            ("CANCELLED", "TERMINAL", "TERMINATED"),
+        )
 
     def test_multiple_runs_reuse_the_same_immutable_definition_snapshot(self) -> None:
         first = self.repository.create_workflow("tts", {"voice": "a"})
@@ -1124,6 +1202,121 @@ class WorkflowRuntimeTests(unittest.TestCase):
                     request={"value": 1},
                 )
 
+    def test_orphaned_idempotency_replays_a_durable_event_after_restart(self) -> None:
+        workflow = self.repository.create_workflow("tts", {})
+        reservation_id, cached = self.repository.begin_idempotency(
+            scope=f"workflow:{workflow.workflow_id}",
+            client_key="restart-replay-key-123456",
+            command_name="localMutation",
+            method="POST",
+            resource_id=workflow.workflow_id,
+            target=None,
+            request={"value": 1},
+            workflow_id=workflow.workflow_id,
+        )
+        self.assertIsNone(cached)
+        self.events.append(
+            workflow.workflow_id,
+            "TEST_LOCAL_MUTATION",
+            {"value": 1},
+            request_id=reservation_id,
+        )
+
+        restarted = WorkflowRepository(self.database)
+        recovered_id, recovered = restarted.begin_idempotency(
+            scope=f"workflow:{workflow.workflow_id}",
+            client_key="restart-replay-key-123456",
+            command_name="localMutation",
+            method="POST",
+            resource_id=workflow.workflow_id,
+            target=None,
+            request={"value": 1},
+            workflow_id=workflow.workflow_id,
+            recovery=lambda row: (202, {"recovered": True, "request_id": row["idempotency_id"]}),
+        )
+        self.assertEqual(recovered_id, reservation_id)
+        self.assertEqual(recovered, {"recovered": True, "request_id": reservation_id})
+
+    def test_expired_orphaned_idempotency_without_durable_outcome_gets_a_fresh_reservation(self) -> None:
+        reservation_id, cached = self.repository.begin_idempotency(
+            scope="workflow:restart-reclaim",
+            client_key="restart-reclaim-key-123456",
+            command_name="localMutation",
+            method="POST",
+            resource_id=None,
+            target=None,
+            request={"value": 1},
+        )
+        self.assertIsNone(cached)
+        with self.database.transaction() as con:
+            con.execute(
+                "UPDATE workflow_idempotency_keys SET expires_at=? WHERE idempotency_id=?",
+                ("2000-01-01T00:00:00Z", reservation_id),
+            )
+        restarted = WorkflowRepository(self.database)
+        fresh_id, fresh_cached = restarted.begin_idempotency(
+            scope="workflow:restart-reclaim",
+            client_key="restart-reclaim-key-123456",
+            command_name="localMutation",
+            method="POST",
+            resource_id=None,
+            target=None,
+            request={"value": 1},
+            recovery=lambda _row: None,
+        )
+        self.assertNotEqual(fresh_id, reservation_id)
+        self.assertIsNone(fresh_cached)
+        restarted.complete_idempotency(fresh_id, response_status=200, response={"ok": True})
+
+    def test_unexpired_idempotency_is_not_reclaimed_by_another_repository_instance(self) -> None:
+        reservation_id, cached = self.repository.begin_idempotency(
+            scope="workflow:cross-process-active",
+            client_key="cross-process-active-key-123456",
+            command_name="localMutation",
+            method="POST",
+            resource_id=None,
+            target=None,
+            request={"value": 1},
+        )
+        self.assertIsNone(cached)
+        restarted = WorkflowRepository(self.database)
+        with self.assertRaises(IdempotencyInProgress):
+            restarted.begin_idempotency(
+                scope="workflow:cross-process-active",
+                client_key="cross-process-active-key-123456",
+                command_name="localMutation",
+                method="POST",
+                resource_id=None,
+                target=None,
+                request={"value": 1},
+                recovery=lambda _row: None,
+            )
+        self.repository.complete_idempotency(reservation_id, response_status=200, response={"ok": True})
+
+    def test_active_idempotency_is_not_reclaimed_by_a_recovery_callback(self) -> None:
+        reservation_id, cached = self.repository.begin_idempotency(
+            scope="workflow:active-reservation",
+            client_key="active-reservation-key-123456",
+            command_name="localMutation",
+            method="POST",
+            resource_id=None,
+            target=None,
+            request={"value": 1},
+        )
+        self.assertIsNone(cached)
+        with self.assertRaises(IdempotencyInProgress):
+            self.repository.begin_idempotency(
+                scope="workflow:active-reservation",
+                client_key="active-reservation-key-123456",
+                command_name="localMutation",
+                method="POST",
+                resource_id=None,
+                target=None,
+                request={"value": 1},
+                recovery=lambda _row: (200, {"must_not": "run"}),
+            )
+        self.repository.complete_idempotency(reservation_id, response_status=200, response={"ok": True})
+
     def _workflow_with_items(self) -> str:
         snapshot = self.repository.create_workflow("tts", {"mode": "composite_cut"})
         for sequence, content in enumerate(("hello", "world")):
@@ -1178,7 +1371,8 @@ class WorkflowRuntimeTests(unittest.TestCase):
         workspace = self.repository.get_workspace(workflow_id)
         self.assertEqual(workspace["progress"]["completed"], 1)
         self.assertEqual(workspace["progress"]["deliverable"], 1)
-        self.assertEqual(workspace["progress"]["pending"], 1)
+        self.assertEqual(workspace["progress"]["failed"], 1)
+        self.assertEqual(workspace["progress"]["pending"], 0)
         self.assertIn(
             "ARTIFACT_METADATA_CONFLICT",
             {blocker["code"] for blocker in workspace["blockers"]},
@@ -1397,7 +1591,89 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(provider.submit_calls, 1)
         self.assertEqual(provider.download_calls, 2)
 
-    def test_generic_resolution_cannot_downgrade_a_work_unit_with_a_receipt(self) -> None:
+    def test_cancel_check_fences_download_after_receipt_is_recorded(self) -> None:
+        workflow_id = self._workflow_with_items()
+
+        class CountingProvider(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.download_calls = 0
+
+            def download(self, receipt):
+                self.download_calls += 1
+                return super().download(receipt)
+
+        provider = CountingProvider()
+        engine = WorkflowEngine(
+            self.repository,
+            ArtifactStore(Path(self.temp.name) / "cancel-before-download-artifacts"),
+        )
+        cancel_requested = {"value": False}
+        original_record = self.repository.record_tts_receipt
+
+        def record_then_cancel(plan, receipt):
+            receipt_id = original_record(plan, receipt)
+            cancel_requested["value"] = True
+            return receipt_id
+
+        with patch.object(self.repository, "record_tts_receipt", side_effect=record_then_cancel):
+            with self.assertRaises(RepositoryError) as context:
+                engine.run_tts(
+                    workflow_id,
+                    provider,
+                    cancel_check=lambda: cancel_requested["value"],
+                )
+
+        self.assertEqual(context.exception.code, "WORKFLOW_CANCELLED")
+        self.assertEqual(provider.download_calls, 0)
+        self.assertEqual(provider.submit_calls, 1)
+
+    def test_pause_check_is_forwarded_into_provider_automation_control(self) -> None:
+        workflow_id = self._workflow_with_items()
+
+        class PauseAwareProvider(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.control_seen = False
+                self.started_at = None
+                self.released_at = None
+
+            def submit(self, submission_key, payload):
+                self.started_at = time.monotonic()
+                control = payload.get("_cancel_check")
+                self.control_seen = callable(control)
+                if callable(control):
+                    control()
+                self.released_at = time.monotonic()
+                return super().submit(submission_key, payload)
+
+        provider = PauseAwareProvider()
+        state = {"resume_at": None}
+
+        def pause_check():
+            if provider.started_at is None:
+                return False
+            if state["resume_at"] is None:
+                state["resume_at"] = time.monotonic() + 0.25
+            return time.monotonic() < state["resume_at"]
+
+        engine = WorkflowEngine(
+            self.repository,
+            ArtifactStore(Path(self.temp.name) / "pause-provider-control-artifacts"),
+        )
+        result = engine.run_tts(
+            workflow_id,
+            provider,
+            pause_check=pause_check,
+        )
+
+        self.assertEqual(result.status, "SUCCEEDED")
+        self.assertTrue(provider.control_seen)
+        self.assertIsNotNone(provider.started_at)
+        self.assertIsNotNone(provider.released_at)
+        self.assertGreaterEqual(provider.released_at - provider.started_at, 0.18)
+
+    def test_tts_resolution_is_disabled_even_when_a_receipt_exists(self) -> None:
         workflow_id = self._workflow_with_items()
 
         class DownloadFailsOnce(FakeProvider):
@@ -1439,7 +1715,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 decision="NOT_SUBMITTED",
                 evidence={"source": "stale-operator", "evidence_hash": "n" * 32},
             )
-        self.assertEqual(conflict.exception.code, "STATE_CONFLICT")
+        self.assertEqual(conflict.exception.code, "RECONCILIATION_DISABLED")
         with self.database.read_transaction() as con:
             states = con.execute(
                 """SELECT p.side_effect_state AS submission_state, u.side_effect_state AS unit_state,
@@ -1455,7 +1731,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
             ("SUBMITTED", "SUBMITTED", "FOUND"),
         )
 
-    def test_provider_receipt_resolution_updates_the_parent_projection_without_not_submitted(self) -> None:
+    def test_tts_receipt_resolution_is_disabled(self) -> None:
         workflow_id = self._workflow_with_items()
 
         class DownloadFails(FakeProvider):
@@ -1489,18 +1765,19 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 decision="NOT_SUBMITTED",
                 evidence={"source": "stale-operator", "evidence_hash": "r" * 32},
             )
-        self.assertEqual(conflict.exception.code, "STATE_CONFLICT")
+        self.assertEqual(conflict.exception.code, "RECONCILIATION_DISABLED")
 
-        confirmed = self.repository.targeted_command(
-            workflow_id,
-            "resolve",
-            {"target_type": "PROVIDER_RECEIPT", "provider_receipt_id": receipt["receipt_id"]},
-            expected_state_version=snapshot.state_version,
-            expected_target_state_version=int(receipt["state_version"]),
-            decision="CONFIRMED",
-            evidence={"source": "receipt-observed", "evidence_hash": "c" * 32},
-        )
-        self.assertEqual(confirmed.latest_event["event_type"], "WORKFLOW_RESOLVE_TARGETED")
+        with self.assertRaises(ConflictError) as disabled:
+            self.repository.targeted_command(
+                workflow_id,
+                "resolve",
+                {"target_type": "PROVIDER_RECEIPT", "provider_receipt_id": receipt["receipt_id"]},
+                expected_state_version=snapshot.state_version,
+                expected_target_state_version=int(receipt["state_version"]),
+                decision="CONFIRMED",
+                evidence={"source": "receipt-observed", "evidence_hash": "c" * 32},
+            )
+        self.assertEqual(disabled.exception.code, "RECONCILIATION_DISABLED")
         with self.database.read_transaction() as con:
             states = con.execute(
                 """SELECT p.side_effect_state AS submission_state, u.side_effect_state AS unit_state,
@@ -1513,16 +1790,17 @@ class WorkflowRuntimeTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(
             (states["submission_state"], states["unit_state"], states["unit_status"], states["query_status"]),
-            ("CONFIRMED", "CONFIRMED", "VERIFYING", "FOUND"),
+            ("SUBMITTED", "SUBMITTED", "WAITING_RETRY", "FOUND"),
         )
 
-    def test_provider_lookup_failure_persists_ambiguous_instead_of_retrying_output(self) -> None:
+    def test_output_retry_never_looks_up_the_provider(self) -> None:
         workflow_id = self._workflow_with_items()
 
         class DownloadThenQueryFails(FakeProvider):
             def __init__(self):
                 super().__init__()
                 self.download_calls = 0
+                self.query_calls = 0
 
             def download(self, receipt):
                 self.download_calls += 1
@@ -1531,33 +1809,31 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 return super().download(receipt)
 
             def query(self, submission_key):
-                raise ProviderError(
-                    "provider lookup is unavailable",
-                    code="TRANSIENT_PROVIDER_ERROR",
-                    ambiguous=True,
-                )
+                self.query_calls += 1
+                raise AssertionError("TTS output retry must not query the provider")
 
         provider = DownloadThenQueryFails()
         engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "query-failure-artifacts"))
         first = engine.run_tts(workflow_id, provider)
         self.assertEqual(first.status, "WAITING_RETRY")
         second = engine.run_tts(workflow_id, provider)
-        self.assertEqual(second.status, "AMBIGUOUS")
+        self.assertEqual(second.status, "SUCCEEDED")
+        self.assertEqual(provider.query_calls, 0)
         with self.database.read_transaction() as con:
             submission = con.execute("SELECT side_effect_state FROM provider_submissions").fetchone()
             workflow = con.execute("SELECT execution_state FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone()
-        self.assertEqual(submission["side_effect_state"], "AMBIGUOUS")
-        self.assertEqual(workflow["execution_state"], "WAITING_USER")
+        self.assertEqual(submission["side_effect_state"], "CONFIRMED")
+        self.assertEqual(workflow["execution_state"], "TERMINAL")
 
-    def test_fake_provider_ambiguous_submission_is_reconciled_without_resubmit(self) -> None:
+    def test_provider_submission_loss_is_retried_without_lookup(self) -> None:
         workflow_id = self._workflow_with_items()
         provider = FakeProvider()
         provider.fail_mode = "after"
         engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "engine-artifacts"))
 
         first = engine.run_tts(workflow_id, provider)
-        self.assertEqual(first.status, "AMBIGUOUS")
-        self.assertEqual(first.error_code, "SUBMISSION_AMBIGUOUS")
+        self.assertEqual(first.status, "WAITING_RETRY")
+        self.assertEqual(first.error_code, "LOCAL_SUBMISSION_NOT_CONFIRMED")
         self.assertEqual(provider.submit_calls, 1)
 
         resumed = engine.run_tts(workflow_id, provider)
@@ -1569,79 +1845,43 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual((budget["used_attempts"], budget["reserved_attempts"]), (1, 0))
         self.assertEqual((states["side_effect_state"], states["status"]), ("CONFIRMED", "SUCCEEDED"))
 
-    def test_ambiguous_run_routes_reconfigure_to_reconciliation_not_dead_end(self) -> None:
-        """终止/断网留下的 AMBIGUOUS run：patch 必须返回可路由的对账错误。
-
-        用户在配置页点击生成时不能再拿到笼统的 CONFIG_FROZEN 死胡同；
-        未决副作用必须以 RECONCILIATION_REQUIRED 暴露，且恢复入口
-        （attempt/work_unit/目标版本）可以通过 list_open_reconciliations
-        重建——应用重启后依然可达。
-        """
+    def test_submission_loss_retries_without_reconciliation_or_lookup(self) -> None:
+        """本地未拿到回执时，下一次生成直接重试，不创建对账入口。"""
 
         workflow_id = self._workflow_with_items()
-        provider = FakeProvider()
+
+        class NoLookupProvider(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.query_calls = 0
+
+            def query(self, submission_key):
+                self.query_calls += 1
+                raise AssertionError("TTS retry must not query the provider")
+
+        provider = NoLookupProvider()
         provider.fail_mode = "after"
-        engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "reconcile-route-artifacts"))
+        engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "retry-route-artifacts"))
 
         first = engine.run_tts(workflow_id, provider)
-        self.assertEqual(first.status, "AMBIGUOUS")
+        self.assertEqual(first.status, "WAITING_RETRY")
         snapshot = self.repository.get_workflow(workflow_id)
-        self.assertEqual(snapshot.execution_state, "WAITING_USER")
+        self.assertEqual(snapshot.execution_state, "WAITING_RETRY")
+        self.assertEqual(self.repository.list_open_reconciliations(workflow_id), [])
 
-        interventions = self.repository.list_open_reconciliations(workflow_id)
-        self.assertEqual(len(interventions), 1)
-        intervention = interventions[0]
-        self.assertEqual(intervention["attempt_id"], first.attempt_id)
-        self.assertTrue(intervention["work_unit_id"])
-        self.assertGreaterEqual(intervention["work_unit_state_version"], 0)
-
-        with self.assertRaises(ConflictError) as raised:
-            self.repository.patch_draft(
-                workflow_id,
-                snapshot.state_version,
-                configuration={"mode": "composite_cut", "default_female_voice": "speaker:changed"},
-            )
-        self.assertEqual(raised.exception.code, "RECONCILIATION_REQUIRED")
-
-        # 对账（确认未提交）之后配置恢复可编辑，生成可以继续——文档不会
-        # 因为一次网络中断而永久卡死。
-        resolved = self.repository.targeted_command(
-            workflow_id,
-            "resolve",
-            {
-                "target_type": "WORK_UNIT",
-                "work_unit_id": intervention["work_unit_id"],
-            },
-            expected_state_version=self.repository.get_workflow(workflow_id).state_version,
-            expected_target_state_version=intervention["work_unit_state_version"],
-            request_id="test-reconcile-not-submitted",
-            decision="NOT_SUBMITTED",
-            evidence={
-                "source": "desktop-user-confirmed-not-submitted",
-                "evidence_hash": "test-evidence-hash",
-                "summary": "用户确认讯飞作品列表中没有本次作品",
-            },
-        )
-        self.assertEqual(resolved.execution_state, "WAITING_USER")
-        with self.database.read_transaction() as con:
-            intervention_state = con.execute(
-                "SELECT state FROM user_interventions WHERE workflow_id=? AND work_unit_id=?",
-                (workflow_id, intervention["work_unit_id"]),
-            ).fetchone()[0]
-        self.assertEqual(intervention_state, "RESOLVED")
-        provider.fail_mode = None
         second = engine.run_tts(workflow_id, provider)
         self.assertEqual(second.status, "SUCCEEDED")
+        self.assertEqual(provider.query_calls, 0)
 
-    def test_fake_provider_ambiguous_submission_is_reconciled_without_resubmit(self) -> None:
+    def test_provider_submission_loss_is_retried_without_lookup_again(self) -> None:
         workflow_id = self._workflow_with_items()
         provider = FakeProvider()
         provider.fail_mode = "after"
         engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "engine-artifacts"))
 
         first = engine.run_tts(workflow_id, provider)
-        self.assertEqual(first.status, "AMBIGUOUS")
-        self.assertEqual(first.error_code, "SUBMISSION_AMBIGUOUS")
+        self.assertEqual(first.status, "WAITING_RETRY")
+        self.assertEqual(first.error_code, "LOCAL_SUBMISSION_NOT_CONFIRMED")
         self.assertEqual(provider.submit_calls, 1)
 
         resumed = engine.run_tts(workflow_id, provider)
@@ -1665,7 +1905,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         ):
             result = engine.run_tts(workflow_id, provider)
 
-        self.assertEqual(result.status, "AMBIGUOUS")
+        self.assertEqual(result.status, "WAITING_RETRY")
         self.assertEqual(result.error_code, "STALE_ATTEMPT")
         self.assertEqual(provider.submit_calls, 0)
         with self.database.read_transaction() as con:
@@ -1685,10 +1925,10 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 "SELECT state FROM side_effect_intents WHERE workflow_id=?",
                 (workflow_id,),
             ).fetchone()
-        self.assertEqual((state["side_effect_state"], state["status"]), ("AMBIGUOUS", "AMBIGUOUS"))
-        self.assertEqual(workflow["execution_state"], "WAITING_USER")
-        self.assertEqual(intervention["state"], "OPEN")
-        self.assertEqual(intent["state"], "NEEDS_RECONCILE")
+        self.assertEqual((state["side_effect_state"], state["status"]), ("REJECTED", "WAITING_RETRY"))
+        self.assertEqual(workflow["execution_state"], "WAITING_RETRY")
+        self.assertIsNone(intervention)
+        self.assertEqual(intent["state"], "ARCHIVED")
 
     def test_provider_lease_heartbeat_uses_the_acquisition_ttl(self) -> None:
         workflow_id = self._workflow_with_items()
@@ -1743,7 +1983,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
             ("SUCCEEDED", "CONFIRMED", int(unit["state_version"])),
         )
 
-    def test_resolve_rejects_step_and_item_targets_with_a_structured_target_error(self) -> None:
+    def test_tts_resolve_is_disabled_in_favor_of_local_retry(self) -> None:
         workflow_id = self._workflow_with_items()
         WorkflowEngine(
             self.repository,
@@ -1771,7 +2011,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 decision="BLOCKED",
                 evidence={"source": "test", "evidence_hash": "s" * 32},
             )
-        self.assertEqual(conflict.exception.code, "TARGET_REQUIRED")
+        self.assertEqual(conflict.exception.code, "RECONCILIATION_DISABLED")
 
     def test_targeted_generation_keeps_unselected_items_retryable(self) -> None:
         workflow_id = self._workflow_with_items()
@@ -1794,53 +2034,26 @@ class WorkflowRuntimeTests(unittest.TestCase):
                          ("SUCCEEDED", "TERMINAL", "TERMINATED"))
         self.assertEqual(provider.submit_calls, 2)
 
-    def test_reconcile_creates_a_read_only_attempt_for_the_exact_work_unit(self) -> None:
+    def test_retry_does_not_create_a_reconcile_attempt(self) -> None:
         workflow_id = self._workflow_with_items()
         provider = FakeProvider()
         provider.fail_mode = "after"
         engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "reconcile-attempt-artifacts"))
 
         first = engine.run_tts(workflow_id, provider)
-        self.assertEqual(first.status, "AMBIGUOUS")
-        snapshot = self.repository.get_workflow(workflow_id)
+        self.assertEqual(first.status, "WAITING_RETRY")
+        resumed = engine.run_tts(workflow_id, provider)
+        self.assertEqual(resumed.status, "SUCCEEDED")
         with self.database.read_transaction() as con:
-            work_unit = con.execute(
-                "SELECT work_unit_id, state_version FROM work_units WHERE workflow_id=?",
+            attempt_kinds = [row["attempt_kind"] for row in con.execute(
+                "SELECT attempt_kind FROM step_attempts WHERE workflow_id=? ORDER BY attempt_seq",
                 (workflow_id,),
-            ).fetchone()
+            ).fetchall()]
+        self.assertEqual(attempt_kinds, ["EXECUTE", "EXECUTE"])
 
-        reconciled = self.repository.targeted_command(
-            workflow_id,
-            "reconcile",
-            {"target_type": "WORK_UNIT", "work_unit_id": work_unit["work_unit_id"]},
-            expected_state_version=snapshot.state_version,
-            expected_target_state_version=int(work_unit["state_version"]),
-            reason="operator requested provider lookup",
-        )
-        self.assertEqual(reconciled.latest_event["event_type"], "WORKFLOW_RECONCILE_TARGETED")
-        reconcile_attempt_id = reconciled.latest_event["payload"]["reconcile_attempt_id"]
-        self.assertEqual(reconciled.latest_event["attempt_id"], reconcile_attempt_id)
-        with self.database.read_transaction() as con:
-            attempt = con.execute(
-                "SELECT attempt_kind, execute_attempt_no, status FROM step_attempts WHERE attempt_id=?",
-                (reconcile_attempt_id,),
-            ).fetchone()
-            target = con.execute(
-                "SELECT target_type, target_id, expected_state_version, source_attempt_id FROM reconcile_targets WHERE reconcile_attempt_id=?",
-                (reconcile_attempt_id,),
-            ).fetchone()
-        self.assertEqual((attempt["attempt_kind"], attempt["execute_attempt_no"], attempt["status"]), ("RECONCILE", None, "CREATED"))
-        self.assertEqual(
-            (target["target_type"], target["target_id"], target["expected_state_version"]),
-            ("WORK_UNIT", work_unit["work_unit_id"], int(work_unit["state_version"])),
-        )
-        self.assertEqual(target["source_attempt_id"], None)
-
-    def test_targeted_command_rejects_an_attempt_from_another_target(self) -> None:
+    def test_tts_targeted_reconciliation_is_disabled(self) -> None:
         workflow_id = self._workflow_with_items()
         provider = FakeProvider()
-        other_step_id = self.repository.create_step(workflow_id, step_key="other", step_type="TTS")
-        other_attempt_id = self.repository.create_attempt(workflow_id, other_step_id, attempt_kind="RECONCILE")
         WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "target-fence-artifacts")).run_tts(
             workflow_id, provider,
         )
@@ -1855,13 +2068,12 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 workflow_id,
                 "reconcile",
                 {"target_type": "WORK_UNIT", "work_unit_id": work_unit["work_unit_id"]},
-                expected_state_version=snapshot.state_version,
+                expected_state_version=max(0, snapshot.state_version - 1),
                 expected_target_state_version=int(work_unit["state_version"]),
-                expected_attempt_id=other_attempt_id,
             )
-        self.assertEqual(context.exception.code, "TARGET_REQUIRED")
+        self.assertEqual(context.exception.code, "RECONCILIATION_DISABLED")
 
-    def test_manual_not_submitted_resolution_creates_a_fresh_execute_attempt(self) -> None:
+    def test_missing_submission_receipt_creates_a_fresh_execute_attempt(self) -> None:
         workflow_id = self._workflow_with_items()
 
         class AmbiguousWithoutReceiptProvider(FakeProvider):
@@ -1871,29 +2083,15 @@ class WorkflowRuntimeTests(unittest.TestCase):
                     raise AmbiguousProviderError("simulated browser disconnect before a provider receipt existed")
                 return super().submit(submission_key, payload)
 
+            def query(self, submission_key):
+                raise AssertionError("missing local receipt must not trigger a provider lookup")
+
         provider = AmbiguousWithoutReceiptProvider()
         engine = WorkflowEngine(self.repository, ArtifactStore(Path(self.temp.name) / "engine-artifacts"))
 
         first = engine.run_tts(workflow_id, provider)
-        self.assertEqual(first.status, "AMBIGUOUS")
+        self.assertEqual(first.status, "WAITING_RETRY")
         self.assertEqual(provider.submit_calls, 1)
-
-        snapshot = self.repository.get_workflow(workflow_id)
-        with self.database.read_transaction() as con:
-            unit = con.execute(
-                "SELECT work_unit_id, state_version, status, side_effect_state FROM work_units WHERE workflow_id=?",
-                (workflow_id,),
-            ).fetchone()
-        resolved = self.repository.targeted_command(
-            workflow_id,
-            "resolve",
-            {"target_type": "WORK_UNIT", "work_unit_id": unit["work_unit_id"]},
-            expected_state_version=snapshot.state_version,
-            expected_target_state_version=int(unit["state_version"]),
-            decision="NOT_SUBMITTED",
-            evidence={"source": "test-user-confirmed", "evidence_hash": "r" * 32},
-        )
-        self.assertEqual(resolved.control_state, "RUNNING")
 
         resumed = engine.run_tts(workflow_id, provider)
         self.assertEqual(resumed.status, "SUCCEEDED")
@@ -1905,7 +2103,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual(
             [(row["attempt_kind"], row["execute_attempt_no"], row["status"]) for row in attempts],
-            [("EXECUTE", 1, "AMBIGUOUS"), ("EXECUTE", 2, "SUCCEEDED")],
+            [("EXECUTE", 1, "FAILED"), ("EXECUTE", 2, "SUCCEEDED")],
         )
 
     def test_fake_provider_failure_before_submission_creates_a_new_execute_attempt_on_retry(self) -> None:
@@ -1928,7 +2126,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
             [("EXECUTE", 1, "FAILED"), ("EXECUTE", 2, "SUCCEEDED")],
         )
 
-    def test_browser_disconnect_before_confirmation_waits_for_user_instead_of_auto_retry(self) -> None:
+    def test_browser_disconnect_before_confirmation_is_local_retryable_without_auto_retry(self) -> None:
         class BrowserClosedProvider:
             provider = "xunfei"
             account_scope = "test-account"
@@ -1936,7 +2134,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
             def submit(self, submission_key, payload):
                 raise ProviderError(
                     "浏览器在提交确认前已关闭",
-                    code="TRANSIENT_PROVIDER_ERROR",
+                    code="LOCAL_SUBMISSION_NOT_CONFIRMED",
                     details={
                         "browser_disconnected": True,
                         "cancelled_before_confirmation": True,
@@ -1956,7 +2154,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         first = engine.run_tts(workflow_id, BrowserClosedProvider())
         self.assertEqual(first.status, "WAITING_RETRY")
         held = self.repository.get_workflow(workflow_id)
-        self.assertEqual(held.execution_state, "WAITING_USER")
+        self.assertEqual(held.execution_state, "WAITING_RETRY")
         self.assertEqual(
             PersistentScheduler(self.database).claim_due_retries(now="9999-12-31T00:00:00.000Z"),
             [],
@@ -1966,7 +2164,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 "SELECT status, retry_after FROM workflow_steps WHERE workflow_id=?",
                 (workflow_id,),
             ).fetchone()
-        self.assertEqual((step["status"], step["retry_after"]), ("WAITING_USER", None))
+        self.assertEqual((step["status"], step["retry_after"]), ("WAITING_RETRY", None))
 
         changed = self.repository.patch_draft(
             workflow_id,
@@ -2147,7 +2345,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(status, "READY")
 
-    def test_recovery_marks_in_flight_submission_ambiguous_without_resubmitting(self) -> None:
+    def test_recovery_marks_in_flight_submission_retryable_without_lookup(self) -> None:
         workflow_id = self._workflow_with_items()
         items = self.repository.list_items(workflow_id)
         plan_items = [{
@@ -2193,10 +2391,22 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 "SELECT side_effect_state, status FROM work_units WHERE work_unit_id=?",
                 (plan["work_unit_id"],),
             ).fetchone()
-        self.assertEqual(submission, "AMBIGUOUS")
-        self.assertEqual((unit["side_effect_state"], unit["status"]), ("AMBIGUOUS", "AMBIGUOUS"))
+        self.assertEqual(submission, "REJECTED")
+        self.assertEqual((unit["side_effect_state"], unit["status"]), ("REJECTED", "WAITING_RETRY"))
+        self.assertEqual(after_recovery.execution_state, "WAITING_RETRY")
+        with self.database.read_transaction() as con:
+            intent = con.execute(
+                "SELECT state FROM side_effect_intents WHERE work_unit_id=?",
+                (plan["work_unit_id"],),
+            ).fetchone()[0]
+            intervention = con.execute(
+                "SELECT COUNT(*) FROM user_interventions WHERE workflow_id=? AND state IN ('OPEN','CLAIMED')",
+                (workflow_id,),
+            ).fetchone()[0]
+        self.assertEqual(intent, "ARCHIVED")
+        self.assertEqual(intervention, 0)
 
-    def test_recovery_repairs_legacy_running_projection_without_resubmitting(self) -> None:
+    def test_recovery_normalizes_legacy_ambiguous_projection_for_retry(self) -> None:
         workflow_id = self._workflow_with_items()
         item = self.repository.list_items(workflow_id)[0]
         plan_item = {
@@ -2225,6 +2435,16 @@ class WorkflowRuntimeTests(unittest.TestCase):
         )
         self.repository.begin_tts_submission(plan)
 
+        # Older recovery state can contain a second active projection for the
+        # same step (for example, a stale WAITING_USER reconcile attempt).
+        # Promoting the ambiguous execute attempt must retire that projection
+        # first or ux_active_step_attempt rejects the whole recovery transaction.
+        competing_attempt_id = self.repository.create_attempt(
+            workflow_id,
+            plan["step_id"],
+            attempt_kind="RECONCILE",
+        )
+
         # Reproduce the old desktop projection: the provider result is already
         # uncertain, but cleanup left the parent workflow looking RUNNING.
         with self.database.transaction() as con:
@@ -2239,6 +2459,11 @@ class WorkflowRuntimeTests(unittest.TestCase):
             con.execute(
                 "UPDATE step_attempts SET status='AMBIGUOUS', result_status='MIXED', error_code='SUBMISSION_AMBIGUOUS' WHERE attempt_id=?",
                 (plan["attempt_id"],),
+            )
+            con.execute(
+                """UPDATE step_attempts SET status='WAITING_USER', result_status='MIXED'
+                   WHERE workflow_id=? AND attempt_id=?""",
+                (workflow_id, competing_attempt_id),
             )
             con.execute(
                 "UPDATE work_unit_attempts SET status='AMBIGUOUS', side_effect_state='AMBIGUOUS' WHERE attempt_id=?",
@@ -2256,23 +2481,39 @@ class WorkflowRuntimeTests(unittest.TestCase):
 
         findings = RecoveryService(self.database).apply_safe_recovery()
         self.assertTrue(any(
-            finding.kind == "workflow_projection" and finding.resource_id == workflow_id
+            finding.kind == "provider_submission" and finding.resource_id == plan["submission_id"]
+            and finding.action == "RETRY"
             for finding in findings
         ))
         repaired = self.repository.get_workflow(workflow_id)
-        self.assertEqual(repaired.execution_state, "WAITING_USER")
+        self.assertEqual(repaired.execution_state, "WAITING_RETRY")
         with self.database.read_transaction() as con:
             item_status = con.execute(
                 "SELECT status FROM work_items WHERE item_id=?", (item["item_id"],)
             ).fetchone()[0]
+            step = con.execute(
+                "SELECT current_attempt_id, status FROM workflow_steps WHERE workflow_id=? AND step_id=?",
+                (workflow_id, plan["step_id"]),
+            ).fetchone()
+            attempts = {
+                row["attempt_id"]: row["status"]
+                for row in con.execute(
+                    "SELECT attempt_id, status FROM step_attempts WHERE workflow_id=? AND step_id=?",
+                    (workflow_id, plan["step_id"]),
+                ).fetchall()
+            }
             event_count = con.execute(
                 """SELECT COUNT(*) FROM workflow_events
-                   WHERE workflow_id=? AND event_type='RECOVERY_PROJECTION_REPAIRED'""",
+                   WHERE workflow_id=? AND event_type='RECOVERY_LOCAL_RETRYABLE'""",
                 (workflow_id,),
             ).fetchone()[0]
-        self.assertEqual(item_status, "AMBIGUOUS")
+        self.assertEqual(item_status, "FAILED")
+        self.assertEqual(step["current_attempt_id"], plan["attempt_id"])
+        self.assertEqual(step["status"], "WAITING_RETRY")
+        self.assertEqual(attempts[plan["attempt_id"]], "WAITING_RETRY")
+        self.assertEqual(attempts[competing_attempt_id], "FAILED")
         self.assertEqual(event_count, 1)
-        # The repair is idempotent after the workflow becomes WAITING_USER.
+        # Local normalization is idempotent after the workflow becomes retryable.
         self.assertFalse(RecoveryService(self.database).apply_safe_recovery())
 
     def test_garbage_collector_only_removes_unreferenced_blob_paths(self) -> None:

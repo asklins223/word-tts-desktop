@@ -367,6 +367,7 @@ class WorkflowApplicationService:
             False,
         )
 
+
     def provider(self, provider: str, account_scope: str) -> TTSProviderPort:
         return self.providers.get(provider, account_scope)
 
@@ -387,6 +388,7 @@ class WorkflowApplicationService:
         workflow_id: str,
         *,
         include_item_ids: Sequence[str] | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a deterministic ZIP and return its complete delivery scope."""
 
@@ -402,6 +404,7 @@ class WorkflowApplicationService:
                 "当前工作流没有可整理的已验证音频",
             )
 
+        is_tts_workflow = self.repository.get_workflow_type(workflow_id).lower() == "tts"
         all_segments = self.repository.list_verified_tts_segments(workflow_id)
         item_rows = self.repository.list_items(workflow_id)
         item_by_id = {str(item["item_id"]): item for item in item_rows}
@@ -438,7 +441,9 @@ class WorkflowApplicationService:
             elif status == "SKIPPED":
                 reason = "ITEM_SKIPPED"
             elif status in {"AMBIGUOUS", "UNRESOLVED"}:
-                reason = "REQUIRES_RECONCILE"
+                # TTS uncertainty is a local retryable failure now. Only the
+                # external workflow compatibility path remains reconcilable.
+                reason = "ITEM_FAILED" if is_tts_workflow else "REQUIRES_RECONCILE"
             elif status == "FAILED":
                 reason = "ITEM_FAILED"
             elif status == "CANCELLED":
@@ -515,7 +520,7 @@ class WorkflowApplicationService:
                     "ARTIFACT_INVALID",
                     "已有 ZIP 产物的格式未通过核验，请重新生成工作流",
                 )
-            return {
+            result = {
                 **existing,
                 "included_count": len(segments),
                 "included_item_ids": included_item_ids,
@@ -526,6 +531,20 @@ class WorkflowApplicationService:
                 "mime_type": "application/zip",
                 "duration_ms": None,
             }
+            if request_id:
+                self.repository.record_export_event(
+                    workflow_id,
+                    artifact_id=artifact_id,
+                    request_id=request_id,
+                    event_payload={
+                        "requested_item_ids": requested_ids,
+                        "response": {
+                            "state_version": int(snapshot.state_version),
+                            "artifact": result,
+                        },
+                    },
+                )
+            return result
 
         width = max(3, len(str(max(1, len(segments)))))
         temporary_path: Path | None = None
@@ -557,14 +576,7 @@ class WorkflowApplicationService:
             with temporary_path.open("rb") as source:
                 staged = self.artifact_store.stage_stream(source)
             blob = self.artifact_store.promote(staged, format="zip")
-            self.repository.attach_export_artifact(
-                workflow_id,
-                artifact_id=artifact_id,
-                blob=blob,
-                producer_version=export_producer_version,
-                parent_artifact_ids=[str(segment["artifact_id"]) for segment in segments],
-            )
-            return {
+            result = {
                 "artifact_id": artifact_id,
                 "workflow_id": workflow_id,
                 "artifact_type": "export-zip",
@@ -584,6 +596,22 @@ class WorkflowApplicationService:
                 "mime_type": "application/zip",
                 "duration_ms": None,
             }
+            self.repository.attach_export_artifact(
+                workflow_id,
+                artifact_id=artifact_id,
+                blob=blob,
+                producer_version=export_producer_version,
+                parent_artifact_ids=[str(segment["artifact_id"]) for segment in segments],
+                request_id=request_id,
+                event_payload={
+                    "requested_item_ids": requested_ids,
+                    "response": {
+                        "state_version": int(snapshot.state_version),
+                        "artifact": result,
+                    },
+                },
+            )
+            return result
         except (ArtifactStoreError, OSError, zipfile.BadZipFile) as exc:
             if isinstance(exc, ArtifactStoreError):
                 raise
@@ -632,6 +660,28 @@ class WorkflowApplicationService:
             reason=reason,
             request_id=request_id,
         )
+
+    def delete_workflow(
+        self,
+        workflow_id: str,
+        *,
+        expected_state_version: int,
+        request_id: str | None = None,
+        response: Mapping[str, Any] | None = None,
+        allow_unresolved: bool = False,
+    ) -> dict[str, Any]:
+        """Delete an unfinished workflow, then clean its managed staging files."""
+
+        cleanup = self.repository.delete_workflow(
+            workflow_id,
+            expected_state_version=expected_state_version,
+            request_id=request_id,
+            response=response,
+            allow_unresolved=allow_unresolved,
+        )
+        for key in cleanup.get("staging_keys", []):
+            self.artifact_store.delete_staging(str(key))
+        return cleanup
 
     def _configuration(self, workflow_id: str) -> dict[str, Any]:
         # Keep the server-owned configuration revision marker out of every

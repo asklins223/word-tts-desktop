@@ -16,7 +16,13 @@ from .config import (
     _SELECT_ALL,
     clamp_param,
 )
-from .errors import XunfeiError, _log
+from .errors import (
+    XunfeiCancelled,
+    XunfeiError,
+    _check_cancel_requested,
+    _log,
+    _wait_with_cancel,
+)
 from .helpers import poll as _poll, safe_eval as _safe_eval
 from .page_scripts import JS
 from .voice_catalog import DEFAULT_FEMALE, get_voice_info
@@ -76,7 +82,9 @@ class CompositeActionsMixin:
         )
 
     @classmethod
-    def _composite_panel_scope(cls, page, require_apply_control=True):
+    def _composite_panel_scope(
+        cls, page, require_apply_control=True, cancel_check=None
+    ):
         """返回真正的多人配音弹层，不把右侧栏搜索框当成弹层。
 
         右侧普通音色栏和“多人配音”弹层都可能使用“搜索主播”占位符。
@@ -90,6 +98,7 @@ class CompositeActionsMixin:
         fallback = None
         try:
             for index in range(min(roots.count(), 20)):
+                _check_cancel_requested(cancel_check)
                 root = roots.nth(index)
                 if root.locator(search_selector).count() == 0:
                     continue
@@ -108,32 +117,47 @@ class CompositeActionsMixin:
                         disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
                     }))"""
                 )
+                _check_cancel_requested(cancel_check)
                 if any(
                     cls._normalize_composite_ui_text(item.get("text")) == "使用"
                     for item in metadata
                 ):
                     return root
+        except XunfeiCancelled:
+            raise
         except Exception:
             pass
         return fallback if not require_apply_control else None
 
     @classmethod
-    def _composite_panel_search(cls, page):
+    def _composite_panel_search(cls, page, cancel_check=None):
         """返回多人配音弹层搜索框；整页右侧栏搜索框不会被返回。"""
-        scope = cls._composite_panel_scope(page, require_apply_control=True)
+        scope = cls._composite_panel_scope(
+            page,
+            require_apply_control=True,
+            cancel_check=cancel_check,
+        )
         if scope is None:
             return None
         search = scope.locator(cls._composite_voice_search_selector())
         return search.first if search.count() > 0 else None
 
     @classmethod
-    def _composite_ui_scope(cls, page):
+    def _composite_ui_scope(cls, page, cancel_check=None):
         """返回当前多人配音弹层，避免点击被右侧栏或旧卡片拦截。"""
-        return cls._composite_panel_scope(page, require_apply_control=True) or page
+        return (
+            cls._composite_panel_scope(
+                page,
+                require_apply_control=True,
+                cancel_check=cancel_check,
+            )
+            or page
+        )
 
     @classmethod
-    def _click_composite_ui_control(cls, page, label):
+    def _click_composite_ui_control(cls, page, label, cancel_check=None):
         """点击可见的多人配音工具按钮，使用真实 Playwright click。"""
+        _check_cancel_requested(cancel_check)
         expected = cls._normalize_composite_ui_text(label)
         # 停顿按钮会被连续点击很多次，但每次的可访问名称都稳定为
         # ``2s``/``1s`` 等。优先直接定位这个可见 UI 按钮，避免每处停顿
@@ -143,10 +167,13 @@ class CompositeActionsMixin:
             try:
                 direct = page.get_by_role("button", name=label, exact=True).last
                 direct.click(timeout=500)
+                _check_cancel_requested(cancel_check)
                 return True
+            except XunfeiCancelled:
+                raise
             except Exception:
                 pass
-        scope = cls._composite_ui_scope(page)
+        scope = cls._composite_ui_scope(page, cancel_check=cancel_check)
         controls = scope.locator(
             'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
             '.cursor-pointer:visible'
@@ -162,13 +189,18 @@ class CompositeActionsMixin:
                     disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
                 }))"""
             )
+            _check_cancel_requested(cancel_check)
             for item in metadata[:200]:
+                _check_cancel_requested(cancel_check)
                 if cls._normalize_composite_ui_text(item.get("text")) != expected:
                     continue
                 if item.get("disabled"):
                     continue
                 controls.nth(int(item["index"])).click(timeout=5000)
+                _check_cancel_requested(cancel_check)
                 return True
+        except XunfeiCancelled:
+            raise
         except Exception:
             pass
         return False
@@ -259,7 +291,8 @@ class CompositeActionsMixin:
         )
 
     @classmethod
-    def _composite_pause_control_metadata(cls, page):
+    def _composite_pause_control_metadata(cls, page, cancel_check=None):
+        _check_cancel_requested(cancel_check)
         controls = page.locator(cls._composite_pause_control_selector())
         metadata = controls.evaluate_all(
             """els => els.map((el, index) => ({
@@ -282,15 +315,20 @@ class CompositeActionsMixin:
                 ),
             }))"""
         )
+        _check_cancel_requested(cancel_check)
         return controls, metadata if isinstance(metadata, list) else []
 
     @classmethod
     def _click_composite_pause_duration(
-        cls, page, boundary_ms, *, restore_selection=None
+        cls, page, boundary_ms, *, restore_selection=None, cancel_check=None
     ):
         """在当前编辑器工具栏/弹出菜单中点击目标停顿时长。"""
         try:
-            controls, metadata = cls._composite_pause_control_metadata(page)
+            controls, metadata = cls._composite_pause_control_metadata(
+                page, cancel_check=cancel_check
+            )
+        except XunfeiCancelled:
+            raise
         except Exception:
             return False
         matches = [
@@ -307,17 +345,21 @@ class CompositeActionsMixin:
         )
         for item in matches:
             try:
+                _check_cancel_requested(cancel_check)
                 if callable(restore_selection):
                     restore_selection()
                 controls.nth(int(item["index"])).click(timeout=3000)
+                _check_cancel_requested(cancel_check)
                 return True
+            except XunfeiCancelled:
+                raise
             except Exception:
                 continue
         return False
 
     @classmethod
     def _click_composite_pause_control(
-        cls, page, boundary_ms, *, restore_selection=None
+        cls, page, boundary_ms, *, restore_selection=None, cancel_check=None
     ):
         """打开必要的停顿菜单并点击目标时长，返回是否完成页面点击。
 
@@ -329,11 +371,16 @@ class CompositeActionsMixin:
             page,
             boundary_ms,
             restore_selection=restore_selection,
+            cancel_check=cancel_check,
         ):
             return True
 
         try:
-            controls, metadata = cls._composite_pause_control_metadata(page)
+            controls, metadata = cls._composite_pause_control_metadata(
+                page, cancel_check=cancel_check
+            )
+        except XunfeiCancelled:
+            raise
         except Exception:
             return False
 
@@ -362,12 +409,15 @@ class CompositeActionsMixin:
         )
         for item in triggers:
             try:
+                _check_cancel_requested(cancel_check)
                 # 工具栏的 mousedown 可能会保存当前原生 Selection；先在
                 # 同一个 contenteditable 中恢复精确的行尾折叠选区，避免
                 # 点击“停顿”时编辑器拿到的是上一次音色面板的选区。
                 if callable(restore_selection):
                     restore_selection()
                 controls.nth(int(item["index"])).click(timeout=3000)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 continue
             # 规范的编辑器会在工具栏 mousedown 时保留 Selection，但部分
@@ -376,6 +426,8 @@ class CompositeActionsMixin:
             if callable(restore_selection):
                 try:
                     restore_selection()
+                except XunfeiCancelled:
+                    raise
                 except Exception:
                     pass
             target_clicked = _poll(
@@ -383,11 +435,13 @@ class CompositeActionsMixin:
                     page,
                     boundary_ms,
                     restore_selection=restore_selection,
+                    cancel_check=cancel_check,
                 ),
                 timeout=2,
                 interval=0.04,
                 max_interval=0.2,
                 page=page,
+                cancel_check=cancel_check,
             )
             if target_clicked:
                 return True
@@ -410,12 +464,17 @@ class CompositeActionsMixin:
 
         for item in [item for item in metadata[:400] if is_more_trigger(item)]:
             try:
+                _check_cancel_requested(cancel_check)
                 controls.nth(int(item["index"])).click(timeout=3000)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 continue
             if callable(restore_selection):
                 try:
                     restore_selection()
+                except XunfeiCancelled:
+                    raise
                 except Exception:
                     pass
             if _poll(
@@ -423,17 +482,19 @@ class CompositeActionsMixin:
                     page,
                     boundary_ms,
                     restore_selection=restore_selection,
+                    cancel_check=cancel_check,
                 ),
                 timeout=1.5,
                 interval=0.04,
                 max_interval=0.2,
                 page=page,
+                cancel_check=cancel_check,
             ):
                 return True
         return False
 
     @classmethod
-    def _find_composite_voice_card(cls, page, voice_name):
+    def _find_composite_voice_card(cls, page, voice_name, cancel_check=None):
         """寻找当前搜索结果中唯一的目标音色卡片。
 
         多人配音弹层同时包含搜索结果、最近使用音色和参数快捷卡片。
@@ -443,7 +504,8 @@ class CompositeActionsMixin:
         不唯一时优先按主名称精确匹配，避免 ``Amanda`` 同时命中
         ``Amanda-教育`` 等变体导致的长时间轮询。
         """
-        scope = cls._composite_ui_scope(page)
+        _check_cancel_requested(cancel_check)
+        scope = cls._composite_ui_scope(page, cancel_check=cancel_check)
         controls = scope.locator(
             'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
             '.cursor-pointer:visible'
@@ -460,11 +522,15 @@ class CompositeActionsMixin:
                     label: el.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent?.trim() || '',
                 }))"""
             )
+        except XunfeiCancelled:
+            raise
         except Exception:
             return None
+        _check_cancel_requested(cancel_check)
         expected_norm = cls._normalize_composite_ui_text(voice_name)
         candidates = []
         for item in metadata[:300]:
+            _check_cancel_requested(cancel_check)
             index = int(item["index"])
             text = str(item.get("text") or "")
             if not cls._composite_ui_text_matches(text, voice_name):
@@ -561,9 +627,10 @@ class CompositeActionsMixin:
         return pool_sorted[0]["control"]
 
     @classmethod
-    def _open_composite_voice_panel(cls, page):
+    def _open_composite_voice_panel(cls, page, cancel_check=None):
         """打开“多人配音”面板，并返回其搜索框。"""
-        search = cls._composite_panel_search(page)
+        _check_cancel_requested(cancel_check)
+        search = cls._composite_panel_search(page, cancel_check=cancel_check)
         if search is None:
             # 队列刚完成时工具栏按钮可能有几十到几百毫秒的 disabled
             # 状态。立即判失败会触发整组重试，客户端看起来就会慢很多；
@@ -571,29 +638,35 @@ class CompositeActionsMixin:
             clicked = _poll(
                 lambda: (
                     True
-                    if cls._click_composite_ui_control(page, "多人配音")
+                    if cls._click_composite_ui_control(
+                        page, "多人配音", cancel_check=cancel_check
+                    )
                     else None
                 ),
                 timeout=4,
                 interval=0.08,
                 max_interval=0.3,
                 page=page,
+                cancel_check=cancel_check,
             )
             if not clicked:
                 raise XunfeiError("未找到可用的“多人配音”按钮")
             search = _poll(
-                lambda: cls._composite_panel_search(page),
+                lambda: cls._composite_panel_search(
+                    page, cancel_check=cancel_check
+                ),
                 timeout=8,
                 interval=0.08,
                 max_interval=0.4,
                 page=page,
+                cancel_check=cancel_check,
             )
         if search is None or search.count() == 0:
             raise XunfeiError("“多人配音”面板未加载音色搜索框")
         return search
 
     @classmethod
-    def _close_composite_voice_panel(cls, page):
+    def _close_composite_voice_panel(cls, page, cancel_check=None):
         """关闭多人配音音色面板，避免失败重试时遮挡编辑器。
 
         音色卡片搜索失败时，讯飞页面仍会保留一个 fixed 遮罩层。这个
@@ -601,10 +674,15 @@ class CompositeActionsMixin:
         编辑器坏了。优先使用页面支持的 Escape，再在仍可见时点击面板
         内的明确关闭/取消控件；整个过程只使用浏览器可见 UI 操作。
         """
-        search = cls._composite_panel_search(page)
+        _check_cancel_requested(cancel_check)
+        search = cls._composite_panel_search(page, cancel_check=cancel_check)
 
         def panel_closed():
-            return cls._composite_panel_search(page) is None
+            _check_cancel_requested(cancel_check)
+            return (
+                cls._composite_panel_search(page, cancel_check=cancel_check)
+                is None
+            )
 
         if panel_closed():
             return True
@@ -618,6 +696,7 @@ class CompositeActionsMixin:
             interval=0.1,
             max_interval=0.4,
             page=page,
+            cancel_check=cancel_check,
         ):
             return True
 
@@ -625,7 +704,9 @@ class CompositeActionsMixin:
         # 只在包含音色搜索框的 fixed 弹层内匹配，避免误点编辑器其它按钮。
         try:
             scope = cls._composite_panel_scope(
-                page, require_apply_control=True
+                page,
+                require_apply_control=True,
+                cancel_check=cancel_check,
             )
             if scope is None or search is None:
                 return panel_closed()
@@ -634,6 +715,7 @@ class CompositeActionsMixin:
             )
             close_labels = {"关闭", "取消", "×", "✕", "close", "cancel"}
             for index in range(min(controls.count(), 100)):
+                _check_cancel_requested(cancel_check)
                 control = controls.nth(index)
                 label = ""
                 try:
@@ -655,22 +737,28 @@ class CompositeActionsMixin:
                     interval=0.1,
                     max_interval=0.4,
                     page=page,
+                    cancel_check=cancel_check,
                 ):
                     return True
+        except XunfeiCancelled:
+            raise
         except Exception:
             pass
         return panel_closed()
 
     @classmethod
-    def _apply_composite_ui_params(cls, page, speed, pitch, volume):
+    def _apply_composite_ui_params(
+        cls, page, speed, pitch, volume, *, cancel_check=None
+    ):
         """在多人配音面板中用键盘设置三项参数并逐项回读。"""
+        _check_cancel_requested(cancel_check)
         targets = (
             clamp_param(speed),
             clamp_param(pitch),
             clamp_param(volume),
         )
         labels = ("语速", "语调", "音量")
-        scope = cls._composite_ui_scope(page)
+        scope = cls._composite_ui_scope(page, cancel_check=cancel_check)
 
         def find_inputs():
             inputs = scope.locator('input.w-12:visible')
@@ -685,11 +773,13 @@ class CompositeActionsMixin:
             interval=0.25,
             max_interval=0.8,
             page=page,
+            cancel_check=cancel_check,
         )
         if inputs is None or inputs.count() < 3:
             raise XunfeiError("“多人配音”面板的语速、语调、音量输入框未完整加载")
 
         for index, (label, value) in enumerate(zip(labels, targets)):
+            _check_cancel_requested(cancel_check)
             field = inputs.nth(index)
 
             def read_expected_value():
@@ -708,14 +798,18 @@ class CompositeActionsMixin:
                 # 不能只看到 input_value 正确就立即点击“使用”，否则
                 # 会把上一组音色的旧参数带入标记。80ms 足够让 blur/input
                 # 状态落地，仍比原先每项固定 180ms 更快。
-                page.wait_for_timeout(80)
+                _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+                _check_cancel_requested(cancel_check)
                 actual = _poll(
                     read_expected_value,
                     timeout=1.2,
                     interval=0.025,
                     max_interval=0.12,
                     page=page,
+                    cancel_check=cancel_check,
                 )
+            except XunfeiCancelled:
+                raise
             except Exception as error:
                 raise XunfeiError(
                     f"多人配音 UI 参数[{label}]设置失败: {error}"
@@ -843,7 +937,24 @@ class CompositeActionsMixin:
                 raise XunfeiError(f"多人配音第 {item_index + 1} 道题数据异常")
             segments = item.get("segments") or []
             if not segments and item.get("text"):
-                segments = [{"text": item.get("text")}]
+                # 兼容旧的/恢复中的多人配音计划：这类条目可能只有
+                # 原始 text，没有经过 composite_plan 预展开。必须先走
+                # 统一的 W/M 解析，否则 (W)/(M) 会被原样输入讯飞编辑器
+                # 并可能被当作正文朗读。
+                from wordtts.synthesis import build_synthesis_segments
+
+                segments = build_synthesis_segments(
+                    item.get("text"),
+                    item.get("speed", item.get("rate", PARAM_DEFAULT)),
+                    item.get("volume", PARAM_DEFAULT),
+                    item.get("pitch", PARAM_DEFAULT),
+                    default_voice=item.get("default_voice") or item.get("voice_key"),
+                    female_voice=item.get("female_voice"),
+                    male_voice=item.get("male_voice"),
+                    role_voices=item.get("role_voices"),
+                    role_configs=item.get("role_configs"),
+                    default_role=item.get("default_role"),
+                )
             before = len(rows)
             for segment in segments:
                 if not isinstance(segment, dict):
@@ -991,9 +1102,10 @@ class CompositeActionsMixin:
     @classmethod
     def _apply_composite_voice_to_selection(
         cls, page, rows, first_index, last_index, *, config_row=None,
-        verify_ranges=None,
+        verify_ranges=None, cancel_check=None,
     ):
         """给当前精确选区设置音色、参数，并回读页面的 speaker 标记。"""
+        _check_cancel_requested(cancel_check)
         first_row = config_row or rows[first_index]
         voice_key = str(first_row.get("voice_key") or DEFAULT_FEMALE)
         info = dict(get_voice_info(voice_key))
@@ -1005,19 +1117,23 @@ class CompositeActionsMixin:
                     raise XunfeiError("多人配音批量选区包含不同音色或参数，拒绝套用")
 
         phase_started_at = time.perf_counter()
-        search = cls._open_composite_voice_panel(page)
+        search = cls._open_composite_voice_panel(page, cancel_check=cancel_check)
         panel_open_ms = round((time.perf_counter() - phase_started_at) * 1000)
         card = None
         for search_attempt in range(2):
+            _check_cancel_requested(cancel_check)
             search.click(timeout=3000)
             page.keyboard.press(_SELECT_ALL)
             page.keyboard.type(voice_name)
             card = _poll(
-                lambda: cls._find_composite_voice_card(page, voice_name),
+                lambda: cls._find_composite_voice_card(
+                    page, voice_name, cancel_check=cancel_check
+                ),
                 timeout=4,
                 interval=0.08,
                 max_interval=0.35,
                 page=page,
+                cancel_check=cancel_check,
             )
             if card is not None:
                 break
@@ -1025,15 +1141,17 @@ class CompositeActionsMixin:
                 # 搜索结果偶尔会因弹层刚打开而没有挂载。重新打开同一
                 # 个网页面板即可恢复，不改变编辑器选区，也不盲点其它
                 # 音色卡片。
-                cls._close_composite_voice_panel(page)
-                search = cls._open_composite_voice_panel(page)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                search = cls._open_composite_voice_panel(page, cancel_check=cancel_check)
         if card is None:
             raise XunfeiError(f"多人配音面板未找到音色卡片: {voice_name}")
+        _check_cancel_requested(cancel_check)
         card.click(timeout=5000)
         # 选中卡片后面板会重新挂载三项参数输入框；输入框数量出现
         # 之前，旧的输入节点也可能短暂可见。给 React 一次短落地时间，
         # 避免把参数发给上一张卡片的旧表单。
-        page.wait_for_timeout(80)
+        _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
         card_ms = round((time.perf_counter() - phase_started_at) * 1000)
         params_started_at = time.perf_counter()
         cls._apply_composite_ui_params(
@@ -1041,10 +1159,14 @@ class CompositeActionsMixin:
             first_row.get("speed", PARAM_DEFAULT),
             first_row.get("pitch", PARAM_DEFAULT),
             first_row.get("volume", PARAM_DEFAULT),
+            cancel_check=cancel_check,
         )
         params_ms = round((time.perf_counter() - params_started_at) * 1000)
         apply_started_at = time.perf_counter()
-        if not cls._click_composite_ui_control(page, "使用"):
+        _check_cancel_requested(cancel_check)
+        if not cls._click_composite_ui_control(
+            page, "使用", cancel_check=cancel_check
+        ):
             raise XunfeiError(f"多人配音面板未找到可用的“使用”按钮: {voice_name}")
         ranges_to_verify = verify_ranges or [(first_index, last_index)]
         verified = _poll(
@@ -1060,6 +1182,7 @@ class CompositeActionsMixin:
             interval=0.2,
             max_interval=0.8,
             page=page,
+            cancel_check=cancel_check,
         )
         if not verified:
             raise XunfeiError(
@@ -1070,7 +1193,7 @@ class CompositeActionsMixin:
         # 讯飞页面对包含连续范围的队列有时会保留 pending-range 装饰，
         # 虽然音色已经成功套用。显式用 Escape 清理网页队列，确保下一
         # 个音色配置组不会把上一组的待处理段落一起带入。
-        if verify_ranges and not cls._clear_composite_queue(page):
+        if verify_ranges and not cls._clear_composite_queue(page, cancel_check=cancel_check):
             raise XunfeiError("多人配音上一组多段选区未能清理")
         _log(
             f"[xunfei]   多人配音配置细分 {voice_name}："
@@ -1086,8 +1209,11 @@ class CompositeActionsMixin:
             )
 
     @classmethod
-    def _apply_composite_voice_to_queue(cls, page, rows, ranges):
+    def _apply_composite_voice_to_queue(
+        cls, page, rows, ranges, *, cancel_check=None
+    ):
         """对讯飞网页多段选择队列一次性设置音色和三项参数。"""
+        _check_cancel_requested(cancel_check)
         if not ranges:
             raise XunfeiError("多人配音多段选区没有可套用的音色配置")
         first_index = ranges[0][0]
@@ -1107,6 +1233,7 @@ class CompositeActionsMixin:
             ranges[0][1],
             config_row=first_row,
             verify_ranges=ranges,
+            cancel_check=cancel_check,
         )
         _log(
             f"[xunfei]   多人配音已统一设置 {len(ranges)} 个区间、"
@@ -1184,9 +1311,11 @@ class CompositeActionsMixin:
 
     @classmethod
     def _insert_composite_pause(
-        cls, page, row_index, boundary_ms, *, emit_log=True, verify=True
+        cls, page, row_index, boundary_ms, *, emit_log=True, verify=True,
+        cancel_check=None,
     ):
         """在指定题目末行末尾通过页面停顿按钮插入内部定位标记。"""
+        _check_cancel_requested(cancel_check)
         paragraphs = page.locator(".ssml-editor p")
         if row_index < 0 or row_index >= paragraphs.count():
             raise XunfeiError("多人配音停顿位置超出编辑器段落范围")
@@ -1210,23 +1339,37 @@ class CompositeActionsMixin:
         # “选整行 -> ArrowRight”的落点，但省掉两三次重型 select_text
         # 往返），再用一步定位的真实 click 点击停顿时长按钮。是否真正
         # 插入由回读校验决定，失败才逐级降级。
+        _check_cancel_requested(cancel_check)
         try:
             placed = page.evaluate(JS.PLACE_CARET_AT_ROW_END, row_index)
         except Exception:
             placed = None
         if isinstance(placed, dict) and placed.get("ok"):
-            if settled(cls._click_composite_ui_control(page, label)):
+            _check_cancel_requested(cancel_check)
+            if settled(
+                cls._click_composite_ui_control(
+                    page, label, cancel_check=cancel_check
+                )
+            ):
+                _check_cancel_requested(cancel_check)
                 log_inserted()
                 return
 
         # 原脚本契约回退：JS 选整行 -> ArrowRight 折叠到行尾。程序化
         # 光标不被页面认账时，这个方向键折叠仍然有效。
+        _check_cancel_requested(cancel_check)
         fast_box = _safe_eval(page, JS.SELECT_EDITOR_ROW, row_index)
         if not isinstance(fast_box, dict) or not fast_box.get("text"):
             paragraphs.nth(row_index).select_text(timeout=5000)
         page.keyboard.press("ArrowRight")
-        page.wait_for_timeout(10)
-        if settled(cls._click_composite_ui_control(page, label)):
+        _wait_with_cancel(page, 0.01, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
+        if settled(
+            cls._click_composite_ui_control(
+                page, label, cancel_check=cancel_check
+            )
+        ):
+            _check_cancel_requested(cancel_check)
             log_inserted()
             return
 
@@ -1254,6 +1397,7 @@ class CompositeActionsMixin:
 
         def collapse_pause_selection_to_end():
             """重建原脚本的“选整行 -> ArrowRight -> 行尾”契约。"""
+            _check_cancel_requested(cancel_check)
             try:
                 target.scroll_into_view_if_needed(timeout=5000)
                 target.select_text(timeout=5000)
@@ -1263,7 +1407,8 @@ class CompositeActionsMixin:
             page.keyboard.press("ArrowRight")
             # select_text + ArrowRight 都是同步的浏览器输入动作；给页面
             # 一个很短的事件循环机会，实际插入结果由下面的回读轮询确认。
-            page.wait_for_timeout(20)
+            _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
 
         collapse_pause_selection_to_end()
 
@@ -1277,6 +1422,7 @@ class CompositeActionsMixin:
                     page,
                     boundary_ms,
                     restore_selection=restore_selection,
+                    cancel_check=cancel_check,
                 )
                 else None
             ),
@@ -1284,6 +1430,7 @@ class CompositeActionsMixin:
             interval=0.04,
             max_interval=0.2,
             page=page,
+            cancel_check=cancel_check,
         )
         if not clicked:
             raise XunfeiError(f"未找到讯飞停顿按钮或时长菜单: {label}")
@@ -1296,6 +1443,7 @@ class CompositeActionsMixin:
                 interval=0.04,
                 max_interval=0.2,
                 page=page,
+                cancel_check=cancel_check,
             )
             if not inserted:
                 raise XunfeiError(
@@ -1304,11 +1452,13 @@ class CompositeActionsMixin:
         log_inserted()
 
     @classmethod
-    def _prepare_composite_editor(cls, page, work):
+    def _prepare_composite_editor(cls, page, work, *, cancel_check=None):
         """用讯飞页面 UI 构造多人作品，返回行和停顿边界。"""
+        _check_cancel_requested(cancel_check)
         started_at = time.perf_counter()
         rows, boundaries = cls._composite_ui_rows(work)
-        cls._input_composite_text(page, rows)
+        cls._input_composite_text(page, rows, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
         groups = cls._composite_row_groups(rows)
         queue_plan = cls._composite_signature_ranges(rows)
         _log(
@@ -1327,30 +1477,36 @@ class CompositeActionsMixin:
         # 试探两种选区机制。
         native_selection = False
         for queue_attempt in range(2):
+            _check_cancel_requested(cancel_check)
             if queue_attempt:
                 native_selection = True
                 _log(
                     "[xunfei]   多人配音多段队列应用回读失败，"
                     "重新输入全部文本后再试一次"
                 )
-                cls._close_composite_voice_panel(page)
-                cls._clear_composite_queue(page)
-                cls._input_composite_text(page, rows)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                cls._clear_composite_queue(page, cancel_check=cancel_check)
+                cls._input_composite_text(page, rows, cancel_check=cancel_check)
             try:
                 for entry_index, entry in enumerate(queue_plan, start=1):
+                    _check_cancel_requested(cancel_check)
                     group_started_at = time.perf_counter()
                     ranges = entry["ranges"]
                     selection_error = None
                     for selection_attempt in range(2):
+                        _check_cancel_requested(cancel_check)
                         try:
                             cls._select_composite_queue_rows(
                                 page,
                                 rows,
                                 ranges,
                                 native=(native_selection or selection_attempt > 0),
+                                cancel_check=cancel_check,
                             )
                             selection_error = None
                             break
+                        except XunfeiCancelled:
+                            raise
                         except XunfeiError as error:
                             selection_error = error
                             retryable = (
@@ -1364,13 +1520,18 @@ class CompositeActionsMixin:
                                     "[xunfei]   多人配音多段选区回读不一致，"
                                     "清空当前队列后重试一次"
                                 )
-                                if not cls._clear_composite_queue(page):
+                                if not cls._clear_composite_queue(
+                                    page, cancel_check=cancel_check
+                                ):
                                     break
                                 continue
                             break
                     if selection_error:
                         raise selection_error
-                    cls._apply_composite_voice_to_queue(page, rows, ranges)
+                    cls._apply_composite_voice_to_queue(
+                        page, rows, ranges, cancel_check=cancel_check
+                    )
+                    _check_cancel_requested(cancel_check)
                     voice_name = get_voice_info(
                         rows[ranges[0][0]].get("voice_key") or DEFAULT_FEMALE
                     )["name"]
@@ -1384,49 +1545,68 @@ class CompositeActionsMixin:
                     )
                 queue_error = None
                 break
+            except XunfeiCancelled:
+                raise
             except XunfeiError as error:
                 queue_error = error
-                cls._close_composite_voice_panel(page)
-                cls._clear_composite_queue(page)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                cls._clear_composite_queue(page, cancel_check=cancel_check)
 
         try:
             if queue_error:
                 raise queue_error
+        except XunfeiCancelled:
+            raise
         except XunfeiError as error:
             _log(
                 f"[xunfei]   多人配音多段队列不可用，重新输入后按连续区间处理: {error}"
             )
-            cls._close_composite_voice_panel(page)
-            cls._clear_composite_queue(page)
-            cls._input_composite_text(page, rows)
+            cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+            cls._clear_composite_queue(page, cancel_check=cancel_check)
+            cls._input_composite_text(page, rows, cancel_check=cancel_check)
             marking_plan = cls._composite_marking_plan(rows)
             base_index = marking_plan["base_index"]
             correction_groups = marking_plan["correction_groups"]
             try:
-                cls._select_editor_rows(page, rows, 0, len(rows) - 1)
+                cls._select_editor_rows(
+                    page, rows, 0, len(rows) - 1, cancel_check=cancel_check
+                )
                 cls._apply_composite_voice_to_selection(
                     page,
                     rows,
                     0,
                     len(rows) - 1,
                     config_row=rows[base_index],
+                    cancel_check=cancel_check,
                 )
+            except XunfeiCancelled:
+                raise
             except XunfeiError as fallback_error:
                 _log(
                     f"[xunfei]   多人配音全文基准标注失败，按连续区间处理: {fallback_error}"
                 )
-                cls._close_composite_voice_panel(page)
-                cls._input_composite_text(page, rows)
+                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
+                cls._input_composite_text(page, rows, cancel_check=cancel_check)
                 for first_index, last_index in groups:
-                    cls._select_editor_rows(page, rows, first_index, last_index)
+                    _check_cancel_requested(cancel_check)
+                    cls._select_editor_rows(
+                        page, rows, first_index, last_index,
+                        cancel_check=cancel_check,
+                    )
                     cls._apply_composite_voice_to_selection(
-                        page, rows, first_index, last_index
+                        page, rows, first_index, last_index,
+                        cancel_check=cancel_check,
                     )
             else:
                 for first_index, last_index in correction_groups:
-                    cls._select_editor_rows(page, rows, first_index, last_index)
+                    _check_cancel_requested(cancel_check)
+                    cls._select_editor_rows(
+                        page, rows, first_index, last_index,
+                        cancel_check=cancel_check,
+                    )
                     cls._apply_composite_voice_to_selection(
-                        page, rows, first_index, last_index
+                        page, rows, first_index, last_index,
+                        cancel_check=cancel_check,
                     )
             marking_mode = "连续区间回退"
             marking_group_count = len(correction_groups) + 1
@@ -1441,15 +1621,20 @@ class CompositeActionsMixin:
         )
 
         pause_started_at = time.perf_counter()
-        if boundaries and not cls._close_composite_voice_panel(page):
+        _check_cancel_requested(cancel_check)
+        if boundaries and not cls._close_composite_voice_panel(
+            page, cancel_check=cancel_check
+        ):
             raise XunfeiError("多人配音音色面板未关闭，无法定位停顿工具栏")
         for row_index, boundary_ms in boundaries:
+            _check_cancel_requested(cancel_check)
             cls._insert_composite_pause(
                 page,
                 row_index,
                 boundary_ms,
                 emit_log=False,
                 verify=False,
+                cancel_check=cancel_check,
             )
         if boundaries:
             all_pauses_inserted = _poll(
@@ -1462,6 +1647,7 @@ class CompositeActionsMixin:
                 interval=0.04,
                 max_interval=0.2,
                 page=page,
+                cancel_check=cancel_check,
             )
             if not all_pauses_inserted:
                 issues = cls._read_composite_pause_issues(page, boundaries)
@@ -1470,14 +1656,16 @@ class CompositeActionsMixin:
                     raise XunfeiError(
                         "讯飞停顿插入校验失败：检测到重复停顿标记，"
                         f"行 {[item['row'] + 1 for item in duplicate_rows]}"
-                    )
+                )
                 for item in issues:
+                    _check_cancel_requested(cancel_check)
                     cls._insert_composite_pause(
                         page,
                         item["row"],
                         item["value"],
                         emit_log=False,
                         verify=True,
+                        cancel_check=cancel_check,
                     )
                 if cls._read_composite_pause_issues(page, boundaries):
                     raise XunfeiError("讯飞停顿批量插入后回读仍不完整")

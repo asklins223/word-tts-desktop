@@ -3,9 +3,10 @@
 
 The child stops after the local ``IN_FLIGHT`` commit and before a Provider
 response.  The parent kills only that child, starts a fresh database owner,
-and verifies that recovery produces ``AMBIGUOUS`` plus a reconcile intent
-without submitting anything.  The probe uses only the deterministic local
-repository and never enables a real Provider.
+and verifies that recovery converts the local submission to a retryable
+``REJECTED`` state without submitting anything or querying a Provider.  The
+probe uses only the deterministic local repository and never enables a real
+Provider.
 """
 
 from __future__ import annotations
@@ -133,7 +134,7 @@ def run_probe() -> dict[str, Any]:
                     raise RuntimeError("recovery scanner did not observe the in-flight submission")
                 if not any(item.resource_id == ready["submission_id"] for item in applied):
                     raise RuntimeError("recovery did not process the in-flight submission")
-                if submission_state != "AMBIGUOUS" or intent_state != "NEEDS_RECONCILE":
+                if submission_state != "REJECTED" or intent_state != "ARCHIVED":
                     raise RuntimeError(
                         f"unexpected recovery state: submission={submission_state}, intent={intent_state}"
                     )

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePath
+from collections.abc import Callable
 from typing import Any, Mapping
 
 from .database import WorkflowDatabase
@@ -57,6 +59,12 @@ class LeaseConflict(ConflictError):
 
 class BudgetExhausted(ConflictError):
     code = "RESOURCE_EXHAUSTED"
+
+
+IdempotencyRecovery = Callable[
+    [Mapping[str, Any]],
+    tuple[int, Mapping[str, Any]] | None,
+]
 
 
 def _safe_source_filename(value: Any, fallback: str = "未命名文档.docx") -> str:
@@ -152,6 +160,19 @@ def _is_expired(value: Any) -> bool:
     return expires_at <= datetime.now(timezone.utc)
 
 
+def _table_exists(con: sqlite3.Connection, table_name: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone() is not None
+
+
+def _table_columns(con: sqlite3.Connection, table_name: str) -> set[str]:
+    if not _table_exists(con, table_name):
+        return set()
+    return {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
 def _idempotency_request_fingerprint(
     *,
     command_name: str,
@@ -241,6 +262,8 @@ def _snapshot_from_connection(con: sqlite3.Connection, workflow_id: str) -> Work
         artifact_count=int(counts["artifact_count"]),
         latest_event_id=latest_event_id,
         latest_seq=latest_seq,
+        last_error_code=(str(row["last_error_code"])[:128] if row["last_error_code"] is not None else None),
+        last_error_message=(str(row["last_error_message"])[:2000] if row["last_error_message"] is not None else None),
         updated_at=str(row["updated_at"]),
         latest_event=latest_event,
     )
@@ -257,6 +280,12 @@ class WorkflowRepository:
         self.database = database
         self.events = event_store or EventStore(database)
         self.intent_log = intent_log or SideEffectIntentLog(database.path.parent / "side_effect_intents.jsonl")
+        # A pending reservation is still live while this repository instance
+        # is executing its route.  A different process cannot observe this
+        # in-memory set, so an unexpired pending row must remain protected by
+        # its durable TTL until a committed outcome can be recovered.
+        self._idempotency_activity_lock = threading.RLock()
+        self._active_idempotency_ids: set[str] = set()
 
     def initialize(self) -> None:
         self.database.initialize()
@@ -264,6 +293,31 @@ class WorkflowRepository:
     def get_workflow(self, workflow_id: str) -> WorkflowSnapshot:
         with self.database.read_transaction() as con:
             return _snapshot_from_connection(con, workflow_id)
+
+    def get_workflow_type(self, workflow_id: str) -> str:
+        """Return the durable workflow kind for projections outside a snapshot."""
+
+        with self.database.read_transaction() as con:
+            row = con.execute(
+                "SELECT workflow_type FROM workflows WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"workflow does not exist: {workflow_id}")
+            return str(row["workflow_type"] or "")
+
+    def get_event_by_request_id(self, request_id: str) -> dict[str, Any] | None:
+        """Return the latest durable workflow event for one API request."""
+
+        from .event_store import _event_from_row
+
+        with self.database.read_transaction() as con:
+            row = con.execute(
+                """SELECT * FROM workflow_events
+                   WHERE request_id=? ORDER BY seq DESC LIMIT 1""",
+                (request_id,),
+            ).fetchone()
+            return _event_from_row(row).as_dict() if row is not None else None
 
     def get_workspace(
         self,
@@ -324,7 +378,10 @@ class WorkflowRepository:
                 workflow_id = str(row["workflow_id"])
                 snapshot = _snapshot_from_connection(con, workflow_id)
                 generation_accepted = bool(row["generation_accepted"])
-                unresolved = con.execute(
+                is_tts_workflow = str(con.execute(
+                    "SELECT workflow_type FROM workflows WHERE workflow_id=?", (workflow_id,)
+                ).fetchone()[0] or "").lower() == "tts"
+                unresolved = False if is_tts_workflow else con.execute(
                     """SELECT 1 FROM work_units
                        WHERE workflow_id=?
                          AND side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')
@@ -351,7 +408,7 @@ class WorkflowRepository:
                 elif takeover_allowed:
                     resume_reason = "发现未完成且无未决外部副作用的运行，可安全接管"
                 elif unresolved:
-                    resume_reason = "存在未决外部副作用，必须先对账"
+                    resume_reason = "存在未决外部操作，需要人工处理"
                 else:
                     resume_reason = "当前状态不允许自动接管，请查看工作区动作"
                 candidates.append({
@@ -377,7 +434,10 @@ class WorkflowRepository:
                 return None
             if snapshot.execution_state not in {"PREPARING", "RUNNING", "RECOVERING"}:
                 return None
-            unresolved = con.execute(
+            is_tts_workflow = str(con.execute(
+                "SELECT workflow_type FROM workflows WHERE workflow_id=?", (workflow_id,)
+            ).fetchone()[0] or "").lower() == "tts"
+            unresolved = None if is_tts_workflow else con.execute(
                 """SELECT 1 FROM work_units
                    WHERE workflow_id=?
                      AND side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')
@@ -1089,6 +1149,7 @@ class WorkflowRepository:
                 # is still being prepared.  That path is durably marked
                 # REJECTED/WAITING_RETRY and is safe to reconfigure; the next
                 # run gets a new submission key because its plan hash changes.
+                is_tts_workflow = str(row["workflow_type"] or "").lower() == "tts"
                 unresolved = con.execute(
                     """SELECT 1 FROM work_units
                        WHERE workflow_id=?
@@ -1104,16 +1165,16 @@ class WorkflowRepository:
                     (workflow_id, workflow_id),
                 ).fetchone() is not None
                 safe_reconfigure = (
-                    not unresolved
+                    (not unresolved or is_tts_workflow)
                     and row["status"] == "ACTIVE"
                     and row["execution_state"] in {"WAITING_RETRY", "WAITING_USER"}
                     and row["control_state"] == "RUNNING"
                 )
                 if not safe_reconfigure:
-                    if unresolved:
-                        # 有未决外部副作用：这不是“配置冻结”，而是必须先走
-                        # 对账（确认未提交/已提交）才能收敛。给渲染层一个可
-                        # 路由的专用错误码，避免用户在配置页拿到死胡同报错。
+                    if unresolved and not is_tts_workflow:
+                        # External operations retain their evidence-driven
+                        # handoff. TTS failures are locally retryable and were
+                        # deliberately allowed above.
                         raise ConflictError(
                             "workflow has unresolved provider side effects; complete reconciliation before reconfiguring",
                             code="RECONCILIATION_REQUIRED",
@@ -1183,7 +1244,7 @@ class WorkflowRepository:
                         code="ITEM_ALREADY_DELIVERED",
                         details={"item_id": item_id},
                     )
-                if unresolved_item:
+                if unresolved_item and str(row["workflow_type"] or "").lower() != "tts":
                     raise ConflictError(
                         "an item with an unresolved provider side effect cannot be edited",
                         code="RECONCILIATION_REQUIRED",
@@ -1414,22 +1475,36 @@ class WorkflowRepository:
         workflow_id: str,
         *,
         reason: str | None = None,
+        force_cancel: bool = False,
     ) -> WorkflowSnapshot:
-        """Close the local generation resource and settle a safe cancellation.
+        """Close local generation state and optionally finish cancellation.
 
-        ``cancel`` is intentionally a two-phase operation.  The command first
-        records ``TERMINATING``; only the worker that has released the
-        generation slot may call this method.  If a provider submission is
-        still in-flight, submitted, confirmed-without-output, or ambiguous,
-        the business run remains unresolved and is never rewritten as a plain
-        user cancellation.  In that case only ``cleanup_state`` is advanced,
-        so a new run can start without hiding the reconciliation work.
+        Worker cleanup keeps the conservative default: an unresolved provider
+        boundary is recorded locally without guessing its remote outcome.
+        The user-facing cancel route passes ``force_cancel=True`` so the local
+        workflow becomes terminal immediately; late worker callbacks are
+        fenced by the publication guards below.
         """
 
         now = utc_now()
         with self.database.transaction() as con:
             snapshot = _snapshot_from_connection(con, workflow_id)
-            if snapshot.cleanup_state == "SUCCEEDED":
+            if snapshot.execution_state == "TERMINAL":
+                return snapshot
+            workflow_row = con.execute(
+                "SELECT workflow_type FROM workflows WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()
+            is_tts_workflow = bool(
+                workflow_row
+                and str(workflow_row["workflow_type"] or "").lower() == "tts"
+            )
+            # Only local TTS side effects can be retired by the user-facing
+            # hard-stop path.  An external operation may already have reached
+            # the remote system, so a generic force flag must never turn that
+            # workflow terminal without its own recovery/confirmation fence.
+            force_cancel = bool(force_cancel and is_tts_workflow)
+            if snapshot.cleanup_state == "SUCCEEDED" and not force_cancel:
                 return snapshot
 
             unresolved = con.execute(
@@ -1446,15 +1521,47 @@ class WorkflowRepository:
                    LIMIT 1""",
                 (workflow_id, workflow_id),
             ).fetchone() is not None
+            if not is_tts_workflow and _table_exists(con, "external_operations"):
+                unresolved = unresolved or con.execute(
+                    """SELECT 1 FROM external_operations
+                       WHERE workflow_id=?
+                         AND side_effect_state IN (
+                             'INTENT_RECORDED', 'IN_FLIGHT', 'SUBMITTED',
+                             'CONFIRMED', 'AMBIGUOUS'
+                         )
+                       LIMIT 1""",
+                    (workflow_id,),
+                ).fetchone() is not None
             cancel_requested = (
-                snapshot.control_state == "TERMINATING"
+                snapshot.control_state in {"TERMINATING", "TERMINATED"}
                 and snapshot.result_status == "IN_PROGRESS"
-                and not unresolved
+                and (force_cancel or not unresolved)
             )
 
             if cancel_requested:
                 # Preserve any already verified item Artifact while marking
                 # only the remaining local work as cancelled.
+                if force_cancel:
+                    # The cancellation command is the local decision point.
+                    # Retire every TTS side-effect projection here so restart
+                    # recovery cannot reopen a reconciliation handoff for a
+                    # task the user has already stopped.
+                    con.execute(
+                        """UPDATE provider_submissions
+                           SET side_effect_state='REJECTED', state_version=state_version+1
+                           WHERE provider_submission_id IN (
+                               SELECT provider_submission_id FROM work_units
+                               WHERE workflow_id=? AND provider_submission_id IS NOT NULL
+                           ) AND side_effect_state IN ('IN_FLIGHT', 'SUBMITTED', 'CONFIRMED', 'AMBIGUOUS')""",
+                        (workflow_id,),
+                    )
+                    con.execute(
+                        """UPDATE side_effect_intents
+                           SET state='ARCHIVED', updated_at=?
+                           WHERE workflow_id=? AND operation_namespace='tts'
+                             AND state <> 'ARCHIVED'""",
+                        (now, workflow_id),
+                    )
                 con.execute(
                     """UPDATE work_unit_items
                        SET result_status='CANCELLED', state_version=state_version+1
@@ -1471,11 +1578,13 @@ class WorkflowRepository:
                 )
                 con.execute(
                     """UPDATE work_units
-                       SET status='CANCELLED', finished_at=?, state_version=state_version+1
+                       SET status='CANCELLED', side_effect_state=CASE
+                               WHEN ? THEN 'REJECTED' ELSE side_effect_state END,
+                           finished_at=?, state_version=state_version+1
                        WHERE workflow_id=?
                          AND status NOT IN ('SUCCEEDED', 'CANCELLED')
-                         AND side_effect_state IN ('NOT_STARTED', 'INTENT_RECORDED', 'REJECTED')""",
-                    (now, workflow_id),
+                         AND (? OR side_effect_state IN ('NOT_STARTED', 'INTENT_RECORDED', 'REJECTED'))""",
+                    (int(force_cancel), now, workflow_id, int(force_cancel)),
                 )
                 con.execute(
                     """UPDATE work_items
@@ -1493,17 +1602,21 @@ class WorkflowRepository:
                 )
                 con.execute(
                     """UPDATE work_unit_attempts
-                       SET status='CANCELLED', finished_at=?, state_version=state_version+1
+                       SET status='CANCELLED', side_effect_state=CASE
+                               WHEN ? THEN 'REJECTED' ELSE side_effect_state END,
+                           finished_at=?, state_version=state_version+1
                        WHERE workflow_id=?
-                         AND status NOT IN ('SUCCEEDED', 'FAILED', 'AMBIGUOUS', 'CANCELLED')""",
-                    (now, workflow_id),
+                         AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+                         AND (? OR status <> 'AMBIGUOUS')""",
+                    (int(force_cancel), now, workflow_id, int(force_cancel)),
                 )
                 con.execute(
                     """UPDATE step_attempts
                        SET status='CANCELLED', result_status='CANCELLED', finished_at=?, state_version=state_version+1
                        WHERE workflow_id=?
-                         AND status NOT IN ('SUCCEEDED', 'FAILED', 'AMBIGUOUS', 'CANCELLED')""",
-                    (now, workflow_id),
+                         AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+                         AND (? OR status <> 'AMBIGUOUS')""",
+                    (now, workflow_id, int(force_cancel)),
                 )
                 con.execute(
                     """UPDATE workflow_steps
@@ -1528,7 +1641,8 @@ class WorkflowRepository:
                            cleanup_state='SUCCEEDED', last_error_code='WORKFLOW_CANCELLED',
                            last_error_message=?, finished_at=COALESCE(finished_at, ?),
                            state_version=state_version+1, updated_at=?
-                       WHERE workflow_id=? AND result_status='IN_PROGRESS' AND control_state='TERMINATING'""",
+                       WHERE workflow_id=? AND result_status='IN_PROGRESS'
+                         AND control_state IN ('TERMINATING', 'TERMINATED')""",
                     (result_status, reason or "任务已由用户取消", now, now, workflow_id),
                 )
             else:
@@ -1797,6 +1911,22 @@ class WorkflowRepository:
         parsed = validate_target(target)
         with self.database.transaction() as con:
             snapshot = _snapshot_from_connection(con, workflow_id)
+            workflow_row = con.execute(
+                "SELECT workflow_type FROM workflows WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()
+            if (
+                str(workflow_row["workflow_type"] or "").lower() == "tts"
+                and action.lower() in {"reconcile", "resolve"}
+            ):
+                raise ConflictError(
+                    "TTS workflows use local task state; generate again instead of reconciling",
+                    code="RECONCILIATION_DISABLED",
+                )
+            # Legacy renderers may still retry an obsolete confirmation click
+            # with an old workflow version.  Reject that removed operation on
+            # its semantic boundary first; it must never surface as a version
+            # conflict or mutate a TTS target.
             require_expected(snapshot.state_version, expected_state_version)
             target_row, table, key_column = self._target_row(con, workflow_id, parsed)
             target_version = int(target_row["state_version"])
@@ -2026,7 +2156,7 @@ class WorkflowRepository:
                 inferred_source_attempt_id = str(row["attempt_id"])
         elif target.target_type == "PROVIDER_RECEIPT":
             binding = con.execute(
-                """SELECT u.step_id, b.observed_by_attempt_id
+                """SELECT u.step_id, u.work_unit_id, b.observed_by_attempt_id
                    FROM provider_receipt_bindings b
                    JOIN work_units u
                      ON u.workflow_id=b.workflow_id AND u.work_unit_id=b.work_unit_id
@@ -2106,6 +2236,7 @@ class WorkflowRepository:
             raise ConflictError(f"reconcile target cannot be recorded: {exc}") from exc
         return reconcile_attempt_id
 
+
     def _retry_target(self, con: sqlite3.Connection, workflow_id: str, target: CommandTarget, row: sqlite3.Row, table: str, key_column: str) -> bool:
         if target.target_type == "STEP":
             if row["status"] not in {"WAITING_RETRY", "RETRYABLE_FAILED", "AMBIGUOUS", "WAITING_USER"}:
@@ -2116,36 +2247,61 @@ class WorkflowRepository:
                 (workflow_id, row["step_id"], row["state_version"]),
             )
         elif target.target_type == "ITEM":
-            # An item whose provider side effect is ambiguous must go through
-            # reconcile/resolve first.  Treating it as an ordinary retry
-            # could submit the same paid text a second time.
-            if row["status"] != "FAILED":
+            # TTS legacy projections may still contain AMBIGUOUS/UNRESOLVED
+            # item rows before startup recovery has normalized them. They are
+            # local retry candidates; no provider lookup is needed.
+            workflow_type = con.execute(
+                "SELECT workflow_type FROM workflows WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()
+            is_tts_workflow = str(workflow_type["workflow_type"] or "").lower() == "tts" if workflow_type else False
+            retryable_item_statuses = {"FAILED"}
+            if is_tts_workflow:
+                retryable_item_statuses.update({"SUCCEEDED", "AMBIGUOUS", "UNRESOLVED"})
+            if row["status"] not in retryable_item_statuses:
                 raise ConflictError(f"item status {row['status']} is not retryable")
-            ready_artifact = con.execute(
-                """SELECT 1 FROM artifacts a
+            # Match the workspace projection's latest-artifact fence. A
+            # corrupted/legacy artifact may still carry READY+verified flags,
+            # but if its Artifact and Blob facts disagree it is precisely a
+            # local retry target and must not be mistaken for delivered audio.
+            latest_artifact = con.execute(
+                """SELECT a.format AS artifact_format, a.sha256 AS artifact_sha256,
+                          a.size_bytes AS artifact_size_bytes,
+                          b.format AS blob_format, b.sha256 AS blob_sha256,
+                          b.size_bytes AS blob_size_bytes
+                   FROM artifacts a
                    JOIN artifact_blobs b ON b.blob_id=a.blob_id
                    WHERE a.workflow_id=? AND a.item_id=? AND a.artifact_type='tts-segment'
                      AND a.lifecycle_state='READY' AND a.verified=1 AND b.lifecycle_state='READY'
+                   ORDER BY a.created_at DESC, a.artifact_id DESC
                    LIMIT 1""",
                 (workflow_id, target.item_id),
             ).fetchone()
-            if ready_artifact is not None:
-                raise ConflictError(
-                    "an item with a verified artifact cannot be retried in place",
-                    code="ITEM_ALREADY_DELIVERED",
-                    details={"item_id": target.item_id},
-                )
+            if latest_artifact is not None:
+                from .workspace import artifact_blob_facts_match
+
+                if artifact_blob_facts_match(
+                    artifact_format=latest_artifact["artifact_format"],
+                    blob_format=latest_artifact["blob_format"],
+                    artifact_sha256=latest_artifact["artifact_sha256"],
+                    blob_sha256=latest_artifact["blob_sha256"],
+                    artifact_size_bytes=latest_artifact["artifact_size_bytes"],
+                    blob_size_bytes=latest_artifact["blob_size_bytes"],
+                ):
+                    raise ConflictError(
+                        "an item with a verified artifact cannot be retried in place",
+                        code="ITEM_ALREADY_DELIVERED",
+                        details={"item_id": target.item_id},
+                    )
             step = con.execute(
                 "SELECT * FROM workflow_steps WHERE workflow_id=? AND step_id=?",
                 (workflow_id, target.step_id),
             ).fetchone()
             if step is None:
                 raise NotFoundError(f"step does not exist: {target.step_id}")
-            # The failed item can be retried with a narrower plan.  Retire the
-            # old safe attempt first so the active-attempt partial index does
-            # not reject the new work unit.  IN_FLIGHT/SUBMITTED/CONFIRMED/
-            # AMBIGUOUS rows are deliberately left untouched and can only be
-            # handled by the reconciliation path.
+            # The failed item can be retried with a narrower plan. Retire the
+            # old local attempt first so the active-attempt partial index does
+            # not reject the new work unit. Provider state is never queried.
             if step["status"] in {"WAITING_RETRY", "WAITING_USER", "READY"}:
                 now = utc_now()
                 active_attempts = con.execute(
@@ -2243,69 +2399,12 @@ class WorkflowRepository:
     def _resolution_state_conflict(message: str, *, evidence_required: bool = False) -> None:
         raise ConflictError(message, code="EVIDENCE_REQUIRED" if evidence_required else "STATE_CONFLICT")
 
-    @staticmethod
-    def _ensure_tts_intervention(
-        con: sqlite3.Connection,
-        plan: Mapping[str, Any],
-        *,
-        reason: str,
-        now: str,
-    ) -> None:
-        """Create the durable user handoff for an unresolved TTS submit."""
-
-        workflow_id = str(plan.get("workflow_id") or "")
-        work_unit_id = str(plan.get("work_unit_id") or "")
-        submission_id = str(plan.get("submission_id") or "")
-        if not workflow_id or not work_unit_id or not submission_id:
-            raise RepositoryError(
-                "ambiguous TTS failure is missing its durable identifiers",
-                code="PERSISTENCE_ERROR",
-            )
-        if con.execute(
-            """SELECT 1 FROM user_interventions
-               WHERE workflow_id=? AND work_unit_id=? AND state IN ('OPEN','CLAIMED')
-               LIMIT 1""",
-            (workflow_id, work_unit_id),
-        ).fetchone() is not None:
-            return
-        intervention_id = f"intervention_{submission_id}_{work_unit_id}"
-        if con.execute(
-            "SELECT 1 FROM user_interventions WHERE intervention_id=?",
-            (intervention_id,),
-        ).fetchone() is not None:
-            return
-        con.execute(
-            """INSERT INTO user_interventions(
-                intervention_id, workflow_id, step_id, attempt_id, work_unit_id,
-                intervention_type, reason, owner_id, state, evidence_json,
-                expires_at, resolved_by, resolved_at, state_version, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                intervention_id,
-                workflow_id,
-                str(plan.get("step_id") or "") or None,
-                str(plan.get("attempt_id") or "") or None,
-                work_unit_id,
-                "RECONCILE_PROVIDER",
-                str(reason or "provider submission requires reconciliation")[:2000],
-                None,
-                "OPEN",
-                "{}",
-                None,
-                None,
-                None,
-                0,
-                now,
-                now,
-            ),
-        )
-
     def list_open_reconciliations(self, workflow_id: str) -> list[dict[str, Any]]:
-        """Return OPEN provider-reconciliation handoffs for one workflow.
+        """Return external-operation handoffs for one workflow.
 
-        渲染层在重启后用这个投影重建“确认未提交后重试”的目标参数
-        （attempt/work_unit/目标版本），保证终止或断网后的任务永远有
-        可达的收敛入口，而不是停留在无法理解的报错上。
+        TTS workflows deliberately return no reconciliation projection:
+        their durable local state is the only source of truth and a later
+        explicit generation creates a fresh attempt.
         """
 
         with self.database.read_transaction() as con:
@@ -2324,8 +2423,10 @@ class WorkflowRepository:
                               ORDER BY e.seq DESC LIMIT 1
                           ) AS works_name
                    FROM user_interventions i
+                   JOIN workflows w ON w.workflow_id = i.workflow_id
                    LEFT JOIN work_units u ON u.work_unit_id = i.work_unit_id
                    WHERE i.workflow_id = ?
+                     AND LOWER(COALESCE(w.workflow_type, '')) <> 'tts'
                      AND i.state = 'OPEN'
                      AND i.intervention_type = 'RECONCILE_PROVIDER'
                    ORDER BY i.created_at, i.intervention_id""",
@@ -2735,6 +2836,8 @@ class WorkflowRepository:
         producer: str = "workflow-export",
         producer_version: str = "1",
         parent_artifact_ids: list[str] | None = None,
+        request_id: str | None = None,
+        event_payload: Mapping[str, Any] | None = None,
     ) -> str:
         """Bind a generated delivery package and record its source artifacts."""
 
@@ -2750,6 +2853,14 @@ class WorkflowRepository:
             if existing is not None:
                 if str(existing["sha256"]) != str(blob.sha256) or int(existing["size_bytes"]) != int(blob.size_bytes):
                     raise ConflictError("export artifact id points to a different Blob", code="ARTIFACT_INVALID")
+                if request_id:
+                    self._append_export_event_in_transaction(
+                        con,
+                        workflow_id,
+                        artifact_id,
+                        request_id,
+                        event_payload,
+                    )
                 return artifact_id
 
             blob_row = con.execute("SELECT * FROM artifact_blobs WHERE sha256=?", (blob.sha256,)).fetchone()
@@ -2803,7 +2914,75 @@ class WorkflowRepository:
                     (new_id("derivation"), parent_id, artifact_id, "EXPORT", "1",
                      content_hash({"workflow_id": workflow_id, "parent": parent_id, "child": artifact_id}), now),
                 )
+            if request_id:
+                self._append_export_event_in_transaction(
+                    con,
+                    workflow_id,
+                    artifact_id,
+                    request_id,
+                    event_payload,
+                )
         return artifact_id
+
+    def _append_export_event_in_transaction(
+        self,
+        con: sqlite3.Connection,
+        workflow_id: str,
+        artifact_id: str,
+        request_id: str,
+        event_payload: Mapping[str, Any] | None,
+    ) -> None:
+        payload = dict(event_payload or {})
+        payload["artifact_id"] = artifact_id
+        self.events.append_in_transaction(
+            con,
+            workflow_id,
+            "WORKFLOW_EXPORTED",
+            payload,
+            request_id=request_id,
+            actor_type="USER",
+            actor_id="desktop",
+        )
+        snapshot = _snapshot_from_connection(con, workflow_id)
+        self.events.write_snapshot_in_transaction(con, workflow_id, snapshot.as_dict())
+
+    def record_export_event(
+        self,
+        workflow_id: str,
+        *,
+        artifact_id: str,
+        request_id: str,
+        event_payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Record an export request that reused an existing immutable ZIP."""
+
+        with self.database.transaction() as con:
+            row = con.execute(
+                """SELECT a.artifact_id, a.artifact_type, a.format,
+                          a.lifecycle_state, a.verified,
+                          b.format AS blob_format, b.lifecycle_state AS blob_lifecycle_state
+                   FROM artifacts a
+                   JOIN artifact_blobs b ON b.blob_id=a.blob_id
+                   WHERE a.workflow_id=? AND a.artifact_id=?""",
+                (workflow_id, artifact_id),
+            ).fetchone()
+            if (
+                row is None
+                or row["artifact_type"] != "export-zip"
+                or row["lifecycle_state"] != "READY"
+                or int(row["verified"] or 0) != 1
+                or row["blob_lifecycle_state"] != "READY"
+                or str(row["format"] or "").lower().lstrip(".") != "zip"
+                or str(row["blob_format"] or "").lower().lstrip(".") != "zip"
+            ):
+                raise RepositoryError("export artifact is not ready", code="ARTIFACT_INVALID")
+            self._append_export_event_in_transaction(
+                con,
+                workflow_id,
+                artifact_id,
+                request_id,
+                event_payload,
+            )
 
     def finalize_legacy_import(
         self,
@@ -3009,6 +3188,102 @@ class WorkflowRepository:
             ).fetchall()
             return [_snapshot_from_connection(con, str(row["workflow_id"])) for row in rows]
 
+    def _workflow_delete_block_reason(
+        self,
+        con: sqlite3.Connection,
+        snapshot: WorkflowSnapshot,
+        *,
+        allow_unresolved: bool = False,
+    ) -> str | None:
+        """Return why a workflow cannot be physically removed, if any.
+
+        Deletion is intentionally narrower than hiding a terminal workflow.
+        The database keeps provider/external facts as the recovery authority,
+        so an unfinished run is removable only when no durable fact still
+        says that an external operation may have crossed its side-effect
+        boundary.
+        """
+
+        if snapshot.status == "CLOSED" or snapshot.execution_state == "TERMINAL":
+            return "终态任务请使用归档"
+        terminating = snapshot.control_state == "TERMINATING"
+        if con.execute(
+            "SELECT 1 FROM workflows WHERE parent_workflow_id=? LIMIT 1",
+            (snapshot.workflow_id,),
+        ).fetchone() is not None:
+            return "任务存在派生运行，暂不能删除"
+
+        # A user-confirmed history deletion is an explicit local purge.  It
+        # may discard unresolved provider/external projections, while the
+        # deletion path still preserves detached external mapping facts and
+        # archives the append-only intent journal after the DB commit.
+        if allow_unresolved:
+            return None
+
+        for row in con.execute(
+            "SELECT lease_until FROM workflow_leases "
+            "WHERE workflow_id=? AND state='ACTIVE'",
+            (snapshot.workflow_id,),
+        ).fetchall():
+            if not _is_expired(row["lease_until"]):
+                return "任务正在结束，请稍后再试" if terminating else "任务仍被执行器占用，请稍后再试"
+
+        if con.execute(
+            "SELECT 1 FROM user_interventions "
+            "WHERE workflow_id=? AND state IN ('OPEN','CLAIMED') LIMIT 1",
+            (snapshot.workflow_id,),
+        ).fetchone() is not None:
+            return "任务存在待处理核验事项，必须先完成核验"
+
+        if con.execute(
+            "SELECT 1 FROM side_effect_intents "
+            "WHERE workflow_id=? AND state NOT IN ('ARCHIVED','REJECTED','ABORTED') LIMIT 1",
+            (snapshot.workflow_id,),
+        ).fetchone() is not None:
+            return "任务存在未决外部副作用，必须先完成核验"
+
+        if con.execute(
+            """SELECT 1
+               FROM work_units u
+               LEFT JOIN provider_submissions p
+                 ON p.workflow_group_id=u.workflow_group_id
+                AND p.provider_submission_id=u.provider_submission_id
+               WHERE u.workflow_id=?
+                 AND (
+                     u.side_effect_state NOT IN ('NOT_STARTED','REJECTED')
+                     OR (p.provider_submission_id IS NOT NULL
+                         AND p.side_effect_state NOT IN ('NOT_STARTED','REJECTED'))
+                 )
+               LIMIT 1""",
+            (snapshot.workflow_id,),
+        ).fetchone() is not None:
+            return "任务存在未决 Provider 提交，必须先完成核验"
+
+        # The Full profile may have a second external-record graph.  Do not
+        # guess whether its rows are safe to discard: any row tied directly to
+        # this run remains an explicit deletion guard.
+        if _table_exists(con, "external_operations") and con.execute(
+            "SELECT 1 FROM external_operations WHERE workflow_id=? LIMIT 1",
+            (snapshot.workflow_id,),
+        ).fetchone() is not None:
+            return "任务存在外部系统操作事实，必须先完成核验"
+        if _table_exists(con, "external_records") and con.execute(
+            """SELECT 1 FROM external_records
+               WHERE local_workflow_id=?
+                  OR local_item_id IN (
+                      SELECT item_id FROM work_items WHERE workflow_id=?
+                  )
+               LIMIT 1""",
+            (snapshot.workflow_id, snapshot.workflow_id),
+        ).fetchone() is not None:
+            return "任务存在外部记录映射，必须先完成核验"
+        if _table_exists(con, "external_record_bindings") and con.execute(
+            "SELECT 1 FROM external_record_bindings WHERE workflow_id=? LIMIT 1",
+            (snapshot.workflow_id,),
+        ).fetchone() is not None:
+            return "任务存在外部记录绑定，必须先完成核验"
+        return None
+
     def list_history_records(self, *, limit: int = 100) -> list[dict[str, Any]]:
         """Return a safe, bounded history projection for the desktop UI.
 
@@ -3125,6 +3400,16 @@ class WorkflowRepository:
                              AND a.size_bytes=b.size_bytes""",
                         (workflow_id, expected_full_zip_id),
                     ).fetchone()
+                # The history action is an explicit, user-confirmed local
+                # purge, so unresolved reconciliation facts must not leave a
+                # stale disabled button.  Terminal runs still use archive and
+                # derived runs remain protected by the repository guard.
+                delete_block_reason = self._workflow_delete_block_reason(
+                    con,
+                    snapshot,
+                    allow_unresolved=True,
+                )
+                terminal = snapshot.execution_state == "TERMINAL"
                 available_item_ids = {str(item["item_id"]) for item in artifact_rows if item["item_id"]}
                 failed_items = []
                 failed_count = 0
@@ -3173,6 +3458,11 @@ class WorkflowRepository:
                     "execution_state": snapshot.execution_state,
                     "control_state": snapshot.control_state,
                     "state_version": snapshot.state_version,
+                    "can_delete": not terminal and delete_block_reason is None,
+                    "delete_reason": (
+                        delete_block_reason
+                        or ("终态任务请使用归档" if terminal else None)
+                    ),
                     "created_at": str(row["created_at"]),
                     "completed_at": row["finished_at"] or row["updated_at"],
                     "updated_at": snapshot.updated_at,
@@ -3220,6 +3510,439 @@ class WorkflowRepository:
             archived = _snapshot_from_connection(con, workflow_id)
             self.events.write_snapshot_in_transaction(con, workflow_id, archived.as_dict())
             return archived
+
+    def delete_workflow(
+        self,
+        workflow_id: str,
+        *,
+        expected_state_version: int,
+        request_id: str | None = None,
+        response: Mapping[str, Any] | None = None,
+        allow_unresolved: bool = False,
+    ) -> dict[str, Any]:
+        """Physically remove an unfinished workflow and its local facts.
+
+        This is deliberately an atomic database operation.  The idempotency
+        response is written in the same transaction as the delete and is not
+        linked back to the workflow, so a lost HTTP response can be replayed
+        after the workflow row has disappeared.  Files are returned as a
+        post-commit cleanup plan; the garbage collector performs the final
+        Blob unlink against a fresh reference scan.  ``allow_unresolved`` is
+        reserved for the explicit history-delete command: it removes local
+        reconciliation/provider projections and leaves any external mapping
+        detached rather than pretending that a remote submission was undone.
+        """
+
+        if request_id is not None and response is None:
+            raise RepositoryError(
+                "delete idempotency completion requires a response",
+                code="PERSISTENCE_ERROR",
+            )
+
+        staging_keys: set[str] = set()
+        candidate_blobs: dict[str, str] = {}
+        deleted_blob_storage_keys: set[str] = set()
+        deleted_intents: list[dict[str, str]] = []
+        external_operation_ids: set[str] = set()
+        external_mapping_ids: set[str] = set()
+        now = utc_now()
+        try:
+            with self.database.transaction() as con:
+                snapshot = _snapshot_from_connection(con, workflow_id)
+                require_expected(snapshot.state_version, expected_state_version)
+                block_reason = self._workflow_delete_block_reason(
+                    con,
+                    snapshot,
+                    allow_unresolved=allow_unresolved,
+                )
+                if block_reason:
+                    raise ConflictError(
+                        block_reason,
+                        code=(
+                            "ARCHIVE_REQUIRED"
+                            if snapshot.execution_state == "TERMINAL"
+                            else "DELETE_BLOCKED"
+                        ),
+                        details={"workflow_id": workflow_id},
+                    )
+
+                workflow_row = con.execute(
+                    "SELECT workflow_group_id, parent_workflow_id FROM workflows WHERE workflow_id=?",
+                    (workflow_id,),
+                ).fetchone()
+                if workflow_row is None:
+                    raise NotFoundError(f"workflow does not exist: {workflow_id}")
+                group_id = str(workflow_row["workflow_group_id"])
+                has_other_workflows = con.execute(
+                    "SELECT 1 FROM workflows WHERE workflow_group_id=? AND workflow_id<>? LIMIT 1",
+                    (group_id, workflow_id),
+                ).fetchone() is not None
+
+                if allow_unresolved:
+                    deleted_intents = [
+                        {
+                            "operation_namespace": str(row["operation_namespace"]),
+                            "operation_key": str(row["operation_key"]),
+                            "payload_hash": str(row["payload_hash"]),
+                            "intent_id": str(row["intent_id"]),
+                        }
+                        for row in con.execute(
+                            """SELECT intent_id, operation_namespace, operation_key, payload_hash
+                               FROM side_effect_intents WHERE workflow_id=?""",
+                            (workflow_id,),
+                        ).fetchall()
+                    ]
+
+                    if _table_exists(con, "external_operations"):
+                        for row in con.execute(
+                            """SELECT external_operation_id, external_record_mapping_id
+                               FROM external_operations WHERE workflow_id=?""",
+                            (workflow_id,),
+                        ).fetchall():
+                            external_operation_ids.add(str(row["external_operation_id"]))
+                            external_mapping_ids.add(str(row["external_record_mapping_id"]))
+                    if _table_exists(con, "external_record_bindings"):
+                        for row in con.execute(
+                            """SELECT external_operation_id, external_record_mapping_id
+                               FROM external_record_bindings WHERE workflow_id=?""",
+                            (workflow_id,),
+                        ).fetchall():
+                            if row["external_operation_id"]:
+                                external_operation_ids.add(str(row["external_operation_id"]))
+                            external_mapping_ids.add(str(row["external_record_mapping_id"]))
+                    if _table_exists(con, "external_records"):
+                        for row in con.execute(
+                            """SELECT external_record_mapping_id
+                               FROM external_records
+                               WHERE local_workflow_id=?
+                                  OR local_item_id IN (
+                                      SELECT item_id FROM work_items WHERE workflow_id=?
+                                  )""",
+                            (workflow_id, workflow_id),
+                        ).fetchall():
+                            external_mapping_ids.add(str(row["external_record_mapping_id"]))
+
+                # In explicit history-delete mode, mappings owned by this
+                # workflow will be detached below.  They must not keep the
+                # workflow group alive by themselves; mappings belonging to
+                # another run still do.
+                if _table_exists(con, "external_records"):
+                    if allow_unresolved and external_mapping_ids:
+                        mapping_placeholders = ",".join("?" for _ in external_mapping_ids)
+                        has_external_group_reference = con.execute(
+                            f"""SELECT 1 FROM external_records
+                                WHERE current_workflow_group_id=?
+                                  AND external_record_mapping_id NOT IN ({mapping_placeholders})
+                                LIMIT 1""",
+                            (group_id, *sorted(external_mapping_ids)),
+                        ).fetchone() is not None
+                    else:
+                        has_external_group_reference = con.execute(
+                            "SELECT 1 FROM external_records WHERE current_workflow_group_id=? LIMIT 1",
+                            (group_id,),
+                        ).fetchone() is not None
+                else:
+                    has_external_group_reference = False
+                delete_group_facts = not has_other_workflows and not has_external_group_reference
+
+                if request_id is not None:
+                    idem_row = con.execute(
+                        "SELECT workflow_id, response_json FROM workflow_idempotency_keys WHERE idempotency_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    if idem_row is None:
+                        raise NotFoundError(f"idempotency key does not exist: {request_id}")
+                    if idem_row["response_json"] is not None:
+                        raise ConflictError(
+                            "delete idempotency request has already completed",
+                            code="IDEMPOTENCY_IN_PROGRESS",
+                        )
+                    if idem_row["workflow_id"] is not None:
+                        raise ConflictError(
+                            "delete idempotency reservation is bound to the workflow",
+                            code="IDEMPOTENCY_CONFLICT",
+                        )
+
+                artifact_rows = con.execute(
+                    """SELECT DISTINCT a.blob_id, b.storage_key, a.staging_ref
+                       FROM artifacts a
+                       LEFT JOIN artifact_blobs b ON b.blob_id=a.blob_id
+                       WHERE a.workflow_id=?""",
+                    (workflow_id,),
+                ).fetchall()
+                for artifact in artifact_rows:
+                    staging_ref = str(artifact["staging_ref"] or "").strip()
+                    if staging_ref:
+                        staging_keys.add(staging_ref)
+                    blob_id = str(artifact["blob_id"] or "").strip()
+                    storage_key = str(artifact["storage_key"] or "").strip()
+                    if blob_id and storage_key:
+                        candidate_blobs[blob_id] = storage_key
+
+                source_import_columns = _table_columns(con, "source_imports")
+                if "staging_key" in source_import_columns:
+                    staging_keys.update(
+                        str(row["staging_key"])
+                        for row in con.execute(
+                            "SELECT staging_key FROM source_imports WHERE workflow_id=? AND staging_key IS NOT NULL",
+                            (workflow_id,),
+                        ).fetchall()
+                        if str(row["staging_key"] or "").strip()
+                    )
+                generation_columns = _table_columns(con, "source_import_generations")
+                if "staging_key" in generation_columns:
+                    staging_keys.update(
+                        str(row["staging_key"])
+                        for row in con.execute(
+                            "SELECT staging_key FROM source_import_generations WHERE workflow_id=?",
+                            (workflow_id,),
+                        ).fetchall()
+                        if str(row["staging_key"] or "").strip()
+                    )
+
+                # Break the source-import/artifact cycle before deleting either
+                # side.  Both current (generation projection) and older local
+                # databases are supported here because users may upgrade in
+                # place without recreating their data directory.
+                con.execute(
+                    "UPDATE workflows SET source_artifact_id=NULL WHERE workflow_id=?",
+                    (workflow_id,),
+                )
+                if "current_artifact_id" in source_import_columns:
+                    con.execute(
+                        "UPDATE source_imports SET current_artifact_id=NULL WHERE workflow_id=?",
+                        (workflow_id,),
+                    )
+                elif "source_artifact_id" in source_import_columns:
+                    con.execute(
+                        "UPDATE source_imports SET source_artifact_id=NULL WHERE workflow_id=?",
+                        (workflow_id,),
+                    )
+                if "source_artifact_id" in generation_columns:
+                    con.execute(
+                        "UPDATE source_import_generations SET source_artifact_id=NULL WHERE workflow_id=?",
+                        (workflow_id,),
+                    )
+
+                # Explicit history deletion is allowed to remove unresolved
+                # local provider/external projections.  External records are
+                # deliberately retained as detached business facts so a
+                # later run can still discover an already-created remote
+                # record; operation/binding rows that point at this workflow
+                # must be removed before their local workflow FK targets.
+                if allow_unresolved and _table_exists(con, "external_operations"):
+                    if external_operation_ids and _table_exists(con, "external_operation_targets"):
+                        operation_placeholders = ",".join("?" for _ in external_operation_ids)
+                        con.execute(
+                            f"DELETE FROM external_operation_targets WHERE external_operation_id IN ({operation_placeholders})",
+                            tuple(sorted(external_operation_ids)),
+                        )
+                    if _table_exists(con, "external_record_bindings"):
+                        if external_operation_ids:
+                            operation_placeholders = ",".join("?" for _ in external_operation_ids)
+                            con.execute(
+                                f"""DELETE FROM external_record_bindings
+                                    WHERE workflow_id=? OR external_operation_id IN ({operation_placeholders})""",
+                                (workflow_id, *sorted(external_operation_ids)),
+                            )
+                        else:
+                            con.execute(
+                                "DELETE FROM external_record_bindings WHERE workflow_id=?",
+                                (workflow_id,),
+                            )
+                    con.execute(
+                        "DELETE FROM external_operations WHERE workflow_id=?",
+                        (workflow_id,),
+                    )
+                    if external_mapping_ids and _table_exists(con, "external_records"):
+                        mapping_placeholders = ",".join("?" for _ in external_mapping_ids)
+                        mapping_params = tuple(sorted(external_mapping_ids))
+                        con.execute(
+                            f"""UPDATE external_records
+                                SET local_workflow_id=CASE WHEN local_workflow_id=? THEN NULL ELSE local_workflow_id END,
+                                    local_item_id=CASE WHEN local_item_id IN (
+                                        SELECT item_id FROM work_items WHERE workflow_id=?
+                                    ) THEN NULL ELSE local_item_id END,
+                                    current_workflow_group_id=CASE
+                                        WHEN ? AND current_workflow_group_id=? THEN NULL
+                                        ELSE current_workflow_group_id END,
+                                    current_operation_key=CASE
+                                        WHEN current_operation_key IS NOT NULL AND NOT EXISTS (
+                                            SELECT 1 FROM external_operations remaining
+                                            WHERE remaining.external_record_mapping_id=external_records.external_record_mapping_id
+                                              AND remaining.external_operation_key=external_records.current_operation_key
+                                        ) THEN NULL
+                                        ELSE current_operation_key END,
+                                    updated_at=?
+                                WHERE external_record_mapping_id IN ({mapping_placeholders})""",
+                            (
+                                workflow_id,
+                                workflow_id,
+                                1 if delete_group_facts else 0,
+                                group_id,
+                                now,
+                                *mapping_params,
+                            ),
+                        )
+                        if _table_exists(con, "external_record_leases"):
+                            con.execute(
+                                f"""UPDATE external_record_leases
+                                    SET state='RELEASED', heartbeat_at=?
+                                    WHERE external_record_mapping_id IN ({mapping_placeholders})
+                                      AND NOT EXISTS (
+                                          SELECT 1 FROM external_operations remaining
+                                          WHERE remaining.external_record_mapping_id=external_record_leases.external_record_mapping_id
+                                      )
+                                      AND NOT EXISTS (
+                                          SELECT 1 FROM external_record_bindings remaining
+                                          WHERE remaining.external_record_mapping_id=external_record_leases.external_record_mapping_id
+                                      )""",
+                                (now, *mapping_params),
+                            )
+
+                # Events/snapshots and recovery facts must go before the
+                # workflow-owned execution rows because their foreign keys are
+                # intentionally RESTRICT rather than cascading.
+                con.execute("DELETE FROM snapshot_anchors WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM workflow_snapshots WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM workflow_events WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM workflow_event_streams WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM reconcile_targets WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM reconcile_evidence WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM user_interventions WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM side_effect_intents WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM provider_receipt_bindings WHERE workflow_id=?", (workflow_id,))
+
+                # Derivations may point across workflows (for example a rerun
+                # reusing a source Blob), so remove only edges touching the
+                # target before removing its Artifact rows.
+                con.execute(
+                    """DELETE FROM artifact_derivations
+                       WHERE parent_artifact_id IN (SELECT artifact_id FROM artifacts WHERE workflow_id=?)
+                          OR child_artifact_id IN (SELECT artifact_id FROM artifacts WHERE workflow_id=?)""",
+                    (workflow_id, workflow_id),
+                )
+                con.execute("DELETE FROM artifacts WHERE workflow_id=?", (workflow_id,))
+                if generation_columns:
+                    con.execute("DELETE FROM source_import_generations WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM source_imports WHERE workflow_id=?", (workflow_id,))
+
+                # Work-unit children have to be removed in dependency order.
+                con.execute(
+                    "DELETE FROM work_unit_segments WHERE work_unit_id IN (SELECT work_unit_id FROM work_units WHERE workflow_id=?)",
+                    (workflow_id,),
+                )
+                con.execute("DELETE FROM work_unit_items WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM work_unit_attempts WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM workflow_step_dependencies WHERE workflow_id=?", (workflow_id,))
+                con.execute(
+                    "UPDATE work_item_assignments SET supersedes_assignment_id=NULL WHERE workflow_id=?",
+                    (workflow_id,),
+                )
+                con.execute("DELETE FROM work_item_assignments WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM work_units WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM step_attempts WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM workflow_steps WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM work_items WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM workflow_idempotency_keys WHERE workflow_id=?", (workflow_id,))
+                con.execute("DELETE FROM workflow_leases WHERE workflow_id=?", (workflow_id,))
+
+                # A group root is a deferred composite foreign key.  Clear it
+                # before deleting the root workflow even when the group itself
+                # is retained by an external mapping.
+                con.execute(
+                    "UPDATE workflow_groups SET root_workflow_id=NULL WHERE root_workflow_id=?",
+                    (workflow_id,),
+                )
+
+                if request_id is not None:
+                    updated = con.execute(
+                        """UPDATE workflow_idempotency_keys
+                           SET response_status=?, response_json=?, workflow_id=NULL
+                           WHERE idempotency_id=? AND response_json IS NULL""",
+                        (200, canonical_json(dict(response or {})), request_id),
+                    )
+                    if updated.rowcount != 1:
+                        raise ConflictError(
+                            "delete idempotency reservation changed while deleting",
+                            code="IDEMPOTENCY_IN_PROGRESS",
+                        )
+
+                deleted = con.execute(
+                    "DELETE FROM workflows WHERE workflow_id=? AND state_version=?",
+                    (workflow_id, expected_state_version),
+                )
+                if deleted.rowcount != 1:
+                    raise ConflictError("workflow changed while deleting")
+
+                # Group-level provider facts are shared by reruns.  Remove
+                # them only when this was the final local run and no external
+                # record still points at the group.
+                if delete_group_facts:
+                    con.execute(
+                        """DELETE FROM provider_receipt_bindings
+                           WHERE receipt_id IN (
+                               SELECT receipt_id FROM provider_receipts WHERE workflow_group_id=?
+                           )""",
+                        (group_id,),
+                    )
+                    con.execute(
+                        """DELETE FROM provider_receipt_identifiers
+                           WHERE receipt_id IN (
+                               SELECT receipt_id FROM provider_receipts WHERE workflow_group_id=?
+                           )""",
+                        (group_id,),
+                    )
+                    con.execute("DELETE FROM provider_receipts WHERE workflow_group_id=?", (group_id,))
+                    con.execute("DELETE FROM provider_submissions WHERE workflow_group_id=?", (group_id,))
+                    con.execute("DELETE FROM provider_sessions WHERE workflow_group_id=?", (group_id,))
+                    con.execute("DELETE FROM retry_budgets WHERE workflow_group_id=?", (group_id,))
+                    con.execute("DELETE FROM workflow_groups WHERE workflow_group_id=?", (group_id,))
+
+                for blob_id, storage_key in candidate_blobs.items():
+                    if con.execute(
+                        "SELECT 1 FROM artifacts WHERE blob_id=? LIMIT 1",
+                        (blob_id,),
+                    ).fetchone() is not None:
+                        continue
+                    deleted_blob = con.execute(
+                        "DELETE FROM artifact_blobs WHERE blob_id=?",
+                        (blob_id,),
+                    )
+                    if deleted_blob.rowcount:
+                        deleted_blob_storage_keys.add(storage_key)
+        except sqlite3.IntegrityError as exc:
+            raise RepositoryError(
+                "workflow data could not be deleted safely",
+                code="PERSISTENCE_ERROR",
+            ) from exc
+
+        if allow_unresolved:
+            # The database delete has committed.  Mark the append-only journal
+            # entries as intentionally archived after the commit so a normal
+            # recovery scan does not resurrect a task the user explicitly
+            # removed.  A journal write failure leaves the live entry for the
+            # recovery verifier to surface rather than claiming it is safe.
+            for intent in deleted_intents:
+                try:
+                    self.intent_log.mark(
+                        operation_namespace=intent["operation_namespace"],
+                        operation_key=intent["operation_key"],
+                        payload_hash=intent["payload_hash"],
+                        intent_id=intent["intent_id"],
+                        state="ARCHIVED",
+                    )
+                except Exception:
+                    pass
+
+        if request_id is not None:
+            self._idempotency_forget(request_id)
+        return {
+            "workflow_id": workflow_id,
+            "staging_keys": sorted(staging_keys),
+            "blob_storage_keys": sorted(deleted_blob_storage_keys),
+            "deleted_at": now,
+        }
 
     def list_artifacts(self, workflow_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
         """Return safe artifact metadata; storage keys remain an internal fact."""
@@ -3326,6 +4049,7 @@ class WorkflowRepository:
             return {
                 "artifact_id": str(row["artifact_id"]),
                 "workflow_id": str(row["workflow_id"]),
+                "artifact_type": str(row["artifact_type"]),
                 "storage_key": str(row["storage_key"]),
                 "format": str(row["blob_format"]),
                 "sha256": str(row["blob_sha256"]),
@@ -3947,6 +4671,22 @@ class WorkflowRepository:
             ).fetchone()
             if submission is None or unit is None or attempt is None:
                 raise NotFoundError("TTS plan is incomplete")
+            workflow = con.execute(
+                "SELECT control_state, execution_state FROM workflows WHERE workflow_id=?",
+                (plan["workflow_id"],),
+            ).fetchone()
+            if workflow is None:
+                raise NotFoundError("workflow does not exist")
+            if str(workflow["control_state"]) != "RUNNING":
+                code = "WORKFLOW_CANCELLED" if str(workflow["control_state"]) in {"TERMINATING", "TERMINATED"} else "CONTROL_STATE_CONFLICT"
+                raise ConflictError(
+                    "workflow control state does not permit provider submission",
+                    code=code,
+                    details={
+                        "control_state": str(workflow["control_state"]),
+                        "execution_state": str(workflow["execution_state"]),
+                    },
+                )
             if submission["side_effect_state"] in {"AMBIGUOUS", "SUBMITTED", "CONFIRMED"}:
                 raise ConflictError("TTS submission already crossed the side-effect boundary")
             if unit["state_version"] != plan["state_version"]:
@@ -4023,8 +4763,9 @@ class WorkflowRepository:
         ``preserve_submission`` is used only after a provider receipt has
         already been observed.  At that point a download, staging, or local
         publication failure must leave the billable submission in its known
-        submitted state so a retry can query/download the same receipt rather
-        than opening a second provider attempt.
+        submitted state for the current local attempt; a later explicit
+        generation still creates a fresh attempt and does not query the
+        provider.
         """
 
         now = utc_now()
@@ -4032,22 +4773,18 @@ class WorkflowRepository:
         message = (safe_message if isinstance(safe_message, str) else str(error_code))[:2000]
         safe_details = redact_public_json(error_details or {})
         details = dict(safe_details) if isinstance(safe_details, Mapping) else {}
-        details_payload = {"error_code": error_code, "message": message, "details": details}
         retry_after = None
-        # Closing the browser before the provider confirmation is a deliberate
-        # user handoff, not an unattended transient outage.  Keep this run
-        # out of the durable retry queue while the renderer returns to config;
-        # otherwise the scheduler can reopen the old voice/session just as the
-        # user selects a new voice and starts the next run.
-        manual_handoff = (
-            not ambiguous
-            and bool(details.get("browser_disconnected") or details.get("cancelled_before_confirmation"))
+        # TTS has no provider reconciliation branch. Keep the old argument for
+        # callers compiled against the previous repository API, but normalize
+        # every no-receipt failure to a local retryable state.
+        if error_code in {"SUBMISSION_AMBIGUOUS", "TTS_SUBMISSION_AMBIGUOUS"}:
+            error_code = "LOCAL_SUBMISSION_NOT_CONFIRMED"
+        ambiguous = False
+        details_payload = {"error_code": error_code, "message": message, "details": details}
+        suppress_automatic_retry = bool(
+            details.get("browser_disconnected")
+            or details.get("cancelled_before_confirmation")
         )
-        if preserve_submission and ambiguous:
-            raise RepositoryError(
-                "a preserved TTS submission cannot also be marked ambiguous",
-                code="PERSISTENCE_ERROR",
-            )
         if preserve_submission:
             # The caller can request this mode only after record_tts_receipt;
             # verify the durable fact before mutating any projections.  This
@@ -4075,23 +4812,15 @@ class WorkflowRepository:
                 )
             submission_state = str(submission["side_effect_state"])
             unit_state = submission_state
-            unit_status = "WAITING_USER" if manual_handoff else "WAITING_RETRY"
+            unit_status = "WAITING_RETRY"
             attempt_status = unit_status
             step_status = unit_status
             result_status = "FAILED"
-        elif ambiguous:
-            submission_state, unit_state, unit_status, attempt_status, step_status, result_status = (
-                "AMBIGUOUS", "AMBIGUOUS", "AMBIGUOUS", "AMBIGUOUS", "AMBIGUOUS", "MIXED"
-            )
-        elif manual_handoff:
-            submission_state, unit_state, unit_status, attempt_status, step_status, result_status = (
-                "REJECTED", "REJECTED", "WAITING_USER", "WAITING_USER", "WAITING_USER", "FAILED"
-            )
         else:
             submission_state, unit_state, unit_status, attempt_status, step_status, result_status = (
                 "REJECTED", "REJECTED", "WAITING_RETRY", "WAITING_RETRY", "WAITING_RETRY", "FAILED"
             )
-        intent_state = "COMMITTED" if preserve_submission else ("NEEDS_RECONCILE" if ambiguous else "ARCHIVED")
+        intent_state = "COMMITTED" if preserve_submission else "ARCHIVED"
         with self.database.transaction() as con:
             if require_lease:
                 self._assert_plan_lease(con, plan)
@@ -4113,16 +4842,11 @@ class WorkflowRepository:
                 return
             if not require_lease and str(current_unit["created_by_attempt_id"] or "") != str(plan.get("attempt_id") or ""):
                 return
-            if not ambiguous and not manual_handoff and error_code in RetryPolicy.RETRYABLE:
+            if not ambiguous and not suppress_automatic_retry and error_code in RetryPolicy.RETRYABLE:
                 # Keep the first automatic retry out of the same event-loop
                 # turn as the failure.  The attempt number is read in this
                 # transaction and the delay is capped; this is intentionally
                 # deterministic so a restart cannot create a retry storm.
-                # Give the desktop a short handoff window before an automatic
-                # dispatcher opens a new browser. The user may need to return
-                # to configuration and change the voice after deliberately
-                # closing Chrome; an immediate claim races that decision and
-                # leaves the old generation task owning the browser session.
                 # Rate limiting keeps its shorter provider-facing delay.
                 retry_after = _expiry(5) if error_code == "PROVIDER_RATE_LIMITED" else _expiry(15)
             if not preserve_submission:
@@ -4173,10 +4897,8 @@ class WorkflowRepository:
                 """UPDATE workflows SET execution_state=?, last_error_code=?, last_error_message=?,
                        state_version=state_version+1, updated_at=?
                    WHERE workflow_id=?""",
-                ("WAITING_USER" if (ambiguous or manual_handoff) else "WAITING_RETRY", error_code, message, now, plan["workflow_id"]),
+                ("WAITING_RETRY", error_code, message, now, plan["workflow_id"]),
             )
-            if ambiguous:
-                self._ensure_tts_intervention(con, plan, reason=message, now=now)
             unit_after = con.execute(
                 "SELECT state_version FROM work_units WHERE workflow_id=? AND work_unit_id=?",
                 (plan["workflow_id"], plan["work_unit_id"]),
@@ -4188,7 +4910,7 @@ class WorkflowRepository:
             self.events.append_in_transaction(
                 con,
                 plan["workflow_id"],
-                "TTS_OUTPUT_RETRYABLE_FAILURE" if preserve_submission else ("TTS_SUBMISSION_AMBIGUOUS" if ambiguous else "TTS_SUBMISSION_REJECTED"),
+                "TTS_OUTPUT_RETRYABLE_FAILURE" if preserve_submission else "TTS_SUBMISSION_REJECTED",
                 {
                     "submission_id": plan["submission_id"],
                     "work_unit_id": plan["work_unit_id"],
@@ -4222,11 +4944,12 @@ class WorkflowRepository:
     ) -> WorkflowSnapshot:
         """Persist an unexpected worker failure before the task disappears.
 
-        The in-memory task registry is only a scheduling aid.  If an
-        exception occurs before the engine can create a typed TTS failure,
-        leaving the workflow in RUNNING/IN_PROGRESS makes the run look alive
-        forever after restart.  This transition keeps the business result
-        unresolved and makes the next action explicit: retry or reconcile.
+        The in-memory task registry is only a scheduling aid. If an exception
+        occurs before the engine can create a typed TTS failure, leaving the
+        workflow in RUNNING/IN_PROGRESS makes the run look alive forever after
+        restart. TTS boundaries are normalized to local rejection here, so the
+        next explicit generation is a fresh attempt and never a provider
+        reconciliation request.
         """
 
         now = utc_now()
@@ -4239,6 +4962,11 @@ class WorkflowRepository:
             snapshot = _snapshot_from_connection(con, workflow_id)
             if snapshot.execution_state == "TERMINAL" or snapshot.control_state == "TERMINATING":
                 return snapshot
+            workflow_row = con.execute(
+                "SELECT workflow_type FROM workflows WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()
+            is_tts_workflow = str(workflow_row["workflow_type"] or "").lower() == "tts" if workflow_row else False
             unresolved = con.execute(
                 """SELECT 1 FROM work_units
                    WHERE workflow_id=?
@@ -4247,13 +4975,75 @@ class WorkflowRepository:
                    LIMIT 1""",
                 (workflow_id,),
             ).fetchone() is not None
-            next_execution = "WAITING_USER" if unresolved else "WAITING_RETRY"
+            if is_tts_workflow:
+                # An unexpected worker exception can happen after the local
+                # IN_FLIGHT commit. Retire those projections together before
+                # publishing the retryable workflow state; no remote fact is
+                # inferred and no lookup is attempted.
+                con.execute(
+                    """UPDATE provider_submissions
+                       SET side_effect_state='REJECTED', state_version=state_version+1
+                       WHERE provider_submission_id IN (
+                           SELECT provider_submission_id FROM work_units
+                           WHERE workflow_id=? AND provider_submission_id IS NOT NULL
+                       ) AND side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')""",
+                    (workflow_id,),
+                )
+                con.execute(
+                    """UPDATE work_units
+                       SET side_effect_state='REJECTED', status='WAITING_RETRY',
+                           state_version=state_version+1
+                       WHERE workflow_id=? AND status NOT IN ('SUCCEEDED','CANCELLED')
+                         AND side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')""",
+                    (workflow_id,),
+                )
+                con.execute(
+                    """UPDATE work_unit_attempts
+                       SET side_effect_state='REJECTED', status='WAITING_RETRY',
+                           finished_at=?, state_version=state_version+1
+                       WHERE workflow_id=?
+                         AND status IN ('CREATED','PREPARING','RUNNING','VERIFYING',
+                                        'WAITING_USER','BLOCKED','RECOVERING','AMBIGUOUS')
+                         AND side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')""",
+                    (now, workflow_id),
+                )
+                con.execute(
+                    """UPDATE work_unit_items SET result_status='FAILED', state_version=state_version+1
+                       WHERE workflow_id=? AND result_status NOT IN ('SUCCEEDED','SKIPPED')""",
+                    (workflow_id,),
+                )
+                con.execute(
+                    """UPDATE work_unit_segments SET result_status='FAILED'
+                       WHERE work_unit_id IN (
+                           SELECT work_unit_id FROM work_units WHERE workflow_id=?
+                       ) AND result_status NOT IN ('SUCCEEDED','SKIPPED')""",
+                    (workflow_id,),
+                )
+                con.execute(
+                    """UPDATE work_items SET status='FAILED', state_version=state_version+1, updated_at=?
+                       WHERE workflow_id=? AND status NOT IN ('SUCCEEDED','SKIPPED','CANCELLED')""",
+                    (now, workflow_id),
+                )
+                con.execute(
+                    """UPDATE side_effect_intents SET state='ARCHIVED', updated_at=?
+                       WHERE workflow_id=? AND operation_namespace='tts' AND state <> 'ARCHIVED'""",
+                    (now, workflow_id),
+                )
+                con.execute(
+                    """UPDATE user_interventions SET state='RESOLVED', resolved_by='worker-failure',
+                              resolved_at=?, updated_at=?, state_version=state_version+1
+                       WHERE workflow_id=? AND intervention_type='RECONCILE_PROVIDER'
+                         AND state IN ('OPEN','CLAIMED')""",
+                    (now, now, workflow_id),
+                )
+            next_execution = "WAITING_RETRY" if is_tts_workflow else ("WAITING_USER" if unresolved else "WAITING_RETRY")
+            next_status = next_execution
             con.execute(
                 """UPDATE step_attempts
                    SET status=?, result_status='FAILED', error_code=?, error_details_json=?,
                        finished_at=?, state_version=state_version+1
                    WHERE workflow_id=? AND status IN ('CREATED','PREPARING','RUNNING','VERIFYING')""",
-                ("WAITING_USER" if unresolved else "WAITING_RETRY", code,
+                (next_status, code,
                  canonical_json({"error_code": code, "message": message, "details": details}),
                  now, workflow_id),
             )
@@ -4262,19 +5052,19 @@ class WorkflowRepository:
                    SET status=?, finished_at=?, state_version=state_version+1
                    WHERE workflow_id=? AND status IN ('CREATED','PREPARING','RUNNING','VERIFYING')
                      AND side_effect_state NOT IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')""",
-                ("WAITING_USER" if unresolved else "WAITING_RETRY", now, workflow_id),
+                (next_status, now, workflow_id),
             )
             con.execute(
                 """UPDATE work_units SET status=?, state_version=state_version+1
                    WHERE workflow_id=? AND status IN ('PENDING','READY','RUNNING','VERIFYING')
                      AND side_effect_state NOT IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')""",
-                ("WAITING_USER" if unresolved else "WAITING_RETRY", workflow_id),
+                (next_status, workflow_id),
             )
             con.execute(
                 """UPDATE workflow_steps SET status=?, error_code=?, error_details_json=?,
                        state_version=state_version+1
                    WHERE workflow_id=? AND status IN ('PENDING','READY','PREPARING','RUNNING','VERIFYING')""",
-                ("WAITING_USER" if unresolved else "WAITING_RETRY", code,
+                (next_status, code,
                  canonical_json({"error_code": code, "message": message, "details": details}), workflow_id),
             )
             con.execute(
@@ -4389,9 +5179,8 @@ class WorkflowRepository:
 
             # The provider call and local staging can outlive a user command.
             # Acquire the final control-plane fence before publishing any
-            # READY artifact.  A cancel that wins this race leaves the
-            # confirmed unit available for reconciliation instead of letting
-            # a late worker silently terminalize a cancelled run.
+            # READY artifact. A cancel that wins this race keeps the local
+            # workflow terminal and rejects the late publication.
             workflow = con.execute(
                 "SELECT control_state, execution_state FROM workflows WHERE workflow_id=?",
                 (plan["workflow_id"],),
@@ -4617,6 +5406,22 @@ class WorkflowRepository:
         summary = dict(safe_summary) if isinstance(safe_summary, Mapping) else {}
         with self.database.transaction() as con:
             self._assert_plan_lease(con, plan)
+            workflow = con.execute(
+                "SELECT control_state, execution_state FROM workflows WHERE workflow_id=?",
+                (plan["workflow_id"],),
+            ).fetchone()
+            if workflow is None:
+                raise NotFoundError("workflow does not exist")
+            if str(workflow["control_state"]) != "RUNNING":
+                code = "WORKFLOW_CANCELLED" if str(workflow["control_state"]) in {"TERMINATING", "TERMINATED"} else "CONTROL_STATE_CONFLICT"
+                raise ConflictError(
+                    "workflow control state does not permit provider receipt publication",
+                    code=code,
+                    details={
+                        "control_state": str(workflow["control_state"]),
+                        "execution_state": str(workflow["execution_state"]),
+                    },
+                )
             submission = con.execute(
                 "SELECT * FROM provider_submissions WHERE provider_submission_id=?",
                 (plan["submission_id"],),
@@ -4676,7 +5481,6 @@ class WorkflowRepository:
                     "receipt_id": str(receipt_id),
                     "workflow_id": str(plan["workflow_id"]),
                     "work_unit_id": str(plan["work_unit_id"]),
-                    "observed_by_attempt_id": str(plan["attempt_id"]),
                 }
                 for field, expected in immutable_binding_fields.items():
                     if str(existing_binding[field]) != expected:
@@ -4685,6 +5489,15 @@ class WorkflowRepository:
                             code="PROVIDER_RECEIPT_SCOPE",
                             details={"binding_key": binding_key, "field": field},
                         )
+                if (
+                    relation_type != "REUSED"
+                    and str(existing_binding["observed_by_attempt_id"] or "") != str(plan["attempt_id"])
+                ):
+                    raise ConflictError(
+                        "provider receipt binding conflicts with the existing run-local fact",
+                        code="PROVIDER_RECEIPT_SCOPE",
+                        details={"binding_key": binding_key, "field": "observed_by_attempt_id"},
+                    )
                 if (
                     str(existing_binding["relation_type"]) != relation_type
                     and {str(existing_binding["relation_type"]), relation_type} != {"SUBMITTED", "REUSED"}
@@ -4695,7 +5508,11 @@ class WorkflowRepository:
                         details={"binding_key": binding_key},
                     )
                 existing_unit_attempt_id = existing_binding["work_unit_attempt_id"]
-                if existing_unit_attempt_id and str(existing_unit_attempt_id) != str(work_unit_attempt_id):
+                if (
+                    relation_type != "REUSED"
+                    and existing_unit_attempt_id
+                    and str(existing_unit_attempt_id) != str(work_unit_attempt_id)
+                ):
                     raise ConflictError(
                         "provider receipt binding has a conflicting work-unit attempt",
                         code="PROVIDER_RECEIPT_SCOPE",
@@ -4936,6 +5753,7 @@ class WorkflowRepository:
         request: Mapping[str, Any],
         workflow_id: str | None = None,
         ttl_seconds: int = 86400,
+        recovery: IdempotencyRecovery | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         scope_hash = content_hash(scope)
         target_json = canonical_json(dict(target or {}))
@@ -4946,16 +5764,24 @@ class WorkflowRepository:
             target_json=target_json,
             request=request,
         )
+        orphan_row: dict[str, Any] | None = None
+        created_id: str | None = None
 
         def replay_existing(row: sqlite3.Row | None, *, purge_expired: bool) -> tuple[str, dict[str, Any] | None] | None:
+            nonlocal orphan_row
             if row is None:
                 return None
             if purge_expired and _is_expired(row["expires_at"]):
-                con.execute(
-                    "DELETE FROM workflow_idempotency_keys WHERE idempotency_id=?",
-                    (row["idempotency_id"],),
-                )
-                return None
+                # A completed response is only a cache entry and can be
+                # discarded after its TTL.  An expired pending row is also a
+                # durable claim: keep it long enough for the recovery path to
+                # distinguish an unknown outcome from a safe, expired claim.
+                if row["response_json"] is not None:
+                    con.execute(
+                        "DELETE FROM workflow_idempotency_keys WHERE idempotency_id=?",
+                        (row["idempotency_id"],),
+                    )
+                    return None
             # The metadata columns are part of the idempotency identity,
             # not merely audit fields.  Without these checks a client key
             # reused for two commands in the same scope could replay the
@@ -4973,62 +5799,233 @@ class WorkflowRepository:
             hash_matches = row["request_hash"] in {request_hash, legacy_hash}
             if not metadata_matches or not hash_matches:
                 raise IdempotencyConflict("same idempotency key was used for a different request")
-            if row["response_json"]:
+            if row["response_json"] is not None:
                 return str(row["idempotency_id"]), json.loads(row["response_json"])
+            idempotency_id = str(row["idempotency_id"])
+            if self._idempotency_is_active(idempotency_id):
+                raise IdempotencyInProgress(
+                    "the same idempotency request is still in progress; retry after it completes"
+                )
+            # A pending row without a live owner belongs to a request that
+            # may have exited after its domain transaction committed but
+            # before response_json was saved.  Defer the decision until the
+            # write transaction has closed so the recovery callback can read
+            # the durable domain facts without nesting transactions.
+            orphan_row = dict(row)
+            return None
+
+        try:
+            with self.database.transaction() as con:
+                row = con.execute(
+                    "SELECT * FROM workflow_idempotency_keys WHERE scope_hash=? AND client_key=?",
+                    (scope_hash, client_key),
+                ).fetchone()
+                existing = replay_existing(row, purge_expired=True)
+                if existing is not None:
+                    return existing
+                if orphan_row is None:
+                    idem_id = new_id("idempotency")
+                    # Mark before INSERT so another request in this process
+                    # cannot mistake the tiny commit window for an orphan.
+                    self._idempotency_mark_active(idem_id)
+                    created_id = idem_id
+                    # A route may reserve an idempotency key before its domain
+                    # lookup returns NOT_FOUND. Keep the association when the
+                    # workflow exists, but do not violate the optional FK
+                    # while preserving the route's intended 404 response.
+                    stored_workflow_id = workflow_id
+                    if stored_workflow_id is not None:
+                        exists = con.execute(
+                            "SELECT 1 FROM workflows WHERE workflow_id=?",
+                            (stored_workflow_id,),
+                        ).fetchone()
+                        if exists is None:
+                            stored_workflow_id = None
+                    values = (
+                        idem_id, scope_hash, client_key, command_name, method, resource_id,
+                        target_json, request_hash, stored_workflow_id, None, None, _expiry(ttl_seconds), utc_now(),
+                    )
+                if orphan_row is None:
+                    try:
+                        con.execute(
+                            """INSERT INTO workflow_idempotency_keys(
+                                idempotency_id, scope_hash, client_key, command_name, method,
+                                resource_id, target_json, request_hash, workflow_id,
+                                response_status, response_json, expires_at, created_at
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            values,
+                        )
+                    except sqlite3.IntegrityError:
+                        # BEGIN IMMEDIATE normally serializes this path, but a
+                        # legacy caller or another process can still race the
+                        # SELECT/INSERT window. Turn the UNIQUE loser into the
+                        # same safe replay or in-progress result instead of
+                        # leaking a 500.
+                        if created_id is not None:
+                            self._idempotency_forget(created_id)
+                            created_id = None
+                        competing = con.execute(
+                            "SELECT * FROM workflow_idempotency_keys WHERE scope_hash=? AND client_key=?",
+                            (scope_hash, client_key),
+                        ).fetchone()
+                        existing = replay_existing(competing, purge_expired=True)
+                        if existing is not None:
+                            return existing
+                        if orphan_row is not None:
+                            raise IdempotencyInProgress(
+                                "the same idempotency request is still in progress; retry after it completes"
+                            )
+                        # The only reason the row can disappear here is an
+                        # expired reservation observed during the defensive
+                        # recheck. Retry the insert once; if another
+                        # reservation wins that race, it is an in-progress
+                        # request rather than a persistence fault.
+                        idem_id = new_id("idempotency")
+                        self._idempotency_mark_active(idem_id)
+                        created_id = idem_id
+                        stored_workflow_id = workflow_id
+                        if stored_workflow_id is not None:
+                            exists = con.execute(
+                                "SELECT 1 FROM workflows WHERE workflow_id=?",
+                                (stored_workflow_id,),
+                            ).fetchone()
+                            if exists is None:
+                                stored_workflow_id = None
+                        values = (
+                            idem_id, scope_hash, client_key, command_name, method, resource_id,
+                            target_json, request_hash, stored_workflow_id, None, None, _expiry(ttl_seconds), utc_now(),
+                        )
+                        try:
+                            con.execute(
+                                """INSERT INTO workflow_idempotency_keys(
+                                    idempotency_id, scope_hash, client_key, command_name, method,
+                                    resource_id, target_json, request_hash, workflow_id,
+                                    response_status, response_json, expires_at, created_at
+                                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                values,
+                            )
+                        except sqlite3.IntegrityError as retry_exc:
+                            self._idempotency_forget(created_id)
+                            created_id = None
+                            raise IdempotencyInProgress(
+                                "the same idempotency request is still in progress; retry after it completes"
+                            ) from retry_exc
+        except Exception:
+            if created_id is not None:
+                self._idempotency_forget(created_id)
+            raise
+
+        if created_id is not None:
+            return created_id, None
+        if orphan_row is None:
+            raise RepositoryError("idempotency reservation could not be established")
+        if recovery is None:
+            raise IdempotencyInProgress(
+                "the same idempotency request is still in progress; retry after it completes"
+            )
+        return self._recover_or_reclaim_idempotency(
+            orphan_row,
+            recovery=recovery,
+            scope_hash=scope_hash,
+            client_key=client_key,
+            command_name=command_name,
+            method=method,
+            resource_id=resource_id,
+            target_json=target_json,
+            request_hash=request_hash,
+            workflow_id=workflow_id,
+            ttl_seconds=ttl_seconds,
+        )
+
+    def _recover_or_reclaim_idempotency(
+        self,
+        orphan_row: Mapping[str, Any],
+        *,
+        recovery: IdempotencyRecovery,
+        scope_hash: str,
+        client_key: str,
+        command_name: str,
+        method: str,
+        resource_id: str | None,
+        target_json: str,
+        request_hash: str,
+        workflow_id: str | None,
+        ttl_seconds: int,
+    ) -> tuple[str, dict[str, Any] | None]:
+        recovered = recovery(orphan_row)
+        if recovered is not None:
+            response_status, response = recovered
+            if not isinstance(response_status, int) or not isinstance(response, Mapping):
+                raise IdempotencyInProgress(
+                    "the committed idempotency response cannot be reconstructed safely"
+                )
+            response_value = dict(response)
+            with self.database.transaction() as con:
+                current = con.execute(
+                    "SELECT * FROM workflow_idempotency_keys WHERE idempotency_id=?",
+                    (orphan_row["idempotency_id"],),
+                ).fetchone()
+                if current is None:
+                    raise IdempotencyInProgress(
+                        "the idempotency reservation changed while recovering"
+                    )
+                if current["response_json"] is not None:
+                    return str(current["idempotency_id"]), json.loads(current["response_json"])
+                updated = con.execute(
+                    """UPDATE workflow_idempotency_keys
+                       SET response_status=?, response_json=?,
+                           workflow_id=COALESCE(?, workflow_id)
+                       WHERE idempotency_id=? AND response_json IS NULL""",
+                    (
+                        response_status,
+                        canonical_json(response_value),
+                        workflow_id,
+                        orphan_row["idempotency_id"],
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise IdempotencyInProgress(
+                        "the idempotency reservation changed while recovering"
+                    )
+            self._idempotency_forget(str(orphan_row["idempotency_id"]))
+            return str(orphan_row["idempotency_id"]), response_value
+
+        # No durable outcome was found.  An unexpired pending row may still be
+        # owned by a live request in another process; reclaiming it here could
+        # execute the same mutation twice.  Only the durable claim expiry
+        # permits a fresh reservation.
+        if not _is_expired(orphan_row.get("expires_at")):
             raise IdempotencyInProgress(
                 "the same idempotency request is still in progress; retry after it completes"
             )
 
-        with self.database.transaction() as con:
-            row = con.execute(
-                "SELECT * FROM workflow_idempotency_keys WHERE scope_hash=? AND client_key=?",
-                (scope_hash, client_key),
-            ).fetchone()
-            existing = replay_existing(row, purge_expired=True)
-            if existing is not None:
-                return existing
-            idem_id = new_id("idempotency")
-            # A route may reserve an idempotency key before its domain lookup
-            # returns NOT_FOUND. Keep the association when the workflow
-            # exists, but do not violate the optional FK while preserving the
-            # route's intended 404 response for an unknown resource.
-            stored_workflow_id = workflow_id
-            if stored_workflow_id is not None:
-                exists = con.execute(
-                    "SELECT 1 FROM workflows WHERE workflow_id=?",
-                    (stored_workflow_id,),
-                ).fetchone()
-                if exists is None:
-                    stored_workflow_id = None
-            values = (
-                idem_id, scope_hash, client_key, command_name, method, resource_id,
-                target_json, request_hash, stored_workflow_id, None, None, _expiry(ttl_seconds), utc_now(),
-            )
-            try:
-                con.execute(
-                    """INSERT INTO workflow_idempotency_keys(
-                        idempotency_id, scope_hash, client_key, command_name, method,
-                        resource_id, target_json, request_hash, workflow_id,
-                        response_status, response_json, expires_at, created_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    values,
-                )
-            except sqlite3.IntegrityError:
-                # BEGIN IMMEDIATE normally serializes this path, but a legacy
-                # caller or another process can still race the SELECT/INSERT
-                # window. Turn the UNIQUE loser into the same safe replay or
-                # in-progress result instead of leaking a 500.
-                competing = con.execute(
+        # Replace only this exact expired pending row with a fresh reservation.
+        # The second transaction rechecks the row so a concurrent completion
+        # is replayed instead of being deleted.
+        fresh_id = new_id("idempotency")
+        self._idempotency_mark_active(fresh_id)
+        try:
+            with self.database.transaction() as con:
+                current = con.execute(
                     "SELECT * FROM workflow_idempotency_keys WHERE scope_hash=? AND client_key=?",
                     (scope_hash, client_key),
                 ).fetchone()
-                existing = replay_existing(competing, purge_expired=True)
-                if existing is not None:
-                    return existing
-                # The only reason the row can disappear here is an expired
-                # reservation observed during the defensive recheck. Retry
-                # the insert once; if another reservation wins that race, it
-                # is an in-progress request rather than a persistence fault.
+                if current is None:
+                    raise IdempotencyInProgress("the idempotency reservation changed while recovering")
+                if current["response_json"] is not None:
+                    self._idempotency_forget(fresh_id)
+                    return str(current["idempotency_id"]), json.loads(current["response_json"])
+                if str(current["idempotency_id"]) != str(orphan_row["idempotency_id"]):
+                    raise IdempotencyInProgress("the same idempotency request is still in progress; retry after it completes")
+                con.execute(
+                    "DELETE FROM workflow_idempotency_keys WHERE idempotency_id=? AND response_json IS NULL",
+                    (orphan_row["idempotency_id"],),
+                )
+                stored_workflow_id = workflow_id or current["workflow_id"]
+                if stored_workflow_id is not None and con.execute(
+                    "SELECT 1 FROM workflows WHERE workflow_id=?", (stored_workflow_id,)
+                ).fetchone() is None:
+                    stored_workflow_id = None
                 try:
                     con.execute(
                         """INSERT INTO workflow_idempotency_keys(
@@ -5036,13 +6033,32 @@ class WorkflowRepository:
                             resource_id, target_json, request_hash, workflow_id,
                             response_status, response_json, expires_at, created_at
                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        values,
+                        (
+                            fresh_id, scope_hash, client_key, command_name, method, resource_id,
+                            target_json, request_hash, stored_workflow_id, None, None,
+                            _expiry(ttl_seconds), utc_now(),
+                        ),
                     )
-                except sqlite3.IntegrityError as retry_exc:
+                except sqlite3.IntegrityError as exc:
                     raise IdempotencyInProgress(
                         "the same idempotency request is still in progress; retry after it completes"
-                    ) from retry_exc
-            return idem_id, None
+                    ) from exc
+        except Exception:
+            self._idempotency_forget(fresh_id)
+            raise
+        return fresh_id, None
+
+    def _idempotency_is_active(self, idempotency_id: str) -> bool:
+        with self._idempotency_activity_lock:
+            return idempotency_id in self._active_idempotency_ids
+
+    def _idempotency_mark_active(self, idempotency_id: str) -> None:
+        with self._idempotency_activity_lock:
+            self._active_idempotency_ids.add(str(idempotency_id))
+
+    def _idempotency_forget(self, idempotency_id: str) -> None:
+        with self._idempotency_activity_lock:
+            self._active_idempotency_ids.discard(str(idempotency_id))
 
     def abandon_idempotency(self, *, client_key: str, resource_id: str | None = None) -> int:
         """Release a reservation whose route failed before a response was saved.
@@ -5079,7 +6095,10 @@ class WorkflowRepository:
                 "WHERE idempotency_id=? AND response_json IS NULL",
                 (rows[0]["idempotency_id"],),
             )
-            return int(result.rowcount)
+            deleted = int(result.rowcount)
+            if deleted:
+                self._idempotency_forget(str(rows[0]["idempotency_id"]))
+            return deleted
 
     def complete_idempotency(
         self,
@@ -5097,6 +6116,7 @@ class WorkflowRepository:
             )
             if updated.rowcount != 1:
                 raise NotFoundError(f"idempotency key does not exist: {idempotency_id}")
+        self._idempotency_forget(idempotency_id)
 
     def record_side_effect_intent(
         self,

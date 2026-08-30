@@ -15,6 +15,8 @@
 - 本机历史中心最多显示最近 20 个任务，可重新查看、试听、下载或归档；归档会保留审计事实和 Artifact，不等于物理删除。
 - 生成过程提供结构化时间线、断线恢复、取消与失败重试信息。
 - macOS 与 Windows 桌面安装包均由 GitHub Actions 自动构建。
+- 桌面端内置版本中心：启动后自动检查 GitHub Releases，支持可选/强制更新、下载、重启安装和更新日志展示。
+- Windows NSIS 安装包使用同一品牌语言的自定义欢迎页、完成页和侧栏，安装权限与文件解包仍由 NSIS 安全处理；macOS 保持打开即用或拖入 Applications 的原生流程。
 - 正式桌面 App 默认开启真实讯飞调用，双击安装包即可使用；`--smoke-test` 始终只走逻辑离线流程，不打开真实页面。直接诊断后端时可用 `--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 显式离线。
 - Renderer 只保留新的工作台单一入口；workflow 数据与任务记录由现有服务端目录独立持久化，界面更新不会创建第二套 Shell。
 
@@ -61,6 +63,8 @@ build_electron_windows.bat
 ```
 
 构建流程会打包 Python 后端、Playwright Chromium 和 Electron 前端，并执行本地后端健康检查与产物文件校验；不启动业务页面、不登录讯飞、不访问第三方页面。讯飞工作流使用 `python3 tools/xunfei_smoke.py --logical-only ...` 做无页面逻辑验证，真实账号 smoke 不进入默认构建流。
+
+版本发布、强制更新策略和 GitHub Release 资产要求见 [自动更新与发布流程](docs/auto-update.md)。
 
 ## 项目目录约定
 

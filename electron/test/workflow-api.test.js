@@ -54,6 +54,20 @@ test('取消命令也支持固定幂等键，重试不会制造第二次控制�
     assert.equal(cancelCall.headers['X-Idempotency-Key'], 'renderer-cancel-fixed-key');
 });
 
+test('删除未完成工作流使用 DELETE，并保留幂等键在请求头', async () => {
+    const transport = createTransport();
+    const api = createWorkflowApi({ request: transport.request });
+    await api.deleteWorkflow(
+        'workflow-1',
+        { expected_state_version: 3, reason: 'desktop-history-delete' },
+    );
+    const deleteCall = transport.calls.find(call => call.method === 'DELETE');
+    assert.ok(deleteCall);
+    assert.equal(deleteCall.pathname, '/api/v1/workflows/workflow-1');
+    assert.equal(deleteCall.body.expected_state_version, 3);
+    assert.equal(deleteCall.headers['X-Idempotency-Key'].startsWith('renderer-'), true);
+});
+
 test('有取消信号的命令请求会把 signal 传到代理层', async () => {
     const transport = createTransport();
     const api = createWorkflowApi({ request: transport.request });
@@ -91,24 +105,13 @@ test('源文件写入在读取状态和申请写入票据时也会传递取消�
     assert.equal(writerTicketCall.signal, controller.signal);
 });
 
-test('歧义解决支持固定幂等键且 attempt_id 只用于 URL', async () => {
+test('TTS 工作流客户端不暴露对账和歧义解决入口', () => {
     const transport = createTransport();
     const api = createWorkflowApi({ request: transport.request });
-    await api.resolve(
-        {
-            attempt_id: 'attempt/1',
-            expected_state_version: 4,
-            expected_target_state_version: 7,
-            decision: 'NOT_SUBMITTED',
-        },
-        { idempotencyKey: 'renderer-resolve-fixed-key' },
-    );
-    const resolveCall = transport.calls.find(call => call.pathname.includes('/attempts/'));
-    assert.ok(resolveCall);
-    assert.equal(resolveCall.pathname, '/api/v1/attempts/attempt%2F1/resolve');
-    assert.equal(resolveCall.headers['X-Idempotency-Key'], 'renderer-resolve-fixed-key');
-    assert.equal(resolveCall.body.attempt_id, undefined);
-    assert.equal(resolveCall.body.decision, 'NOT_SUBMITTED');
+    assert.equal(api.getWorkflowRecovery, undefined);
+    assert.equal(api.reconcile, undefined);
+    assert.equal(api.resolve, undefined);
+    assert.equal(transport.calls.length, 0);
 });
 
 test('事件连接委托主进程申请 ticket，源文件写入在 API 客户端内部申请 grant', async () => {

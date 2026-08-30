@@ -9,24 +9,24 @@
 ## Direction contract
 
 - **Thesis**：文档配音工作台是一张轻盈、可恢复的任务桌面，而不是一次性表单。
-- **Own world**：教材排版的清晰层级与声音信号的节奏共同构成蓝紫工作台。文档区域使用纸面、细线和留白；声音、生成与交付区域才使用波形、节奏和状态色。
+- **Own world**：教材排版的清晰层级与声音信号的节奏共同构成明亮纯蓝工作台。文档区域使用纸面、细线和留白；声音、生成与交付区域才使用波形、节奏和状态色。
 - **Story**：导入源文档 → 核对内容 → 配置声音 → 生成任务 → 交付音频。
 - **First viewport**：左侧流程轨道、顶部任务上下文、中央单一主动作，以及同一视线内的状态证据。
-- **Form**：白色纸面与浅蓝画布、蓝紫主色、薄边界、适度圆角和克制阴影；不用渐变文字、装饰性光晕或把卡片套进卡片来制造层次。
+- **Form**：白色纸面与浅蓝画布、清透明亮的纯蓝主色、薄边界、适度圆角和克制阴影；不用渐变文字、装饰性光晕或把卡片套进卡片来制造层次。
 - **Signature interaction**：每个服务端允许的动作都从 workspace 投影进入统一命令协调层，带 pending、状态冲突重试和超时后的只读对账；页面不凭本地猜测宣称任务已暂停、已完成或可交付。
 
 ## Tokens
 
 | Role | Light | Dark | Use |
 | --- | --- | --- | --- |
-| Canvas | `#F1F8FF` | `#0F172A` | 页面背景 |
-| Surface | `#FFFFFF` | `#17223A` | 纸面、面板、输入区 |
-| Ink | `#263552` | `#EEF4FF` | 标题、正文、关键数字 |
-| Muted ink | `#62718A` | `#A9B8D0` | 辅助说明、元数据 |
-| Line | `#DCE8F5` | `#304260` | 分隔线、边界、焦点外圈 |
-| Primary | `#5668C8` | `#AEB8FF` | 主动作、当前步骤、可交付强调 |
-| Primary soft | `#E4E7FF` | `#29345F` | 选中面、提示面、轻量状态 |
-| Sky | `#B9DCFF` | `#365B83` | 导入与文档信号 |
+| Canvas | `#F4F9FF` | `#0B1F38` | 页面背景 |
+| Surface | `#FFFFFF` | `#102B49` | 纸面、面板、输入区 |
+| Ink | `#24445F` | `#DCEEFF` | 标题、正文、关键数字 |
+| Muted ink | `#55748F` | `#A8C4DE` | 辅助说明、元数据 |
+| Line | `#D7E7F7` | `#2A4B6C` | 分隔线、边界、焦点外圈 |
+| Primary | `#1A73E8` | `#57A3FF` | 主动作、当前步骤、可交付强调 |
+| Primary soft | `#E7F0FF` | `#123B68` | 选中面、提示面、轻量状态 |
+| Sky | `#C4E5FF` | `#2B6591` | 导入与文档信号 |
 | Blush | `#FFB9CA` | `#7C425B` | 需要处理的非破坏性提示 |
 | Mint | `#AEE8D0` | `#2D6A59` | 已核验、成功、可交付 |
 | Attention | `#F2CB79` | `#8D6B2F` | 暂停、等待、待对账 |
@@ -67,7 +67,9 @@
 
 ## Asset provenance
 
-- 保留既有品牌图标：[electron/renderer/assets/app-icon.png](electron/renderer/assets/app-icon.png)。本次重设计未新增或替换位图资产。
+- 保留既有品牌图标：[electron/renderer/assets/app-icon.png](electron/renderer/assets/app-icon.png)，品牌资产本身不重绘；新增插画素材只用于工作台背景与状态空面。
+- 新增导入工作台背景：[electron/renderer/assets/pig-document-desk-background.png](electron/renderer/assets/pig-document-desk-background.png)，使用内置 `image_gen` 生成的手绘小猪、文档与声音波形插画；中心保留低干扰留白供 HTML 操作文案使用。
+- 新增跨页面小猪素材：[electron/renderer/assets/pig-mascot-sticker.png](electron/renderer/assets/pig-mascot-sticker.png)，使用内置 `image_gen` 生成的透明背景小猪贴纸，用于空状态和全局拖拽提示，不替代语义图标。
 - SVG 图标为界面语义图标，使用统一线宽；不以 emoji 或 Unicode 字符替代图标。
 
 ## Evidence boundary

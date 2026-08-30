@@ -26,6 +26,8 @@ const WORKFLOW_PROJECTION_FIELDS = Object.freeze([
     'artifact_count',
     'latest_event_id',
     'latest_seq',
+    'last_error_code',
+    'last_error_message',
     'updated_at',
 ]);
 
@@ -33,7 +35,18 @@ function projectWorkflowSnapshot(workflow) {
     if (!workflow || typeof workflow !== 'object') return null;
     const projection = {};
     WORKFLOW_PROJECTION_FIELDS.forEach((field) => {
-        if (workflow[field] !== undefined) projection[field] = workflow[field];
+        if (workflow[field] === undefined) return;
+        if (field === 'last_error_code') {
+            projection[field] = workflow[field] === null
+                ? null
+                : String(workflow[field]).slice(0, 128);
+        } else if (field === 'last_error_message') {
+            projection[field] = workflow[field] === null
+                ? null
+                : String(workflow[field]).slice(0, 2000);
+        } else {
+            projection[field] = workflow[field];
+        }
     });
     const runtime = {};
     const existingRuntime = workflow.runtime;
@@ -361,6 +374,7 @@ function createWorkspaceState() {
         phase: null,
         runtime: { status: null, stage: null, message: null, itemId: null, updatedAt: null },
         executionState: null,
+        controlState: null,
         resultStatus: null,
         updatedAt: null,
     };
@@ -404,16 +418,25 @@ function projectWorkspaceData(workspace) {
 
 function workspaceProgressState(workspace, scalarState) {
     const progress = workspace?.progress;
-    if (!progress || typeof progress !== 'object') return scalarState;
-    return {
+    const snapshot = workspace?.snapshot && typeof workspace.snapshot === 'object'
+        ? workspace.snapshot
+        : {};
+    const nextState = {
         ...scalarState,
+        controlState: snapshot.control_state
+            ? String(snapshot.control_state)
+            : scalarState.controlState,
+    };
+    if (!progress || typeof progress !== 'object') return nextState;
+    return {
+        ...nextState,
         items: {
-            ...scalarState.items,
-            total: Number.isFinite(Number(progress.total)) ? Number(progress.total) : scalarState.items.total,
-            completed: Number.isFinite(Number(progress.completed)) ? Number(progress.completed) : scalarState.items.completed,
-            failed: Number.isFinite(Number(progress.failed)) ? Number(progress.failed) : scalarState.items.failed,
-            skipped: Number.isFinite(Number(progress.skipped)) ? Number(progress.skipped) : scalarState.items.skipped,
-            cancelled: Number.isFinite(Number(progress.cancelled)) ? Number(progress.cancelled) : scalarState.items.cancelled,
+            ...nextState.items,
+            total: Number.isFinite(Number(progress.total)) ? Number(progress.total) : nextState.items.total,
+            completed: Number.isFinite(Number(progress.completed)) ? Number(progress.completed) : nextState.items.completed,
+            failed: Number.isFinite(Number(progress.failed)) ? Number(progress.failed) : nextState.items.failed,
+            skipped: Number.isFinite(Number(progress.skipped)) ? Number(progress.skipped) : nextState.items.skipped,
+            cancelled: Number.isFinite(Number(progress.cancelled)) ? Number(progress.cancelled) : nextState.items.cancelled,
         },
     };
 }
@@ -435,6 +458,46 @@ function advanceWorkspaceWithEvent(workspace, event) {
         workspace.runtime = { ...workspace.runtime, ...runtimePatch };
         workspace.updatedAt = event.created_at || workspace.updatedAt;
     };
+    const controlPatch = {};
+    const setControl = (controlState, {
+        executionState = null,
+        resultStatus = null,
+        phase = null,
+        message = null,
+        lastErrorCode = undefined,
+        lastErrorMessage = undefined,
+    } = {}) => {
+        workspace.controlState = controlState;
+        controlPatch.control_state = controlState;
+        if (executionState) {
+            workspace.executionState = executionState;
+            controlPatch.execution_state = executionState;
+        }
+        if (resultStatus) {
+            workspace.resultStatus = resultStatus;
+            controlPatch.result_status = resultStatus;
+        }
+        if (phase || message) {
+            workspace.phase = phase || workspace.phase;
+            workspace.runtime = {
+                ...workspace.runtime,
+                status: controlState.toLowerCase(),
+                message: message || workspace.runtime.message,
+                updatedAt: event.created_at || workspace.runtime.updatedAt,
+            };
+        }
+        if (lastErrorCode !== undefined) {
+            const value = lastErrorCode === null ? null : capWorkspaceText(lastErrorCode, 128);
+            controlPatch.last_error_code = value;
+            workspace.lastErrorCode = value;
+        }
+        if (lastErrorMessage !== undefined) {
+            const value = lastErrorMessage === null ? null : capWorkspaceText(lastErrorMessage, 2000);
+            controlPatch.last_error_message = value;
+            workspace.lastErrorMessage = value;
+        }
+        workspace.updatedAt = event.created_at || workspace.updatedAt;
+    };
     if (type === 'TTS_PLAN_PREPARED') {
         const count = Number(payload.item_count);
         if (Number.isInteger(count) && count > 0) workspace.items.total = count;
@@ -454,7 +517,35 @@ function advanceWorkspaceWithEvent(workspace, event) {
         touch('verifying');
     } else if (type === 'TTS_SUBMISSION_AMBIGUOUS' || type === 'TTS_SUBMISSION_REJECTED' || type === 'GENERATION_TASK_FAILED') {
         touch('attention');
+        const errorCode = capWorkspaceText(payload.error_code, 128);
+        const errorMessage = capWorkspaceText(payload.message || payload.error, 2000);
+        if (errorCode !== null) {
+            workspace.lastErrorCode = errorCode;
+            controlPatch.last_error_code = errorCode;
+        }
+        if (errorMessage !== null) {
+            workspace.lastErrorMessage = errorMessage;
+            controlPatch.last_error_message = errorMessage;
+        }
+    } else if (type === 'WORKFLOW_PAUSE') {
+        setControl('PAUSE_REQUESTED', { phase: 'pausing', message: '正在暂停任务…' });
+    } else if (type === 'WORKFLOW_PAUSED') {
+        setControl('PAUSED', { phase: 'paused', message: '任务已暂停，可恢复执行' });
+    } else if (type === 'WORKFLOW_RESUME') {
+        setControl('RUNNING', { phase: 'running', message: '正在恢复任务…' });
+    } else if (type === 'WORKFLOW_CANCEL') {
+        setControl('TERMINATING', { executionState: 'BLOCKED', phase: 'stopping', message: '正在停止生成任务…' });
+    } else if (type === 'WORKFLOW_CANCELLED') {
+        setControl('TERMINATED', {
+            executionState: 'TERMINAL',
+            resultStatus: payload.result_status || 'CANCELLED',
+            phase: 'attention',
+            message: '任务已取消',
+            lastErrorCode: 'WORKFLOW_CANCELLED',
+            lastErrorMessage: payload.reason || payload.message || '任务已取消',
+        });
     }
+    return controlPatch;
 }
 
 function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, workspaceLoader = null } = {}) {
@@ -646,6 +737,7 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
         const nextWorkspace = workspaceProgressState(workspace, {
             ...state.workspace,
             executionState: projectedSnapshot?.execution_state || state.workspace.executionState,
+            controlState: projectedSnapshot?.control_state || state.workspace.controlState,
             resultStatus: projectedSnapshot?.result_status || state.workspace.resultStatus,
             updatedAt: projectedSnapshot?.updated_at || state.workspace.updatedAt,
         });
@@ -820,6 +912,7 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
                 workspace.items.total = itemCount;
             }
             workspace.executionState = snapshotState.execution_state ? String(snapshotState.execution_state) : workspace.executionState;
+            workspace.controlState = snapshotState.control_state ? String(snapshotState.control_state) : workspace.controlState;
             workspace.resultStatus = snapshotState.result_status ? String(snapshotState.result_status) : workspace.resultStatus;
             workspace.updatedAt = snapshotState.updated_at || workspace.updatedAt;
             const projectedSnapshot = projectWorkflowSnapshot(snapshotState);
@@ -864,9 +957,10 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
             notify();
             return { accepted: false, reason: 'gap', expectedSeq: state.lastSeq + 1, actualSeq: event.seq };
         }
-        advanceWorkspaceWithEvent(state.workspace, event);
+        const eventStatePatch = advanceWorkspaceWithEvent(state.workspace, event);
         const projectedWorkflow = projectWorkflowSnapshot({
             ...(state.workflow || {}),
+            ...eventStatePatch,
             workflow_id: event.workflow_id,
             latest_event_id: event.event_id,
             latest_seq: event.seq,

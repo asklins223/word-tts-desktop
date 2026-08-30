@@ -199,7 +199,16 @@ if exist "%ELECTRON_DIR%\release\win-unpacked" rmdir /s /q "%ELECTRON_DIR%\relea
 del /q "%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*.exe" >nul 2>&1
 
 pushd "%ELECTRON_DIR%"
-call npx electron-builder --win
+set "PACKAGE_VERSION="
+for /f "delims=" %%v in ('node -p "require('./package.json').version"') do set "PACKAGE_VERSION=%%v"
+popd
+if not defined PACKAGE_VERSION (
+    call :err "无法读取 electron/package.json 版本号"
+    exit /b 1
+)
+
+pushd "%ELECTRON_DIR%"
+call npx electron-builder --win --publish never
 set "BUILD_EXIT=!errorlevel!"
 popd
 
@@ -239,24 +248,14 @@ if !errorlevel! neq 0 (
 )
 call :log "打包 Electron 桌面冒烟测试通过"
 
-REM 查找构建产物
-set "EXE_PATH="
-for %%f in ("%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*-x64.exe") do (
-    if not defined EXE_PATH set "EXE_PATH=%%f"
+REM 只接受当前 package.json 版本对应的 NSIS 安装包；unpacked 目录不能
+REM 作为用户分发包，也没有 electron-updater 所需的安装器语义。
+set "EXE_PATH=%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-!PACKAGE_VERSION!-x64.exe"
+if not exist "!EXE_PATH!" (
+    call :err "未找到当前版本 NSIS 安装包: !EXE_PATH!"
+    exit /b 1
 )
-
-if not defined EXE_PATH (
-    REM 检查 win-unpacked 目录
-    if exist "%ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe" (
-        call :log "构建产物 (unpacked): %ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe"
-        call :warn "未找到 NSIS 安装包，可直接使用 win-unpacked 目录"
-    ) else (
-        call :err "未找到构建产物"
-        exit /b 1
-    )
-) else (
-    call :log "构建产物: !EXE_PATH!"
-)
+call :log "构建产物: !EXE_PATH!"
 
 call :log "打包完成 OK"
 

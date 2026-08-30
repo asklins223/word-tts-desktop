@@ -291,6 +291,28 @@ class ExternalRecordService:
             ).fetchone()
             return dict(row) if row is not None else None
 
+    def find_record_lease(self, mapping_id: str, owner_id: str) -> ExternalLease | None:
+        """Find a still-active lease that can replay a lost lease response."""
+
+        self._require_runtime()
+        now = utc_now()
+        with self.database.read_transaction() as con:
+            row = con.execute(
+                """SELECT * FROM external_record_leases
+                   WHERE external_record_mapping_id=? AND owner_id=?
+                     AND state='ACTIVE' AND lease_until>?""",
+                (mapping_id, owner_id, now),
+            ).fetchone()
+            if row is None:
+                return None
+            return ExternalLease(
+                str(row["lease_id"]),
+                str(row["external_record_mapping_id"]),
+                str(row["owner_id"]),
+                int(row["fencing_token"]),
+                str(row["lease_until"]),
+            )
+
     def acquire_record_lease(self, mapping_id: str, owner_id: str, *, ttl_seconds: int = 60) -> ExternalLease:
         self._require_runtime()
         self._require_text(owner_id, "owner_id")
@@ -489,6 +511,21 @@ class ExternalRecordService:
             if row is None:
                 raise NotFoundError(f"external operation does not exist: {operation_id}")
             return self._operation_public(row)
+
+    def find_operation(self, mapping_id: str, operation_key: str) -> dict[str, Any] | None:
+        """Find a prepared operation by its stable mapping/key pair."""
+
+        self._require_runtime()
+        with self.database.read_transaction() as con:
+            row = con.execute(
+                """SELECT o.*, r.external_system, r.external_account_scope, r.business_record_key,
+                          r.external_record_id, r.external_status
+                   FROM external_operations o JOIN external_records r
+                     ON r.external_record_mapping_id=o.external_record_mapping_id
+                   WHERE o.external_record_mapping_id=? AND o.external_operation_key=?""",
+                (mapping_id, operation_key),
+            ).fetchone()
+            return self._operation_public(row) if row is not None else None
 
     def begin_operation(self, operation_id: str, lease: ExternalLease) -> dict[str, Any]:
         self._require_runtime()

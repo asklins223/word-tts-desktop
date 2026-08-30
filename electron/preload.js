@@ -78,6 +78,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('app-notice', handler);
         return () => ipcRenderer.removeListener('app-notice', handler);
     },
+    // 更新下载、安装和 GitHub Release 页面均由主进程执行；renderer 只接收
+    // 可序列化状态，不能自行拼接远程地址或调用 Node/Electron API。
+    update: {
+        getStatus: () => ipcRenderer.invoke('update-status'),
+        check: () => ipcRenderer.invoke('update-check'),
+        download: () => ipcRenderer.invoke('update-download'),
+        install: () => ipcRenderer.invoke('update-install'),
+        openReleasePage: () => ipcRenderer.invoke('open-update-release'),
+        onStateChange: (callback) => {
+            if (typeof callback !== 'function') return () => {};
+            const handler = (_event, state) => callback(state);
+            ipcRenderer.on('app-update', handler);
+            return () => ipcRenderer.removeListener('app-update', handler);
+        },
+    },
 
     // 平台信息
     platform: process.platform,

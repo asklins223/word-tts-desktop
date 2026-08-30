@@ -20,9 +20,11 @@ from .config import (
 )
 from .errors import (
     XunfeiError,
+    XunfeiCancelled,
     XunfeiSubmissionAmbiguous,
     _check_cancel_requested,
     _log,
+    _wait_with_cancel,
 )
 from .helpers import poll as _poll, safe_eval as _safe_eval
 from .page_scripts import AI_FLAG_KEYWORD_VARIANTS, JS
@@ -42,13 +44,14 @@ class PageActionsMixin:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _pause(page, base, spread=0.4):
+    def _pause(page, base, spread=0.4, cancel_check=None):
         """拟人等待 base±spread 秒。"""
+        _check_cancel_requested(cancel_check)
         seconds = max(0.05, base + ((time.time() * 7) % 1) * 2 * spread - spread)
-        page.wait_for_timeout(int(seconds * 1000))
+        _wait_with_cancel(page, seconds, cancel_check=cancel_check)
 
     @staticmethod
-    def _type_text(page, text):
+    def _type_text(page, text, cancel_check=None):
         """
         在已聚焦的编辑器中一次性插入文本，等价于用户粘贴。
 
@@ -57,14 +60,22 @@ class PageActionsMixin:
         接受键盘插入，再用 contenteditable 的 fill 做一次性兜底。
         """
         value = str(text or "")
+        _check_cancel_requested(cancel_check)
         try:
             page.keyboard.insert_text(value)
+            _check_cancel_requested(cancel_check)
             return True
+        except XunfeiCancelled:
+            raise
         except Exception as exc:
             _log(f"[xunfei]   一次性插入文本失败，尝试编辑器填充: {exc}")
+        _check_cancel_requested(cancel_check)
         try:
             page.locator(".ssml-editor").first.fill(value, timeout=5000)
+            _check_cancel_requested(cancel_check)
             return True
+        except XunfeiCancelled:
+            raise
         except Exception as exc:
             _log(f"[xunfei]   编辑器一次性填充失败: {exc}")
             return False
@@ -108,57 +119,71 @@ class PageActionsMixin:
         except Exception:
             return False
 
-    def _clear_editor(self, page):
+    def _clear_editor(self, page, cancel_check=None):
         """清空文本编辑器内容。"""
+        _check_cancel_requested(cancel_check)
         _safe_eval(page, JS.CLEAR_EDITOR)
-        page.wait_for_timeout(200)
+        _wait_with_cancel(page, 0.2, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
         actual = _safe_eval(page, JS.GET_EDITOR_TEXT)
         if actual:
             try:
+                _check_cancel_requested(cancel_check)
                 page.locator(".ssml-editor").first.click(timeout=3000)
                 page.keyboard.press(_SELECT_ALL)
                 page.keyboard.press("Backspace")
-                page.wait_for_timeout(200)
+                _wait_with_cancel(page, 0.2, cancel_check=cancel_check)
+                _check_cancel_requested(cancel_check)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 pass
 
-    def _input_text(self, page, text):
+    def _input_text(self, page, text, cancel_check=None):
         """在编辑器中拟人输入文本并验证。"""
-        self._clear_editor(page)
+        _check_cancel_requested(cancel_check)
+        self._clear_editor(page, cancel_check=cancel_check)
         page.locator(".ssml-editor").first.click(timeout=5000)
-        self._pause(page, 0.15, 0.08)
+        self._pause(page, 0.15, 0.08, cancel_check=cancel_check)
         page.keyboard.press(_SELECT_ALL)
         page.keyboard.press("Backspace")
-        self._pause(page, 0.1, 0.05)
-        self._type_text(page, text)
-        page.wait_for_timeout(150)
+        self._pause(page, 0.1, 0.05, cancel_check=cancel_check)
+        self._type_text(page, text, cancel_check=cancel_check)
+        _wait_with_cancel(page, 0.15, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
 
         for attempt in range(2):
+            _check_cancel_requested(cancel_check)
             actual = _safe_eval(page, JS.GET_EDITOR_TEXT) or ""
             if len(actual) >= len(text) * 0.85:
                 return True
             _log(f"[xunfei]   输入验证失败 (attempt {attempt + 1})，重试...")
-            self._clear_editor(page)
+            self._clear_editor(page, cancel_check=cancel_check)
             page.locator(".ssml-editor").first.click(timeout=5000)
-            self._type_text(page, text)
-            page.wait_for_timeout(150)
+            self._type_text(page, text, cancel_check=cancel_check)
+            _wait_with_cancel(page, 0.15, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
         return False
 
     @staticmethod
-    def _clear_editor_with_keyboard(page):
+    def _clear_editor_with_keyboard(page, cancel_check=None):
         """只用真实键盘操作清空编辑器，供多人配音 UI 流程使用。"""
+        _check_cancel_requested(cancel_check)
         # 讯飞失败重试时可能还留着 ssml-float-bar；先用键盘收起它，
         # 避免真实 editor.click 被浮动条遮挡。
         page.keyboard.press("Escape")
-        page.wait_for_timeout(30)
+        _wait_with_cancel(page, 0.03, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
         editor = page.locator(".ssml-editor").first
         editor.click(timeout=5000)
         page.keyboard.press(_SELECT_ALL)
         page.keyboard.press("Backspace")
-        page.wait_for_timeout(200)
+        _wait_with_cancel(page, 0.2, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
         paragraphs = page.locator(".ssml-editor p")
         remaining = []
         for index in range(paragraphs.count()):
+            _check_cancel_requested(cancel_check)
             paragraph = paragraphs.nth(index)
             text = paragraph.inner_text(timeout=1000)
             # ProseMirror 空编辑器会显示 contenteditable=false 的占位符，
@@ -195,16 +220,18 @@ class PageActionsMixin:
         return values
 
     @classmethod
-    def _input_composite_text(cls, page, rows):
+    def _input_composite_text(cls, page, rows, cancel_check=None):
         """把多人配音的逻辑行按真实编辑器段落输入并回读。"""
+        _check_cancel_requested(cancel_check)
         values = [str(row.get("text") or "") for row in rows]
         if not values or any(not value.strip() for value in values):
             raise XunfeiError("多人配音 UI 文本包含空行，无法安全定位选区")
-        cls._clear_editor_with_keyboard(page)
+        cls._clear_editor_with_keyboard(page, cancel_check=cancel_check)
         editor = page.locator(".ssml-editor").first
         editor.click(timeout=5000)
-        cls._type_text(page, "\n".join(values))
-        page.wait_for_timeout(250)
+        cls._type_text(page, "\n".join(values), cancel_check=cancel_check)
+        _wait_with_cancel(page, 0.25, cancel_check=cancel_check)
+        _check_cancel_requested(cancel_check)
         actual = cls._read_editor_paragraphs(page)
         if len(actual) != len(values):
             raise XunfeiError(
@@ -212,6 +239,7 @@ class PageActionsMixin:
                 f"期望 {len(values)}，实际 {len(actual)}"
             )
         for index, (expected, received) in enumerate(zip(values, actual)):
+            _check_cancel_requested(cancel_check)
             if received.strip() != expected.strip():
                 raise XunfeiError(
                     f"多人配音 UI 文本第 {index + 1} 行校验失败："
@@ -236,7 +264,9 @@ class PageActionsMixin:
         return selected
 
     @classmethod
-    def _select_editor_rows(cls, page, rows, first_index, last_index):
+    def _select_editor_rows(
+        cls, page, rows, first_index, last_index, *, cancel_check=None
+    ):
         """通过真实页面选区选中一行或一段连续逻辑行。
 
         讯飞编辑器通常会把多行文本放进可滚动的 contenteditable 中。
@@ -246,6 +276,7 @@ class PageActionsMixin:
         Range 重新建立同一个浏览器选区；三种方式都必须通过精确文本回读。
         任何方式都失败时直接停止，不能把一个本应批量设置的组拆成逐行操作。
         """
+        _check_cancel_requested(cancel_check)
         if first_index < 0 or last_index < first_index or last_index >= len(rows):
             raise XunfeiError("多人配音 UI 选区索引越界")
         paragraphs = page.locator(".ssml-editor p")
@@ -260,7 +291,8 @@ class PageActionsMixin:
         if first_index == last_index:
             # Playwright 的 select_text 只选当前段落，绝不退化为编辑器全选。
             first.select_text(timeout=5000)
-            page.wait_for_timeout(80)
+            _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             return cls._verify_editor_selection(page, expected_values)
 
         errors = []
@@ -283,6 +315,7 @@ class PageActionsMixin:
 
         # 方式一：先真实选中首行，再滚动到末行并 Shift-click。这个动作
         # 不要求首尾同时出现在视口中，最适合打包客户端的窄窗口和长文档。
+        _check_cancel_requested(cancel_check)
         try:
             first_target = paragraph_text_target(first)
             last_target = paragraph_text_target(last)
@@ -300,18 +333,22 @@ class PageActionsMixin:
                 modifiers=["Shift"],
                 timeout=5000,
             )
-            page.wait_for_timeout(120)
+            _wait_with_cancel(page, 0.12, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             selected = cls._verify_editor_selection(page, expected_values)
             _log(
                 f"[xunfei]   多人配音批量选区行 {first_index + 1}-"
                 f"{last_index + 1}（Shift-click）"
             )
             return selected
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             errors.append(f"Shift-click: {error}")
 
         # 方式二：短范围仍优先使用真实鼠标拖选，兼容讯飞页面没有稳定
         # 锚点行为的版本。只有首尾都在当前视口时才执行，避免跨滚动拖选。
+        _check_cancel_requested(cancel_check)
         try:
             first_target = paragraph_text_target(first)
             last_target = paragraph_text_target(last)
@@ -335,32 +372,39 @@ class PageActionsMixin:
             page.mouse.down()
             page.mouse.move(end["x"], end["y"], steps=8)
             page.mouse.up()
-            page.wait_for_timeout(120)
+            _wait_with_cancel(page, 0.12, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             selected = cls._verify_editor_selection(page, expected_values)
             _log(
                 f"[xunfei]   多人配音批量选区行 {first_index + 1}-"
                 f"{last_index + 1}（鼠标拖选）"
             )
             return selected
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             errors.append(f"鼠标拖选: {error}")
 
         # 方式三：仍然只改变浏览器当前 Selection，不调用讯飞接口，也不
         # 修改编辑器内容。它是跨滚动场景的页面交互兜底，后续“使用”按钮
         # 仍由页面 UI 读取这个选区并产生 speaker 标记。
+        _check_cancel_requested(cancel_check)
         try:
             selected = _safe_eval(
                 page,
                 JS.SELECT_EDITOR_RANGE,
                 [first_index, last_index],
             )
-            page.wait_for_timeout(120)
+            _wait_with_cancel(page, 0.12, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             verified = cls._verify_editor_selection(page, expected_values)
             _log(
                 f"[xunfei]   多人配音批量选区行 {first_index + 1}-"
                 f"{last_index + 1}（页面选区兜底）"
             )
             return verified
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             errors.append(f"页面选区兜底: {error}")
 
@@ -400,8 +444,9 @@ class PageActionsMixin:
             return 0
 
     @classmethod
-    def _clear_composite_queue(cls, page):
+    def _clear_composite_queue(cls, page, cancel_check=None):
         """清空讯飞网页的多段选区队列，不改动编辑器文本。"""
+        _check_cancel_requested(cancel_check)
         try:
             # 选区浮动条本身会拦截 editor.click。先用真实键盘 Escape
             # 收起工具条并清掉队列，只有页面仍保留待处理段落时才需要
@@ -409,23 +454,30 @@ class PageActionsMixin:
             page.keyboard.press("Escape")
             if cls._read_composite_queue_count(page) == 0:
                 return True
-            page.wait_for_timeout(20)
+            _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             if cls._read_composite_queue_count(page) == 0:
                 return True
             editor = page.locator(".ssml-editor").first
             editor.click(timeout=3000)
             page.keyboard.press("Escape")
+        except XunfeiCancelled:
+            raise
         except Exception:
             return False
+        _check_cancel_requested(cancel_check)
         return bool(_poll(
             lambda: cls._read_composite_queue_count(page) == 0,
             timeout=3,
             interval=0.1,
             page=page,
+            cancel_check=cancel_check,
         ))
 
     @classmethod
-    def _select_composite_queue_rows(cls, page, rows, ranges, *, native=False):
+    def _select_composite_queue_rows(
+        cls, page, rows, ranges, *, native=False, cancel_check=None
+    ):
         """用讯飞网页真实的 Command/Ctrl 多选队列加入多个不连续区间。
 
         讯飞的多段队列只在真实 pointerup 带有 Command/Ctrl 修饰键时生效，
@@ -435,6 +487,7 @@ class PageActionsMixin:
         “使用”动作仍只执行一次。Range 路径只负责建立浏览器当前选区，若
         页面版本没有正确接受它，调用方会清空队列并切回原生 select_text。
         """
+        _check_cancel_requested(cancel_check)
         normalized_ranges = [
             (int(first), int(last))
             for first, last in ranges
@@ -464,6 +517,7 @@ class PageActionsMixin:
 
         def select_exact_text(row_index):
             """用页面 Range 或浏览器原生方式选中一整行正文。"""
+            _check_cancel_requested(cancel_check)
             target = paragraph_text_target(paragraphs.nth(row_index))
             if not native:
                 selected = _safe_eval(
@@ -485,7 +539,8 @@ class PageActionsMixin:
                     raise XunfeiError(
                         f"多人配音快速选区失败：第 {row_index + 1} 行坐标不可用"
                     )
-                page.wait_for_timeout(20)
+                _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
+                _check_cancel_requested(cancel_check)
                 return None, box
 
             # 保留一次轻量居中滚动：讯飞的待处理选区装饰只在目标行进入
@@ -511,9 +566,11 @@ class PageActionsMixin:
             except Exception:
                 target.scroll_into_view_if_needed(timeout=5000)
                 box = target.bounding_box()
-            page.wait_for_timeout(20)
+            _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             target.select_text(timeout=5000)
-            page.wait_for_timeout(20)
+            _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
             return target, box
 
         def enqueue_current_selection(target, box):
@@ -523,6 +580,7 @@ class PageActionsMixin:
             原生 select_text/Shift-click 完整选区，再只发送一次带修饰键的
             真实鼠标 pointerup，避免长句换行时依赖鼠标拖动终点。
             """
+            _check_cancel_requested(cancel_check)
             if not box or box["width"] < 4 or box["height"] < 4:
                 raise XunfeiError("多人配音多段选区目标行不可见")
             def send_pointerup():
@@ -545,12 +603,14 @@ class PageActionsMixin:
             # 反而会在打包客户端里累积数百毫秒。固定给事件 20ms 落地，
             # 最终统一用 expected_count 回读；总数不符时由上层清空队列
             # 后重试整组，避免以速度换取漏段。
-            page.wait_for_timeout(20)
+            _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
 
         # 每行加入同一队列；连续配置仍由上层合并为一个配置组，后续只
         # 点击一次“使用”，不会退化成逐段打开音色面板。
         for first, last in normalized_ranges:
             for row_index in range(first, last + 1):
+                _check_cancel_requested(cancel_check)
                 target, box = select_exact_text(row_index)
                 enqueue_current_selection(target, box)
 
@@ -569,9 +629,10 @@ class PageActionsMixin:
             interval=0.1,
             max_interval=0.4,
             page=page,
+            cancel_check=cancel_check,
         )
         if actual_count != expected_count:
-            cls._clear_composite_queue(page)
+            cls._clear_composite_queue(page, cancel_check=cancel_check)
             raise XunfeiError(
                 "多人配音多段选区数量校验失败："
                 f"期望 {expected_count} 个待选段，实际 {actual_count} 个"
@@ -582,8 +643,9 @@ class PageActionsMixin:
         )
         return actual_count
 
-    def _select_voice(self, page, voice_name, voice_key=None):
+    def _select_voice(self, page, voice_name, voice_key=None, cancel_check=None):
         """搜索并选择指定发音人，并以页面实际选中态校验缓存。"""
+        _check_cancel_requested(cancel_check)
         target_key = str(voice_key or "").strip() or None
 
         # 提交作品后讯飞页面可能把发音人恢复为平台默认值。不能只相信
@@ -596,6 +658,7 @@ class PageActionsMixin:
         )
         if cache_matches:
             selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
+            _check_cancel_requested(cancel_check)
             if selected:
                 return True
             _log(
@@ -611,6 +674,7 @@ class PageActionsMixin:
         )
 
         def mark_selected():
+            _check_cancel_requested(cancel_check)
             # 讯飞页面切换音色后会把三项调节恢复为页面默认值；即使新旧
             # 音色的目标数值恰好相同，也必须让 _apply_params() 重新下发。
             voice_changed = (
@@ -625,6 +689,7 @@ class PageActionsMixin:
             return True
 
         for round_idx in range(2):
+            _check_cancel_requested(cancel_check)
             selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
             if selected:
                 return mark_selected()
@@ -635,30 +700,34 @@ class PageActionsMixin:
             if search_input.count() > 0:
                 search_input.first.click(timeout=3000)
                 search_input.first.fill("")
-                self._pause(page, 0.15, 0.06)
+                self._pause(page, 0.15, 0.06, cancel_check=cancel_check)
                 search_input.first.fill(voice_name)
                 _poll(
                     lambda: _safe_eval(page, JS.CHECK_SEARCH_RESULT, voice_name),
                     timeout=5, interval=0.6, page=page,
+                    cancel_check=cancel_check,
                 )
 
+            _check_cancel_requested(cancel_check)
             clicked = _safe_eval(page, JS.SEARCH_AND_CLICK_VOICE, voice_name)
             if clicked:
-                self._pause(page, 0.6, 0.25)
+                self._pause(page, 0.6, 0.25, cancel_check=cancel_check)
                 selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
+                _check_cancel_requested(cancel_check)
                 if selected:
                     return mark_selected()
                 _log(f"[xunfei]   发音人 '{voice_name}' 点击后未见选中态，重试...")
 
         raise XunfeiError(f"未找到或无法选中发音人: {voice_name}")
 
-    def _apply_params(self, page, speed, pitch, volume):
+    def _apply_params(self, page, speed, pitch, volume, cancel_check=None):
         """
         设置语速/语调/音量三项并回读验证。
         与已应用参数一致时跳过；切换发音人后必须重新应用（站点会重置参数）。
         """
         targets = {"speed": clamp_param(speed), "pitch": clamp_param(pitch),
                    "volume": clamp_param(volume)}
+        _check_cancel_requested(cancel_check)
         if self._applied_params == targets:
             return True
 
@@ -666,6 +735,7 @@ class PageActionsMixin:
         values = (targets["speed"], targets["pitch"], targets["volume"])
         failed_labels = []
         for idx, (label, value) in enumerate(zip(labels, values)):
+            _check_cancel_requested(cancel_check)
             ok = False
             # 方式一：真实键盘输入（点击 → 全选 → 输入 → Tab 失焦）
             try:
@@ -675,16 +745,20 @@ class PageActionsMixin:
                     page.keyboard.press(_SELECT_ALL)
                     page.keyboard.type(str(value))
                     page.keyboard.press("Tab")
-                    self._pause(page, 0.25, 0.1)
+                    self._pause(page, 0.25, 0.1, cancel_check=cancel_check)
                     readback = _safe_eval(page, JS.READ_PARAM_INPUTS) or []
+                    _check_cancel_requested(cancel_check)
                     ok = idx < len(readback) and readback[idx].strip() == str(value)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 ok = False
             # 方式二：JS 注入兜底 + 回读验证
             if not ok:
                 _safe_eval(page, JS.SET_PARAM_INPUT, [idx, value])
-                self._pause(page, 0.2, 0.08)
+                self._pause(page, 0.2, 0.08, cancel_check=cancel_check)
                 readback = _safe_eval(page, JS.READ_PARAM_INPUTS) or []
+                _check_cancel_requested(cancel_check)
                 ok = idx < len(readback) and readback[idx].strip() == str(value)
             if not ok:
                 _log(f"[xunfei]   ⚠️ 参数[{label}] 设置为 {value} 后回读不一致")
@@ -702,8 +776,9 @@ class PageActionsMixin:
         _log(f"[xunfei]   参数已应用: {applied_log}")
         return True
 
-    def _click_generate(self, page):
+    def _click_generate(self, page, cancel_check=None):
         """点击'生成音频'按钮。"""
+        _check_cancel_requested(cancel_check)
         btn = page.locator("button", has_text="生成音频")
         if btn.count() == 0:
             btn = page.locator("button.bg-blue-600")
@@ -711,7 +786,7 @@ class PageActionsMixin:
             raise XunfeiError("未找到'生成音频'按钮")
         btn.first.click(timeout=5000)
         _log("[xunfei]   已点击生成音频")
-        self._pause(page, 0.6, 0.3)
+        self._pause(page, 0.6, 0.3, cancel_check=cancel_check)
 
     @staticmethod
     def _normalize_works_name(value):
@@ -719,10 +794,11 @@ class PageActionsMixin:
         text = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", str(value or "")).strip()
         return text[:25] or f"wordtts_{uuid.uuid4().hex[:10]}"
 
-    def _set_works_name(self, page, works_name):
+    def _set_works_name(self, page, works_name, cancel_check=None):
         """在作品设置弹窗中写入唯一名称，便于下载页人工核对。"""
         normalized = self._normalize_works_name(works_name)
         try:
+            _check_cancel_requested(cancel_check)
             field = page.locator('input[placeholder*="作品名称"]:visible').first
             if field.count() == 0:
                 return False
@@ -730,11 +806,14 @@ class PageActionsMixin:
             page.keyboard.press(_SELECT_ALL)
             page.keyboard.insert_text(normalized)
             page.keyboard.press("Tab")
-            self._pause(page, 0.2, 0.08)
+            self._pause(page, 0.2, 0.08, cancel_check=cancel_check)
             actual = field.input_value(timeout=1000)
+            _check_cancel_requested(cancel_check)
             if actual == normalized:
                 _log(f"[xunfei]   作品名称已设置: {normalized}")
                 return True
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             _log(f"[xunfei]   作品名称设置失败（继续使用默认名称）: {error}")
         return False
@@ -847,7 +926,9 @@ class PageActionsMixin:
         点击“确认合成”，防止在 Windows/不同账号默认值为 WAV 时生成失败。
         """
         def set_probe():
+            _check_cancel_requested(cancel_check)
             result = _safe_eval(page, JS.SET_MP3_FORMAT)
+            _check_cancel_requested(cancel_check)
             if isinstance(result, dict) and result.get("status") != "not_found":
                 return result
             return None
@@ -862,7 +943,9 @@ class PageActionsMixin:
         status = result.get("status") if isinstance(result, dict) else None
         if status not in {"already_mp3", "clicked_mp3"}:
             # JS 选择器失败时只按同一套精确规则兜底，绝不退化为 first radio。
+            _check_cancel_requested(cancel_check)
             fallback = self._set_mp3_format_with_locator(page)
+            _check_cancel_requested(cancel_check)
             if fallback in {"already_locator", "clicked_locator"}:
                 status = fallback
             elif fallback in {"mp3_not_found", "mp3_disabled"}:
@@ -876,7 +959,9 @@ class PageActionsMixin:
             return False
 
         def read_probe():
+            _check_cancel_requested(cancel_check)
             state = _safe_eval(page, JS.GET_MP3_FORMAT)
+            _check_cancel_requested(cancel_check)
             if isinstance(state, dict) and state.get("status") != "not_found":
                 return state
             return None
@@ -891,7 +976,9 @@ class PageActionsMixin:
         if not isinstance(state, dict) or not state.get("checked"):
             # React 受控单选项偶尔会让 JS click 后的 DOM 更新稍慢；只有在
             # 回读仍未确认时才使用 locator，再次点击同一个 MP3 选项。
+            _check_cancel_requested(cancel_check)
             fallback = self._set_mp3_format_with_locator(page)
+            _check_cancel_requested(cancel_check)
             if fallback in {"already_locator", "clicked_locator"}:
                 state = _poll(
                     read_probe,
@@ -910,7 +997,9 @@ class PageActionsMixin:
 
         # 最后再读取一次 locator 状态，日志里明确区分“没弹窗”和“MP3
         # 不存在/未勾选”，便于定位 Windows 端页面结构差异。
+        _check_cancel_requested(cancel_check)
         locator_state = self._read_mp3_format_with_locator(page)
+        _check_cancel_requested(cancel_check)
         if locator_state == "mp3":
             _log("[xunfei]   作品设置格式已确认为 MP3 (locator)")
             return True
@@ -1141,7 +1230,7 @@ class PageActionsMixin:
                         return None
                     if clicked == "clicked":
                         js_click_attempted = True
-                        self._pause(page, 0.18, 0.05)
+                        self._pause(page, 0.18, 0.05, cancel_check=cancel_check)
                         return None
                 # JS click 没有让 React 受控状态变化时，降低频率再用
                 # locator 点击真实 button[role=switch]，避免连续点同一开关。
@@ -1149,7 +1238,7 @@ class PageActionsMixin:
                 if now - last_locator_attempt >= 0.65:
                     last_locator_attempt = now
                     if self._click_ai_switch_with_locator(page):
-                        self._pause(page, 0.25, 0.08)
+                        self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
                 return None
 
             # switch 尚未挂载时也给 locator 一次机会；页面继续异步渲染时，
@@ -1158,7 +1247,7 @@ class PageActionsMixin:
             if now - last_locator_attempt >= 0.65:
                 last_locator_attempt = now
                 if self._click_ai_switch_with_locator(page):
-                    self._pause(page, 0.25, 0.08)
+                    self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
             return None
 
         result = _poll(
@@ -1214,7 +1303,7 @@ class PageActionsMixin:
             if snapshot:
                 _log(f"[xunfei]   AI 弹窗未勾选‘不再提示’，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return False
-        self._pause(page, 0.35, 0.15)
+        self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
 
         if ensure_switch:
             switch_state = self._ensure_ai_switch_off(
@@ -1232,7 +1321,7 @@ class PageActionsMixin:
                 if snapshot:
                     _log(f"[xunfei]   AI 标识开关未确认关闭，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
                 return False
-            self._pause(page, 0.35, 0.15)
+            self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
 
         confirmed = bool(_poll(
             lambda: _safe_eval(page, JS.CLICK_AI_CONFIRM),
@@ -1269,7 +1358,7 @@ class PageActionsMixin:
             if snapshot:
                 _log(f"[xunfei]   AI 标识确认后弹窗仍存在: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return False
-        self._pause(page, 0.5, 0.2)
+        self._pause(page, 0.5, 0.2, cancel_check=cancel_check)
         return True
 
     def _wait_order_or_error(self, page, timeout, cancel_check=None):
@@ -1399,7 +1488,7 @@ class PageActionsMixin:
                 self._submission_state_uncertain = True
             return settled
 
-        self._pause(page, 0.6, 0.3)
+        self._pause(page, 0.6, 0.3, cancel_check=cancel_check)
 
         # 讯飞“作品设置”弹窗中的格式是独立的 WAV/MP3 单选项。不能依赖
         # 默认勾选，也不能取第一个 option；提交前必须回读并确认 MP3。
@@ -1408,7 +1497,10 @@ class PageActionsMixin:
             return "failed"
 
         if works_name:
-            self._set_works_name(page, works_name)
+            if cancel_check is None:
+                self._set_works_name(page, works_name)
+            else:
+                self._set_works_name(page, works_name, cancel_check=cancel_check)
 
         # “作品设置”就是这次提交使用的最终设置，真实 DOM 中开关位于这里：
         # role="switch"、aria-checked="true"。必须在第一次确认合成前关闭，
@@ -1426,6 +1518,7 @@ class PageActionsMixin:
             return "failed"
 
         # 第一次点击"确认合成"
+        _check_cancel_requested(cancel_check)
         clicked = self._click_confirm_synth_button(page)
         if not clicked:
             clicked = bool(_safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"))
@@ -1438,6 +1531,7 @@ class PageActionsMixin:
         confirm_clicked = True
         self._confirm_click_succeeded = True
 
+        _check_cancel_requested(cancel_check)
         outcome = observe_after_first_confirm()
         _log(f"[xunfei]   第一次确认后的页面状态: {outcome}")
         ai_modal_seen = outcome == "ai_modal"
@@ -1510,6 +1604,7 @@ class PageActionsMixin:
         ))
         _log(f"[xunfei]   第二次确认合成: {'✓' if clicked2 else '✗'}")
         if clicked2:
+            _check_cancel_requested(cancel_check)
             confirm_clicked = True
             self._confirm_click_succeeded = True
             settled = wait_order(90) or "ok"

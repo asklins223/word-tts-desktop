@@ -10,10 +10,13 @@ from pathlib import Path
 from typing import IO, Iterator
 
 from db.migration_runner import (
+    Migration,
     MigrationError,
     apply_migrations,
+    backup_database,
     load_migrations,
     prepare_migration_backup,
+    repair_data_consistency,
     resolve_target,
 )
 
@@ -74,9 +77,33 @@ class WorkflowDatabase:
                 # API; the backup remains beside the database for
                 # restore/verification tooling.
                 self.last_migration_backup = str(backup_path)
+            repair_backup_created = backup_path is not None
+
+            def repair_callback(
+                con: sqlite3.Connection,
+                migration: Migration | None,
+                statement: str | None,
+                error: Exception,
+            ) -> bool:
+                nonlocal repair_backup_created
+                if not repair_backup_created:
+                    repair_backup = backup_database(self.path)
+                    if repair_backup is None:
+                        raise MigrationError(
+                            "cannot create backup before repairing data consistency"
+                        )
+                    self.last_migration_backup = str(repair_backup)
+                    repair_backup_created = True
+                return repair_data_consistency(con, migration, statement, error)
+
             con = self.connect(write=True)
             try:
-                result = apply_migrations(con, target=target, migrations=migrations)
+                result = apply_migrations(
+                    con,
+                    target=target,
+                    migrations=migrations,
+                    repair_data_consistency=repair_callback,
+                )
                 if result:
                     raise MigrationError(f"workflow schema initialization failed: {result}")
             finally:

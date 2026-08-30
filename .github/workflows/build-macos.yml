@@ -11,6 +11,13 @@ on:
     tags:
       - 'v*'
 
+# Windows and macOS are separate workflows but both upsert the same GitHub
+# Release for a tag. Serialize them so the two release writers cannot race
+# while creating the release or uploading its metadata.
+concurrency:
+  group: wordtts-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-14
@@ -43,8 +50,8 @@ jobs:
           REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
           requested="$REQUESTED_VERSION"
-          if [ -z "$requested" ] && [ "${{ github.ref_type }}" = "tag" ]; then
-            requested="${{ github.ref_name }}"
+          if [ -z "$requested" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            requested="$GITHUB_REF_NAME"
             requested="${requested#v}"
           fi
           if [ -n "$requested" ]; then
@@ -62,6 +69,12 @@ jobs:
           resolved="$(node -p "require('./package.json').version")"
           echo "version=$resolved" >> "$GITHUB_OUTPUT"
           echo "本次构建版本: $resolved"
+
+      - name: Validate update policy
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: node scripts/validate_update_policy.js
 
       - name: Install Python dependencies
         run: |
@@ -99,12 +112,33 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash build_electron.sh
 
+      - name: Resolve final macOS artifacts
+        id: mac-artifacts
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) arch="arm64" ;;
+            x86_64) arch="x64" ;;
+            *) echo "不支持的 macOS 架构: $(uname -m)" >&2; exit 1 ;;
+          esac
+          zip_path="electron/release/小猪wordTTS-${RELEASE_VERSION}-${arch}.zip"
+          dmg_path="electron/release/小猪wordTTS-${RELEASE_VERSION}-${arch}.dmg"
+          test -s "$zip_path"
+          test -s "$dmg_path"
+          echo "zip=$zip_path" >> "$GITHUB_OUTPUT"
+          echo "dmg=$dmg_path" >> "$GITHUB_OUTPUT"
+          echo "最终 macOS 自动更新 ZIP: $zip_path"
+          echo "最终 macOS 首次安装 DMG: $dmg_path"
+
       - name: Verify packaged macOS backend (local-only)
         env:
           # Electron 的 os.tmpdir() 在 macOS 上遵循 TMPDIR；固定到 runner
           # 临时目录，失败时可以稳定上传 wordtts-electron-smoke.log。
           TMPDIR: ${{ runner.temp }}
           WORDTTS_DEBUG_LOGS: '1'
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -151,9 +185,13 @@ jobs:
               echo "打包后端提前退出" >&2
               exit 1
             fi
-            if curl --fail --silent --header "X-Desktop-Capability: $token" "http://127.0.0.1:$port/api/v1/health" | grep -q '"app":"wordtts"'; then
-              ready=1
-              break
+            health_json=""
+            if health_json="$(curl --fail --silent --header "X-Desktop-Capability: $token" "http://127.0.0.1:$port/api/v1/health" 2>/dev/null)"; then
+              if HEALTH_JSON="$health_json" python -c 'import json, os, sys; payload=json.loads(os.environ["HEALTH_JSON"]); expected=os.environ["EXPECTED_VERSION"]; ok=payload.get("status") == "ok" and payload.get("app") == "wordtts" and str(payload.get("version")) == expected; print(f"健康检查内容不匹配: {payload!r}，期望版本 {expected}", file=sys.stderr) if not ok else None; raise SystemExit(0 if ok else 1)'
+              then
+                ready=1
+                break
+              fi
             fi
             sleep 0.5
           done
@@ -175,22 +213,36 @@ jobs:
         with:
           name: 小猪wordTTS-macOS
           path: |
-            electron/release/小猪wordTTS-*.dmg
-            electron/release/小猪wordTTS-*.zip
+            ${{ steps.mac-artifacts.outputs.dmg }}
+            ${{ steps.mac-artifacts.outputs.zip }}
           retention-days: 30
           if-no-files-found: error
+
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/extract_release_notes.js
+
+      - name: Prepare auto-update metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/prepare_update_metadata.js --platform darwin
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            electron/release/小猪wordTTS-*.dmg
-            electron/release/小猪wordTTS-*.zip
+            electron/release/latest-mac.yml
+            ${{ steps.mac-artifacts.outputs.dmg }}
+            ${{ steps.mac-artifacts.outputs.zip }}
           name: 小猪wordTTS ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          body_path: CHANGELOG.md
+          body_path: release-notes.md
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import secrets
 import tempfile
@@ -32,7 +33,7 @@ from db.migration_runner import MigrationError
 from workflow.artifact_store import ArtifactStore, ArtifactStoreError, ArtifactTooLarge
 from workflow.data_safety import redact_public_json
 from workflow.database import WorkflowDatabase
-from workflow.domain import DomainError, new_id
+from workflow.domain import DomainError, content_hash, new_id
 from workflow.event_store import CursorExpired, EventStoreError, InvalidCursor
 from workflow.external import ExternalRecordService, ExternalSubmission, ExternalLease
 from workflow.garbage_collector import ArtifactGarbageCollector
@@ -57,6 +58,9 @@ from workflow.workspace import (
     artifact_blob_facts_match,
     item_content_id,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowCreateBody(BaseModel):
@@ -282,11 +286,13 @@ class WorkflowRuntime:
     generation_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
     generation_dispatch_guard: asyncio.Lock = field(default_factory=asyncio.Lock)
     generation_tasks_by_workflow: dict[str, asyncio.Task] = field(default_factory=dict)
+    generation_slot_owners: dict[str, asyncio.Task] = field(default_factory=dict)
     generation_cancel_events: dict[str, threading.Event] = field(default_factory=dict)
     recovery: RecoveryService | None = None
     scheduler: PersistentScheduler | None = None
     garbage_collector: ArtifactGarbageCollector | None = None
     startup_recovery_findings: tuple[Any, ...] = field(default_factory=tuple)
+    startup_recovery_error: str | None = None
     startup_scheduler_claims: tuple[Any, ...] = field(default_factory=tuple)
     startup_gc_findings: tuple[Any, ...] = field(default_factory=tuple)
     initialization_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -325,7 +331,7 @@ class WorkflowRuntime:
         ))
         application = WorkflowApplicationService(
             repository,
-            SourceImportService(database, artifacts, ticket_manager=tickets),
+            SourceImportService(database, artifacts, ticket_manager=tickets, event_store=repository.events),
             artifacts,
             parser=LegacyWordParser(),
             providers=providers,
@@ -372,25 +378,41 @@ class WorkflowRuntime:
                     "workflow data directory is unavailable",
                     code="PERSISTENCE_ERROR",
                 ) from exc
+            recovery = self.recovery or RecoveryService(self.database)
+            scheduler = self.scheduler or PersistentScheduler(self.database, event_store=self.repository.events)
+            garbage_collector = self.garbage_collector or ArtifactGarbageCollector(self.database, self.artifacts)
+            self.recovery = recovery
+            self.scheduler = scheduler
+            self.garbage_collector = garbage_collector
+
+            # Startup maintenance is deliberately best-effort.  A crashed
+            # worker may leave one malformed legacy row behind, but that row
+            # must not make the whole application unable to import a new
+            # document.  Each maintenance task is isolated and can be retried
+            # on the next process start; schema initialization above remains
+            # fail-closed because the API cannot operate without a database.
+            self.startup_recovery_error = None
             try:
-                recovery = self.recovery or RecoveryService(self.database)
-                scheduler = self.scheduler or PersistentScheduler(self.database, event_store=self.repository.events)
-                garbage_collector = self.garbage_collector or ArtifactGarbageCollector(self.database, self.artifacts)
-                # Recovery is deliberately safe-only: it expires local leases
-                # and marks uncertain provider/external work AMBIGUOUS.  The
-                # separate background dispatcher below can only claim the
-                # narrower, policy-approved rejected/retryable path.
+                # Recovery is safe-only: it expires local leases, converts TTS
+                # uncertainty into a local retryable state, and keeps only
+                # external work on the AMBIGUOUS/reconciliation path.
                 self.startup_recovery_findings = tuple(recovery.apply_safe_recovery())
+            except Exception:
+                self.startup_recovery_findings = tuple()
+                self.startup_recovery_error = "workflow startup recovery failed"
+                logger.exception("workflow startup recovery failed; continuing with the local API")
+
+            try:
                 self.startup_scheduler_claims = tuple(scheduler.expire_interventions())
+            except Exception:
+                self.startup_scheduler_claims = tuple()
+                logger.exception("startup intervention expiry failed; continuing with the local API")
+
+            try:
                 self.startup_gc_findings = tuple(garbage_collector.collect(limit=32))
-                self.recovery = recovery
-                self.scheduler = scheduler
-                self.garbage_collector = garbage_collector
-            except Exception as exc:
-                raise RepositoryError(
-                    "workflow startup recovery failed",
-                    code="PERSISTENCE_ERROR",
-                ) from exc
+            except Exception:
+                self.startup_gc_findings = tuple()
+                logger.exception("startup artifact cleanup failed; continuing with the local API")
             self.initialized = True
         self._start_scheduler_if_possible()
 
@@ -550,6 +572,379 @@ def _command_response(snapshot, action: str, request_id: str | None = None, **ex
     return response
 
 
+def _event_idempotency_recovery(
+    runtime: WorkflowRuntime,
+    event_types: set[str],
+    builder,
+):
+    """Build a recovery callback from an event atomically written by a route.
+
+    The idempotency row and the domain event use the same request id.  After a
+    process restart, the event proves that the mutation committed even if the
+    HTTP response was lost; without that proof the repository may reclaim the
+    orphaned reservation and retry the local mutation.
+    """
+
+    expected = {str(event_type) for event_type in event_types}
+
+    def recover(row: Mapping[str, Any]):
+        event = runtime.repository.get_event_by_request_id(str(row["idempotency_id"]))
+        if event is None:
+            return None
+        event_type = str(event.get("event_type") or "")
+        if event_type not in expected:
+            raise IdempotencyInProgress(
+                "the idempotency request has a conflicting durable event",
+                details={
+                    "idempotency_id": str(row["idempotency_id"]),
+                    "event_type": event_type,
+                },
+            )
+        stored_workflow_id = row.get("workflow_id")
+        if stored_workflow_id and str(event.get("workflow_id")) != str(stored_workflow_id):
+            raise IdempotencyInProgress(
+                "the idempotency event belongs to another workflow",
+                details={"idempotency_id": str(row["idempotency_id"])},
+            )
+        try:
+            return builder(row, event)
+        except IdempotencyInProgress:
+            raise
+        except Exception as exc:
+            raise IdempotencyInProgress(
+                "the committed idempotency response cannot be reconstructed safely",
+                details={"idempotency_id": str(row["idempotency_id"])},
+            ) from exc
+
+    return recover
+
+
+def _durable_idempotency_recovery(builder):
+    """Adapt a natural-key lookup into an idempotency recovery callback."""
+
+    def recover(row: Mapping[str, Any]):
+        try:
+            return builder(row)
+        except IdempotencyInProgress:
+            raise
+        except Exception as exc:
+            raise IdempotencyInProgress(
+                "the committed idempotency response cannot be reconstructed safely",
+                details={"idempotency_id": str(row["idempotency_id"])},
+            ) from exc
+
+    return recover
+
+
+def _is_tts_workflow(runtime: WorkflowRuntime, workflow_id: str) -> bool:
+    """Read the workflow kind without involving a provider or scheduler."""
+
+    with runtime.database.read_transaction() as con:
+        row = con.execute(
+            "SELECT workflow_type FROM workflows WHERE workflow_id=?",
+            (workflow_id,),
+        ).fetchone()
+    return bool(row and str(row["workflow_type"] or "").lower() == "tts")
+
+
+def _tts_generation_accepted(runtime: WorkflowRuntime, workflow_id: str) -> bool:
+    """Return whether this TTS workflow has crossed the local generate fence."""
+
+    with runtime.database.read_transaction() as con:
+        row = con.execute(
+            """SELECT 1 FROM workflows w
+               WHERE w.workflow_id=?
+                 AND (
+                     EXISTS (
+                         SELECT 1 FROM workflow_events e
+                         WHERE e.workflow_id=w.workflow_id
+                           AND e.event_type='WORKFLOW_GENERATE'
+                     )
+                     OR EXISTS (
+                         SELECT 1 FROM workflow_steps s
+                         WHERE s.workflow_id=w.workflow_id
+                           AND s.step_type='TTS'
+                     )
+                 )
+               LIMIT 1""",
+            (workflow_id,),
+        ).fetchone()
+    return row is not None
+
+
+def _force_local_cancel(
+    runtime: WorkflowRuntime,
+    workflow_id: str,
+    *,
+    reason: str,
+    request_id: str | None = None,
+    expected_state_version: int | None = None,
+):
+    """Make cancellation monotonic and terminal without contacting a provider.
+
+    Cancellation is a local fence.  A renderer may submit an old version, or
+    replay a response written by an older build that stopped at TERMINATING;
+    neither case should leave the user blocked behind a stale optimistic-lock
+    value.  The command is retried against the latest local snapshot, then the
+    repository's publication fence closes the workflow immediately.
+    """
+
+    cancel_event = runtime.generation_cancel_events.get(workflow_id)
+    if cancel_event is not None:
+        cancel_event.set()
+    _release_generation_slot_for_cancel(runtime, workflow_id)
+
+    supplied_version = expected_state_version
+    for attempt in range(3):
+        snapshot = runtime.repository.get_workflow(workflow_id)
+        if snapshot.execution_state == "TERMINAL":
+            return snapshot
+        if snapshot.control_state in {"TERMINATING", "TERMINATED"}:
+            break
+        command_version = supplied_version if attempt == 0 and supplied_version is not None else snapshot.state_version
+        try:
+            runtime.repository.command(
+                workflow_id,
+                "cancel",
+                command_version,
+                request_id=request_id,
+                reason=reason,
+            )
+            break
+        except ConflictError as exc:
+            if getattr(exc, "code", "") != "STATE_CONFLICT" or attempt >= 2:
+                raise
+
+    return runtime.repository.finalize_generation_cleanup(
+        workflow_id,
+        reason=reason,
+        force_cancel=True,
+    )
+
+
+def _recover_workflow_command(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any], action: str):
+    workflow_id = str(event["workflow_id"])
+    if action == "cancel":
+        payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+        reason = str(payload.get("reason") or "用户取消任务")
+        snapshot = _force_local_cancel(
+            runtime,
+            workflow_id,
+            reason=reason,
+            request_id=None,
+        )
+    else:
+        snapshot = runtime.repository.get_workflow(workflow_id)
+    return 202, _command_response(snapshot, action, str(row["idempotency_id"]))
+
+
+def _recover_workflow_envelope(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    snapshot = runtime.repository.get_workflow(str(event["workflow_id"]))
+    return 200, _workflow_envelope(snapshot, str(row["idempotency_id"]))
+
+
+def _recover_parse_results(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        metadata: dict[str, Any] = {}
+        raw_metadata = item.get("metadata_json")
+        if isinstance(raw_metadata, str):
+            try:
+                parsed_metadata = json.loads(raw_metadata)
+            except (TypeError, json.JSONDecodeError):
+                parsed_metadata = {}
+            if isinstance(parsed_metadata, Mapping):
+                metadata = dict(parsed_metadata)
+        doc_type = str(metadata.get("doc_type") or item.get("item_type") or "document")
+        groups.setdefault(doc_type, []).append({
+            "id": item.get("item_identity_key"),
+            "category": item.get("item_type"),
+            "text": item.get("normalized_content"),
+            "role": item.get("role"),
+            "voice_key": item.get("voice_key"),
+            "source_locator": item.get("source_locator"),
+            "metadata": metadata,
+        })
+    return [{"doc_type": key, "items": value} for key, value in groups.items()]
+
+
+def _recover_parse(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    workflow_id = str(event["workflow_id"])
+    snapshot = runtime.repository.get_workflow(workflow_id)
+    items = runtime.repository.list_items(workflow_id)
+    if not items:
+        raise IdempotencyInProgress("the committed parser result is incomplete")
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    source_artifact_id = str(payload.get("source_artifact_id") or snapshot.source_artifact_id or "")
+    if not source_artifact_id:
+        raise IdempotencyInProgress("the committed parser result has no source artifact")
+    parsed_artifact_ids = payload.get("parsed_artifact_ids")
+    parsed_artifact_id = (
+        str(parsed_artifact_ids[0])
+        if isinstance(parsed_artifact_ids, list) and parsed_artifact_ids
+        else None
+    )
+    return 202, _command_response(
+        snapshot,
+        "parse",
+        str(row["idempotency_id"]),
+        parse_results=_recover_parse_results(items),
+        source_filename=runtime.application._source_filename(workflow_id, source_artifact_id),
+        source_artifact_id=source_artifact_id,
+        parsed_artifact_id=parsed_artifact_id,
+    )
+
+
+def _recover_export(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    workflow_id = str(event["workflow_id"])
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    requested_item_ids = payload.get("requested_item_ids")
+    if requested_item_ids is not None and not isinstance(requested_item_ids, list):
+        raise IdempotencyInProgress("the committed export request has an invalid item selection")
+
+    stored_response = payload.get("response")
+    if not isinstance(stored_response, Mapping):
+        # Older export events did not persist the response scope. Rebuilding
+        # from the current segments could silently return a different ZIP, so
+        # fail closed instead of violating idempotency.
+        raise IdempotencyInProgress(
+            "the committed export response cannot be reconstructed safely; retry with a new idempotency key"
+        )
+    stored_artifact = stored_response.get("artifact")
+    if not isinstance(stored_artifact, Mapping):
+        raise IdempotencyInProgress("the committed export response has no artifact metadata")
+    artifact_id = str(stored_artifact.get("artifact_id") or payload.get("artifact_id") or "")
+    if not artifact_id or (
+        payload.get("artifact_id") is not None
+        and str(payload.get("artifact_id")) != artifact_id
+    ):
+        raise IdempotencyInProgress("the committed export response has conflicting artifact metadata")
+    if str(stored_artifact.get("artifact_type") or "") != "export-zip":
+        raise IdempotencyInProgress("the committed export response points to a non-export artifact")
+    try:
+        storage = runtime.repository.get_artifact_storage(artifact_id, workflow_id=workflow_id)
+    except Exception as exc:
+        raise IdempotencyInProgress("the committed export artifact is no longer available") from exc
+    if (
+        storage.get("artifact_type") != "export-zip"
+        or str(storage.get("format") or "").lower().lstrip(".") != "zip"
+        or str(stored_artifact.get("format") or "").lower().lstrip(".") != "zip"
+        or str(storage.get("sha256") or "") != str(stored_artifact.get("sha256") or "")
+        or int(storage.get("size_bytes") or -1) != int(stored_artifact.get("size_bytes") or -1)
+    ):
+        raise IdempotencyInProgress("the committed export artifact failed integrity validation")
+    try:
+        state_version = int(stored_response["state_version"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise IdempotencyInProgress("the committed export response has an invalid state version") from exc
+    return 201, {
+        "request_id": str(row["idempotency_id"]),
+        "workflow_id": workflow_id,
+        "state_version": state_version,
+        "artifact": dict(stored_artifact),
+    }
+
+
+def _recover_source_write(
+    runtime: WorkflowRuntime,
+    import_id: str,
+    expected_size: int,
+    expected_sha256: str,
+):
+    result = runtime.imports.get_import(import_id)
+    if (
+        str(result.get("status")) == "READY"
+        and int(result.get("actual_size_bytes") or -1) == int(expected_size)
+        and str(result.get("actual_sha256") or "") == str(expected_sha256)
+    ):
+        return 201, result
+    return None
+
+
+def _recover_source_generation(
+    runtime: WorkflowRuntime,
+    row: Mapping[str, Any],
+    event: Mapping[str, Any],
+    source_import_id: str,
+):
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    if str(payload.get("source_import_id") or "") != source_import_id:
+        raise IdempotencyInProgress("the source generation event belongs to another import")
+    try:
+        generation = int(payload["generation"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise IdempotencyInProgress("the committed source generation has invalid durable facts") from exc
+    stored_response = payload.get("response")
+    if isinstance(stored_response, Mapping):
+        if (
+            str(stored_response.get("source_import_id") or "") != source_import_id
+            or int(stored_response.get("staging_generation") or -1) != generation
+        ):
+            raise IdempotencyInProgress("the committed source generation response has conflicting durable facts")
+        # Verify the historical row still exists, but do not project the
+        # current parent generation over the original response.
+        runtime.imports.get_generation(source_import_id, generation)
+        return 201, dict(stored_response)
+    result = runtime.imports.get_import(source_import_id)
+    if int(result.get("staging_generation") or -1) != generation:
+        raise IdempotencyInProgress("the committed source generation is no longer current")
+    return 201, result
+
+
+def _recover_external_record(runtime: WorkflowRuntime, workflow_id: str, body: ExternalRecordBody):
+    record = runtime.external.find_record(
+        external_system=body.external_system,
+        account_scope=body.account_scope,
+        business_record_key=body.business_record_key,
+    )
+    if record is None:
+        return None
+    if str(record.get("local_workflow_id") or "") != workflow_id:
+        raise IdempotencyInProgress("the external mapping is owned by another workflow")
+    return 201, record
+
+
+def _recover_external_lease(runtime: WorkflowRuntime, mapping_id: str, owner_id: str):
+    lease = runtime.external.find_record_lease(mapping_id, owner_id)
+    if lease is None:
+        return None
+    return 201, {
+        "lease_id": lease.lease_id,
+        "mapping_id": lease.mapping_id,
+        "owner_id": lease.owner_id,
+        "fencing_token": lease.fencing_token,
+        "lease_until": lease.lease_until,
+    }
+
+
+def _recover_external_operation_prepare(
+    runtime: WorkflowRuntime,
+    workflow_id: str,
+    body: ExternalOperationBody,
+):
+    operation = runtime.external.find_operation(body.mapping_id, body.operation_key)
+    if operation is None:
+        return None
+    if (
+        str(operation.get("workflow_id")) != workflow_id
+        or str(operation.get("target_payload_hash")) != content_hash(body.payload)
+        or str(operation.get("mapping_version")) != body.mapping_version
+    ):
+        raise IdempotencyInProgress("the external operation is bound to different durable facts")
+    return 201, operation
+
+
+def _recover_external_operation_state(
+    runtime: WorkflowRuntime,
+    operation_id: str,
+    allowed_states: set[str],
+):
+    operation = runtime.external.get_operation(operation_id)
+    if str(operation.get("side_effect_state") or "") not in allowed_states:
+        return None
+    return 202, operation
+
+
 def _generation_target_state_version(runtime: WorkflowRuntime, workflow_id: str, work_unit_id: str | None) -> int | None:
     if not work_unit_id:
         return None
@@ -562,7 +957,7 @@ def _generation_target_state_version(runtime: WorkflowRuntime, workflow_id: str,
 
 
 def _publish_generation_result_event(runtime: WorkflowRuntime, workflow_id: str, result: Any) -> None:
-    """Publish a durable event when a recovery-only query produced no receipt."""
+    """Publish a durable event when a worker produced no local receipt."""
 
     status = str(getattr(result, "status", ""))
     if status not in {"AMBIGUOUS", "WAITING_RETRY"}:
@@ -656,6 +1051,46 @@ def _active_generation_task(runtime: WorkflowRuntime, workflow_id: str) -> async
     return task if task is not None and not task.done() else None
 
 
+def _release_generation_slot_for_cancel(runtime: WorkflowRuntime, workflow_id: str) -> bool:
+    """Detach a canceled local worker that is stuck in an uninterruptible call.
+
+    The provider thread is intentionally left alone; Playwright may still be
+    unwinding on its own thread.  The durable workflow is already terminal at
+    this point, so releasing only this worker's lease lets a fresh workflow
+    start.  ``_GenerationSlotLease`` sees the removed owner and will not
+    release the semaphore a second time when the old task eventually exits.
+    """
+
+    active_task = _active_generation_task(runtime, workflow_id)
+    owner = runtime.generation_slot_owners.get(workflow_id)
+    if active_task is None or owner is not active_task:
+        return False
+    runtime.generation_slot_owners.pop(workflow_id, None)
+    runtime.generation_slots.release()
+    return True
+
+
+class _GenerationSlotLease:
+    """Semaphore lease that can be revoked by the local cancel fence."""
+
+    def __init__(self, runtime: WorkflowRuntime, workflow_id: str):
+        self.runtime = runtime
+        self.workflow_id = workflow_id
+        self.owner: asyncio.Task | None = None
+
+    async def __aenter__(self):
+        await self.runtime.generation_slots.acquire()
+        self.owner = asyncio.current_task()
+        self.runtime.generation_slot_owners[self.workflow_id] = self.owner
+        return self
+
+    async def __aexit__(self, _exc_type, _exc_value, _traceback):
+        if self.runtime.generation_slot_owners.get(self.workflow_id) is self.owner:
+            self.runtime.generation_slot_owners.pop(self.workflow_id, None)
+            self.runtime.generation_slots.release()
+        return False
+
+
 def _ensure_generation_dispatch_capacity(runtime: WorkflowRuntime, workflow_id: str) -> None:
     """Fail before changing durable state when no local worker can be queued."""
 
@@ -668,6 +1103,42 @@ def _ensure_generation_dispatch_capacity(runtime: WorkflowRuntime, workflow_id: 
             code="RESOURCE_EXHAUSTED",
             details={"queue_depth": max(0, len(runtime.generation_tasks) - 1), "max_active": 1, "max_queue": max_queue},
         )
+
+
+async def _wait_for_retryable_generation_to_finish(
+    runtime: WorkflowRuntime,
+    workflow_id: str,
+    *,
+    timeout_seconds: float = 5.0,
+) -> None:
+    """Let a just-failed local worker release its dispatch slot before retry.
+
+    A TTS worker records ``WAITING_RETRY`` at the failure boundary and only
+    then returns through its provider thread and cleanup callback.  A user can
+    click retry during that short interval.  Waiting for the same local task
+    here is safe because the durable state is already retryable; a genuinely
+    running task remains protected by the normal capacity check below.
+    """
+
+    active = _active_generation_task(runtime, workflow_id)
+    if active is None:
+        return
+    try:
+        snapshot = runtime.repository.get_workflow(workflow_id)
+    except Exception:
+        return
+    if snapshot.execution_state not in {"WAITING_RETRY", "WAITING_USER"}:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(active),
+            timeout=max(0.1, float(timeout_seconds)),
+        )
+    except asyncio.TimeoutError:
+        # The worker may still be doing provider/browser cleanup. Let the
+        # caller receive the usual GENERATION_ALREADY_RUNNING response rather
+        # than starting a second browser session.
+        return
 
 
 def _pause_probe(runtime: WorkflowRuntime, workflow_id: str) -> bool:
@@ -684,12 +1155,26 @@ def _workspace_capabilities(runtime: WorkflowRuntime, workflow_id: str) -> dict[
 
     snapshot = runtime.repository.get_workflow(workflow_id)
     active = _active_generation_task(runtime, workflow_id) is not None
+    is_tts_workflow = _is_tts_workflow(runtime, workflow_id)
+    tts_generation_accepted = is_tts_workflow and _tts_generation_accepted(runtime, workflow_id)
+    local_tts_pause_available = (
+        tts_generation_accepted
+        and snapshot.control_state == "RUNNING"
+        and snapshot.execution_state in {"PREPARING", "RUNNING", "RECOVERING"}
+    )
+    local_tts_resume_available = (
+        tts_generation_accepted
+        and snapshot.control_state in {"PAUSED", "PAUSE_REQUESTED"}
+    )
     capabilities: dict[str, Any] = {
-        # A pause is cooperative and therefore requires a live worker to
-        # receive the pause probe.  A RUNNING snapshot alone is not proof that
-        # this process owns the worker after a restart.
-        "supports_pause": active and snapshot.control_state == "RUNNING",
-        "supports_resume": active,
+        # TTS can settle a pause locally when a browser worker disappeared
+        # after acceptance. Other workflow kinds still require their live
+        # worker to acknowledge a cooperative pause.
+        "supports_pause": (
+            snapshot.control_state == "RUNNING"
+            and (active or local_tts_pause_available)
+        ),
+        "supports_resume": active or local_tts_resume_available,
         "supports_takeover": False,
     }
     configuration = runtime.application._configuration(workflow_id)
@@ -954,7 +1439,20 @@ def _schedule_generation_task(
 
     async def run_task() -> None:
         try:
-            async with runtime.generation_slots:
+            async with _GenerationSlotLease(runtime, workflow_id):
+                if cancel_event.is_set():
+                    return
+                # A queued task can receive PAUSE_REQUESTED before it owns a
+                # generation slot.  It has no provider safe point to call
+                # back from, so acknowledge that durable request here and
+                # leave the task parked without opening the browser.  Without
+                # this gate the queued worker started after the pause click,
+                # which made the UI look as if pause had no effect.
+                if await asyncio.to_thread(_pause_probe, runtime, workflow_id):
+                    return
+                # Cancellation can arrive while the queued worker is doing
+                # the durable pause probe. Do not start a provider call after
+                # its slot lease has already been revoked by the cancel path.
                 if cancel_event.is_set():
                     return
                 started_at = time.monotonic()
@@ -995,6 +1493,19 @@ def _schedule_generation_task(
                 while not provider_task.done():
                     await asyncio.wait({provider_task}, timeout=2.0)
                     if not provider_task.done():
+                        # The engine persists a retryable submission failure
+                        # before the provider thread returns.  Do not append a
+                        # fresh "still processing" status in that small
+                        # handoff window: it can become the latest event and
+                        # make the renderer hide the actionable failure.
+                        try:
+                            live_snapshot = runtime.repository.get_workflow(workflow_id)
+                        except Exception:
+                            live_snapshot = None
+                        if live_snapshot is not None and live_snapshot.execution_state in {
+                            "WAITING_RETRY", "WAITING_USER", "TERMINAL",
+                        }:
+                            continue
                         _publish_generation_runtime_event(
                             runtime,
                             workflow_id,
@@ -1051,6 +1562,8 @@ def _schedule_generation_task(
     return task
 
 
+
+
 async def _dispatch_due_retries_once(runtime: WorkflowRuntime) -> int:
     """Claim and execute only safe, provider-ready retry candidates."""
 
@@ -1071,22 +1584,38 @@ async def _dispatch_due_retries_once(runtime: WorkflowRuntime) -> int:
             all_skipped = bool(items) and all(
                 str(item.get("status") or "") == "SKIPPED" for item in items
             )
-            if not all_skipped:
-                adapter = runtime.application.provider(provider_name, account_scope)
-                runtime.application._ensure_provider_ready(
-                    adapter,
-                    allow_interactive=False,
-                )
             async with runtime.generation_dispatch_guard:
-                _schedule_generation_task(
-                    runtime,
-                    claim.workflow_id,
-                    generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
-                    provider=provider_name,
-                    account_scope=account_scope,
-                    allow_interactive_provider=False,
-                )
-            dispatched += 1
+                # The scheduler claim is made before the process-level
+                # dispatch lock. A user can therefore hold/cancel the run in
+                # between. Re-read the local state while holding the same
+                # fence used by those commands; never start a worker for a
+                # task that is now waiting for the user or already terminal.
+                current = await asyncio.to_thread(runtime.repository.get_workflow, claim.workflow_id)
+                if (
+                    current.execution_state != "WAITING_RETRY"
+                    or current.control_state != "RUNNING"
+                ):
+                    continue
+                if _active_generation_task(runtime, claim.workflow_id) is None:
+                    # The capability check is local-only, but it still does
+                    # not belong before the cancellation/state fence. A claim
+                    # that was cancelled while waiting for this lock must be
+                    # returned without touching provider setup.
+                    if not all_skipped:
+                        adapter = runtime.application.provider(provider_name, account_scope)
+                        runtime.application._ensure_provider_ready(
+                            adapter,
+                            allow_interactive=False,
+                        )
+                    _schedule_generation_task(
+                        runtime,
+                        claim.workflow_id,
+                        generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
+                        provider=provider_name,
+                        account_scope=account_scope,
+                        allow_interactive_provider=False,
+                    )
+                    dispatched += 1
         except RepositoryError as exc:
             delay = 1 if getattr(exc, "code", "") == "RESOURCE_EXHAUSTED" else 30
             await asyncio.to_thread(
@@ -1137,21 +1666,41 @@ async def _dispatch_recoverable_once(runtime: WorkflowRuntime) -> int:
             all_skipped = bool(items) and all(
                 str(item.get("status") or "") == "SKIPPED" for item in items
             )
-            if not all_skipped:
-                adapter = runtime.application.provider(provider_name, account_scope)
-                runtime.application._ensure_provider_ready(
-                    adapter,
-                    allow_interactive=False,
-                )
-            taken_over = await asyncio.to_thread(runtime.repository.mark_takeover, workflow_id)
-            if taken_over is None:
-                continue
-            # ``mark_takeover`` yields to the event loop.  A user command or
-            # another dispatcher pass can therefore register a local task
-            # before this coroutine reaches the enqueue step.  Reuse the
-            # same process-level fence as the foreground and retry paths so
-            # the durable takeover cannot produce two local workers.
+            # The durable takeover transition and local task registration must
+            # share one process-level fence with pause/cancel/resume.  If
+            # ``mark_takeover`` runs before this lock, a user command can land
+            # between the state transition and task registration and observe
+            # a RECOVERING run that is not yet represented by a local worker.
+            # That window is especially harmful for pause: the next recovery
+            # pass can then race the user's control request.
             async with runtime.generation_dispatch_guard:
+                # Re-read before checking provider capability. A recovery
+                # candidate can be cancelled or paused after the index scan;
+                # neither state should cause a new provider setup attempt.
+                current = await asyncio.to_thread(runtime.repository.get_workflow, workflow_id)
+                if (
+                    current.control_state != "RUNNING"
+                    or current.execution_state not in {"PREPARING", "RUNNING", "RECOVERING"}
+                ):
+                    continue
+                if not all_skipped:
+                    adapter = runtime.application.provider(provider_name, account_scope)
+                    runtime.application._ensure_provider_ready(
+                        adapter,
+                        allow_interactive=False,
+                    )
+                taken_over = await asyncio.to_thread(runtime.repository.mark_takeover, workflow_id)
+                if taken_over is None:
+                    continue
+                current = await asyncio.to_thread(runtime.repository.get_workflow, workflow_id)
+                if current.control_state != "RUNNING" or current.execution_state != "RECOVERING":
+                    # Keep the final state check even though the transition is
+                    # fenced: repository-side recovery may have returned an
+                    # already-RECOVERING snapshot, or another process may have
+                    # changed the row between database transactions.
+                    continue
+                if _active_generation_task(runtime, workflow_id) is not None:
+                    continue
                 _schedule_generation_task(
                     runtime,
                     workflow_id,
@@ -1264,18 +1813,110 @@ def install_workflow_api(
         runtime.ensure_initialized()
         return _workflow_envelope(runtime.repository.get_workflow(workflow_id))
 
+    @router.delete("/workflows/{workflow_id}")
+    async def delete_workflow(
+        workflow_id: str,
+        body: WorkflowCommandBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Physically delete an unfinished workflow and its local data."""
+
+        runtime.ensure_initialized()
+        key = _idempotency_key(idempotency_key)
+        # The workflow row is deliberately not attached to this reservation:
+        # the mutation removes that row.  The repository completes this key
+        # inside the same transaction as the delete, making replay safe after
+        # the target no longer exists.
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}",
+            client_key=key,
+            command_name="deleteWorkflow",
+            method="DELETE",
+            resource_id=workflow_id,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=None,
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+
+        request_id = str(idem_id)
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "accepted_action": "delete",
+            "deleted": True,
+        }
+        # A history deletion is an explicit user-confirmed local purge.  Ask a
+        # cooperative local worker to stop first, then take the same dispatch
+        # fence before deleting its durable rows.  We never delete underneath
+        # an in-flight provider call because its thread could still publish a
+        # result after the workflow row disappeared.
+        active_task = None
+        async with runtime.generation_dispatch_guard:
+            active_task = _active_generation_task(runtime, workflow_id)
+            if active_task is not None:
+                cancel_event = runtime.generation_cancel_events.get(workflow_id)
+                if cancel_event is not None:
+                    cancel_event.set()
+        if active_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(active_task), timeout=15.0)
+            except asyncio.TimeoutError as exc:
+                raise RepositoryError(
+                    "generation is still running; wait for the current provider call to stop",
+                    code="GENERATION_ALREADY_RUNNING",
+                ) from exc
+            except Exception:
+                # The task wrapper persists its own typed failure.  A task
+                # exception must not prevent the explicit local purge once it
+                # has released the worker slot and lease.
+                pass
+
+        async with runtime.generation_dispatch_guard:
+            if _active_generation_task(runtime, workflow_id) is not None:
+                raise RepositoryError(
+                    "generation is still running; retry deletion shortly",
+                    code="GENERATION_ALREADY_RUNNING",
+                )
+            runtime.application.delete_workflow(
+                workflow_id,
+                expected_state_version=body.expected_state_version,
+                request_id=request_id,
+                response=response,
+                allow_unresolved=True,
+            )
+
+        # Staging refs are workflow-owned and can be removed immediately.  A
+        # fresh GC scan handles content-addressed Blobs only when no remaining
+        # Artifact references them, including the case where a rerun shared a
+        # Blob with another workflow.
+        if runtime.garbage_collector is not None:
+            try:
+                runtime.garbage_collector.collect(limit=256)
+            except Exception:
+                # The database delete has already committed; cleanup is
+                # recoverable on the next startup and must not turn success
+                # into an ambiguous HTTP response.
+                pass
+        return JSONResponse(response, status_code=200)
+
     @router.get("/workflows/{workflow_id}/recovery")
     async def get_workflow_recovery(workflow_id: str):
-        """Expose the OPEN reconciliation handoffs after a restart.
+        """Expose external-operation handoffs after a restart.
 
-        任务被终止/断网后若有未决外部副作用，渲染层必须能重建
-        “确认未提交后重试”的目标参数；否则用户在配置页只能拿到
-        无法理解的冻结报错，任务看起来永远无法继续。
+        This compatibility endpoint is for the separate external-system
+        workflow profile. TTS workspaces return an empty list and use local
+        retry/cancel state only; the renderer does not call this endpoint.
         """
 
         runtime.ensure_initialized()
         snapshot = runtime.repository.get_workflow(workflow_id)
-        interventions = runtime.repository.list_open_reconciliations(workflow_id)
+        interventions = (
+            []
+            if _is_tts_workflow(runtime, workflow_id)
+            else runtime.repository.list_open_reconciliations(workflow_id)
+        )
         return {
             "request_id": _request_id(),
             "workflow_id": workflow_id,
@@ -1378,10 +2019,15 @@ def install_workflow_api(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="archiveWorkflow",
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(),
             workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_ARCHIVED"},
+                lambda row, event: _recover_workflow_command(runtime, row, event, "archive"),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        request_id = _request_id()
+        request_id = str(idem_id)
         snapshot = runtime.application.archive(
             workflow_id,
             expected_state_version=body.expected_state_version,
@@ -1399,10 +2045,15 @@ def install_workflow_api(
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="patchDraftWorkflow",
             method="PATCH", resource_id=workflow_id, target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_PATCHED"},
+                lambda row, event: _recover_workflow_envelope(runtime, row, event),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        request_id = _request_id()
+        request_id = str(idem_id)
         snapshot = runtime.repository.patch_draft(
             workflow_id, body.expected_state_version,
             expected_configuration_revision=body.configuration_revision,
@@ -1423,10 +2074,24 @@ def install_workflow_api(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="patchWorkflowWorkspace",
             method="PATCH", resource_id=workflow_id, target=None, request=body.model_dump(),
             workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_PATCHED"},
+                lambda row, event: (
+                    200,
+                    {
+                        "request_id": str(row["idempotency_id"]),
+                        "workspace": runtime.repository.get_workspace(
+                            str(event["workflow_id"]),
+                            capabilities=_workspace_capabilities(runtime, str(event["workflow_id"])),
+                        ),
+                    },
+                ),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        request_id = _request_id()
+        request_id = str(idem_id)
         runtime.repository.patch_draft(
             workflow_id,
             body.expected_state_version,
@@ -1453,29 +2118,39 @@ def install_workflow_api(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="holdRetry",
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(),
             workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"RETRY_HELD"},
+                lambda row, event: _recover_workflow_command(runtime, row, event, "retry_hold"),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        request_id = _request_id()
-        snapshot = runtime.repository.hold_automatic_retry(
-            workflow_id,
-            body.expected_state_version,
-            request_id=request_id,
-            reason=body.reason or "desktop-return-to-configuration",
-        )
-        # A scheduler claim may have started the local worker between the
-        # renderer's last snapshot and this command.  Ask it to stop.  If the
-        # provider boundary was crossed, the engine will preserve the required
-        # ambiguous/reconciliation state instead of forcing a config change.
-        cancel_event = runtime.generation_cancel_events.get(workflow_id)
-        active_task = runtime.generation_tasks_by_workflow.get(workflow_id)
-        if (
-            snapshot.execution_state == "WAITING_USER"
-            and cancel_event is not None
-            and active_task is not None
-            and not active_task.done()
-        ):
-            cancel_event.set()
+        request_id = str(idem_id)
+        # Serialize the durable hold with local dispatch. Without this fence
+        # a scheduler can claim the retry between the state transition and
+        # the cancel-event check, reopening the browser while the user is
+        # returning to configuration.
+        async with runtime.generation_dispatch_guard:
+            snapshot = runtime.repository.hold_automatic_retry(
+                workflow_id,
+                body.expected_state_version,
+                request_id=request_id,
+                reason=body.reason or "desktop-return-to-configuration",
+            )
+            # A scheduler claim may have started the local worker before the
+            # lock was acquired. Ask it to stop. TTS has no reconciliation
+            # handoff: the local retry/stop decision remains authoritative
+            # even if the provider boundary was crossed.
+            cancel_event = runtime.generation_cancel_events.get(workflow_id)
+            active_task = runtime.generation_tasks_by_workflow.get(workflow_id)
+            if (
+                snapshot.execution_state == "WAITING_USER"
+                and cancel_event is not None
+                and active_task is not None
+                and not active_task.done()
+            ):
+                cancel_event.set()
         response = _command_response(snapshot, "retry_hold", request_id)
         runtime.repository.complete_idempotency(idem_id, response_status=202, response=response, workflow_id=workflow_id)
         return JSONResponse(response, status_code=202)
@@ -1486,74 +2161,123 @@ def install_workflow_api(
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name=action,
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {f"WORKFLOW_{action.upper()}"},
+                lambda row, event: _recover_workflow_command(runtime, row, event, action),
+            ),
         )
         if cached is not None:
-            return JSONResponse(cached, status_code=200)
-        before = runtime.repository.get_workflow(workflow_id)
-        if action == "pause" and _active_generation_task(runtime, workflow_id) is None:
-            raise RepositoryError(
-                "no local generation worker is available to receive the pause request",
-                code="GENERATION_NOT_RUNNING",
-            )
-        if action == "resume" and _active_generation_task(runtime, workflow_id) is None:
-            if before.control_state in {"PAUSED", "PAUSE_REQUESTED"}:
-                candidate = next(
-                    (
-                        value for value in runtime.repository.list_active_workflows(limit=200)
-                        if value.get("workflow", {}).get("workflow_id") == workflow_id
-                    ),
-                    None,
-                )
-                if not candidate or not candidate.get("can_resume"):
-                    raise ConflictError(
-                        "workflow cannot resume until its external side effect is reconciled",
-                        code="RECONCILIATION_REQUIRED",
-                    )
-                configuration = runtime.application._configuration(workflow_id)
-                # A workflow whose every item is already SKIPPED can be
-                # closed by the local repository path and must not require a
-                # provider login merely to resume that local transition.
-                items = runtime.repository.list_items(workflow_id)
-                all_skipped = bool(items) and all(
-                    str(item.get("status") or "") == "SKIPPED" for item in items
-                )
-                if not all_skipped:
-                    adapter = runtime.application.provider(
-                        str(configuration.get("provider") or "xunfei"),
-                        str(configuration.get("account_scope") or "xunfei-default"),
-                    )
-                    runtime.application._ensure_provider_ready(adapter)
-        request_id = _request_id()
-        snapshot = runtime.repository.command(
-            workflow_id, action, body.expected_state_version,
-            request_id=request_id, reason=body.reason,
-        )
-        if action == "cancel":
-            cancel_event = runtime.generation_cancel_events.get(workflow_id)
-            if cancel_event is not None:
-                cancel_event.set()
-            active_task = runtime.generation_tasks_by_workflow.get(workflow_id)
-            if active_task is None or active_task.done():
-                # A task can finish between the GET and this command.  Close
-                # the local cleanup lifecycle immediately in that case; an
-                # unresolved provider side effect is still kept in
-                # TERMINATING/WAITING_USER by the repository guard.
-                snapshot = runtime.repository.finalize_generation_cleanup(
-                    workflow_id,
-                    reason=body.reason or "用户取消任务",
-                )
-        elif action == "resume" and _active_generation_task(runtime, workflow_id) is None:
-            try:
+            if action == "cancel":
                 async with runtime.generation_dispatch_guard:
-                    _ensure_generation_dispatch_capacity(runtime, workflow_id)
-                    configuration = runtime.application._configuration(workflow_id)
-                    _schedule_generation_task(
+                    snapshot = _force_local_cancel(
                         runtime,
                         workflow_id,
-                        generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
-                        provider=str(configuration.get("provider") or "xunfei"),
-                        account_scope=str(configuration.get("account_scope") or "xunfei-default"),
+                        reason=body.reason or "用户取消任务",
+                        request_id=str(idem_id),
                     )
+                response = _command_response(snapshot, action, str(idem_id))
+                # Older builds cached the intermediate TERMINATING snapshot.
+                # Replace that response so every subsequent replay observes
+                # the same terminal local outcome.
+                runtime.repository.complete_idempotency(
+                    idem_id,
+                    response_status=202,
+                    response=response,
+                    workflow_id=workflow_id,
+                )
+                return JSONResponse(response, status_code=200)
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        if action == "pause":
+            # The local pause decision and worker lookup must be one fenced
+            # operation. Otherwise recovery dispatch can register a worker
+            # after the no-worker check but before PAUSE is persisted.
+            async with runtime.generation_dispatch_guard:
+                before = runtime.repository.get_workflow(workflow_id)
+                active_task = _active_generation_task(runtime, workflow_id)
+                local_tts_pause = (
+                    _is_tts_workflow(runtime, workflow_id)
+                    and _tts_generation_accepted(runtime, workflow_id)
+                    and before.execution_state in {"PREPARING", "RUNNING", "RECOVERING"}
+                    and before.control_state == "RUNNING"
+                )
+                if active_task is None and not local_tts_pause:
+                    raise RepositoryError(
+                        "no local generation worker is available to receive the pause request",
+                        code="GENERATION_NOT_RUNNING",
+                    )
+                snapshot = runtime.repository.command(
+                    workflow_id, action, body.expected_state_version,
+                    request_id=request_id, reason=body.reason,
+                )
+                if local_tts_pause:
+                    # TTS control is local. Persist PAUSED immediately even
+                    # when a browser worker is active; its private control
+                    # probe parks before the next page action. This makes the
+                    # durable state and UI respond without waiting for an
+                    # arbitrary Playwright timeout.
+                    snapshot = runtime.repository.acknowledge_pause(workflow_id)
+        elif action == "cancel":
+            async with runtime.generation_dispatch_guard:
+                snapshot = _force_local_cancel(
+                    runtime,
+                    workflow_id,
+                    reason=body.reason or "用户取消任务",
+                    request_id=request_id,
+                    expected_state_version=body.expected_state_version,
+                )
+        else:
+            before = runtime.repository.get_workflow(workflow_id)
+            if action == "resume" and _active_generation_task(runtime, workflow_id) is None:
+                if before.control_state in {"PAUSED", "PAUSE_REQUESTED"}:
+                    candidate = next(
+                        (
+                            value for value in runtime.repository.list_active_workflows(limit=200)
+                            if value.get("workflow", {}).get("workflow_id") == workflow_id
+                        ),
+                        None,
+                    )
+                    if not candidate or not candidate.get("can_resume"):
+                        raise ConflictError(
+                            "workflow cannot resume until its external side effect is reconciled",
+                            code="RECONCILIATION_REQUIRED",
+                        )
+                    configuration = runtime.application._configuration(workflow_id)
+                    # A workflow whose every item is already SKIPPED can be
+                    # closed by the local repository path and must not require
+                    # a provider login merely to resume that local transition.
+                    items = runtime.repository.list_items(workflow_id)
+                    all_skipped = bool(items) and all(
+                        str(item.get("status") or "") == "SKIPPED" for item in items
+                    )
+                    if not all_skipped:
+                        adapter = runtime.application.provider(
+                            str(configuration.get("provider") or "xunfei"),
+                            str(configuration.get("account_scope") or "xunfei-default"),
+                        )
+                        runtime.application._ensure_provider_ready(adapter)
+            snapshot = runtime.repository.command(
+                workflow_id, action, body.expected_state_version,
+                request_id=request_id, reason=body.reason,
+            )
+        if action == "resume":
+            try:
+                async with runtime.generation_dispatch_guard:
+                    # A recovery tick may win the lock after the resume
+                    # command changes PAUSED -> RUNNING. Re-check the worker
+                    # registry inside the fence so that winner is reused
+                    # instead of being treated as a scheduling failure.
+                    if _active_generation_task(runtime, workflow_id) is None:
+                        _ensure_generation_dispatch_capacity(runtime, workflow_id)
+                        configuration = runtime.application._configuration(workflow_id)
+                        _schedule_generation_task(
+                            runtime,
+                            workflow_id,
+                            generation_mode=str(configuration.get("generation_mode") or "composite_cut"),
+                            provider=str(configuration.get("provider") or "xunfei"),
+                            account_scope=str(configuration.get("account_scope") or "xunfei-default"),
+                        )
             except Exception:
                 # Keep a restarted workflow paused if scheduling fails after
                 # the resume command was fenced.  A later explicit resume can
@@ -1580,13 +2304,18 @@ def install_workflow_api(
     async def parse_workflow(workflow_id: str, body: ParseBody, idempotency_key: str = Header(..., alias="X-Idempotency-Key")):
         runtime.ensure_initialized()
         key = _idempotency_key(idempotency_key)
-        request_id = _request_id()
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="parseWorkflow",
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_PARSED"},
+                lambda row, event: _recover_parse(runtime, row, event),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
         result = await asyncio.to_thread(
             runtime.application.parse,
             workflow_id,
@@ -1610,13 +2339,18 @@ def install_workflow_api(
     async def generate_workflow(workflow_id: str, body: GenerateBody, idempotency_key: str = Header(..., alias="X-Idempotency-Key")):
         runtime.ensure_initialized()
         key = _idempotency_key(idempotency_key)
-        request_id = _request_id()
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="generateWorkflow",
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_GENERATE"},
+                lambda row, event: _recover_workflow_command(runtime, row, event, "generate"),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
         if body.configuration_revision is not None:
             current_configuration_revision = runtime.repository.get_configuration_revision(workflow_id)
             if int(body.configuration_revision) != current_configuration_revision:
@@ -1633,6 +2367,7 @@ def install_workflow_api(
         # requests can both observe a free slot, accept two RUNNING snapshots,
         # and only then discover that one enqueue lost the race.
         async with runtime.generation_dispatch_guard:
+            await _wait_for_retryable_generation_to_finish(runtime, workflow_id)
             _ensure_generation_dispatch_capacity(runtime, workflow_id)
             snapshot = runtime.application.accept_generation(
                 workflow_id,
@@ -1645,41 +2380,58 @@ def install_workflow_api(
             )
             response = _command_response(snapshot, "generate", request_id)
             effective_configuration = runtime.application._configuration(workflow_id)
-            try:
-                _schedule_generation_task(
-                    runtime,
+            # There is no provider work when every parsed item was explicitly
+            # skipped.  Close this local, billable-free path before returning
+            # instead of enqueueing a task whose only job is to discover that
+            # it has nothing to submit.  Besides avoiding a needless browser
+            # startup, this makes the POST response and the immediately-read
+            # workflow snapshot agree on the terminal result.
+            items = runtime.repository.list_items(workflow_id)
+            all_items_skipped = bool(items) and body.item_ids is None and all(
+                str(item.get("status") or "") == "SKIPPED" for item in items
+            )
+            if all_items_skipped:
+                snapshot = runtime.repository.complete_skipped_workflow(
                     workflow_id,
-                    generation_mode=str(effective_configuration.get("generation_mode") or "composite_cut"),
-                    provider=str(effective_configuration.get("provider") or "xunfei"),
-                    account_scope=str(effective_configuration.get("account_scope") or "xunfei-default"),
-                    item_ids=body.item_ids,
+                    request_id=request_id,
                 )
-            except RepositoryError as exc:
-                # Capacity is checked before acceptance, but the task registry
-                # can still change inside the helper.  Do not leave a durable
-                # RUNNING workflow behind when the enqueue fails.
-                if exc.code != "GENERATION_ALREADY_RUNNING":
+                response = _command_response(snapshot, "generate", request_id)
+            else:
+                try:
+                    _schedule_generation_task(
+                        runtime,
+                        workflow_id,
+                        generation_mode=str(effective_configuration.get("generation_mode") or "composite_cut"),
+                        provider=str(effective_configuration.get("provider") or "xunfei"),
+                        account_scope=str(effective_configuration.get("account_scope") or "xunfei-default"),
+                        item_ids=body.item_ids,
+                    )
+                except RepositoryError as exc:
+                    # Capacity is checked before acceptance, but the task registry
+                    # can still change inside the helper.  Do not leave a durable
+                    # RUNNING workflow behind when the enqueue fails.
+                    if exc.code != "GENERATION_ALREADY_RUNNING":
+                        try:
+                            runtime.repository.record_generation_task_failure(
+                                workflow_id,
+                                error_code=exc.code,
+                                error_message=str(exc),
+                                error_details=getattr(exc, "details", None),
+                            )
+                        except Exception:
+                            pass
+                    raise
+                except Exception as exc:
                     try:
                         runtime.repository.record_generation_task_failure(
                             workflow_id,
-                            error_code=exc.code,
+                            error_code=getattr(exc, "code", "INTERNAL_ERROR"),
                             error_message=str(exc),
                             error_details=getattr(exc, "details", None),
                         )
                     except Exception:
                         pass
-                raise
-            except Exception as exc:
-                try:
-                    runtime.repository.record_generation_task_failure(
-                        workflow_id,
-                        error_code=getattr(exc, "code", "INTERNAL_ERROR"),
-                        error_message=str(exc),
-                        error_details=getattr(exc, "details", None),
-                    )
-                except Exception:
-                    pass
-                raise
+                    raise
         runtime.repository.complete_idempotency(idem_id, response_status=202, response=response, workflow_id=workflow_id)
         return JSONResponse(response, status_code=202)
 
@@ -1687,13 +2439,18 @@ def install_workflow_api(
     async def export_workflow_zip(workflow_id: str, body: ExportZipBody, idempotency_key: str = Header(..., alias="X-Idempotency-Key")):
         runtime.ensure_initialized()
         key = _idempotency_key(idempotency_key)
-        request_id = _request_id()
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="exportWorkflowZip",
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_EXPORTED"},
+                lambda row, event: _recover_export(runtime, row, event),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
         snapshot = runtime.repository.get_workflow(workflow_id)
         if snapshot.state_version != body.expected_state_version:
             raise ConflictError("workflow state_version is stale", code="STATE_CONFLICT")
@@ -1701,6 +2458,7 @@ def install_workflow_api(
             runtime.application.create_export_zip,
             workflow_id,
             include_item_ids=body.include_item_ids,
+            request_id=request_id,
         )
         response = {
             "request_id": request_id,
@@ -1728,10 +2486,15 @@ def install_workflow_api(
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name=action,
             method="POST", resource_id=workflow_id, target=body.target, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {f"WORKFLOW_{action.upper()}_TARGETED"},
+                lambda row, event: _recover_workflow_command(runtime, row, event, action),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        request_id = _request_id()
+        request_id = str(idem_id)
         snapshot = runtime.repository.targeted_command(
             workflow_id, action, body.target,
             expected_state_version=body.expected_state_version,
@@ -1766,10 +2529,15 @@ def install_workflow_api(
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="createWorkflowRerun",
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_RERUN_CREATED"},
+                lambda row, event: _recover_workflow_envelope(runtime, row, event),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        request_id = _request_id()
+        request_id = str(idem_id)
         snapshot = runtime.repository.create_rerun(
             workflow_id,
             expected_group_state_version=body.expected_group_state_version,
@@ -1788,6 +2556,9 @@ def install_workflow_api(
             scope=f"workflow:{workflow_id}:external-record", client_key=key,
             command_name="ensureExternalRecord", method="POST", resource_id=workflow_id,
             target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_external_record(runtime, workflow_id, body),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
@@ -1817,6 +2588,9 @@ def install_workflow_api(
             scope=f"external-record:{mapping_id}:lease", client_key=key,
             command_name="acquireExternalRecordLease", method="POST", resource_id=mapping_id,
             target=None, request=body.model_dump(), workflow_id=workflow_id or None,
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_external_lease(runtime, mapping_id, body.owner_id),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
@@ -1839,6 +2613,9 @@ def install_workflow_api(
             scope=f"workflow:{workflow_id}:external-operation", client_key=key,
             command_name="prepareExternalOperation", method="POST", resource_id=workflow_id,
             target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_external_operation_prepare(runtime, workflow_id, body),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
@@ -1867,6 +2644,13 @@ def install_workflow_api(
             scope=f"workflow:{operation['workflow_id']}:external-operation:{operation_id}", client_key=key,
             command_name="beginExternalOperation", method="POST", resource_id=operation_id,
             target={"external_operation_id": operation_id}, request=body.model_dump(), workflow_id=str(operation["workflow_id"]),
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_external_operation_state(
+                    runtime,
+                    operation_id,
+                    {"IN_FLIGHT", "SUBMITTED", "CONFIRMED", "REJECTED", "AMBIGUOUS"},
+                ),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
@@ -1884,6 +2668,13 @@ def install_workflow_api(
             scope=f"workflow:{operation['workflow_id']}:external-operation:{operation_id}", client_key=key,
             command_name="observeExternalSubmission", method="POST", resource_id=operation_id,
             target={"external_operation_id": operation_id}, request=body.model_dump(), workflow_id=str(operation["workflow_id"]),
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_external_operation_state(
+                    runtime,
+                    operation_id,
+                    {"SUBMITTED", "CONFIRMED", "REJECTED"},
+                ),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
@@ -1902,6 +2693,16 @@ def install_workflow_api(
             scope=f"workflow:{operation['workflow_id']}:external-operation:{operation_id}", client_key=key,
             command_name="resolveExternalOperation", method="POST", resource_id=operation_id,
             target={"external_operation_id": operation_id}, request=body.model_dump(), workflow_id=str(operation["workflow_id"]),
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_external_operation_state(
+                    runtime,
+                    operation_id,
+                    {
+                        "CONFIRMED" if body.decision == "CONFIRMED" else
+                        "REJECTED" if body.decision == "NOT_SUBMITTED" else "AMBIGUOUS",
+                    },
+                ),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
@@ -1922,7 +2723,6 @@ def install_workflow_api(
         key = _idempotency_key(idempotency_key)
         target = dict(body.target)
         target.setdefault("work_unit_attempt_id", attempt_id) if target.get("target_type") == "WORK_UNIT_ATTEMPT" else None
-        request_id = _request_id()
         # Resolve has no workflow path parameter; resolve the target once to
         # discover its workflow, then reuse the same conditional operation.
         parsed = runtime.repository.get_workflow_for_target(target)
@@ -1930,9 +2730,15 @@ def install_workflow_api(
             scope=f"workflow:{parsed}", client_key=key, command_name="resolve",
             method="POST", resource_id=attempt_id, target=target, request=body.model_dump(),
             workflow_id=parsed,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"WORKFLOW_RESOLVE_TARGETED"},
+                lambda row, event: _recover_workflow_command(runtime, row, event, "resolve"),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
         snapshot = runtime.repository.targeted_command(
             parsed, "resolve", target,
             expected_state_version=body.expected_state_version,
@@ -1953,6 +2759,13 @@ def install_workflow_api(
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"workflow:{workflow_id}", client_key=key, command_name="createSourceImport",
             method="POST", resource_id=workflow_id, target=None, request=body.model_dump(), workflow_id=workflow_id,
+            recovery=_durable_idempotency_recovery(
+                lambda row: (
+                    (201, existing)
+                    if (existing := runtime.imports.get_import_by_request_key(workflow_id, key)) is not None
+                    else None
+                ),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
@@ -1973,10 +2786,20 @@ def install_workflow_api(
         idem_id, cached = runtime.repository.begin_idempotency(
             scope=f"source-import:{import_id}", client_key=key, command_name="createSourceImportGeneration",
             method="POST", resource_id=import_id, target=None, request=body.model_dump(), workflow_id=source_import["workflow_id"],
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SOURCE_GENERATION_CREATED"},
+                lambda row, event: _recover_source_generation(runtime, row, event, import_id),
+            ),
         )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        runtime.imports.create_generation(import_id, expected_state_version=body.expected_state_version)
+        request_id = str(idem_id)
+        runtime.imports.create_generation(
+            import_id,
+            expected_state_version=body.expected_state_version,
+            request_id=request_id,
+        )
         result = runtime.imports.get_import(import_id)
         runtime.repository.complete_idempotency(idem_id, response_status=201, response=result, workflow_id=source_import["workflow_id"])
         return result
@@ -2049,6 +2872,9 @@ def install_workflow_api(
                 method="PUT", resource_id=import_id, target={"generation": staging_generation},
                 request={"generation": staging_generation, "size_bytes": size, "sha256": content_hash_value},
                 workflow_id=source_generation["workflow_id"],
+                recovery=_durable_idempotency_recovery(
+                    lambda row: _recover_source_write(runtime, import_id, size, content_hash_value),
+                ),
             )
             if cached is not None:
                 return JSONResponse(cached, status_code=200)
@@ -2063,7 +2889,18 @@ def install_workflow_api(
         runtime.ensure_initialized()
         source_import = runtime.imports.get_import(import_id)
         key = _idempotency_key(idempotency_key)
-        idem_id, cached = runtime.repository.begin_idempotency(scope=f"source-import:{import_id}", client_key=key, command_name="abortSourceImport", method="POST", resource_id=import_id, target=None, request=body.model_dump(), workflow_id=source_import["workflow_id"])
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"source-import:{import_id}", client_key=key, command_name="abortSourceImport",
+            method="POST", resource_id=import_id, target=None, request=body.model_dump(),
+            workflow_id=source_import["workflow_id"],
+            recovery=_durable_idempotency_recovery(
+                lambda row: (
+                    (202, current)
+                    if str((current := runtime.imports.get_import(import_id)).get("status")) == "ABORTED"
+                    else None
+                ),
+            ),
+        )
         if cached is not None:
             return JSONResponse(cached, status_code=200)
         runtime.imports.abort(import_id, expected_state_version=body.expected_state_version)

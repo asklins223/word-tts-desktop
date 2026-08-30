@@ -6,7 +6,13 @@ import os
 import re
 import time
 
-from .errors import _check_cancel_requested, _check_page_open, _log
+from .errors import (
+    XunfeiCancelled,
+    _check_cancel_requested,
+    _check_page_open,
+    _log,
+    _wait_with_cancel,
+)
 
 
 def poll(
@@ -28,6 +34,11 @@ def poll(
             result = check_fn()
             if result:
                 return result
+        except XunfeiCancelled:
+            # Cancellation is a control-flow signal, not a transient page
+            # probe failure.  Let it escape immediately instead of allowing
+            # the poller to run another attempt and continue automation.
+            raise
         except Exception:
             pass
         remaining = deadline - time.monotonic()
@@ -38,14 +49,10 @@ def poll(
             current_interval * (0.9 + (time.monotonic() % 0.2)),
             remaining,
         )
-        if page is not None:
-            try:
-                page.wait_for_timeout(int(sleep_s * 1000))
-            except Exception:
-                _check_page_open(page)
-                raise
-        else:
-            time.sleep(sleep_s)
+        # Keep waits interruptible in 250ms slices.  A plain Playwright
+        # timeout can otherwise hold the browser worker after the user has
+        # already pressed pause/stop.
+        _wait_with_cancel(page, sleep_s, cancel_check=cancel_check)
         current_interval = min(upper_interval, current_interval * 1.35)
     return None
 

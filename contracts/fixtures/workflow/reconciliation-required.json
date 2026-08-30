@@ -1,6 +1,6 @@
 {
   "name": "reconciliation-required",
-  "expected": { "view": "issues", "primary_action": "RECONCILE", "terminal": false, "retry_enabled": false },
+  "expected": { "view": "issues", "primary_action": "OPEN_VIEW", "terminal": false, "retry_enabled": false },
   "schema_version": 1,
   "source_filename": "lesson.docx",
   "snapshot": { "workflow_id": "fixture-reconciliation-required", "workflow_group_id": "fixture-group-reconcile", "group_state_version": 1, "parent_workflow_id": null, "result_status": "IN_PROGRESS", "execution_state": "BLOCKED", "control_state": "RUNNING", "cleanup_state": "NONE", "status": "ACTIVE", "state_version": 12, "draft_revision": 1, "current_step_id": "step-tts", "source_artifact_id": "artifact-source-reconcile", "item_count": 2, "artifact_count": 0, "latest_event_id": "event-reconcile-12", "latest_seq": 12, "updated_at": "2026-08-30T00:00:12Z" },

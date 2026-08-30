@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator, Sequence
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 DB_PATH_ENV = "WORDTTS_DB_PATH"
@@ -45,6 +45,27 @@ class Migration:
     name: str
     sql: str
     checksum: str
+
+
+DataConsistencyRepair = Callable[
+    [sqlite3.Connection, Migration | None, str | None, Exception], bool
+]
+
+_MAX_DATA_CONSISTENCY_REPAIRS = 8
+_SQL_IDENTIFIER = (
+    r'(?:[A-Za-z_][A-Za-z0-9_]*|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[(?:[^\]])+\])'
+)
+_UNIQUE_INDEX_RE = re.compile(
+    rf"\A\s*CREATE\s+UNIQUE\s+INDEX\s+(?P<index>{_SQL_IDENTIFIER})"
+    rf"\s+ON\s+(?P<table>{_SQL_IDENTIFIER})\s*"
+    rf"\((?P<columns>.*?)\)"
+    rf"(?:\s+WHERE\s+(?P<where>.*?))?\s*;?\s*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+class _DataRepairNotApplicable(Exception):
+    """The migration failure is not a safely identifiable data conflict."""
 
 
 def _db_path() -> Path:
@@ -249,11 +270,248 @@ def _check_integrity(con: sqlite3.Connection) -> None:
         raise MigrationError(f"integrity_check failed: {integrity}")
 
 
+def _is_data_consistency_failure(exc: BaseException) -> bool:
+    message = str(exc).upper()
+    if isinstance(exc, sqlite3.IntegrityError):
+        return (
+            "UNIQUE CONSTRAINT FAILED" in message
+            or "FOREIGN KEY CONSTRAINT FAILED" in message
+        )
+    return isinstance(exc, MigrationError) and "FOREIGN_KEY_CHECK FAILED" in message
+
+
+def _quote_identifier(identifier: str) -> str:
+    if "\x00" in identifier:
+        raise _DataRepairNotApplicable("identifier contains NUL")
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _strip_leading_sql_comments(statement: str) -> str:
+    remaining = statement.strip()
+    while remaining:
+        if remaining.startswith("--"):
+            newline = remaining.find("\n")
+            if newline < 0:
+                return ""
+            remaining = remaining[newline + 1 :].lstrip()
+            continue
+        if remaining.startswith("/*"):
+            end = remaining.find("*/", 2)
+            if end < 0:
+                return ""
+            remaining = remaining[end + 2 :].lstrip()
+            continue
+        break
+    return remaining
+
+
+def _unquote_sql_identifier(token: str) -> str | None:
+    token = token.strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+        return token
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        body = token[1:-1]
+        if '"' in body.replace('""', ""):
+            return None
+        return body.replace('""', '"')
+    if len(token) >= 2 and token[0] == "`" and token[-1] == "`":
+        body = token[1:-1]
+        if "`" in body.replace("``", ""):
+            return None
+        return body.replace("``", "`")
+    if len(token) >= 2 and token[0] == "[" and token[-1] == "]":
+        body = token[1:-1]
+        return body if "]" not in body else None
+    return None
+
+
+def _rowid_table_columns(
+    con: sqlite3.Connection,
+    table_name: str,
+) -> tuple[str, dict[str, tuple[object, ...]]]:
+    table = con.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    if table is None or table[0] is None:
+        raise _DataRepairNotApplicable(f"table is unavailable: {table_name}")
+    if re.search(r"\bWITHOUT\s+ROWID\b", str(table[0]), re.IGNORECASE):
+        raise _DataRepairNotApplicable(f"table has no rowid: {table_name}")
+    rows = con.execute(f"PRAGMA table_info({_quote_identifier(table_name)})").fetchall()
+    columns = {str(row[1]): tuple(row) for row in rows}
+    if not columns:
+        raise _DataRepairNotApplicable(f"table has no columns: {table_name}")
+    return _quote_identifier(table_name), columns
+
+
+def _unique_index_conflicts(
+    con: sqlite3.Connection,
+    statement: str,
+) -> tuple[str, list[int]] | None:
+    match = _UNIQUE_INDEX_RE.match(_strip_leading_sql_comments(statement))
+    if match is None:
+        return None
+
+    table_name = _unquote_sql_identifier(match.group("table"))
+    columns = [
+        _unquote_sql_identifier(column)
+        for column in match.group("columns").split(",")
+    ]
+    if table_name is None or not columns or any(column is None for column in columns):
+        return None
+    normalized_columns = [column for column in columns if column is not None]
+    if len(set(normalized_columns)) != len(normalized_columns):
+        return None
+
+    try:
+        quoted_table, table_columns = _rowid_table_columns(con, table_name)
+    except _DataRepairNotApplicable:
+        return None
+    if any(column not in table_columns for column in normalized_columns):
+        return None
+
+    predicate = match.group("where")
+    if predicate is None:
+        predicate = "1"
+    else:
+        predicate = predicate.strip()
+        if predicate.endswith(";"):
+            predicate = predicate[:-1].rstrip()
+        # The predicate comes from a frozen migration file, but rejecting
+        # statement separators keeps this repair bounded to one expression.
+        if not predicate or ";" in predicate:
+            return None
+
+    quoted_columns = [_quote_identifier(column) for column in normalized_columns]
+    non_null = " AND ".join(f"{column} IS NOT NULL" for column in quoted_columns)
+    group_by = ", ".join(quoted_columns)
+    rows = con.execute(
+        f"""
+        SELECT rowid
+        FROM {quoted_table}
+        WHERE ({predicate})
+          AND ({non_null})
+          AND rowid NOT IN (
+              SELECT MIN(rowid)
+              FROM {quoted_table}
+              WHERE ({predicate})
+                AND ({non_null})
+              GROUP BY {group_by}
+          )
+        ORDER BY rowid
+        """
+    ).fetchall()
+    return table_name, [int(row[0]) for row in rows]
+
+
+def _foreign_key_conflicts(con: sqlite3.Connection) -> list[tuple[str, int]] | None:
+    rows = con.execute("PRAGMA foreign_key_check").fetchall()
+    conflicts: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for row in rows:
+        table_name = str(row[0]) if row[0] is not None else ""
+        if not table_name or row[1] is None:
+            return None
+        try:
+            rowid = int(row[1])
+            _rowid_table_columns(con, table_name)
+        except (TypeError, ValueError, _DataRepairNotApplicable):
+            return None
+        conflict = (table_name, rowid)
+        if conflict not in seen:
+            seen.add(conflict)
+            conflicts.append(conflict)
+    return conflicts
+
+
+def _delete_rowids(
+    con: sqlite3.Connection,
+    rows: Sequence[tuple[str, int]],
+) -> int:
+    deleted = 0
+    for table_name, rowid in rows:
+        quoted_table, _ = _rowid_table_columns(con, table_name)
+        exists = con.execute(
+            f"SELECT 1 FROM {quoted_table} WHERE rowid=?",
+            (rowid,),
+        ).fetchone()
+        if exists is None:
+            continue
+        con.execute(f"DELETE FROM {quoted_table} WHERE rowid=?", (rowid,))
+        deleted += 1
+    return deleted
+
+
+def _rollback_repair_savepoint(con: sqlite3.Connection, name: str) -> None:
+    try:
+        con.execute(f"ROLLBACK TO {name}")
+    except sqlite3.Error:
+        pass
+    try:
+        con.execute(f"RELEASE {name}")
+    except sqlite3.Error:
+        pass
+
+
+def repair_data_consistency(
+    con: sqlite3.Connection,
+    migration: Migration | None,
+    statement: str | None,
+    error: Exception,
+) -> bool:
+    """Delete only identifiable conflicting rows so a migration can retry.
+
+    This deliberately handles a narrow set of cases: duplicate rows blocking a
+    ``CREATE UNIQUE INDEX`` and already-existing orphan rows reported by
+    ``PRAGMA foreign_key_check``.  An INSERT/UPDATE that fails during a
+    migration has no unambiguous row to delete, so it remains a hard failure.
+    """
+
+    if not _is_data_consistency_failure(error):
+        return False
+
+    savepoint = "data_consistency_repair"
+    try:
+        con.execute(f"SAVEPOINT {savepoint}")
+    except sqlite3.Error:
+        return False
+    try:
+        message = str(error).upper()
+        if "FOREIGN KEY" in message or "FOREIGN_KEY" in message:
+            conflicts = _foreign_key_conflicts(con)
+            if not conflicts:
+                raise _DataRepairNotApplicable("no existing foreign-key orphan rows")
+            deleted = _delete_rowids(con, conflicts)
+            description = "foreign-key orphan rows"
+        else:
+            if migration is None or statement is None:
+                raise _DataRepairNotApplicable("unique conflict has no migration statement")
+            unique_conflict = _unique_index_conflicts(con, statement)
+            if unique_conflict is None:
+                raise _DataRepairNotApplicable("unique conflict is not a supported index migration")
+            table_name, rowids = unique_conflict
+            if not rowids:
+                raise _DataRepairNotApplicable("unique index has no identifiable duplicate rows")
+            deleted = _delete_rowids(con, [(table_name, rowid) for rowid in rowids])
+            description = f"duplicate rows from {table_name}"
+
+        if deleted <= 0:
+            raise _DataRepairNotApplicable("no rows were deleted")
+        con.execute(f"RELEASE {savepoint}")
+        print(f"[migrate] repaired data consistency: deleted {deleted} {description}")
+        return True
+    except (_DataRepairNotApplicable, sqlite3.Error, ValueError):
+        _rollback_repair_savepoint(con, savepoint)
+        return False
+
+
 def apply_migrations(
     con: sqlite3.Connection,
     *,
     target: int,
     migrations: Sequence[Migration] | None = None,
+    repair_data_consistency: DataConsistencyRepair | None = None,
+    _repair_attempt: int = 0,
 ) -> int:
     """Apply missing migrations through ``target`` atomically."""
 
@@ -266,9 +524,11 @@ def apply_migrations(
         if migration.version > target or migration.version <= current:
             continue
         print(f"[migrate] applying {migration.name} ...")
+        failing_statement: str | None = None
         try:
             con.execute("BEGIN IMMEDIATE")
             for statement in iter_sql_statements(migration.sql):
+                failing_statement = statement
                 con.execute(statement)
             con.execute(
                 "INSERT INTO schema_migrations(version, name, checksum, applied_at) "
@@ -293,12 +553,45 @@ def apply_migrations(
                 # useful for diagnostics and catches accidental non-transaction
                 # statements in future migrations.
                 pass
+            if (
+                repair_data_consistency is not None
+                and _repair_attempt < _MAX_DATA_CONSISTENCY_REPAIRS
+                and _is_data_consistency_failure(exc)
+                and repair_data_consistency(
+                    con,
+                    migration,
+                    failing_statement,
+                    exc,
+                )
+            ):
+                print(f"[migrate] retrying {migration.name} after data repair")
+                return apply_migrations(
+                    con,
+                    target=target,
+                    migrations=migrations,
+                    repair_data_consistency=repair_data_consistency,
+                    _repair_attempt=_repair_attempt + 1,
+                )
             print(f"[migrate] FAILED {migration.name}: {exc}", file=sys.stderr)
             return 3
 
     try:
         _check_integrity(con)
     except Exception as exc:
+        if (
+            repair_data_consistency is not None
+            and _repair_attempt < _MAX_DATA_CONSISTENCY_REPAIRS
+            and _is_data_consistency_failure(exc)
+            and repair_data_consistency(con, None, None, exc)
+        ):
+            print("[migrate] retrying post-check after data repair")
+            return apply_migrations(
+                con,
+                target=target,
+                migrations=migrations,
+                repair_data_consistency=repair_data_consistency,
+                _repair_attempt=_repair_attempt + 1,
+            )
         print(f"[migrate] post-check failed: {exc}", file=sys.stderr)
         return 4
     return 0
@@ -507,9 +800,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             backup_path = prepare_migration_backup(db_path, target=target, migrations=migrations)
             if backup_path is not None:
                 print(f"[migrate] pre-upgrade backup: {backup_path}")
+            repair_backup_created = backup_path is not None
+
+            def repair_callback(
+                con: sqlite3.Connection,
+                migration: Migration | None,
+                statement: str | None,
+                error: Exception,
+            ) -> bool:
+                nonlocal repair_backup_created
+                if not repair_backup_created:
+                    repair_backup = backup_database(db_path)
+                    if repair_backup is None:
+                        raise MigrationError(
+                            "cannot create backup before repairing data consistency"
+                        )
+                    repair_backup_created = True
+                    print(f"[migrate] pre-repair backup: {repair_backup}")
+                return repair_data_consistency(con, migration, statement, error)
+
             con = _open_write_database(db_path)
             try:
-                return apply_migrations(con, target=target, migrations=migrations)
+                return apply_migrations(
+                    con,
+                    target=target,
+                    migrations=migrations,
+                    repair_data_consistency=repair_callback,
+                )
             finally:
                 con.close()
     except MigrationError as exc:

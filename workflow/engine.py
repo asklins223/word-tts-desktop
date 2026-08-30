@@ -1,9 +1,11 @@
 """Application-level vertical workflow runner backed by the durable ports.
 
 The engine deliberately knows nothing about Playwright or Electron.  A
-provider only needs ``submit``, ``query`` and ``download``; all billable
-boundaries, retries, receipts and artifacts are persisted by the repository
-before this module returns.
+provider only needs ``submit`` and ``download``; all local task boundaries,
+retries, receipts and artifacts are persisted by the repository before this
+module returns.  TTS recovery never queries the provider: without a durable
+local receipt or artifact, the next explicit generation starts a fresh
+attempt.
 """
 
 from __future__ import annotations
@@ -170,6 +172,16 @@ class WorkflowEngine:
     ) -> TTSRunResult:
 
         self._wait_if_paused(workflow_id, cancel_check, pause_check)
+        # The Xunfei adapter runs synchronous browser automation in its own
+        # thread.  Passing only ``cancel_check`` meant a pause was visible to
+        # this engine thread but invisible while the page was being prepared,
+        # submitted, or polled for a receipt.  Give provider automation a
+        # pause-aware control probe so it parks at its next existing safe
+        # checkpoint without clicking the page again until resume.
+        provider_control_check = self._provider_control_check(
+            cancel_check,
+            pause_check,
+        )
         if self._cancel_requested(cancel_check):
             raise RepositoryError("generation cancelled before provider submission", code="WORKFLOW_CANCELLED")
         snapshot = self.repository.get_workflow(workflow_id)
@@ -366,146 +378,63 @@ class WorkflowEngine:
         receipt_id: str | None = None
         submission_state = str(plan["submission_state"])
         if submission_state in {"AMBIGUOUS", "IN_FLIGHT", "SUBMITTED", "CONFIRMED"}:
-            self._wait_if_paused(workflow_id, cancel_check, pause_check)
-            if self._cancel_requested(cancel_check):
-                raise RepositoryError("generation cancelled while provider result was unresolved", code="WORKFLOW_CANCELLED")
-            if callable(progress_callback):
-                try:
-                    progress_callback({
-                        "stage": "reconciling",
-                        "status": "reconciling",
-                        "item_id": str(ordered_plan[0].get("item_id") or "") if ordered_plan else "",
-                    })
-                except Exception:
-                    pass
-            query_with_context = getattr(provider, "query_with_context", None)
-
-            def query_provider() -> Any:
-                if callable(query_with_context):
-                    query_context = {"plan": ordered_plan, "profile": profile}
-                    query_kwargs = {}
-                    if callable(cancel_check):
-                        query_kwargs["cancel_check"] = cancel_check
-                    if callable(progress_callback):
-                        query_kwargs["progress_callback"] = progress_callback
-                    try:
-                        return query_with_context(
-                            submission_key,
-                            query_context,
-                            **query_kwargs,
-                        )
-                    except TypeError as exc:
-                        # Keep injected providers written against the original
-                        # two-argument port usable while the real browser
-                        # adapter receives the cancellation/progress hooks.
-                        message = str(exc)
-                        if not query_kwargs or not any(
-                            token in message for token in ("cancel_check", "progress_callback")
-                        ):
-                            raise
-                        return query_with_context(submission_key, query_context)
-                return provider.query(submission_key)
-
-            try:
-                # A provider lookup is an external call too.  Renewing here
-                # fences an expired/replaced worker before it can consume a
-                # stale browser session or publish the observed receipt.
-                receipt = self._provider_call_with_lease(
-                    lease_id,
-                    owner_id,
-                    fencing_token,
-                    query_provider,
-                )
-            except ProviderError as exc:
-                # A failed provider lookup is not proof that the prior
-                # submission disappeared.  Persist the conservative
-                # AMBIGUOUS state so a scheduler/restart cannot keep treating
-                # the work as a safe retryable output failure.
-                if exc.code == "STALE_ATTEMPT":
-                    self._record_stale_lease(plan, receipt_id=None, error=exc)
-                else:
-                    try:
-                        self.repository.mark_tts_failure(
-                            plan,
-                            error_code=exc.code,
-                            error_message=str(exc)[:2000],
-                            error_details=getattr(exc, "details", None),
-                            ambiguous=True,
-                        )
-                    except Exception:
-                        # If the lease or database is already unavailable, the
-                        # existing IN_FLIGHT/SUBMITTED fact remains for recovery.
-                        # Do not replace the provider lookup's conservative
-                        # outcome with a secondary persistence exception.
-                        pass
-                return TTSRunResult(
-                    workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                    str(plan["submission_id"]), None, tuple(), "AMBIGUOUS", exc.code, bool(plan["reused"]),
-                    str(exc), dict(getattr(exc, "details", {}) or {}),
-                )
-            except Exception as exc:
-                if getattr(exc, "code", "") == "STALE_ATTEMPT":
-                    self._record_stale_lease(plan, receipt_id=None, error=exc)
-                else:
-                    try:
-                        self.repository.mark_tts_failure(
-                            plan,
-                            error_code=getattr(exc, "code", "SUBMISSION_AMBIGUOUS"),
-                            error_message=str(exc)[:2000],
-                            error_details=getattr(exc, "details", None),
-                            ambiguous=True,
-                        )
-                    except Exception:
-                        pass
-                return TTSRunResult(
-                    workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                    str(plan["submission_id"]), None, tuple(), "AMBIGUOUS",
-                    getattr(exc, "code", "SUBMISSION_AMBIGUOUS"), bool(plan["reused"]),
-                    str(exc)[:2000], dict(getattr(exc, "details", {}) or {}),
-                )
-            if receipt is None:
-                if submission_state != "AMBIGUOUS":
-                    self.repository.mark_tts_failure(
-                        plan,
-                        error_code="SUBMISSION_AMBIGUOUS",
-                        error_message="未找到已提交作品；系统未重复提交，请核验讯飞作品列表后再决定",
-                        ambiguous=True,
-                    )
-                return TTSRunResult(
-                    workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                    str(plan["submission_id"]), None, tuple(), "AMBIGUOUS", "SUBMISSION_AMBIGUOUS", bool(plan["reused"]),
-                    "未找到已提交作品；系统未重复提交，请核验讯飞作品列表后再决定",
-                )
+            # Do not query the provider. If a previous process stopped after
+            # crossing the local submission boundary without a durable output,
+            # archive that local attempt and immediately create a fresh one for
+            # this explicit generation request.
+            message = "本地没有保存可下载结果，按未完成任务处理；可以直接重新生成"
+            self.repository.mark_tts_failure(
+                plan,
+                error_code="LOCAL_SUBMISSION_NOT_CONFIRMED",
+                error_message=message,
+                ambiguous=False,
+            )
+            if budget_id and not budget_reused:
+                self.repository.release_budget(budget_id)
+            return self._run_tts(
+                workflow_id,
+                provider,
+                generation_mode=generation_mode,
+                lease_id=lease_id,
+                fencing_token=fencing_token,
+                owner_id=owner_id,
+                cancel_check=cancel_check,
+                pause_check=pause_check,
+                item_ids=item_ids,
+                progress_callback=progress_callback,
+            )
         else:
             try:
                 self._wait_if_paused(workflow_id, cancel_check, pause_check)
                 self.repository.begin_tts_submission(plan)
                 self._wait_if_paused(workflow_id, cancel_check, pause_check)
                 if self._cancel_requested(cancel_check):
-                    message = "用户取消时讯飞提交结果尚未确认；系统未重复提交，请核验讯飞作品列表后再决定"
+                    message = "任务已停止，讯飞任务未返回本地任务 ID；可以直接重新生成"
                     self.repository.mark_tts_failure(
                         plan,
-                        error_code="SUBMISSION_AMBIGUOUS",
+                        error_code="WORKFLOW_CANCELLED",
                         error_message=message,
-                        ambiguous=True,
+                        ambiguous=False,
                     )
                     return TTSRunResult(
                         workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                        str(plan["submission_id"]), None, tuple(), "AMBIGUOUS", "SUBMISSION_AMBIGUOUS", bool(plan["reused"]),
+                        str(plan["submission_id"]), None, tuple(), "WAITING_RETRY", "WORKFLOW_CANCELLED", bool(plan["reused"]),
                         message,
                     )
                 provider_payload: dict[str, Any] = {"plan": ordered_plan, "profile": profile}
-                if cancel_check is not None:
+                if provider_control_check is not None:
                     # This private, in-memory callback is consumed only by
                     # adapters that can interrupt their browser workflow. It
                     # is never persisted in the submission plan or sent to a
                     # generic backend adapter.
-                    provider_payload["_cancel_check"] = cancel_check
+                    provider_payload["_cancel_check"] = provider_control_check
                 if progress_callback is not None:
                     # This callback is process-local observability only.  It
                     # never enters the durable provider submission payload or
                     # the idempotency hash.
                     provider_payload["_progress_callback"] = progress_callback
+                if self._cancel_requested(cancel_check):
+                    raise RepositoryError("generation cancelled before provider submission", code="WORKFLOW_CANCELLED")
                 # This is the last local fence before the billable provider
                 # call.  If the lease was lost, leave the durable IN_FLIGHT
                 # boundary for recovery instead of invoking a stale worker.
@@ -520,26 +449,38 @@ class WorkflowEngine:
                     self._record_stale_lease(plan, receipt_id=None, error=exc)
                     return TTSRunResult(
                         workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                        str(plan["submission_id"]), None, tuple(), "AMBIGUOUS", exc.code, bool(plan["reused"]),
+                        str(plan["submission_id"]), None, tuple(), "WAITING_RETRY", exc.code, bool(plan["reused"]),
                         str(exc), dict(getattr(exc, "details", {}) or {}),
                     )
                 raise
             except AmbiguousProviderError as exc:
+                if self._cancel_requested(cancel_check):
+                    raise RepositoryError(
+                        "generation cancelled during provider submission",
+                        code="WORKFLOW_CANCELLED",
+                    ) from exc
                 message = str(exc)[:2000]
                 self.repository.mark_tts_failure(
                     plan,
-                    error_code="SUBMISSION_AMBIGUOUS",
+                    error_code="LOCAL_SUBMISSION_NOT_CONFIRMED",
                     error_message=message,
                     error_details=getattr(exc, "details", None),
-                    ambiguous=True,
+                    ambiguous=False,
                 )
                 return TTSRunResult(
                     workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                    str(plan["submission_id"]), None, tuple(), "AMBIGUOUS", "SUBMISSION_AMBIGUOUS", bool(plan["reused"]),
+                    str(plan["submission_id"]), None, tuple(), "WAITING_RETRY", "LOCAL_SUBMISSION_NOT_CONFIRMED", bool(plan["reused"]),
                     message, dict(getattr(exc, "details", {}) or {}),
                 )
             except FakeProviderError as exc:
+                if self._cancel_requested(cancel_check):
+                    raise RepositoryError(
+                        "generation cancelled during provider submission",
+                        code="WORKFLOW_CANCELLED",
+                    ) from exc
                 code = getattr(exc, "code", "TRANSIENT_PROVIDER_ERROR")
+                if code == "SUBMISSION_AMBIGUOUS":
+                    code = "LOCAL_SUBMISSION_NOT_CONFIRMED"
                 message = str(exc)[:2000]
                 self.repository.mark_tts_failure(
                     plan,
@@ -554,48 +495,81 @@ class WorkflowEngine:
                     message,
                 )
             except ProviderError as exc:
+                if self._cancel_requested(cancel_check):
+                    raise RepositoryError(
+                        "generation cancelled during provider submission",
+                        code="WORKFLOW_CANCELLED",
+                    ) from exc
                 code = getattr(exc, "code", "TRANSIENT_PROVIDER_ERROR")
+                if code == "SUBMISSION_AMBIGUOUS":
+                    code = "LOCAL_SUBMISSION_NOT_CONFIRMED"
                 message = str(exc)[:2000]
-                ambiguous = getattr(exc, "ambiguous", None)
-                ambiguous = True if ambiguous is None else bool(ambiguous)
                 self.repository.mark_tts_failure(
                     plan,
                     error_code=code,
                     error_message=message,
                     error_details=getattr(exc, "details", None),
-                    ambiguous=ambiguous,
+                    ambiguous=False,
                 )
-                if budget_id and not budget_reused and not ambiguous:
+                if budget_id and not budget_reused:
                     self.repository.release_budget(budget_id)
                 return TTSRunResult(
                     workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
                     str(plan["submission_id"]), None, tuple(),
-                    "AMBIGUOUS" if ambiguous else "WAITING_RETRY",
+                    "WAITING_RETRY",
                     code, bool(plan["reused"]), message,
                     dict(getattr(exc, "details", {}) or {}),
                 )
             except Exception as exc:
-                # Reaching this branch after begin_tts_submission is itself an
-                # uncertain side-effect boundary; leave the row reconcileable.
-                code = getattr(exc, "code", "SUBMISSION_AMBIGUOUS")
-                message = str(exc)[:2000] or "讯飞提交后未能确认结果"
+                if self._cancel_requested(cancel_check):
+                    raise RepositoryError(
+                        "generation cancelled during provider submission",
+                        code="WORKFLOW_CANCELLED",
+                    ) from exc
+                # A provider exception without a returned task ID is treated
+                # as a failed local submission. The next explicit run is a
+                # fresh generation; no provider lookup is attempted.
+                code = getattr(exc, "code", "LOCAL_SUBMISSION_NOT_CONFIRMED")
+                if code == "SUBMISSION_AMBIGUOUS":
+                    code = "LOCAL_SUBMISSION_NOT_CONFIRMED"
+                message = str(exc)[:2000] or "讯飞任务未返回本地任务 ID"
                 self.repository.mark_tts_failure(
                     plan,
                     error_code=code,
                     error_message=message,
                     error_details=getattr(exc, "details", None),
-                    ambiguous=True,
+                    ambiguous=False,
                 )
                 return TTSRunResult(
                     workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                    str(plan["submission_id"]), None, tuple(), "AMBIGUOUS", code, bool(plan["reused"]),
+                    str(plan["submission_id"]), None, tuple(), "WAITING_RETRY", code, bool(plan["reused"]),
                     message, dict(getattr(exc, "details", {}) or {}),
                 )
 
+        if receipt is None:
+            message = "讯飞任务未返回本地任务 ID；可以直接重新生成"
+            self.repository.mark_tts_failure(
+                plan,
+                error_code="SUBMISSION_NOT_CREATED",
+                error_message=message,
+                ambiguous=False,
+            )
+            if budget_id and not budget_reused:
+                self.repository.release_budget(budget_id)
+            return TTSRunResult(
+                workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
+                str(plan["submission_id"]), None, tuple(), "WAITING_RETRY",
+                "SUBMISSION_NOT_CREATED", bool(plan["reused"]), message,
+            )
+
         try:
             self._wait_if_paused(workflow_id, cancel_check, pause_check)
+            if self._cancel_requested(cancel_check):
+                raise RepositoryError("generation cancelled before provider receipt publication", code="WORKFLOW_CANCELLED")
             receipt_id = self.repository.record_tts_receipt(plan, self._receipt_mapping(receipt))
             self._wait_if_paused(workflow_id, cancel_check, pause_check)
+            if self._cancel_requested(cancel_check):
+                raise RepositoryError("generation cancelled before provider download", code="WORKFLOW_CANCELLED")
             output = self._provider_call_with_lease(
                 lease_id,
                 owner_id,
@@ -628,9 +602,6 @@ class WorkflowEngine:
             )
         except RepositoryError as exc:
             # A control-plane fence (pause/cancel) is not a provider failure.
-            # In particular, do not rewrite a confirmed submission as
-            # AMBIGUOUS merely because cancellation won the final publication
-            # race; the cleanup/reconciliation projection owns that state.
             if getattr(exc, "code", "") in {"WORKFLOW_CANCELLED", "CONTROL_STATE_CONFLICT"}:
                 raise
             if getattr(exc, "code", "") == "STALE_ATTEMPT":
@@ -638,7 +609,7 @@ class WorkflowEngine:
                 return TTSRunResult(
                     workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
                     str(plan["submission_id"]), receipt_id, tuple(),
-                    "WAITING_RETRY" if receipt_id is not None else "AMBIGUOUS",
+                    "WAITING_RETRY",
                     exc.code, bool(plan["reused"]),
                     str(exc), dict(getattr(exc, "details", {}) or {}),
                 )
@@ -647,53 +618,61 @@ class WorkflowEngine:
                 error_code=getattr(exc, "code", "PERSISTENCE_AMBIGUOUS"),
                 error_message=str(exc)[:2000],
                 error_details=getattr(exc, "details", None),
-                ambiguous=True,
+                ambiguous=False,
+                preserve_submission=receipt_id is not None,
             )
             return TTSRunResult(
                 workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                str(plan["submission_id"]), receipt_id, tuple(), "AMBIGUOUS",
+                str(plan["submission_id"]), receipt_id, tuple(), "WAITING_RETRY",
                 getattr(exc, "code", "PERSISTENCE_AMBIGUOUS"), bool(plan["reused"]),
                 str(exc)[:2000], dict(getattr(exc, "details", {}) or {}),
             )
         except (ProviderError, ArtifactStoreError) as exc:
+            if self._cancel_requested(cancel_check):
+                raise RepositoryError(
+                    "generation cancelled during provider download",
+                    code="WORKFLOW_CANCELLED",
+                ) from exc
             if getattr(exc, "code", "") == "STALE_ATTEMPT":
                 self._record_stale_lease(plan, receipt_id=receipt_id, error=exc)
                 return TTSRunResult(
                     workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
                     str(plan["submission_id"]), receipt_id, tuple(),
-                    "WAITING_RETRY" if receipt_id is not None else "AMBIGUOUS",
+                    "WAITING_RETRY",
                     exc.code, bool(plan["reused"]),
                     str(exc)[:2000], dict(getattr(exc, "details", {}) or {}),
                 )
-            ambiguous = getattr(exc, "ambiguous", None)
-            ambiguous = False if ambiguous is None else bool(ambiguous)
             # Once record_tts_receipt has succeeded, the provider side effect
-            # is known.  A failure while downloading, staging, or publishing
-            # the output must retry from that receipt and never turn the
-            # submission back into a fresh submit attempt.
-            preserve_submission = receipt_id is not None and not ambiguous
+            # is locally known. A failure while downloading, staging, or
+            # publishing remains retryable; a later run may regenerate it
+            # without querying the provider.
             self.repository.mark_tts_failure(
                 plan,
                 error_code=getattr(exc, "code", "ARTIFACT_INVALID"),
                 error_message=str(exc)[:2000],
                 error_details=getattr(exc, "details", None),
-                ambiguous=ambiguous,
-                preserve_submission=preserve_submission,
+                ambiguous=False,
+                preserve_submission=receipt_id is not None,
             )
             return TTSRunResult(
                 workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
                 str(plan["submission_id"]), receipt_id, tuple(),
-                "AMBIGUOUS" if ambiguous else "WAITING_RETRY",
+                "WAITING_RETRY",
                 getattr(exc, "code", "ARTIFACT_INVALID"), bool(plan["reused"]),
                 str(exc)[:2000], dict(getattr(exc, "details", {}) or {}),
             )
         except Exception as exc:
+            if self._cancel_requested(cancel_check):
+                raise RepositoryError(
+                    "generation cancelled during provider download",
+                    code="WORKFLOW_CANCELLED",
+                ) from exc
             if getattr(exc, "code", "") == "STALE_ATTEMPT":
                 self._record_stale_lease(plan, receipt_id=receipt_id, error=exc)
                 return TTSRunResult(
                     workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
                     str(plan["submission_id"]), receipt_id, tuple(),
-                    "WAITING_RETRY" if receipt_id is not None else "AMBIGUOUS",
+                    "WAITING_RETRY",
                     exc.code, bool(plan["reused"]),
                     str(exc)[:2000], dict(getattr(exc, "details", {}) or {}),
                 )
@@ -702,11 +681,12 @@ class WorkflowEngine:
                 error_code=getattr(exc, "code", "PERSISTENCE_AMBIGUOUS"),
                 error_message=str(exc)[:2000],
                 error_details=getattr(exc, "details", None),
-                ambiguous=True,
+                ambiguous=False,
+                preserve_submission=receipt_id is not None,
             )
             return TTSRunResult(
                 workflow_id, str(plan["step_id"]), str(plan["attempt_id"]), str(plan["work_unit_id"]),
-                str(plan["submission_id"]), receipt_id, tuple(), "AMBIGUOUS",
+                str(plan["submission_id"]), receipt_id, tuple(), "WAITING_RETRY",
                 getattr(exc, "code", "PERSISTENCE_AMBIGUOUS"), bool(plan["reused"]),
                 str(exc)[:2000], dict(getattr(exc, "details", {}) or {}),
             )
@@ -771,7 +751,7 @@ class WorkflowEngine:
                 error_code="STALE_ATTEMPT",
                 error_message=str(error)[:2000] or "provider lease is stale or expired",
                 error_details=getattr(error, "details", None),
-                ambiguous=not preserve_submission,
+                ambiguous=False,
                 preserve_submission=preserve_submission,
                 require_lease=False,
             )
@@ -878,6 +858,43 @@ class WorkflowEngine:
             if self._cancel_requested(cancel_check):
                 raise RepositoryError("generation cancelled while paused", code="WORKFLOW_CANCELLED")
             time.sleep(0.2)
+
+    def _provider_control_check(
+        self,
+        cancel_check: Callable[[], bool] | None,
+        pause_check: Callable[[], bool] | None,
+    ) -> Callable[[], bool] | None:
+        """Build the control probe used inside synchronous provider work.
+
+        Provider adapters historically accept a cancellation callback, not a
+        second pause callback.  Reusing that private callback keeps the
+        public provider port small while making the browser worker obey the
+        same durable pause/cancel fence as the engine.  The callback returns
+        ``True`` only for cancellation; a pause blocks here and returns
+        ``False`` after the workflow is resumed.
+        """
+
+        if not callable(cancel_check) and not callable(pause_check):
+            return None
+
+        def control_check() -> bool:
+            while True:
+                if self._cancel_requested(cancel_check):
+                    return True
+                if not callable(pause_check):
+                    return False
+                try:
+                    paused = bool(pause_check())
+                except Exception:
+                    # A transient local probe failure must not invent a
+                    # pause inside provider automation.  Publication remains
+                    # fenced by the durable workflow state.
+                    paused = False
+                if not paused:
+                    return False
+                time.sleep(0.2)
+
+        return control_check
 
     @staticmethod
     def _receipt_mapping(receipt: Any) -> dict[str, Any]:

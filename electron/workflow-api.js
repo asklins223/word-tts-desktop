@@ -77,10 +77,6 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}`);
             return response.workflow;
         },
-        async getWorkflowRecovery(workflowId) {
-            // 未决副作用的对账入口：重启后重建“确认未提交后重试”的目标。
-            return call('GET', `/api/v1/workflows/${encode(workflowId)}/recovery`);
-        },
         async getWorkspace(workflowId) {
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}/workspace`);
             return response?.workspace || null;
@@ -212,11 +208,11 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
         async archiveWorkflow(workflowId, input) {
             return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/archive`, input);
         },
+        async deleteWorkflow(workflowId, input) {
+            return mutate('DELETE', `/api/v1/workflows/${encode(workflowId)}`, input);
+        },
         async retry(workflowId, input) {
             return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/retry`, input);
-        },
-        async reconcile(workflowId, input) {
-            return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/reconcile`, input);
         },
         async rerun(workflowId, input, options = {}) {
             const response = await mutate(
@@ -227,17 +223,6 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
                 options,
             );
             return response.workflow;
-        },
-        async resolve(input, options = {}) {
-            if (!input?.attempt_id) throw new Error('resolve requires the source attempt id');
-            const { attempt_id: _attemptId, ...body } = input;
-            return mutate(
-                'POST',
-                `/api/v1/attempts/${encode(_attemptId)}/resolve`,
-                body,
-                options?.idempotencyKey || null,
-                options,
-            );
         },
         async openWorkflowEvents(workflowId, lastEventId) {
             if (typeof openEvents !== 'function') throw new Error('workflow SSE transport is unavailable');

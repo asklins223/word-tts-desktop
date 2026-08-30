@@ -10,7 +10,7 @@ from workflow.database import WorkflowDatabase
 from workflow.engine import WorkflowEngine
 from workflow.fake_provider import FakeProvider
 from workflow.providers import ProviderCapabilityError, XunfeiTTSAdapter
-from workflow.repositories import ConflictError, WorkflowRepository
+from workflow.repositories import ConflictError, NotFoundError, WorkflowRepository
 from workflow.security import OneTimeTicketManager, TicketError, TicketExpired
 from workflow.side_effect_log import SideEffectLogError
 from workflow.source_imports import SourceImportError, SourceImportService
@@ -151,6 +151,68 @@ class RecoveryFaultTests(unittest.TestCase):
         with self.assertRaises(ConflictError):
             self.repository.archive_workflow(workflow, expected_state_version=snapshot.state_version - 1)
         self.assertEqual(result.status, "SUCCEEDED")
+
+    def test_unfinished_submission_is_local_retryable_and_deletable(self) -> None:
+        workflow_id = self._workflow_with_items(1)
+        provider = FakeProvider()
+        provider.fail_mode = "after"
+        result = WorkflowEngine(self.repository, self.artifacts).run_tts(workflow_id, provider)
+        self.assertEqual(result.status, "WAITING_RETRY")
+
+        history = self.repository.list_history_records()
+        self.assertTrue(history[0]["can_delete"])
+        self.assertIsNone(history[0]["delete_reason"])
+        snapshot = self.repository.get_workflow(workflow_id)
+        self.repository.delete_workflow(
+            workflow_id,
+            expected_state_version=snapshot.state_version,
+        )
+        with self.assertRaises(NotFoundError):
+            self.repository.get_workflow(workflow_id)
+        intent_key = next(
+            key for key in self.repository.intent_log.latest_by_key()
+            if key[0] == "tts"
+        )
+        self.assertEqual(
+            self.repository.intent_log.latest_by_key()[intent_key]["state"],
+            "ARCHIVED",
+        )
+
+    def test_unfinished_rejected_workflow_can_be_deleted(self) -> None:
+        workflow_id = self._workflow_with_items(1)
+        provider = FakeProvider()
+        provider.fail_mode = "before"
+        result = WorkflowEngine(self.repository, self.artifacts).run_tts(workflow_id, provider)
+        self.assertEqual(result.status, "WAITING_RETRY")
+        snapshot = self.repository.get_workflow(workflow_id)
+        history = self.repository.list_history_records()
+        self.assertTrue(history[0]["can_delete"])
+
+        self.repository.delete_workflow(
+            workflow_id,
+            expected_state_version=snapshot.state_version,
+        )
+        with self.assertRaises(NotFoundError):
+            self.repository.get_workflow(workflow_id)
+
+    def test_stuck_terminating_workflow_without_active_lease_can_be_deleted(self) -> None:
+        workflow_id = self._workflow_with_items(1)
+        snapshot = self.repository.get_workflow(workflow_id)
+        terminating = self.repository.command(
+            workflow_id,
+            "cancel",
+            snapshot.state_version,
+            reason="stuck-terminating-delete",
+        )
+        self.assertEqual(terminating.control_state, "TERMINATING")
+        self.assertTrue(self.repository.list_history_records()[0]["can_delete"])
+
+        self.repository.delete_workflow(
+            workflow_id,
+            expected_state_version=terminating.state_version,
+        )
+        with self.assertRaises(NotFoundError):
+            self.repository.get_workflow(workflow_id)
 
 
 if __name__ == "__main__":

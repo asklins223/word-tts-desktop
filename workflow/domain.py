@@ -92,6 +92,8 @@ class WorkflowSnapshot:
     artifact_count: int
     latest_event_id: str | None
     latest_seq: int
+    last_error_code: str | None
+    last_error_message: str | None
     updated_at: str
     latest_event: dict[str, Any] | None = None
 

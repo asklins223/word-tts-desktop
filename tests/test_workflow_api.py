@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import tempfile
 import threading
 import time
@@ -13,12 +14,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from api.workflow_routes import WorkflowRuntime, _artifact_row_is_readable, _release_failed_idempotency, install_workflow_api
+from api.workflow_routes import (
+    WorkflowRuntime,
+    _artifact_row_is_readable,
+    _command_response,
+    _release_failed_idempotency,
+    install_workflow_api,
+)
 from db.migration_runner import MigrationError
 from workflow.fake_provider import FakeProvider
 from workflow.parser import LegacyWordParser
 from workflow.providers import ProviderError
-from workflow.repositories import IdempotencyInProgress, RepositoryError
+from workflow.repositories import IdempotencyInProgress, RepositoryError, WorkflowRepository
 from workflow.security import TicketExpired
 
 
@@ -131,6 +138,147 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertEqual(replay.json(), first.json())
 
+    def test_delete_unfinished_workflow_removes_local_facts_and_replays(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        item_id = self.runtime.repository.create_item(
+            workflow_id,
+            item_type="sentence",
+            sequence=0,
+            normalized_content="unfinished local artifact",
+            item_identity_key="unfinished-local-artifact",
+        )
+        staged = self.runtime.artifacts.stage_stream(io.BytesIO(b"unfinished-audio"))
+        blob = self.runtime.artifacts.promote(staged, format="mp3")
+        self.runtime.repository.attach_imported_artifact(
+            workflow_id,
+            artifact_id="unfinished-artifact",
+            blob=blob,
+            artifact_type="tts-segment",
+            producer="test",
+            producer_version="1",
+            item_id=item_id,
+        )
+
+        listed = self.client.get(
+            "/api/v1/workflows",
+            headers={"X-Desktop-Capability": "test-capability"},
+        )
+        self.assertTrue(listed.json()["workflows"][0]["can_delete"])
+        key = "delete-unfinished-workflow-key"
+        deleted = self.client.request(
+            "DELETE",
+            f"/api/v1/workflows/{workflow_id}",
+            headers=self._headers(key),
+            json={"expected_state_version": workflow["state_version"], "reason": "test-delete"},
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["accepted_action"], "delete")
+        self.assertTrue(deleted.json()["deleted"])
+        self.assertFalse((Path(self.temp.name) / "artifacts" / blob.storage_key).exists())
+
+        replay = self.client.request(
+            "DELETE",
+            f"/api/v1/workflows/{workflow_id}",
+            headers=self._headers(key),
+            json={"expected_state_version": workflow["state_version"], "reason": "test-delete"},
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), deleted.json())
+        self.assertEqual(
+            self.client.get(
+                "/api/v1/workflows",
+                headers={"X-Desktop-Capability": "test-capability"},
+            ).json()["workflows"],
+            [],
+        )
+        with self.runtime.database.read_transaction() as con:
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM artifacts WHERE workflow_id=?", (workflow_id,)).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM artifact_blobs").fetchone()[0],
+                0,
+            )
+            self.assertEqual(con.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_delete_unfinished_workflow_with_active_durable_lease_is_available(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        self.runtime.repository.acquire_lease(
+            workflow_id,
+            "provider",
+            "fake:test-account",
+            "test-worker",
+            ttl_seconds=60,
+        )
+
+        listed = self.client.get(
+            "/api/v1/workflows",
+            headers={"X-Desktop-Capability": "test-capability"},
+        )
+        self.assertTrue(listed.json()["workflows"][0]["can_delete"])
+
+        deleted = self.client.request(
+            "DELETE",
+            f"/api/v1/workflows/{workflow_id}",
+            headers=self._headers("delete-active-lease-workflow-key"),
+            json={"expected_state_version": workflow["state_version"], "reason": "test-force-delete"},
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertTrue(deleted.json()["deleted"])
+
+    def test_patch_replays_after_domain_commit_when_response_persistence_is_lost(self) -> None:
+        workflow = self._create_workflow()
+        workspace = self.client.get(
+            f"/api/v1/workflows/{workflow['workflow_id']}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        ).json()["workspace"]
+        body = {
+            "expected_state_version": workspace["snapshot"]["state_version"],
+            "configuration_revision": workspace["configuration"]["configuration_revision"],
+            "configuration": {"mode": "single_segment"},
+            "item_overrides": None,
+        }
+        key = "lost-response-patch-key"
+        reservation_id, cached = self.runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow['workflow_id']}",
+            client_key=key,
+            command_name="patchDraftWorkflow",
+            method="PATCH",
+            resource_id=workflow["workflow_id"],
+            target=None,
+            request=body,
+            workflow_id=workflow["workflow_id"],
+        )
+        self.assertIsNone(cached)
+        self.runtime.repository.patch_draft(
+            workflow["workflow_id"],
+            body["expected_state_version"],
+            expected_configuration_revision=body["configuration_revision"],
+            configuration=body["configuration"],
+            request_id=reservation_id,
+        )
+
+        # A fresh repository represents a backend restart: the old in-memory
+        # owner is gone while the workflow event remains durable.
+        fresh_repository = WorkflowRepository(self.runtime.database)
+        self.runtime.repository = fresh_repository
+        self.runtime.application.repository = fresh_repository
+        replay = self.client.patch(
+            f"/api/v1/workflows/{workflow['workflow_id']}",
+            headers=self._headers(key),
+            json=body,
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()["request_id"], reservation_id)
+        self.assertEqual(replay.json()["workflow"]["state_version"], 1)
+
     def test_resolve_rejects_step_target_with_structured_error(self) -> None:
         workflow = self._create_workflow()
         workflow_id = workflow["workflow_id"]
@@ -159,10 +307,10 @@ class WorkflowApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()["error_code"], "TARGET_REQUIRED")
+        self.assertEqual(response.json()["error_code"], "RECONCILIATION_DISABLED")
 
-    def test_recovery_endpoint_and_frozen_reconfigure_are_routable(self) -> None:
-        """终止留下的 AMBIGUOUS run 必须有可达的对账入口和可路由的 409。"""
+    def test_submission_loss_is_retryable_without_provider_reconciliation(self) -> None:
+        """提交未拿到回执时只保留本地重试状态，不创建对账干预。"""
         from workflow.artifact_store import ArtifactStore
         from workflow.engine import WorkflowEngine
 
@@ -183,33 +331,23 @@ class WorkflowApiTests(unittest.TestCase):
             ArtifactStore(Path(self.temp.name) / "recovery-artifacts"),
         )
         result = engine.run_tts(workflow_id, provider)
-        self.assertEqual(result.status, "AMBIGUOUS")
+        self.assertEqual(result.status, "WAITING_RETRY")
 
-        recovery = self.client.get(
-            f"/api/v1/workflows/{workflow_id}/recovery",
-            headers=self._headers("recovery-read-key"),
-        )
+        with patch.object(
+            self.runtime.repository,
+            "list_open_reconciliations",
+            side_effect=AssertionError("TTS recovery must not read reconciliation records"),
+        ):
+            recovery = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/recovery",
+                headers=self._headers("retry-read-key"),
+            )
         self.assertEqual(recovery.status_code, 200, recovery.text)
         payload = recovery.json()
         self.assertEqual(payload["workflow_id"], workflow_id)
-        self.assertEqual(len(payload["interventions"]), 1)
-        intervention = payload["interventions"][0]
-        self.assertEqual(intervention["attempt_id"], result.attempt_id)
-        self.assertTrue(intervention["work_unit_id"])
-        self.assertGreaterEqual(intervention["work_unit_state_version"], 0)
-        self.assertIn("works_name", intervention)
-
-        snapshot = self.runtime.repository.get_workflow(workflow_id)
-        response = self.client.patch(
-            f"/api/v1/workflows/{workflow_id}",
-            headers=self._headers("recovery-patch-key"),
-            json={
-                "expected_state_version": snapshot.state_version,
-                "configuration": {"mode": "composite_cut", "default_female_voice": "speaker:changed"},
-            },
-        )
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()["error_code"], "RECONCILIATION_REQUIRED")
+        self.assertEqual(payload["interventions"], [])
+        self.assertEqual(self.runtime.repository.get_workflow(workflow_id).execution_state, "WAITING_RETRY")
+        self.assertEqual(engine.run_tts(workflow_id, provider).status, "SUCCEEDED")
 
     def test_credential_like_configuration_is_rejected_before_persistence(self) -> None:
         secret = "do-not-write-this-secret"
@@ -400,6 +538,28 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertFalse(orphan.exists())
         self.assertTrue(any(item.action == "REMOVED" for item in self.runtime.startup_gc_findings))
 
+    def test_startup_recovery_failure_does_not_block_new_workflows(self) -> None:
+        with patch.object(
+            self.runtime.recovery,
+            "apply_safe_recovery",
+            side_effect=RuntimeError("one stale row is malformed"),
+        ):
+            response = self.client.get(
+                "/api/v1/workflows?limit=10",
+                headers={"X-Desktop-Capability": "test-capability"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(self.runtime.initialized)
+        self.assertEqual(self.runtime.startup_recovery_error, "workflow startup recovery failed")
+
+        created = self.client.post(
+            "/api/v1/workflows",
+            headers=self._headers("startup-recovery-failure-create"),
+            json={"workflow_type": "tts", "configuration": {"mode": "composite_cut"}},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
     def test_startup_recovery_expires_a_stale_source_generation(self) -> None:
         self.runtime.ensure_initialized()
         workflow = self.runtime.repository.create_workflow("tts", {})
@@ -540,6 +700,145 @@ class WorkflowApiTests(unittest.TestCase):
         )
         self.assertEqual(replay.status_code, 401, replay.text)
 
+    def test_source_generation_replays_after_domain_commit_when_response_is_lost(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        source = self.client.post(
+            f"/api/v1/workflows/{workflow_id}/source-imports",
+            headers=self._headers("create-source-generation-replay-import"),
+            json={"metadata": {"filename": "retry.docx"}},
+        )
+        self.assertEqual(source.status_code, 201, source.text)
+        source_body = source.json()
+        import_id = source_body["source_import_id"]
+        aborted = self.client.post(
+            f"/api/v1/source-imports/{import_id}/abort",
+            headers=self._headers("abort-source-generation-replay"),
+            json={"expected_state_version": source_body["state_version"]},
+        )
+        self.assertEqual(aborted.status_code, 202, aborted.text)
+        body = {"expected_state_version": aborted.json()["state_version"]}
+        key = "source-generation-replay-key"
+        reservation_id, cached = self.runtime.repository.begin_idempotency(
+            scope=f"source-import:{import_id}",
+            client_key=key,
+            command_name="createSourceImportGeneration",
+            method="POST",
+            resource_id=import_id,
+            target=None,
+            request=body,
+            workflow_id=workflow_id,
+        )
+        self.assertIsNone(cached)
+        self.runtime.imports.create_generation(
+            import_id,
+            expected_state_version=body["expected_state_version"],
+            request_id=reservation_id,
+        )
+        original_response = self.runtime.imports.get_import(import_id)
+        generation_two = self.runtime.imports.get_generation(import_id, 2)
+        aborted_generation_two = self.runtime.imports.abort(
+            import_id,
+            expected_state_version=generation_two["state_version"],
+        )
+        self.runtime.imports.create_generation(
+            import_id,
+            expected_state_version=aborted_generation_two["state_version"],
+        )
+
+        fresh_repository = WorkflowRepository(self.runtime.database)
+        self.runtime.repository = fresh_repository
+        self.runtime.application.repository = fresh_repository
+        replay = self.client.post(
+            f"/api/v1/source-imports/{import_id}/generations",
+            headers=self._headers(key),
+            json=body,
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), original_response)
+
+    def test_export_replay_returns_the_original_zip_after_newer_segments_exist(self) -> None:
+        provider = FakeProvider()
+        self.runtime.providers.register(provider)
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        item_ids = [
+            self.runtime.repository.create_item(
+                workflow_id,
+                item_type="sentence",
+                sequence=sequence,
+                normalized_content=f"export replay {sequence}",
+                item_identity_key=f"export-replay:{sequence}",
+            )
+            for sequence in range(2)
+        ]
+        _, generated = self.runtime.application.start_generation(
+            workflow_id,
+            expected_state_version=self.runtime.repository.get_workflow(workflow_id).state_version,
+            provider="fake",
+            account_scope=provider.account_scope,
+        )
+        self.assertEqual(generated.status, "SUCCEEDED")
+        segments = self.runtime.repository.list_verified_tts_segments(workflow_id)
+        second_segment = next(segment for segment in segments if str(segment["item_id"]) == item_ids[1])
+
+        invalid_staged = self.runtime.artifacts.stage_stream(io.BytesIO(b"not current mp3"))
+        invalid_blob = self.runtime.artifacts.promote(invalid_staged, format="wav")
+        self.runtime.repository.attach_imported_artifact(
+            workflow_id,
+            artifact_id="artifact-export-replay-invalid",
+            blob=invalid_blob,
+            artifact_type="tts-segment",
+            producer="export-replay-test",
+            producer_version="1",
+            item_id=item_ids[1],
+        )
+
+        terminal = self.runtime.repository.get_workflow(workflow_id)
+        body = {"expected_state_version": terminal.state_version, "include_item_ids": None}
+        key = "export-replay-after-new-segment-key"
+        reservation_id, cached = self.runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}",
+            client_key=key,
+            command_name="exportWorkflowZip",
+            method="POST",
+            resource_id=workflow_id,
+            target=None,
+            request=body,
+            workflow_id=workflow_id,
+        )
+        self.assertIsNone(cached)
+        original_artifact = self.runtime.application.create_export_zip(
+            workflow_id,
+            request_id=reservation_id,
+        )
+        self.assertEqual(original_artifact["included_item_ids"], [item_ids[0]])
+
+        with self.runtime.artifacts.read(str(second_segment["storage_key"])) as source:
+            restored_staged = self.runtime.artifacts.stage_stream(source)
+        restored_blob = self.runtime.artifacts.promote(restored_staged, format="mp3")
+        self.runtime.repository.attach_imported_artifact(
+            workflow_id,
+            artifact_id="artifact-export-replay-restored",
+            blob=restored_blob,
+            artifact_type="tts-segment",
+            producer="export-replay-test",
+            producer_version="1",
+            item_id=item_ids[1],
+        )
+
+        fresh_repository = WorkflowRepository(self.runtime.database)
+        self.runtime.repository = fresh_repository
+        self.runtime.application.repository = fresh_repository
+        replay = self.client.post(
+            f"/api/v1/workflows/{workflow_id}/export-zip",
+            headers=self._headers(key),
+            json=body,
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()["artifact"], original_artifact)
+        self.assertEqual(replay.json()["artifact"]["included_item_ids"], [item_ids[0]])
+
     def test_real_provider_capability_failure_is_structured_before_acceptance(self) -> None:
         # The formal runtime is real-provider-on by default.  This test keeps
         # the explicit offline capability-gate regression covered.
@@ -630,6 +929,161 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(current.execution_state, "WAITING_RETRY")
         self.assertEqual(current.result_status, "IN_PROGRESS")
         self.assertEqual(current.latest_event["event_type"], "GENERATION_TASK_FAILED")
+
+    def test_cancel_retries_a_stale_version_and_returns_terminal_snapshot(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        accepted = self.runtime.repository.command(workflow_id, "generate", workflow["state_version"])
+
+        response = self.client.post(
+            f"/api/v1/workflows/{workflow_id}/cancel",
+            headers=self._headers("stale-cancel-command-key"),
+            json={
+                "expected_state_version": workflow["state_version"],
+                "reason": "stale-cancel-test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(response.json()["current_snapshot"]["result_status"], "CANCELLED")
+        self.assertEqual(response.json()["current_snapshot"]["last_error_code"], "WORKFLOW_CANCELLED")
+        self.assertEqual(response.json()["current_snapshot"]["last_error_message"], "stale-cancel-test")
+        current = self.runtime.repository.get_workflow(workflow_id)
+        self.assertEqual(
+            (current.result_status, current.execution_state, current.control_state),
+            ("CANCELLED", "TERMINAL", "TERMINATED"),
+        )
+        self.assertGreater(accepted.state_version, workflow["state_version"])
+
+    def test_replayed_legacy_cancel_finishes_an_old_terminating_snapshot(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        terminating = self.runtime.repository.command(
+            workflow_id,
+            "cancel",
+            workflow["state_version"],
+            request_id="legacy-cancel-event",
+            reason="legacy-stop",
+        )
+        key = "legacy-cancel-replay-key"
+        body = {"expected_state_version": workflow["state_version"], "reason": "legacy-stop"}
+        reservation_id, cached = self.runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}",
+            client_key=key,
+            command_name="cancel",
+            method="POST",
+            resource_id=workflow_id,
+            target=None,
+            request=body,
+            workflow_id=workflow_id,
+        )
+        self.assertIsNone(cached)
+        self.runtime.repository.complete_idempotency(
+            reservation_id,
+            response_status=202,
+            response=_command_response(terminating, "cancel", reservation_id),
+            workflow_id=workflow_id,
+        )
+
+        response = self.client.post(
+            f"/api/v1/workflows/{workflow_id}/cancel",
+            headers=self._headers(key),
+            json=body,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["current_snapshot"]["execution_state"], "TERMINAL")
+        self.assertEqual(self.runtime.repository.get_workflow(workflow_id).control_state, "TERMINATED")
+
+    def test_tts_pause_without_local_worker_is_settled_locally(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        accepted = self.runtime.repository.command(workflow_id, "generate", workflow["state_version"])
+
+        workspace = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        ).json()["workspace"]
+        pause_action = next(
+            action for action in workspace["available_actions"]
+            if action["type"] == "PAUSE"
+        )
+        self.assertTrue(pause_action["enabled"])
+
+        response = self.client.post(
+            f"/api/v1/workflows/{workflow_id}/pause",
+            headers=self._headers("local-pause-command-key"),
+            json={"expected_state_version": accepted.state_version},
+        )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        current = self.runtime.repository.get_workflow(workflow_id)
+        self.assertEqual(current.control_state, "PAUSED")
+        self.assertEqual(current.execution_state, "RUNNING")
+        paused_workspace = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        ).json()["workspace"]
+        resume_action = next(
+            action for action in paused_workspace["available_actions"]
+            if action["type"] == "RESUME"
+        )
+        self.assertTrue(resume_action["enabled"])
+
+    def test_tts_parse_preparing_state_cannot_be_paused_without_generation_acceptance(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        parsed = self.runtime.repository.command(workflow_id, "parse", workflow["state_version"])
+
+        workspace = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        ).json()["workspace"]
+        pause_action = next(
+            action for action in workspace["available_actions"]
+            if action["type"] == "PAUSE"
+        )
+        self.assertFalse(pause_action["enabled"])
+
+        response = self.client.post(
+            f"/api/v1/workflows/{workflow_id}/pause",
+            headers=self._headers("parse-pause-command-key"),
+            json={"expected_state_version": parsed.state_version},
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["error_code"], "GENERATION_NOT_RUNNING")
+        current = self.runtime.repository.get_workflow(workflow_id)
+        self.assertEqual((current.control_state, current.execution_state), ("RUNNING", "PREPARING"))
+
+    def test_tts_pause_during_recovery_takeover_is_settled_locally(self) -> None:
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        accepted = self.runtime.repository.command(workflow_id, "generate", workflow["state_version"])
+        recovering = self.runtime.repository.mark_takeover(workflow_id)
+        self.assertIsNotNone(recovering)
+        self.assertEqual(recovering.execution_state, "RECOVERING")
+
+        workspace = self.client.get(
+            f"/api/v1/workflows/{workflow_id}/workspace",
+            headers={"X-Desktop-Capability": "test-capability"},
+        ).json()["workspace"]
+        pause_action = next(
+            action for action in workspace["available_actions"]
+            if action["type"] == "PAUSE"
+        )
+        self.assertTrue(pause_action["enabled"])
+
+        response = self.client.post(
+            f"/api/v1/workflows/{workflow_id}/pause",
+            headers=self._headers("recovery-pause-command-key"),
+            json={"expected_state_version": recovering.state_version},
+        )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        current = self.runtime.repository.get_workflow(workflow_id)
+        self.assertEqual((current.control_state, current.execution_state), ("PAUSED", "RECOVERING"))
+        self.assertGreater(current.state_version, accepted.state_version)
 
     def test_workspace_routes_return_snapshot_actions_and_versioned_item_edits(self) -> None:
         workflow = self._create_workflow()
@@ -840,6 +1294,18 @@ class WorkflowApiTests(unittest.TestCase):
                 f"/api/v1/workflows/{workflow['workflow_id']}",
                 headers={"X-Desktop-Capability": "test-capability"},
             ).json()["workflow"]
+            paused = client.post(
+                f"/api/v1/workflows/{workflow['workflow_id']}/pause",
+                headers=self._headers("cooperative-pause-key"),
+                json={"expected_state_version": current["state_version"], "reason": "test-pause"},
+            )
+            self.assertEqual(paused.status_code, 202, paused.text)
+            self.assertEqual(paused.json()["current_snapshot"]["control_state"], "PAUSED")
+
+            current = client.get(
+                f"/api/v1/workflows/{workflow['workflow_id']}",
+                headers={"X-Desktop-Capability": "test-capability"},
+            ).json()["workflow"]
             cancelled = client.post(
                 f"/api/v1/workflows/{workflow['workflow_id']}/cancel",
                 headers=self._headers("cooperative-cancel-key"),
@@ -856,8 +1322,144 @@ class WorkflowApiTests(unittest.TestCase):
                 headers={"X-Desktop-Capability": "test-capability"},
             ).json()["workflow"]
         self.assertEqual(snapshot["cleanup_state"], "SUCCEEDED")
-        self.assertEqual(snapshot["control_state"], "TERMINATING")
-        self.assertEqual(snapshot["execution_state"], "WAITING_USER")
+        self.assertEqual(snapshot["control_state"], "TERMINATED")
+        self.assertEqual(snapshot["execution_state"], "TERMINAL")
+        self.assertEqual(snapshot["result_status"], "CANCELLED")
+
+    def test_force_cancel_releases_slot_for_new_workflow_while_old_provider_is_stuck(self) -> None:
+        """中止后旧 Provider 卡住时，新任务仍能进入浏览器启动阶段。"""
+        class StuckProvider:
+            provider = "xunfei"
+            account_scope = "test-force-cancel-account"
+
+            def __init__(self) -> None:
+                self.calls = 0
+                self.first_started = threading.Event()
+                self.second_started = threading.Event()
+                self.release = threading.Event()
+                self._lock = threading.Lock()
+
+            def submit(self, _submission_key, _payload):
+                with self._lock:
+                    self.calls += 1
+                    call_number = self.calls
+                if call_number == 1:
+                    self.first_started.set()
+                else:
+                    self.second_started.set()
+                self.release.wait(10.0)
+                raise ProviderError(
+                    "测试 Provider 已停止",
+                    code="SUBMISSION_AMBIGUOUS",
+                    ambiguous=True,
+                )
+
+            def query(self, _submission_key):
+                return None
+
+            def download(self, _receipt):
+                return b""
+
+        provider = StuckProvider()
+        self.runtime.providers.register(provider)
+        first = self._create_workflow()
+        self.runtime.repository.create_item(
+            first["workflow_id"],
+            item_type="sentence",
+            sequence=0,
+            normalized_content="first",
+            item_identity_key="sentence:first",
+        )
+        first_workspace = self._save_generation_configuration(
+            first["workflow_id"],
+            {"provider": "xunfei", "account_scope": provider.account_scope},
+        )
+
+        with TestClient(self.app) as client:
+            try:
+                started = client.post(
+                    f"/api/v1/workflows/{first['workflow_id']}/generate",
+                    headers=self._headers("stuck-first-generate-key"),
+                    json={
+                        "expected_state_version": first_workspace["snapshot"]["state_version"],
+                        "provider": "xunfei",
+                        "account_scope": provider.account_scope,
+                    },
+                )
+                self.assertEqual(started.status_code, 202, started.text)
+                self.assertTrue(provider.first_started.wait(2.0))
+
+                current = client.get(
+                    f"/api/v1/workflows/{first['workflow_id']}",
+                    headers={"X-Desktop-Capability": "test-capability"},
+                ).json()["workflow"]
+                cancelled = client.post(
+                    f"/api/v1/workflows/{first['workflow_id']}/cancel",
+                    headers=self._headers("stuck-first-cancel-key"),
+                    json={
+                        "expected_state_version": current["state_version"],
+                        "reason": "test-force-cancel",
+                    },
+                )
+                self.assertEqual(cancelled.status_code, 202, cancelled.text)
+                self.assertEqual(
+                    cancelled.json()["current_snapshot"]["execution_state"],
+                    "TERMINAL",
+                )
+
+                second = client.post(
+                    "/api/v1/workflows",
+                    headers=self._headers("stuck-second-create-key"),
+                    json={"workflow_type": "tts", "configuration": {"mode": "composite_cut"}},
+                ).json()["workflow"]
+                self.runtime.repository.create_item(
+                    second["workflow_id"],
+                    item_type="sentence",
+                    sequence=0,
+                    normalized_content="second",
+                    item_identity_key="sentence:second",
+                )
+                second_workspace_response = client.get(
+                    f"/api/v1/workflows/{second['workflow_id']}/workspace",
+                    headers={"X-Desktop-Capability": "test-capability"},
+                )
+                self.assertEqual(second_workspace_response.status_code, 200)
+                second_workspace = second_workspace_response.json()["workspace"]
+                second_saved = client.patch(
+                    f"/api/v1/workflows/{second['workflow_id']}/workspace",
+                    headers=self._headers("stuck-second-config-key"),
+                    json={
+                        "expected_state_version": second_workspace["snapshot"]["state_version"],
+                        "configuration_revision": second_workspace["configuration"]["configuration_revision"],
+                        "configuration": {
+                            "provider": "xunfei",
+                            "account_scope": provider.account_scope,
+                        },
+                    },
+                )
+                self.assertEqual(second_saved.status_code, 200, second_saved.text)
+                second_workspace = second_saved.json()["workspace"]
+                second_started = client.post(
+                    f"/api/v1/workflows/{second['workflow_id']}/generate",
+                    headers=self._headers("stuck-second-generate-key"),
+                    json={
+                        "expected_state_version": second_workspace["snapshot"]["state_version"],
+                        "provider": "xunfei",
+                        "account_scope": provider.account_scope,
+                    },
+                )
+                self.assertEqual(second_started.status_code, 202, second_started.text)
+                self.assertTrue(
+                    provider.second_started.wait(2.0),
+                    "the second workflow remained blocked behind the canceled provider",
+                )
+            finally:
+                provider.release.set()
+
+        deadline = time.monotonic() + 3.0
+        while self.runtime.generation_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(self.runtime.generation_tasks)
 
     def test_external_runtime_requires_full_profile_and_route_lifecycle_is_fenced(self) -> None:
         workflow = self._create_workflow()

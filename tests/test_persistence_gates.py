@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import sys
 import tempfile
@@ -148,6 +149,16 @@ class PersistenceGatesTests(unittest.TestCase):
                 SideEffectIntentLog._unlock_descriptor(target)
 
             self.assertEqual([call[1:] for call in fake_msvcrt.calls], [(1, 1), (3, 1)])
+
+    def test_side_effect_journal_uses_the_windows_directory_flush_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-journal-windows-flush-") as tmp:
+            directory = Path(tmp)
+            with patch.object(os, "name", "nt"), patch.object(
+                SideEffectIntentLog,
+                "_flush_windows_directory",
+            ) as flush_directory:
+                SideEffectIntentLog._fsync_directory(directory)
+            flush_directory.assert_called_once_with(directory)
 
     def test_rejected_tts_plan_marks_pretransaction_journal_as_aborted(self) -> None:
         with tempfile.TemporaryDirectory(prefix="wordtts-journal-abort-") as tmp:

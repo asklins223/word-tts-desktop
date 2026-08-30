@@ -139,6 +139,7 @@ electron/node_modules/
 electron/server_backend_build/
 electron/server_backend_build_tmp/
 electron/release/
+release-notes.md
 .build_bin/
 
 # WordTTS 应用图标：源图与各平台打包产物必须进入干净检出和 CI。

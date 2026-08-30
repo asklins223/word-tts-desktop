@@ -224,6 +224,10 @@ build_python_backend() {
 build_electron_app() {
     log "=== 步骤 2/2: electron-builder 打包应用 ==="
 
+    local package_version
+    package_version="$(node -p "require('$ELECTRON_DIR/package.json').version")"
+    local expected_zip_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.zip"
+
     log "生成 macOS / Windows 应用图标..."
     "$BUILD_PYTHON_CMD" "$SCRIPT_DIR/scripts/build_app_icons.py"
 
@@ -240,6 +244,9 @@ build_electron_app() {
     done
     # 清理旧的 release 目录
     rm -rf "$ELECTRON_DIR/release/$MAC_OUTPUT_DIR" 2>/dev/null || true
+    # 不允许沿用同版本的旧 ZIP。自动更新元数据必须始终对应本次完成签名
+    # 和冒烟验证的 .app，否则本地重跑失败构建时可能把旧包上传到 Release。
+    rm -f "$expected_zip_path"
 
     # 确保后端二进制有执行权限
     chmod +x "$ELECTRON_DIR/server_backend_build/server_backend/server_backend" 2>/dev/null || true
@@ -295,6 +302,12 @@ build_electron_app() {
     npx electron-builder --mac "$BUILDER_ARCH_FLAG" \
         --publish never \
         -c.mac.minimumSystemVersion="$effective_macos_min"
+
+    # electron-builder 的 zip 是在后续签名步骤之前生成的，不能作为自动
+    # 更新包发布。保留它会让通配符上传把未完成签名的副本也带进 Release；
+    # 后面只从最终签名并通过冒烟验证的 .app 重建目标 ZIP。
+    local builder_zip_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}-mac.zip"
+    rm -f "$builder_zip_path" "$builder_zip_path.blockmap" "$ELECTRON_DIR/release/latest-mac.yml"
 
     # 只接受本次目标架构对应的目录，禁止从旧目录误拿另一架构产物。
     local app_path="$ELECTRON_DIR/release/$MAC_OUTPUT_DIR/$PRODUCT_NAME.app"
@@ -393,10 +406,25 @@ build_electron_app() {
 
     # ---- 手动创建 DMG（绕过 electron-builder 的 dmgbuild bug） ----
     log "创建 DMG 安装包..."
-    local package_version
-    package_version="$(node -p "require('$ELECTRON_DIR/package.json').version")"
     local dmg_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.dmg"
+    local zip_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.zip"
     rm -f "$dmg_path"
+
+    # Squirrel.Mac 的自动更新必须使用 ZIP；DMG 只负责首次安装。这里始终
+    # 从已经完成签名和冒烟验证的最终 .app 重建 ZIP，不能复用
+    # electron-builder 在签名步骤之前留下的同名压缩包。
+    rm -f "$zip_path"
+    if ! ditto -c -k --keepParent "$app_path" "$zip_path" 2>/dev/null; then
+        rm -f "$zip_path"
+        err "无法创建 macOS 自动更新 ZIP: $zip_path"
+        exit 1
+    fi
+    if [ ! -s "$zip_path" ] || ! unzip -tqq "$zip_path" >/dev/null 2>&1; then
+        rm -f "$zip_path"
+        err "macOS 自动更新 ZIP 校验失败: $zip_path"
+        exit 1
+    fi
+    echo "  自动更新 ZIP: $zip_path"
 
     # 创建临时 DMG 目录
     local dmg_staging
@@ -431,9 +459,6 @@ build_electron_app() {
         echo "  大小: $(du -sh "$dmg_path" | awk '{print $1}')"
     else
         warn "DMG 创建失败，改用 zip 打包 .app 作为分发产物"
-        local zip_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.zip"
-        rm -f "$zip_path"
-        ditto -c -k --keepParent "$app_path" "$zip_path" 2>/dev/null || true
         if [ -f "$zip_path" ]; then
             echo "  ZIP 创建完成 ✓"
             echo "  位置: $zip_path"

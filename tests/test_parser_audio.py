@@ -26,6 +26,9 @@ class ParserAudioTests(unittest.TestCase):
                         "filename_stem": "题目1",
                         "text": "Hello world.",
                         "role": "W",
+                        "voice": "male",
+                        "question_type": "listening_info",
+                        "type_path": ["信息获取", "听选信息"],
                         "metadata": {"authorization": "secret"},
                     }],
                 }], "ok")
@@ -37,6 +40,9 @@ class ParserAudioTests(unittest.TestCase):
             self.assertEqual(first.items[0].sequence, 0)
             self.assertTrue(first.items[0].identity_key.startswith(first.source_sha256[:32]))
             self.assertEqual(first.items[0].metadata["category"], "对话录音稿")
+            self.assertEqual(first.items[0].metadata["voice"], "male")
+            self.assertEqual(first.items[0].metadata["question_type"], "listening_info")
+            self.assertEqual(first.items[0].metadata["type_path"], ["信息获取", "听选信息"])
             self.assertNotIn("authorization", first.items[0].metadata)
             self.assertEqual(len(calls), 2)
 

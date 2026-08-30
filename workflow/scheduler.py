@@ -161,6 +161,10 @@ class PersistentScheduler:
                    FROM workflow_steps s
                    JOIN workflows w ON w.workflow_id=s.workflow_id
                    WHERE {' AND '.join(predicates)}
+                     AND NOT (
+                         LOWER(COALESCE(w.workflow_type, ''))='tts'
+                         AND s.error_code='LOCAL_SUBMISSION_NOT_CONFIRMED'
+                     )
                    ORDER BY COALESCE(s.retry_after, ''), s.step_id LIMIT ?""",
                 tuple(params),
             ).fetchall()

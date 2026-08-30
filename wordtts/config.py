@@ -54,7 +54,7 @@ BACKEND_CONTRACT_VERSION = 5
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则、音频边界等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 14
+PARSER_VERSION = 16
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
 # 女声 Amanda 默认 50/50/50，男声 George 默认 35/50/50（语速 35）。

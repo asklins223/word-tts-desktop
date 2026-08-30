@@ -87,6 +87,32 @@ test('主进程代理附加 capability，并把 JSON 响应结构化返回', asy
     }
 });
 
+test('主进程代理允许删除历史工作流', async () => {
+    const server = http.createServer((req, res) => {
+        assert.equal(req.method, 'DELETE');
+        assert.equal(req.url, '/api/v1/workflows/workflow-1');
+        assert.equal(req.headers['x-desktop-capability'], 'capability');
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ deleted: true }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    try {
+        const response = await requestWorkflow({
+            http,
+            baseUrl: `http://127.0.0.1:${address.port}`,
+            capability: 'capability',
+            method: 'DELETE',
+            pathname: '/api/v1/workflows/workflow-1',
+            body: { expected_state_version: 2 },
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual(response.body, { deleted: true });
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});
+
 test('源文档上传由主进程按长度流式转发，不把内容拼成一个请求缓冲', async () => {
     const received = [];
     const server = http.createServer((req, res) => {

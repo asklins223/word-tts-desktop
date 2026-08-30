@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
+import os
+import signal
 import tempfile
 import threading
 import time
@@ -749,8 +752,8 @@ class XunfeiFlowTests(unittest.TestCase):
         recover.assert_not_called()
         self.assertEqual(pending["works_id"], "paid-once")
 
-    def test_confirmed_single_submit_without_works_id_is_not_retried(self):
-        """确认按钮已成功点击但漏捕获 ID 时，最多只能进入对账。"""
+    def test_confirmed_single_submit_without_works_id_is_local_retryable(self):
+        """确认按钮已成功点击但漏捕获 ID 时，不查询讯飞作品列表。"""
         session = XunFeiSession()
         session._logged_in = True
         page = mock.Mock()
@@ -764,7 +767,6 @@ class XunfeiFlowTests(unittest.TestCase):
                 mock.patch.object(session, "_click_generate") as click_generate, \
                 mock.patch.object(session, "_confirm_synth", return_value="ok"), \
                 mock.patch.object(session, "_consume_works_id", return_value=None), \
-                mock.patch.object(session, "_recover_works_id_by_name", return_value=None), \
                 mock.patch.object(session, "_recover_and_retry") as recover:
             with self.assertRaises(xunfei.XunfeiSubmissionAmbiguous) as raised:
                 session._generate_pending_one(
@@ -778,8 +780,8 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertTrue(raised.exception.submission_confirmed)
         self.assertTrue(raised.exception.works_name)
 
-    def test_confirmed_composite_submit_without_works_id_is_not_retried(self):
-        """多人配音确认成功但漏捕获 ID 也不能走通用重试。"""
+    def test_confirmed_composite_submit_without_works_id_is_local_retryable(self):
+        """多人配音确认成功但漏捕获 ID 时，不查询讯飞作品列表。"""
         session = XunFeiSession()
         session._logged_in = True
         page = mock.Mock()
@@ -798,7 +800,6 @@ class XunfeiFlowTests(unittest.TestCase):
                 mock.patch.object(session, "_click_generate") as click_generate, \
                 mock.patch.object(session, "_confirm_synth", return_value="ok"), \
                 mock.patch.object(session, "_consume_works_id", return_value=None), \
-                mock.patch.object(session, "_recover_works_id_by_name", return_value=None), \
                 mock.patch.object(session, "_recover_and_retry") as recover:
             with self.assertRaises(xunfei.XunfeiSubmissionAmbiguous):
                 session._generate_pending_composite(work, max_retries=3)
@@ -849,12 +850,13 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(result["ambiguous-job"]["works_name"], "wordtts_paid_once")
         self.assertTrue(any(event.get("ambiguous_works_id") for event in events))
 
-    def test_batch_reconciles_ambiguous_name_without_submitting_again(self):
+    def test_batch_regenerates_ambiguous_submission_without_lookup(self):
         session = XunFeiSession()
         session._logged_in = True
-        recovered = mock.Mock(return_value="works-paid-once")
-        generated = mock.Mock(side_effect=AssertionError("不能重新提交"))
-        session._recover_works_id_by_name = recovered
+        generated = mock.Mock(return_value={
+            "works_id": "works-fresh",
+            "output_path": "/tmp/works-fresh.mp3",
+        })
         session._generate_pending_one = generated
         session._download_pending_batch = lambda pending: {
             item["works_id"]: {**item, "downloaded": True}
@@ -869,17 +871,17 @@ class XunfeiFlowTests(unittest.TestCase):
             "ambiguous_works_name": "wordtts_paid_once",
         }])
 
-        generated.assert_not_called()
-        recovered.assert_called_once()
+        generated.assert_called_once()
         self.assertTrue(result["resume-ambiguous"]["downloaded"])
-        self.assertEqual(result["resume-ambiguous"]["works_id"], "works-paid-once")
+        self.assertEqual(result["resume-ambiguous"]["works_id"], "works-fresh")
 
-    def test_composite_reconciles_ambiguous_name_without_submitting_again(self):
+    def test_composite_regenerates_ambiguous_submission_without_lookup(self):
         session = XunFeiSession()
         session._logged_in = True
-        recovered = mock.Mock(return_value="composite-paid-once")
-        generated = mock.Mock(side_effect=AssertionError("不能重新提交多人作品"))
-        session._recover_works_id_by_name = recovered
+        generated = mock.Mock(return_value={
+            "works_id": "composite-fresh",
+            "output_path": "/tmp/composite-fresh.mp3",
+        })
         session._generate_pending_composite = generated
         session._download_pending_batch = lambda pending, **_kwargs: {
             item["works_id"]: {**item, "downloaded": True}
@@ -901,12 +903,11 @@ class XunfeiFlowTests(unittest.TestCase):
             },
         )
 
-        generated.assert_not_called()
-        recovered.assert_called_once()
+        generated.assert_called_once()
         self.assertTrue(result["composite-resume-ambiguous"]["downloaded"])
         self.assertEqual(
             result["composite-resume-ambiguous"]["works_id"],
-            "composite-paid-once",
+            "composite-fresh",
         )
 
     def test_batch_cancel_check_stops_before_next_submission(self):
@@ -1185,6 +1186,71 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(len(seen_threads), 1)
         self.assertIsNot(seen_threads[0], threading.current_thread())
 
+    def test_disconnected_session_retires_stuck_executor_before_rebuild(self):
+        """浏览器断开后，重建不能排在旧 Playwright 调用后面。"""
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_session_class = xunfei_runtime.XunFeiSession
+        original_executor = xunfei_runtime._playwright_executor
+        original_rotated_session = xunfei_runtime._executor_rotated_session
+        old_executor = mock.Mock()
+        replacement_executor = mock.Mock()
+        created = []
+
+        class DisconnectedSession:
+            _profile_owner_pid = 24680
+
+            def runtime_status_snapshot(self):
+                return {"logged_in": False, "browser_disconnected": True}
+
+            def close(self):
+                raise AssertionError("a disconnected session must not be closed on the replacement worker")
+
+        class FreshSession:
+            def __init__(self, voice_key="amanda"):
+                self.voice_key = voice_key
+                self._reclaim_profile_owner = False
+                self._reclaim_profile_owner_pid = None
+                created.append(self)
+
+            def login(self, **_kwargs):
+                return None
+
+        def submit(function, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(function(*args, **kwargs))
+            except BaseException as error:
+                future.set_exception(error)
+            return future
+
+        replacement_executor.submit.side_effect = submit
+        xunfei_runtime._session = DisconnectedSession()
+        xunfei_runtime._playwright_executor = old_executor
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime.XunFeiSession = FreshSession
+        try:
+            with mock.patch.object(
+                xunfei_runtime,
+                "_get_playwright_executor",
+                return_value=replacement_executor,
+            ):
+                result = asyncio.run(xunfei.ensure_session())
+        finally:
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime.XunFeiSession = original_session_class
+            xunfei_runtime._playwright_executor = original_executor
+            xunfei_runtime._executor_rotated_session = original_rotated_session
+
+        self.assertEqual(old_executor.shutdown.call_args.kwargs, {
+            "wait": False,
+            "cancel_futures": True,
+        })
+        self.assertIs(result, created[0])
+        self.assertTrue(result._reclaim_profile_owner)
+        self.assertEqual(result._reclaim_profile_owner_pid, 24680)
+
     def test_all_playwright_sync_calls_share_one_dedicated_thread(self):
         seen_threads = []
 
@@ -1283,6 +1349,103 @@ class XunfeiFlowTests(unittest.TestCase):
             self.assertEqual(page.locator("#draft-prompt").count(), 0)
             self.assertEqual(page.locator(".ssml-editor").count(), 1)
             browser.close()
+
+    def test_xunfei_cloud_cache_prompt_variant_is_dismissed_before_reuse(self):
+        """讯飞存在云端草稿时，仍应选择清除本地草稿并继续当前任务。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div id="draft-prompt" style="display:block;width:420px;height:180px">
+          <strong>发现本地缓存</strong>
+          <p>检测到上一次编辑内容，是否恢复？</p>
+          <button id="cloud" type="button"
+                  onclick="document.getElementById('draft-prompt').remove()">
+            使用云端缓存
+          </button>
+          <button type="button">恢复本地缓存</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true"></div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            session = XunFeiSession()
+
+            self.assertTrue(session._dismiss_local_draft_prompt(page, timeout=1))
+            self.assertEqual(page.locator("#draft-prompt").count(), 0)
+            browser.close()
+
+    def test_startup_cleanup_does_not_report_disconnect_for_normal_error(self):
+        """清理启动异常时不能凭空设置浏览器断开标记。"""
+        session = XunFeiSession()
+        session.close()
+        self.assertFalse(session._browser_disconnected)
+
+    def test_stale_profile_lock_is_cleared_but_live_lock_is_preserved(self):
+        """重试只清理已退出进程留下的 Chrome 锁。"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            (profile / "SingletonLock").symlink_to("host-2147483647")
+            (profile / "SingletonCookie").symlink_to("cookie-target")
+            (profile / "SingletonSocket").symlink_to("socket-target")
+
+            self.assertTrue(XunFeiSession._clear_stale_profile_lock(profile))
+            self.assertFalse(os.path.lexists(profile / "SingletonLock"))
+            self.assertFalse(os.path.lexists(profile / "SingletonCookie"))
+            self.assertFalse(os.path.lexists(profile / "SingletonSocket"))
+
+            (profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
+            self.assertFalse(XunFeiSession._clear_stale_profile_lock(profile))
+            self.assertTrue(os.path.lexists(profile / "SingletonLock"))
+
+    def test_dedicated_live_profile_owner_can_be_reclaimed_without_killing_other_processes(self):
+        """只回收命令行明确指向讯飞配置目录的 Chrome。"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            owner_pid = 24680
+            (profile / "SingletonLock").symlink_to(f"host-{owner_pid}")
+            command = f"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir={profile}"
+            with mock.patch.object(
+                XunFeiSession,
+                "_profile_lock_owner_command",
+                return_value=command,
+            ), mock.patch.object(
+                XunFeiSession,
+                "_profile_lock_owner_alive",
+                side_effect=[True, False],
+            ), mock.patch("xunfei.session.os.kill") as kill, mock.patch(
+                "xunfei.session.time.sleep"
+            ):
+                self.assertTrue(
+                    XunFeiSession._terminate_profile_owner(
+                        profile,
+                        expected_pid=owner_pid,
+                    )
+                )
+
+            kill.assert_called_once_with(owner_pid, signal.SIGTERM)
+
+    def test_profile_owner_reclaim_fails_closed_for_unrelated_process(self):
+        """无法证明是 Chrome 且属于该配置目录时绝不发送终止信号。"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            owner_pid = 24680
+            (profile / "SingletonLock").symlink_to(f"host-{owner_pid}")
+            command = f"/usr/bin/python --user-data-dir={profile}"
+            with mock.patch.object(
+                XunFeiSession,
+                "_profile_lock_owner_command",
+                return_value=command,
+            ), mock.patch("xunfei.session.os.kill") as kill:
+                self.assertFalse(
+                    XunFeiSession._terminate_profile_owner(
+                        profile,
+                        expected_pid=owner_pid,
+                    )
+                )
+
+            kill.assert_not_called()
 
     def test_order_modal_does_not_wait_for_missing_ai_switch_again(self):
         """订单支付弹窗出现后，不应再次等待不存在的作品设置开关。"""

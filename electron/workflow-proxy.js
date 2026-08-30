@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 
-const ALLOWED_METHODS = new Set(['GET', 'POST', 'PATCH', 'PUT']);
+const ALLOWED_METHODS = new Set(['GET', 'POST', 'PATCH', 'PUT', 'DELETE']);
 
 function createAbortError(message = 'workflow transfer was cancelled') {
     const error = new Error(message);

@@ -164,6 +164,14 @@ def normalize_item(
         "number": raw.get("number"),
         "filename_stem": filename_stem or None,
         "conversation_number": raw.get("conversation_number"),
+        # Preserve parser-owned display facts for the review workbench.  The
+        # legacy parsers emit the intended default gender as ``voice``; it
+        # must survive normalization instead of being silently discarded.
+        "voice": raw.get("voice"),
+        "voice_gender": raw.get("voice_gender"),
+        "question_type": raw.get("question_type"),
+        "sub_type_code": raw.get("sub_type_code"),
+        "type_path": raw.get("type_path") or raw.get("type_hierarchy"),
     })
     return ParsedItem(
         identity_key=identity,
@@ -184,7 +192,7 @@ class LegacyWordParser(ParserPort):
         self,
         *,
         parse_callable: Callable[[str], tuple[list[Mapping[str, Any]], str]] | None = None,
-        parser_version: str = "14",
+        parser_version: str = "16",
     ) -> None:
         self.parse_callable = parse_callable
         self.parser_version = str(parser_version)

@@ -207,20 +207,17 @@
                 tone,
                 view: result === 'SUCCEEDED' || result === 'PARTIAL_SUCCESS' ? 'delivery' : 'issues',
                 terminal: true,
-                primaryAction: (blocker?.requires_reconcile
-                    ? actionFor(normalized, 'RECONCILE', { enabledOnly: true })
-                    : null)
-                    || actionFor(normalized, 'DOWNLOAD_ZIP', { enabledOnly: true })
+                primaryAction: actionFor(normalized, 'DOWNLOAD_ZIP', { enabledOnly: true })
                     || actionFor(normalized, 'EXPORT_ZIP', { enabledOnly: true })
                     || actionFor(normalized, 'OPEN_VIEW', { enabledOnly: true }),
                 secondaryActions: ['RETRY', 'RERUN', 'ARCHIVE'].map(type => actionFor(normalized, type, { enabledOnly: true })).filter(Boolean),
             };
         }
         if (control === 'TERMINATING') {
-            return { key: 'TERMINATING', label: '正在停止', description: '停止请求已提交，正在等待任务安全收尾。', tone: 'warning', view: 'generation', terminal: false, primaryAction: null, secondaryActions: [actionFor(normalized, 'CANCEL', { enabledOnly: true })].filter(Boolean) };
+            return { key: 'TERMINATING', label: '正在停止', description: '停止请求已提交，本地任务即将结束。', tone: 'warning', view: 'generation', terminal: false, primaryAction: null, secondaryActions: [actionFor(normalized, 'CANCEL', { enabledOnly: true })].filter(Boolean) };
         }
         if (control === 'PAUSE_REQUESTED') {
-            return { key: 'PAUSE_REQUESTED', label: '正在暂停', description: '暂停请求已提交，等待当前外部操作结束。', tone: 'warning', view: 'generation', terminal: false, primaryAction: null, secondaryActions: [] };
+            return { key: 'PAUSE_REQUESTED', label: '正在暂停', description: '暂停请求已提交，等待当前处理点结束。', tone: 'warning', view: 'generation', terminal: false, primaryAction: null, secondaryActions: [] };
         }
         if (control === 'PAUSED') {
             return { key: 'PAUSED', label: '已暂停', description: '任务停留在可恢复状态，不会自动重复外部提交。', tone: 'info', view: 'generation', terminal: false, primaryAction: actionFor(normalized, 'RESUME', { enabledOnly: true }), secondaryActions: [actionFor(normalized, 'CANCEL', { enabledOnly: true })].filter(Boolean) };
@@ -237,11 +234,9 @@
         const [label, description, tone, view] = stateMap[execution] || ['同步中', '正在读取任务状态。', 'info', 'generation'];
         const primaryType = execution === 'WAITING_RETRY'
             ? 'RETRY'
-            : ['WAITING_USER', 'BLOCKED'].includes(execution)
-                ? 'RECONCILE'
-                : ['CREATED', 'PREPARING'].includes(execution)
-                    ? 'GENERATE'
-                    : 'OPEN_VIEW';
+            : ['CREATED', 'PREPARING'].includes(execution)
+                ? 'GENERATE'
+                : 'OPEN_VIEW';
         return {
             key: execution,
             label,
@@ -250,7 +245,7 @@
             view,
             terminal: false,
             primaryAction: actionFor(normalized, primaryType, { enabledOnly: true }),
-            secondaryActions: [actionFor(normalized, 'CANCEL', { enabledOnly: true }), actionFor(normalized, 'RECONCILE', { enabledOnly: true })].filter(Boolean),
+            secondaryActions: [actionFor(normalized, 'CANCEL', { enabledOnly: true })].filter(Boolean),
         };
     }
 

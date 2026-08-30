@@ -1,0 +1,7 @@
+{
+  "$schema": "./update-policy.schema.json",
+  "version": "2.7.45",
+  "mode": "optional",
+  "minimumSupportedVersion": null,
+  "message": "这是一个可选更新。你可以在方便时下载并重启安装。"
+}

@@ -122,12 +122,23 @@
                 let workspace = typeof getWorkspace === 'function' ? getWorkspace() : null;
                 let conflictRetried = false;
                 try {
-                    workspace = await refreshWorkspace(workflowId, 'before-command') || workspace;
+                    const refreshedWorkspace = await refreshWorkspace(workflowId, 'before-command');
+                    if (!refreshedWorkspace) {
+                        return { ok: false, reason: 'workspace-refresh-failed', workspace };
+                    }
+                    workspace = refreshedWorkspace;
                     while (true) {
-                        const currentAction = typeof resolveAction === 'function'
-                            ? resolveAction(actionType, workspace) || action
-                            : action;
-                        if (currentAction.enabled !== true) {
+                        const resolvedAction = typeof resolveAction === 'function'
+                            ? resolveAction(actionType, workspace)
+                            : null;
+                        // A complete workspace action list is authoritative:
+                        // never fall back to the stale click payload when the
+                        // refreshed server state removed or disabled it. Some
+                        // lightweight callers provide only a snapshot, so the
+                        // legacy payload remains valid for those partial views.
+                        const currentAction = resolvedAction
+                            || (!Array.isArray(workspace?.available_actions) ? action : null);
+                        if (!currentAction || currentAction.enabled !== true) {
                             return { ok: false, reason: 'action-disabled-after-refresh', workspace };
                         }
                         const snapshot = workspace?.snapshot || workspace?.workflow || {};
@@ -192,7 +203,11 @@
                         } catch (error) {
                             if (error?.code === 'STATE_CONFLICT' && !conflictRetried) {
                                 conflictRetried = true;
-                                workspace = await refreshWorkspace(workflowId, 'state-conflict') || workspace;
+                                const refreshedWorkspace = await refreshWorkspace(workflowId, 'state-conflict');
+                                if (!refreshedWorkspace) {
+                                    return { ok: false, reason: 'workspace-refresh-failed', workspace };
+                                }
+                                workspace = refreshedWorkspace;
                                 continue;
                             }
                             if (error?.code === 'COMMAND_TIMEOUT') {

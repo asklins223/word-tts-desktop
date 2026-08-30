@@ -290,7 +290,11 @@ class SideEffectIntentLog:
                 errors.append(f"journal state mismatch: {key[0]}:{key[1]}")
         for key in sorted(
             key for key in set(latest) - set(row_map)
-            if latest[key].get("state") != "ABORTED"
+            # A physically deleted unfinished workflow may intentionally leave
+            # a terminal, non-billable journal fact behind.  The append-only
+            # journal is the audit trail for that decision; only live or
+            # uncertain states are orphan errors that require recovery.
+            if latest[key].get("state") not in {"ABORTED", "ARCHIVED", "REJECTED"}
         ):
             errors.append(f"journal intent has no SQLite row: {key[0]}:{key[1]}")
         return errors
@@ -381,14 +385,76 @@ class SideEffectIntentLog:
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
+        if os.name == "nt":
+            SideEffectIntentLog._flush_windows_directory(path)
+            return
         try:
             descriptor = os.open(str(path), os.O_RDONLY)
         except OSError:
-            # The supported desktop target is POSIX.  If the directory cannot
-            # be opened, the durability contract is unknown and the caller
-            # must fail closed before invoking a billable side effect.
+            # If the directory cannot be opened, the durability contract is
+            # unknown and the caller must fail closed before invoking a
+            # billable side effect.
             raise
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+    @staticmethod
+    def _flush_windows_directory(path: Path) -> None:
+        """Flush a directory handle on Windows when the filesystem supports it.
+
+        ``os.open(directory)`` is a POSIX idiom and raises on common Windows
+        filesystems.  The file itself has already been flushed by ``_append``;
+        Windows' native directory handle is used here for the remaining
+        metadata flush.  Some filesystems do not expose flushable directory
+        handles, in which case the durable file flush is the strongest
+        operation available and the journal remains usable.
+        """
+
+        import ctypes
+        from ctypes import wintypes
+
+        unsupported_errors = {1, 6, 50, 87}  # INVALID_FUNCTION, INVALID_HANDLE, NOT_SUPPORTED, INVALID_PARAMETER
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        flush_file_buffers = kernel32.FlushFileBuffers
+        flush_file_buffers.argtypes = [wintypes.HANDLE]
+        flush_file_buffers.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+
+        handle = create_file(
+            str(path),
+            0x80000000,  # GENERIC_READ
+            0x00000001 | 0x00000002 | 0x00000004,  # FILE_SHARE_{READ,WRITE,DELETE}
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000,  # FILE_FLAG_BACKUP_SEMANTICS, required for directories
+            None,
+        )
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle == invalid_handle:
+            error = ctypes.get_last_error()
+            if error in unsupported_errors:
+                return
+            raise OSError(error, f"cannot open side-effect journal directory: {path}")
+        try:
+            if not flush_file_buffers(handle):
+                error = ctypes.get_last_error()
+                if error in unsupported_errors:
+                    return
+                raise OSError(error, f"cannot flush side-effect journal directory: {path}")
+        finally:
+            close_handle(handle)

@@ -6,7 +6,7 @@
  * 3. 提供原生文件对话框（选择文件、保存文件）
  */
 
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
@@ -17,6 +17,7 @@ const net = require('net');
 const { pathToFileURL } = require('url');
 const { createNativeFileDialogs } = require('./file-dialogs');
 const { createSourceUploadStaging } = require('./source-staging');
+const { createUpdateManager } = require('./update-manager');
 const {
     newStreamId,
     openWorkflowSse,
@@ -37,6 +38,8 @@ let desktopServicesReady = false;
 let backendReady = false;
 let rendererReady = false;
 let rendererFatalShown = false;
+let updateManager = null;
+let latestUpdateState = null;
 let pythonStopPromise = null;
 let quitCleanupStarted = false;
 let persistentUserDataPath = null;
@@ -61,6 +64,7 @@ const MAX_PENDING_WORKFLOW_EVENT_FRAMES = 512;
 let rendererLifecycleEpoch = 0;
 const isSmokeTest = process.argv.includes('--smoke-test');
 const PRODUCT_NAME = '小猪wordTTS';
+const RELEASES_URL = 'https://github.com/asklins223/word-tts-desktop/releases';
 // 正式 App 默认启用真实讯飞 Provider；只有打包/启动 smoke 明确使用
 // --smoke-test 时才强制离线。后端环境变量由这里统一写成 1，避免用户
 // 直接双击安装包时因为没有额外 shell 环境变量而落入“Provider 未启用”。
@@ -162,6 +166,38 @@ function flushAppNotices() {
     if (!rendererReady || !mainWindow || mainWindow.isDestroyed()) return;
     pendingAppNotices.forEach(notice => mainWindow.webContents.send('app-notice', notice));
     pendingAppNotices.clear();
+    if (latestUpdateState) mainWindow.webContents.send('app-update', latestUpdateState);
+}
+
+function sendUpdateState(state) {
+    latestUpdateState = state;
+    if (rendererReady && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app-update', state);
+    }
+}
+
+function initializeUpdateManager() {
+    updateManager = createUpdateManager({
+        app,
+        appVersion: app.getVersion(),
+        isPackaged: app.isPackaged,
+        isSmokeTest,
+        platform: process.platform,
+        releaseUrl: RELEASES_URL,
+        send: sendUpdateState,
+    });
+    latestUpdateState = updateManager.getStatus();
+}
+
+function safeUpdateStatus() {
+    return updateManager?.getStatus?.() || {
+        status: 'disabled',
+        currentVersion: app.getVersion(),
+        platform: process.platform,
+        releaseUrl: RELEASES_URL,
+        canDownload: false,
+        canInstall: false,
+    };
 }
 
 // ============================================================================
@@ -517,7 +553,7 @@ function createWindow() {
         show: !isSmokeTest || process.platform === 'win32',
         title: PRODUCT_NAME,
         transparent: false,
-        backgroundColor: '#f8fafd',
+        backgroundColor: '#f4f9ff',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
@@ -553,6 +589,9 @@ function createWindow() {
     }
 
     const win = new BrowserWindow(windowOptions);
+    // The `closed` event fires after the BrowserWindow and its webContents
+    // have been destroyed. Keep the sender id as a plain value for cleanup.
+    const windowWebContentsId = win.webContents.id;
     mainWindow = win;
     smokeLog(`window created: show=${windowOptions.show}`);
     rendererReady = false;
@@ -603,7 +642,7 @@ function createWindow() {
     }
 
     win.on('closed', () => {
-        closeWorkflowStreamsForSender(win.webContents.id, 'window-closed');
+        closeWorkflowStreamsForSender(windowWebContentsId, 'window-closed');
         if (mainWindow !== win) return;
         rendererReady = false;
         mainWindow = null;
@@ -809,6 +848,40 @@ function registerIpcHandlers() {
         isAllowedFilePath,
         getMainWindow: () => mainWindow,
         isTrustedSender: isTrustedRendererEvent,
+    });
+
+    // 更新能力只接受本地 renderer 的请求。下载和安装仍由
+    // electron-updater 在主进程完成，避免把 GitHub Release 元数据或文件
+    // 路径暴露给页面脚本。
+    ipcMain.handle('update-status', async (event) => {
+        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
+        return safeUpdateStatus();
+    });
+
+    ipcMain.handle('update-check', async (event) => {
+        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
+        return updateManager?.check?.() || safeUpdateStatus();
+    });
+
+    ipcMain.handle('update-download', async (event) => {
+        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
+        return updateManager?.download?.() || safeUpdateStatus();
+    });
+
+    ipcMain.handle('update-install', async (event) => {
+        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
+        return updateManager?.install?.() || safeUpdateStatus();
+    });
+
+    ipcMain.handle('open-update-release', async (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        try {
+            await shell.openExternal(RELEASES_URL);
+            return { success: true };
+        } catch (error) {
+            console.error('[main] 打开 GitHub Releases 失败:', error.message);
+            return { success: false, reason: 'open-failed', message: error.message };
+        }
     });
 
     // 拖拽导入的分块暂存区：渲染层只持有单个分块，主进程在允许目录内
@@ -1616,6 +1689,7 @@ app.whenReady().then(async () => {
     serverInstance = crypto.createHash('sha256').update(serverToken).digest('hex').slice(0, 16);
     console.log(`[main] 已分配独立后端地址: ${serverUrl}`);
 
+    initializeUpdateManager();
     registerIpcHandlers();
     desktopServicesReady = true;
     startPythonServer();
@@ -1657,10 +1731,12 @@ app.whenReady().then(async () => {
             tone: 'danger',
         });
         createWindow();
+        updateManager?.start?.();
         return;
     }
 
     createWindow();
+    updateManager?.start?.();
 });
 
 app.on('window-all-closed', () => {
@@ -1670,6 +1746,7 @@ app.on('window-all-closed', () => {
 // 在应用退出前确保 Python 进程被终止，防止僵尸进程
 app.on('will-quit', (event) => {
     isQuitting = true;
+    updateManager?.dispose?.();
     workflowSseStreams.forEach(({ stream }) => stream.close());
     workflowSseStreams.clear();
     workflowArtifactStreams.forEach(({ stream }) => stream.destroy());

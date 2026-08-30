@@ -445,7 +445,15 @@ function createNativeFileDialogs({
             return { success: false, reason: 'dialog-error', error: '系统保存框未返回有效结果' };
         }
         if (result.canceled || !result.filePath) return { success: false, reason: 'user-cancelled' };
-        if (options?.signal?.aborted) return { success: false, reason: 'user-cancelled' };
+        const cancelledResult = () => ({
+            success: false,
+            reason: 'user-cancelled',
+            // Keep the IPC result stable across Node versions.  The message
+            // on the AbortError raised by stream.pipeline changed between
+            // supported runtimes and is not useful to the renderer anyway.
+            error: 'file save was cancelled',
+        });
+        if (options?.signal?.aborted) return cancelledResult();
 
         let response = null;
         let target = null;
@@ -463,7 +471,7 @@ function createNativeFileDialogs({
             signal?.addEventListener?.('abort', onAbort, { once: true });
             abortListenerAttached = Boolean(signal);
             response = await openStream({ signal });
-            if (signal?.aborted) return { success: false, reason: 'user-cancelled' };
+            if (signal?.aborted) return cancelledResult();
             const status = Number(response?.statusCode || 0);
             if (status < 200 || status >= 300) {
                 response?.resume?.();
@@ -517,11 +525,12 @@ function createNativeFileDialogs({
             response?.destroy?.();
             target?.destroy?.();
             logger.error('[main] 流式文件保存失败:', error);
+            if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'USER_CANCELLED') {
+                return cancelledResult();
+            }
             return {
                 success: false,
-                reason: signal?.aborted || error?.name === 'AbortError' || error?.code === 'USER_CANCELLED'
-                    ? 'user-cancelled'
-                    : error?.code === 'RESOURCE_EXHAUSTED' ? 'file-too-large' : 'download-error',
+                reason: error?.code === 'RESOURCE_EXHAUSTED' ? 'file-too-large' : 'download-error',
                 error: error?.message,
             };
         } finally {

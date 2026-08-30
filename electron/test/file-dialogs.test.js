@@ -318,7 +318,7 @@ test('流式保存按块报告进度，并在取消时清理临时文件且不�
         assert.deepEqual(result, {
             success: false,
             reason: 'user-cancelled',
-            error: 'The operation was aborted',
+            error: 'file save was cancelled',
         });
         assert.equal(progress[0].receivedBytes, 4 * 1024);
         assert.equal(progress.at(-1).totalBytes, null);

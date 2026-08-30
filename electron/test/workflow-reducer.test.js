@@ -95,10 +95,10 @@ test('terminal state requires execution, control and result facts together', () 
     }), false);
 });
 
-test('state projection selects only enabled server actions and exposes delivery facts', () => {
+test('state projection selects the local retry action and exposes delivery facts', () => {
     const workspace = {
         snapshot: {
-            execution_state: 'WAITING_USER',
+            execution_state: 'WAITING_RETRY',
             control_state: 'RUNNING',
             result_status: 'IN_PROGRESS',
         },
@@ -106,8 +106,7 @@ test('state projection selects only enabled server actions and exposes delivery 
         artifacts: [],
         blockers: [{ severity: 'BLOCKING', message: '需要核验' }],
         available_actions: [
-            { type: 'RECONCILE', enabled: true },
-            { type: 'RETRY', enabled: false, reason: '存在未决副作用' },
+            { type: 'RETRY', enabled: true },
         ],
         delivery: {
             included_item_ids: ['item-1'],
@@ -118,10 +117,10 @@ test('state projection selects only enabled server actions and exposes delivery 
         },
     };
     const state = reducer.deriveWorkflowUserState(workspace.snapshot, workspace);
-    assert.equal(state.key, 'WAITING_USER');
-    assert.equal(state.primaryAction.type, 'RECONCILE');
-    assert.equal(adapter.actionEnabled(workspace, 'RECONCILE'), true);
-    assert.equal(adapter.actionEnabled(workspace, 'RETRY'), false);
+    assert.equal(state.key, 'WAITING_RETRY');
+    assert.equal(state.primaryAction.type, 'RETRY');
+    assert.equal(adapter.actionEnabled(workspace, 'RECONCILE'), false);
+    assert.equal(adapter.actionEnabled(workspace, 'RETRY'), true);
     assert.deepEqual(adapter.deliveryScope(workspace), {
         included: ['item-1'],
         excluded: ['item-2'],
@@ -131,7 +130,7 @@ test('state projection selects only enabled server actions and exposes delivery 
     });
 });
 
-test('terminal projection exposes reconciliation before delivery for missing artifacts', () => {
+test('terminal projection exposes the view action for missing artifacts', () => {
     const workspace = {
         snapshot: {
             execution_state: 'TERMINAL',
@@ -143,10 +142,8 @@ test('terminal projection exposes reconciliation before delivery for missing art
         blockers: [{
             code: 'ARTIFACT_MISSING_OR_UNVERIFIED',
             severity: 'ERROR',
-            requires_reconcile: true,
         }],
         available_actions: [
-            { type: 'RECONCILE', enabled: true, target: { target_type: 'WORK_UNIT', work_unit_id: 'unit-1' } },
             { type: 'EXPORT_ZIP', enabled: false },
             { type: 'OPEN_VIEW', enabled: true },
         ],
@@ -154,7 +151,26 @@ test('terminal projection exposes reconciliation before delivery for missing art
         delivery: { included_item_ids: [], excluded_item_ids: ['item-1'], exclusion_reasons: { 'item-1': 'ARTIFACT_MISSING_OR_UNVERIFIED' } },
     };
     const state = reducer.deriveWorkflowUserState(workspace.snapshot, workspace);
-    assert.equal(state.primaryAction.type, 'RECONCILE');
+    assert.equal(state.primaryAction.type, 'OPEN_VIEW');
+});
+
+test('local stop projects a terminal cancelled task immediately', () => {
+    const workspace = {
+        snapshot: {
+            execution_state: 'TERMINAL',
+            control_state: 'TERMINATED',
+            cleanup_state: 'SUCCEEDED',
+            result_status: 'CANCELLED',
+        },
+        items: [],
+        artifacts: [],
+        available_actions: [{ type: 'OPEN_VIEW', enabled: true }],
+    };
+    const state = reducer.deriveWorkflowUserState(workspace.snapshot, workspace);
+    assert.equal(state.key, 'CANCELLED');
+    assert.equal(state.label, '已取消');
+    assert.equal(state.primaryAction.type, 'OPEN_VIEW');
+    assert.equal(state.view, 'issues');
 });
 
 test('reducer 与 adapter 使用同一套 blocker severity 优先级', () => {

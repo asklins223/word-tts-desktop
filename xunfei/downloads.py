@@ -1,4 +1,4 @@
-"""Download, works-list reconciliation, and page recovery actions.
+"""Download readiness, works-list access, and page recovery actions.
 
 These methods remain a mixin because they share the live page/session state
 with the browser session.  The boundary is intentionally about responsibility:
@@ -147,7 +147,6 @@ class DownloadMixin:
         page,
         needed_count=1,
         expected_ids=None,
-        works_name=None,
         cancel_check=None,
     ):
         """有界分页读取作品列表，直到找到目标 ID 或扫描完安全页数。"""
@@ -172,10 +171,6 @@ class DownloadMixin:
                 "needed_count": target_count,
                 "page_index": page_index,
             }
-            # 只有对账时才带作品名过滤参数，保持旧版测试替身和普通列表
-            # 请求的调用形态不变。
-            if works_name:
-                fetch_kwargs["works_name"] = str(works_name).strip()
             current = self._fetch_works_list_in_page(page, **fetch_kwargs)
             fetch_ok = getattr(self, "_last_works_list_fetch_ok", None)
             if fetch_ok is False:
@@ -203,79 +198,15 @@ class DownloadMixin:
         self._last_works_list_scan_complete = scan_complete
         return records
 
-    def _recover_works_id_by_name(
-        self,
-        page,
-        works_name,
-        timeout=60,
-        cancel_check=None,
-    ):
-        """提交已确认但漏捕获 ID 时，只按唯一作品名做安全对账。
-
-        作品名是提交前写入讯飞作品设置弹窗的短唯一值。对账必须同时满足
-        “名称完全一致”和“只找到一个 ID”；否则保持不确定状态，绝不拿最新
-        作品或临时 ID 猜测归属。
-        """
-        target_name = self._normalize_works_name(works_name)
-        target_label = _normalize_download_label(target_name)
-        if not target_label:
-            return None
-        deadline = time.time() + max(0, float(timeout))
-        logged_wait = False
-        while time.time() < deadline:
-            _check_cancel_requested(cancel_check)
-            records = self._fetch_works_list_pages(
-                page,
-                needed_count=1,
-                works_name=target_name,
-                cancel_check=cancel_check,
-            )
-            candidates = {}
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                record_id = record.get("id") or record.get("worksId")
-                record_name = (
-                    record.get("worksName")
-                    or record.get("works_name")
-                    or record.get("name")
-                    or record.get("title")
-                )
-                if record_id is None or not record_name:
-                    continue
-                if _normalize_download_label(record_name) != target_label:
-                    continue
-                candidates[str(record_id)] = record
-            if len(candidates) == 1:
-                works_id = next(iter(candidates))
-                _log(
-                    f"[xunfei] ✅ 通过唯一作品名找回已提交 worksId: "
-                    f"{works_id} ({target_name})"
-                )
-                return works_id
-            if len(candidates) > 1:
-                _log(
-                    f"[xunfei] ⚠️ 作品名对账发现多个 worksId，保持不确定状态: "
-                    f"{target_name}"
-                )
-            elif not logged_wait:
-                _log(f"[xunfei] ⏳ 等待作品列表对账: {target_name}")
-                logged_wait = True
-            if time.time() >= deadline:
-                break
-            try:
-                page.wait_for_timeout(1000)
-            except Exception:
-                time.sleep(1)
-        return None
-
-    def _wait_for_works_entry(self, page, works_id, timeout=120):
+    def _wait_for_works_entry(self, page, works_id, timeout=120, cancel_check=None):
         """等待同一个 worksId 出现在作品列表中，严禁按名称或最新记录替代。"""
         expected = str(works_id)
         deadline = time.time() + timeout
         logged_wait = False
         while time.time() < deadline:
+            _check_cancel_requested(cancel_check)
             for item in self._fetch_works_list_in_page(page, needed_count=1):
+                _check_cancel_requested(cancel_check)
                 if not isinstance(item, dict):
                     continue
                 item_id = item.get("id") or item.get("worksId")
@@ -285,20 +216,22 @@ class DownloadMixin:
             if not logged_wait:
                 _log(f"[xunfei]   ⏳ 等待作品列表匹配 worksId: {expected}")
                 logged_wait = True
-            page.wait_for_timeout(2000)
+            _wait_with_cancel(page, 2.0, cancel_check=cancel_check)
         _log(f"[xunfei]   ⚠️ 作品列表未匹配到 worksId: {expected}")
         return None
 
-    def _wait_for_works_ready(self, page, works_id, timeout=180):
+    def _wait_for_works_ready(self, page, works_id, timeout=180, cancel_check=None):
         """等待精确 worksId 对应的音频文件真正可下载。"""
         expected = str(works_id)
         deadline = time.time() + timeout
         matched_logged = False
         waiting_logged = False
         while time.time() < deadline:
+            _check_cancel_requested(cancel_check)
             items = self._fetch_works_list_in_page(page, needed_count=1)
             exact = None
             for item in items:
+                _check_cancel_requested(cancel_check)
                 if not isinstance(item, dict):
                     continue
                 item_id = item.get("id") or item.get("worksId")
@@ -324,6 +257,7 @@ class DownloadMixin:
                 sign_url = self._fetch_sign_url_in_page(
                     page, expected, log_result=False
                 )
+                _check_cancel_requested(cancel_check)
                 if sign_url:
                     exact["_download_url"] = sign_url
                     _log(f"[xunfei]   ✅ 匹配作品签名 URL 已就绪 worksId: {expected}")
@@ -337,7 +271,7 @@ class DownloadMixin:
                 _log(f"[xunfei]   ⏳ 等待作品列表匹配 worksId: {expected}")
                 waiting_logged = True
 
-            page.wait_for_timeout(2000)
+            _wait_with_cancel(page, 2.0, cancel_check=cancel_check)
 
         _log(f"[xunfei]   ⚠️ 匹配作品在限定时间内仍不可下载 worksId: {expected}")
         return None
@@ -358,12 +292,13 @@ class DownloadMixin:
             )
         return url
 
-    def _cleanup_after_item(self, page):
+    def _cleanup_after_item(self, page, cancel_check=None):
         """单条提交后关闭残留弹窗并清空编辑器，不刷新页面。"""
+        _check_cancel_requested(cancel_check)
         _safe_eval(page, JS.CLOSE_ALL_MODALS, [])
         # 讯飞页面的音色和三项参数状态要跨条复用；这里只清空输入内容，
         # 不能用 goto/reload，否则同一音色分组会被迫重复选择和设置参数。
-        self._clear_editor(page)
+        self._clear_editor(page, cancel_check=cancel_check)
         # 不再固定等待 1~2 秒。弹窗关闭动画和编辑器清空完成后立即继续，
         # 如果页面较慢则最多等待 2 秒，避免下一条输入撞上旧弹窗。
         ready = _poll(
@@ -374,9 +309,10 @@ class DownloadMixin:
             timeout=2,
             interval=0.1,
             page=page,
+            cancel_check=cancel_check,
         )
         if not ready:
-            self._pause(page, 0.25, 0.08)
+            self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
 
     def _recover_and_retry(self, page, cancel_check=None):
         """合成失败后恢复页面状态（重新加载编辑页，重置音色/参数记忆）。"""
@@ -425,7 +361,9 @@ class DownloadMixin:
         while state == "not_found" and time.monotonic() < detect_deadline:
             _check_cancel_requested(cancel_check)
             try:
-                page.wait_for_timeout(100)
+                _wait_with_cancel(page, 0.1, cancel_check=cancel_check)
+            except XunfeiCancelled:
+                raise
             except Exception:
                 break
             state = _safe_eval(page, JS.DISMISS_LOCAL_DRAFT_PROMPT)
@@ -437,7 +375,7 @@ class DownloadMixin:
             return True
         if state != "clicked":
             _log(
-                "[xunfei]   检测到讯飞本地缓存恢复弹窗，但未找到“空白开始”按钮"
+                "[xunfei]   检测到讯飞本地缓存恢复弹窗，但未找到可继续的处理按钮"
             )
             return False
 
@@ -460,12 +398,14 @@ class DownloadMixin:
         return bool(cleared)
 
     @staticmethod
-    def _click_visible_exact_button(page, label, scope=None):
+    def _click_visible_exact_button(page, label, scope=None, cancel_check=None):
         """点击可见且文字完全匹配的按钮，返回是否成功。"""
+        _check_cancel_requested(cancel_check)
         root = scope or page
         try:
             buttons = root.locator('button:visible')
             for index in range(min(buttons.count(), 100)):
+                _check_cancel_requested(cancel_check)
                 button = buttons.nth(index)
                 try:
                     if re.sub(r"\\s+", "", button.inner_text(timeout=500)).strip() != label:
@@ -473,20 +413,27 @@ class DownloadMixin:
                     if button.is_disabled():
                         continue
                     button.click(force=True, timeout=5000)
+                    _check_cancel_requested(cancel_check)
                     return True
+                except XunfeiCancelled:
+                    raise
                 except Exception:
                     continue
+        except XunfeiCancelled:
+            raise
         except Exception:
             pass
         return False
 
-    def _select_download_rows(self, page, targets):
+    def _select_download_rows(self, page, targets, cancel_check=None):
         """在讯飞作品页按 worksId 对应的 orderNo 精确勾选作品行。"""
         selected = {}
         missing = list(targets)
         for attempt in range(8):
+            _check_cancel_requested(cancel_check)
             state = _safe_eval(page, JS.SELECT_DOWNLOAD_ROWS, missing or targets) or {}
             for item in state.get("selected") or []:
+                _check_cancel_requested(cancel_check)
                 selected[str(item.get("works_id") or "")] = item
             missing_ids = {
                 str(item.get("works_id") or "")
@@ -501,8 +448,9 @@ class DownloadMixin:
                 break
             if attempt >= 7:
                 break
+            _check_cancel_requested(cancel_check)
             _safe_eval(page, JS.SCROLL_DOWNLOAD_LIST)
-            page.wait_for_timeout(500)
+            _wait_with_cancel(page, 0.5, cancel_check=cancel_check)
 
         if selected:
             _log(
@@ -539,17 +487,34 @@ class DownloadMixin:
         page.on("download", on_download)
         try:
             _check_cancel_requested(cancel_check)
-            if not self._click_visible_exact_button(page, "下载"):
+            if cancel_check is None:
+                clicked = self._click_visible_exact_button(page, "下载")
+            else:
+                clicked = self._click_visible_exact_button(
+                    page, "下载", cancel_check=cancel_check
+                )
+            if not clicked:
                 _log("[xunfei]   ❌ 下载页未找到可用的“下载”按钮")
                 return []
 
             # 当前页面通常直接触发多个 MP3 下载；部分账号会先弹出
             # Ant Design 下载确认框，再点击确认按钮。
-            page.wait_for_timeout(500)
+            _wait_with_cancel(page, 0.5, cancel_check=cancel_check)
             _check_cancel_requested(cancel_check)
             dialog = self._find_visible_dialog(page, "下载")
             if dialog is not None:
-                if not self._click_visible_exact_button(page, "下载", scope=dialog):
+                if cancel_check is None:
+                    dialog_clicked = self._click_visible_exact_button(
+                        page, "下载", scope=dialog
+                    )
+                else:
+                    dialog_clicked = self._click_visible_exact_button(
+                        page,
+                        "下载",
+                        scope=dialog,
+                        cancel_check=cancel_check,
+                    )
+                if not dialog_clicked:
                     _log("[xunfei]   ❌ 未能点击下载确认弹窗中的“下载”")
                     return downloads
                 _log("[xunfei]   已确认下载弹窗")
@@ -558,7 +523,7 @@ class DownloadMixin:
             deadline = time.time() + 120
             while len(downloads) < expected and time.time() < deadline:
                 _check_cancel_requested(cancel_check)
-                page.wait_for_timeout(500)
+                _wait_with_cancel(page, 0.5, cancel_check=cancel_check)
             _log(
                 f"[xunfei]   下载页事件完成: {len(downloads)}/{expected} 条"
             )
@@ -600,8 +565,9 @@ class DownloadMixin:
         return None
 
     @staticmethod
-    def _download_signed_url(download_url, output_path):
+    def _download_signed_url(download_url, output_path, cancel_check=None):
         """通过精确 worksId 对应的签名地址下载 MP3。"""
+        _check_cancel_requested(cancel_check)
         if (
             not output_path
             or not str(download_url or "").startswith(("http://", "https://"))
@@ -622,14 +588,19 @@ class DownloadMixin:
             with urllib.request.urlopen(request, timeout=60) as response:
                 with open(temporary_path, "wb") as target:
                     while True:
+                        _check_cancel_requested(cancel_check)
                         chunk = response.read(1024 * 256)
                         if not chunk:
                             break
                         target.write(chunk)
+                _check_cancel_requested(cancel_check)
             if not _looks_like_mp3(temporary_path):
                 raise XunfeiError("签名地址返回的文件不是有效 MP3")
+            _check_cancel_requested(cancel_check)
             os.replace(temporary_path, output_path)
             return True
+        except XunfeiCancelled:
+            raise
         except (OSError, ValueError, urllib.error.URLError, XunfeiError) as error:
             _log(f"[xunfei]   worksId 签名下载失败: {error}")
             return False
@@ -780,10 +751,18 @@ class DownloadMixin:
             works_id = str(target.get("works_id") or "")
             item = target.get("item") or {}
             ready_item = ready.get(works_id) or {}
-            if self._download_signed_url(
-                ready_item.get("download_url"),
-                item.get("output_path"),
-            ):
+            if cancel_check is None:
+                signed_downloaded = self._download_signed_url(
+                    ready_item.get("download_url"),
+                    item.get("output_path"),
+                )
+            else:
+                signed_downloaded = self._download_signed_url(
+                    ready_item.get("download_url"),
+                    item.get("output_path"),
+                    cancel_check=cancel_check,
+                )
+            if signed_downloaded:
                 output_path = item.get("output_path")
                 size = os.path.getsize(output_path)
                 result = {
@@ -820,7 +799,14 @@ class DownloadMixin:
         if not browser_targets:
             return results
 
-        selected, missing = self._select_download_rows(page, browser_targets)
+        if cancel_check is None:
+            selected, missing = self._select_download_rows(page, browser_targets)
+        else:
+            selected, missing = self._select_download_rows(
+                page,
+                browser_targets,
+                cancel_check=cancel_check,
+            )
         _check_cancel_requested(cancel_check)
         selected_targets = [
             target for target in browser_targets

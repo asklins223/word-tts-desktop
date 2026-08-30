@@ -215,6 +215,55 @@ class ExternalRuntimeTests(unittest.TestCase):
         self.assertEqual(intervention["reason"], "EXTERNAL_VERIFY_MISMATCH")
         self.assertEqual(mapping["external_status"], "AMBIGUOUS")
 
+    def test_explicit_workflow_delete_removes_external_operation_but_detaches_mapping(self) -> None:
+        mapping, lease, operation = self._operation()
+        self.service.begin_operation(operation["external_operation_id"], lease)
+        snapshot = self.repository.get_workflow(self.workflow.workflow_id)
+
+        self.repository.delete_workflow(
+            self.workflow.workflow_id,
+            expected_state_version=snapshot.state_version,
+            allow_unresolved=True,
+        )
+
+        with self.database.read_transaction() as con:
+            self.assertEqual(
+                con.execute(
+                    "SELECT COUNT(*) FROM workflows WHERE workflow_id=?",
+                    (self.workflow.workflow_id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                con.execute(
+                    "SELECT COUNT(*) FROM external_operations WHERE external_operation_id=?",
+                    (operation["external_operation_id"],),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                con.execute(
+                    "SELECT COUNT(*) FROM external_record_bindings WHERE workflow_id=?",
+                    (self.workflow.workflow_id,),
+                ).fetchone()[0],
+                0,
+            )
+            detached = con.execute(
+                """SELECT local_workflow_id, local_item_id, current_workflow_group_id,
+                          current_operation_key
+                   FROM external_records WHERE external_record_mapping_id=?""",
+                (mapping["external_record_mapping_id"],),
+            ).fetchone()
+            lease_state = con.execute(
+                "SELECT state FROM external_record_leases WHERE external_record_mapping_id=?",
+                (mapping["external_record_mapping_id"],),
+            ).fetchone()[0]
+            self.assertEqual(con.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        self.assertIsNotNone(detached)
+        self.assertEqual(tuple(detached), (None, None, None, None))
+        self.assertEqual(lease_state, "RELEASED")
+
     def test_record_lease_is_fenced(self) -> None:
         mapping = self.service.ensure_record(
             self.workflow.workflow_id,

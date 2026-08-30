@@ -30,7 +30,7 @@ class XunfeiLoginRequired(XunfeiError):
 
 
 class XunfeiSubmissionAmbiguous(XunfeiError):
-    """页面已确认提交，但本轮无法安全定位唯一 worksId。"""
+    """页面提交后未拿到本地 worksId，调用方应重新生成。"""
 
     def __init__(self, message, works_name=None):
         super().__init__(message)
@@ -111,4 +111,3 @@ def _notify_runtime_progress(callback, *, stage, message, **extra):
         callback(payload)
     except Exception as error:
         _log(f"[xunfei] 浏览器进度回调异常（已忽略）: {error}")
-

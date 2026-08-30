@@ -7,6 +7,9 @@ state; the concrete session combines it with the focused provider mixins.
 from __future__ import annotations
 
 import os
+import re
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -26,6 +29,7 @@ from .errors import (
     _check_cancel_requested,
     _notify_runtime_progress,
     _log,
+    _wait_with_cancel,
 )
 from .helpers import poll as _poll
 from .voice_catalog import get_voice_info
@@ -38,6 +42,184 @@ from .generation import GenerationMixin
 
 class SessionLifecycleMixin:
     """Initialize, log in, and close a persistent Xunfei browser session."""
+
+    @staticmethod
+    def _profile_lock_owner_pid(profile_dir=PROFILE_DIR):
+        """Return the PID encoded by Chrome's SingletonLock symlink."""
+
+        lock_path = os.path.join(profile_dir, "SingletonLock")
+        try:
+            if not os.path.islink(lock_path):
+                return None
+            target = os.readlink(lock_path)
+        except OSError:
+            return None
+        match = re.search(r"-(\d+)$", str(target))
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _profile_lock_owner_command(pid):
+        """Return the owning process command when the platform exposes it."""
+
+        try:
+            if os.name == "nt":
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+            else:
+                result = subprocess.run(
+                    ["ps", "-ww", "-p", str(int(pid)), "-o", "command="],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+        except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+            return None
+        return str(result.stdout or "").strip()
+
+    @staticmethod
+    def _profile_lock_owner_alive(pid):
+        """Check a lock owner without treating a stale PID as a live Chrome."""
+
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # A live process owned by another user must keep its profile lock.
+            return True
+        except (TypeError, ValueError, OSError):
+            return False
+
+        # If the process probe is unavailable, fail closed and preserve the
+        # lock rather than risking another browser using the profile.
+        command = SessionLifecycleMixin._profile_lock_owner_command(pid)
+        return True if command is None else bool(command)
+
+    @classmethod
+    def _terminate_profile_owner(cls, profile_dir=PROFILE_DIR, expected_pid=None):
+        """Stop a leftover Chrome process that owns this dedicated profile.
+
+        Closing the last Chrome window on macOS can leave a background Chrome
+        process alive.  That process keeps ``SingletonLock`` and makes the
+        next Playwright persistent-context launch fail forever.  Only kill a
+        process whose current singleton owner matches ``expected_pid`` (or
+        whose command explicitly contains this profile) and whose command
+        identifies Chrome/Chromium.  This avoids touching a user's unrelated
+        browser process.
+        """
+
+        owner_pid = cls._profile_lock_owner_pid(profile_dir)
+        if owner_pid is None:
+            return False
+        if expected_pid is not None:
+            try:
+                if int(expected_pid) != owner_pid:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        command = cls._profile_lock_owner_command(owner_pid)
+        # A process-list probe failure is intentionally fail-closed.  Without
+        # a command line we cannot prove that the PID is our dedicated Chrome.
+        if not command:
+            return False
+        lowered_command = command.casefold()
+        profile_marker = os.path.realpath(os.path.abspath(str(profile_dir))).casefold()
+        command_profile_marker = str(profile_dir).casefold()
+        browser_process = any(
+            marker in lowered_command
+            for marker in ("chrome", "chromium", "msedge")
+        )
+        owns_profile = profile_marker in lowered_command or command_profile_marker in lowered_command
+        if not browser_process or not owns_profile:
+            return False
+
+        _log(f"[xunfei] 正在结束占用讯飞配置目录的残留浏览器进程 pid={owner_pid}")
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(owner_pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            else:
+                os.kill(owner_pid, signal.SIGTERM)
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if not cls._profile_lock_owner_alive(owner_pid):
+                return True
+            time.sleep(0.1)
+        if os.name != "nt":
+            try:
+                os.kill(owner_pid, signal.SIGKILL)
+            except OSError:
+                pass
+        return not cls._profile_lock_owner_alive(owner_pid)
+
+    @classmethod
+    def _clear_stale_profile_lock(cls, profile_dir=PROFILE_DIR):
+        """Remove only Chrome singleton links whose owner process is gone.
+
+        Chrome can leave these links behind after a force-quit or a crashed
+        renderer.  Passing that profile to Playwright then fails every retry
+        with an "already running" error.  Never delete a lock whose PID is
+        still alive, and re-check the symlink before unlinking to avoid racing
+        a new Chrome process that has claimed the profile.
+        """
+
+        lock_path = os.path.join(profile_dir, "SingletonLock")
+        try:
+            if not os.path.islink(lock_path):
+                return False
+            original_target = os.readlink(lock_path)
+        except OSError:
+            return False
+        match = re.search(r"-(\d+)$", str(original_target))
+        if not match:
+            return False
+        try:
+            owner_pid = int(match.group(1))
+        except (TypeError, ValueError):
+            return False
+        if cls._profile_lock_owner_alive(owner_pid):
+            return False
+        try:
+            if os.readlink(lock_path) != original_target:
+                return False
+        except OSError:
+            return False
+
+        removed = []
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            path = os.path.join(profile_dir, name)
+            try:
+                if os.path.lexists(path):
+                    os.unlink(path)
+                    removed.append(name)
+            except OSError as error:
+                _log(f"[xunfei] 清理失效浏览器锁文件失败（{name}）: {error}")
+        if removed:
+            _log(
+                "[xunfei] 已清理失效的讯飞浏览器配置锁，准备重新启动: "
+                + ", ".join(removed)
+            )
+        return bool(removed)
+
     def __init__(self, voice_key="amanda"):
         voice_info = get_voice_info(voice_key)
         self.voice_key = str(voice_key)
@@ -49,6 +231,13 @@ class SessionLifecycleMixin:
         self._status_lock = threading.Lock()
         self._logged_in = False
         self._browser_disconnected = False
+        self._profile_owner_pid = None
+        self._reclaim_profile_owner = False
+        self._reclaim_profile_owner_pid = None
+        # ``close()`` is also used to clean up a failed startup.  It must not
+        # turn an ordinary startup error (for example, a cache prompt that
+        # could not be dismissed) into a false browser-disconnected signal.
+        self._close_requested = False
         self._real_ua = None
         # 页面状态跟踪（页面复用的关键）。音色 key 和页面显示名称都保留：
         # key 防止同名音色串用，页面回读防止讯飞提交后把音色恢复为默认值。
@@ -91,6 +280,11 @@ class SessionLifecycleMixin:
     def _mark_browser_disconnected(self, *_args):
         """Make a manually closed/crashed Chrome session fail health checks."""
         with self._status_lock:
+            # The context/page close events are also emitted by our own
+            # cleanup.  Only an unsolicited lifecycle event is evidence that
+            # the user/browser disconnected.
+            if self._close_requested:
+                return
             already_disconnected = self._browser_disconnected
             self._browser_disconnected = True
             self._logged_in = False
@@ -112,6 +306,7 @@ class SessionLifecycleMixin:
         """
         with self._status_lock:
             self._browser_disconnected = False
+            self._close_requested = False
         _check_cancel_requested(cancel_check)
         _notify_runtime_progress(
             progress_callback,
@@ -132,6 +327,7 @@ class SessionLifecycleMixin:
             # 更新、扩展和通知。这些服务在低配电脑上会持续占用网络、内存
             # 和后台线程，但不会影响登录、合成或下载。
             "--disable-background-networking",
+            "--disable-background-mode",
             "--disable-component-update",
             "--disable-default-apps",
             "--disable-extensions",
@@ -158,6 +354,17 @@ class SessionLifecycleMixin:
         }
 
         os.makedirs(PROFILE_DIR, exist_ok=True)
+        # A force-quit can leave Chrome's singleton symlinks behind even
+        # though the owning browser process is gone. Clear that narrow stale
+        # lock before every new persistent-context launch so a retry gets a
+        # real browser process instead of immediately reusing a dead session.
+        self._clear_stale_profile_lock(PROFILE_DIR)
+        if self._reclaim_profile_owner:
+            self._terminate_profile_owner(
+                PROFILE_DIR,
+                expected_pid=self._reclaim_profile_owner_pid,
+            )
+            self._clear_stale_profile_lock(PROFILE_DIR)
         _log(f"[xunfei] 浏览器配置目录: {PROFILE_DIR}")
 
         # 优先使用系统 Chrome（真实 UA / 真实指纹），仅 Chromium 降级时补 UA
@@ -176,9 +383,21 @@ class SessionLifecycleMixin:
             self._ctx = self._playwright.chromium.launch_persistent_context(
                 **launch_kwargs
             )
-        except Exception as chrome_error:
-            if "executable_path" in launch_kwargs:
-                _log(f"[xunfei] Chrome 启动失败，改用 Playwright Chromium: {chrome_error}")
+        except Exception as first_error:
+            # The browser can exit between the preflight check and the
+            # launch call. Retry the preferred executable once if that race
+            # left a now-dead SingletonLock behind.
+            lock_recovered = self._clear_stale_profile_lock(PROFILE_DIR)
+            if lock_recovered:
+                try:
+                    self._ctx = self._playwright.chromium.launch_persistent_context(
+                        **launch_kwargs
+                    )
+                except Exception as retry_error:
+                    first_error = retry_error
+
+            if self._ctx is None and "executable_path" in launch_kwargs:
+                _log(f"[xunfei] Chrome 启动失败，改用 Playwright Chromium: {first_error}")
                 launch_kwargs.pop("executable_path", None)
                 launch_kwargs.setdefault(
                     "user_agent",
@@ -186,11 +405,16 @@ class SessionLifecycleMixin:
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/131.0.0.0 Safari/537.36",
                 )
+                # A failed Chrome launch may have created its own dead lock;
+                # perform the same narrow check before the fallback engine.
+                self._clear_stale_profile_lock(PROFILE_DIR)
                 self._ctx = self._playwright.chromium.launch_persistent_context(
                     **launch_kwargs
                 )
-            else:
-                raise
+            elif self._ctx is None:
+                raise first_error
+
+        self._profile_owner_pid = self._profile_lock_owner_pid(PROFILE_DIR)
 
         self._ctx.add_init_script(STEALTH_SCRIPT)
         self._ctx.add_init_script(MUTE_AUDIO_SCRIPT)
@@ -315,7 +539,7 @@ class SessionLifecycleMixin:
                 _check_cancel_requested(cancel_check)
                 if self._browser_disconnected:
                     raise XunfeiError("讯飞浏览器连接已断开")
-                self._page.wait_for_timeout(500)
+                _wait_with_cancel(self._page, 0.5, cancel_check=cancel_check)
                 if self._is_logged_in(self._page):
                     if editor_visible():
                         logged = True
@@ -341,7 +565,35 @@ class SessionLifecycleMixin:
     def close(self):
         """关闭浏览器，保留登录状态（持久化目录不被删除）。"""
         _log("[xunfei] 正在关闭浏览器...")
+        with self._status_lock:
+            # Preserve a disconnect that was observed before cleanup, but do
+            # not create one merely because this method is closing the
+            # context after another startup error.
+            disconnected_before_close = bool(self._browser_disconnected)
+            self._close_requested = True
+            expected_profile_owner_pid = self._profile_owner_pid
+        # If the user closed the visible window but Chrome stayed alive in
+        # background mode, release its profile before asking Playwright to
+        # close an already-disconnected context.
+        if disconnected_before_close:
+            self._terminate_profile_owner(
+                PROFILE_DIR,
+                expected_pid=expected_profile_owner_pid,
+            )
         try:
+            # Prevent the intentional context close below from racing with
+            # the lifecycle callbacks and overwriting the original error.
+            if self._ctx:
+                try:
+                    self._ctx.remove_listener("close", self._mark_browser_disconnected)
+                except Exception:
+                    pass
+            if self._page:
+                for event_name in ("close", "crash"):
+                    try:
+                        self._page.remove_listener(event_name, self._mark_browser_disconnected)
+                    except Exception:
+                        pass
             if self._page and self._response_handler:
                 try:
                     self._page.remove_listener("response", self._response_handler)
@@ -357,6 +609,15 @@ class SessionLifecycleMixin:
         except Exception as e:
             _log(f"[xunfei] 关闭浏览器异常: {e}")
         finally:
+            # ``context.close`` normally terminates the owned browser, but a
+            # macOS background process can survive the last visible window.
+            # Re-check the exact PID after the normal close and release only
+            # that process if it still owns the dedicated profile.
+            if expected_profile_owner_pid is not None:
+                self._terminate_profile_owner(
+                    PROFILE_DIR,
+                    expected_pid=expected_profile_owner_pid,
+                )
             try:
                 if self._playwright:
                     self._playwright.stop()
@@ -365,9 +626,10 @@ class SessionLifecycleMixin:
             self._ctx = None
             self._page = None
             self._playwright = None
+            self._profile_owner_pid = None
             with self._status_lock:
                 self._logged_in = False
-                self._browser_disconnected = True
+                self._browser_disconnected = disconnected_before_close
             self._current_voice_key = None
             self._current_voice_name = None
             self._applied_params = None

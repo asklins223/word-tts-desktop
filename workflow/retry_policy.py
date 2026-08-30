@@ -25,6 +25,7 @@ class RetryPolicy:
     NEVER_AUTOMATIC = {
         "PERSISTENCE_AMBIGUOUS",
         "SUBMISSION_AMBIGUOUS",
+        "LOCAL_SUBMISSION_NOT_CONFIRMED",
         "STALE_ATTEMPT",
         "ARTIFACT_INVALID",
         "AUTH_ERROR",

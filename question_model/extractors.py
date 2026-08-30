@@ -15,7 +15,7 @@
   不伪装成考试小题；阶段 1 只使用解析器实际输出的结构字段生成定位，
   定位冲突时追加出现序号并写诊断，不臆测段落/语篇分组。
 
-七个注册题型全部接入；每种题型的“业务原子边界”与“音频边界”在
+八个注册题型全部接入；每种题型的“业务原子边界”与“音频边界”在
 阶段 1 相同（逐条目），复合结构拆分推迟到阶段 3 统一分段器。
 """
 
@@ -313,6 +313,39 @@ def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
     )
 
 
+def _extract_listening_record_retelling(result: dict, source_key: str) -> ParseCandidate:
+    """听后记录并转述信息：第一节听力短文映射为一个 Stimulus。
+
+    该题型目前只要求生成听力材料音频；第二节的转述开头与参考答案
+    不属于音频正文，因此保持 audio_only，不虚构口语作答题字段。
+    """
+    type_code = QUESTION_TYPE_CODES["听后记录并转述信息"]
+    stimuli = []
+    for raw in result["items"]:
+        category = raw.get("category", "听后记录并转述信息录音稿")
+        locator = f"{category}/录音稿{raw.get('index')}"
+        stimuli.append(Stimulus(
+            stimulus_id=build_identity("stimulus", source_key, locator),
+            sub_type_code=type_code,
+            stimulus_type="listening_script",
+            text=raw["text"],
+            source_locator=locator,
+            section=_section_of(category),
+            resolution_state=ResolutionState.DRAFT,
+        ))
+
+    diagnostics = ("audio_only_candidate",)
+    return ParseCandidate(
+        candidate_id=f"candidate:{type_code}:{source_key}",
+        type_code=type_code,
+        claimed_blocks=tuple(stimulus.source_locator for stimulus in stimuli),
+        entities=tuple(stimuli),
+        confidence=_confidence(diagnostics),
+        diagnostics=diagnostics,
+        capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+    )
+
+
 def _extract_imitation_reading(result: dict, source_key: str) -> ParseCandidate:
     """模仿朗读：每篇文章/段落一条 Stimulus（reading_passage）。
 
@@ -471,6 +504,7 @@ EXTRACTORS = {
     "listening_choice": _extract_listening_selection,
     "listening_response": _extract_listening_response,
     "info_retelling": _extract_info_retelling,
+    "listening_record_retelling": _extract_listening_record_retelling,
     "imitation_reading": _extract_imitation_reading,
     "text_reading": _extract_text_reading,
     "vocabulary": _extract_vocabulary,

@@ -39,6 +39,43 @@ test('同一动作连续点击只发送一次，并在成功后刷新工作区',
     assert.deepEqual(pending, [['workflow-1:PAUSE', true], ['workflow-1:PAUSE', false]]);
 });
 
+test('刷新后的完整动作列表不允许旧点击回退提交', async () => {
+    const calls = [];
+    const coordinator = createWorkflowCommandCoordinator({
+        api: { sendCommand: async (...args) => { calls.push(args); return {}; } },
+        getWorkflowId: () => 'workflow-stale-action',
+        getWorkspace: () => ({ snapshot: { state_version: 2 } }),
+        refresh: async () => ({
+            snapshot: { state_version: 3 },
+            available_actions: [{ type: 'PAUSE', enabled: false }],
+        }),
+        resolveAction: (type, workspace) => workspace.available_actions.find(item => item.type === type) || null,
+        timeoutMs: 1000,
+    });
+
+    const result = await coordinator.run({ type: 'PAUSE', enabled: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'action-disabled-after-refresh');
+    assert.equal(calls.length, 0);
+});
+
+test('工作区刷新失败时不使用旧版本发送命令', async () => {
+    const calls = [];
+    const coordinator = createWorkflowCommandCoordinator({
+        api: { sendCommand: async (...args) => { calls.push(args); return {}; } },
+        getWorkflowId: () => 'workflow-refresh-failed',
+        getWorkspace: () => ({ snapshot: { state_version: 2 } }),
+        refresh: async () => null,
+        resolveAction: () => ({ type: 'PAUSE', enabled: true }),
+        timeoutMs: 1000,
+    });
+
+    const result = await coordinator.run({ type: 'PAUSE', enabled: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'workspace-refresh-failed');
+    assert.equal(calls.length, 0);
+});
+
 test('状态冲突只刷新一次并用同一幂等键重发', async () => {
     const calls = [];
     let refreshCount = 0;

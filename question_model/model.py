@@ -102,7 +102,19 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
         filename_keywords=("信息转述",),
         content_markers=(
             re.compile(r'第一节\s*信息转述'),
-            re.compile(r'信息转述'),
+            # 新题型的“第二节：信息转述”不是本题型，避免同一文档
+            # 被旧 family 与“听后记录并转述信息”同时认领。
+            re.compile(r'^(?!\s*第二节(?:\s*[：:])?\s*信息转述).*信息转述',
+                       re.M),
+        ),
+    ),
+    QuestionFamily(
+        code="listening_record_retelling", display_name="听后记录并转述信息",
+        color="#0369a1",
+        filename_keywords=("听后记录并转述信息", "听后记录"),
+        content_markers=(
+            re.compile(r'第一节\s*[：:]?\s*听后记录'),
+            re.compile(r'听后记录并转述信息'),
         ),
     ),
     QuestionFamily(
@@ -184,6 +196,11 @@ SUB_TYPE_REGISTRY: dict[str, QuestionSubType] = {
                         "stimulus", audio_granularity="script_whole"),
         QuestionSubType("asking_info", "info_retelling", "询问信息",
                         "question", answer_kind="spoken_response"),
+        # 听后记录并转述信息：第一节整篇听力材料是一个音频单元；
+        # 第二节的转述答案不进入音频内容。
+        QuestionSubType("listening_record_retelling", "listening_record_retelling",
+                        "听后记录并转述信息", "stimulus",
+                        audio_granularity="script_whole"),
         # 模仿朗读：本身就是最小题型；外网/教材是来源属性不是小题型
         QuestionSubType("imitation_reading", "imitation_reading", "模仿朗读",
                         "stimulus", audio_granularity="passage"),

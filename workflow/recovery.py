@@ -40,7 +40,7 @@ class RecoveryService:
                 """SELECT provider_submission_id, side_effect_state FROM provider_submissions
                     WHERE side_effect_state IN ('IN_FLIGHT','AMBIGUOUS')""",
             ):
-                findings.append(RecoveryFinding("provider_submission", str(row["provider_submission_id"]), "RECONCILE", str(row["side_effect_state"])))
+                findings.append(RecoveryFinding("provider_submission", str(row["provider_submission_id"]), "RETRY", str(row["side_effect_state"])))
             for row in con.execute(
                 """SELECT attempt_id FROM step_attempts
                     WHERE status IN ('RUNNING','PREPARING','VERIFYING')""",
@@ -74,25 +74,26 @@ class RecoveryService:
         """Apply only local, unambiguous cleanup; never re-submit a Provider."""
         now = utc_now()
         findings: list[RecoveryFinding] = []
-        tts_in_flight: list[tuple[str, str, str, str]] = []
+        tts_unresolved: list[tuple[str, str, str, str | None]] = []
         external_in_flight: list[tuple[str, str, str]] = []
         with self.database.read_transaction() as con:
-            tts_in_flight = [
+            tts_unresolved = [
                 (
                     str(row["provider_submission_id"]),
                     str(row["workflow_id"]),
                     str(row["work_unit_id"]),
-                    str(row["operation_key"]),
+                    str(row["operation_key"]) if row["operation_key"] is not None else None,
                 )
                 for row in con.execute(
                     """SELECT DISTINCT p.provider_submission_id, u.workflow_id,
                               u.work_unit_id, i.operation_key
                        FROM provider_submissions p
                        JOIN work_units u ON u.provider_submission_id=p.provider_submission_id
-                       JOIN side_effect_intents i
+                       LEFT JOIN side_effect_intents i
                          ON i.workflow_id=u.workflow_id AND i.work_unit_id=u.work_unit_id
                         AND i.operation_namespace='tts'
-                       WHERE p.side_effect_state='IN_FLIGHT'"""
+                       WHERE p.side_effect_state IN ('IN_FLIGHT','AMBIGUOUS')
+                         AND u.status <> 'SUCCEEDED'"""
                 ).fetchall()
             ]
             if con.execute(
@@ -114,15 +115,16 @@ class RecoveryService:
         # no SQLite state is changed; if SQLite then fails, the journal itself
         # exposes the mismatch and subsequent recovery remains fail-closed.
         journal_keys: set[tuple[str, str]] = set()
-        for _submission_id, _workflow_id, _work_unit_id, operation_key in tts_in_flight:
-            journal_keys.add(("tts", operation_key))
+        for _submission_id, _workflow_id, _work_unit_id, operation_key in tts_unresolved:
+            if operation_key:
+                journal_keys.add(("tts", operation_key))
         for operation_id, mapping_id, operation_key in external_in_flight:
             journal_keys.add(("external", f"{mapping_id}:{operation_key}"))
         for namespace, operation_key in sorted(journal_keys):
             self.intent_log.mark(
                 operation_namespace=namespace,
                 operation_key=operation_key,
-                state="NEEDS_RECONCILE",
+                state="ARCHIVED" if namespace == "tts" else "NEEDS_RECONCILE",
             )
         with self.database.transaction() as con:
             for row in con.execute(
@@ -152,88 +154,100 @@ class RecoveryService:
                     (now, now, row["source_import_id"], row["generation"]),
                 )
                 findings.append(RecoveryFinding("source_generation", str(row["source_import_generation_id"]), "EXPIRE"))
-            # A process can die after the local IN_FLIGHT commit and before a
-            # provider response.  Marking the submission AMBIGUOUS is the
-            # only safe local action; no recovery path submits again.
+            # A process can die after the local submission boundary and before
+            # the result is usable by the renderer.  TTS has no provider-side
+            # reconciliation path: the durable local attempt is rejected and
+            # the next explicit generation creates a fresh execute attempt.
             rows = con.execute(
-                """SELECT p.provider_submission_id, p.workflow_group_id
-                   FROM provider_submissions p WHERE p.side_effect_state='IN_FLIGHT'""",
+                """SELECT DISTINCT p.provider_submission_id, u.workflow_id,
+                                  u.work_unit_id, u.step_id, u.created_by_attempt_id,
+                                  u.created_at
+                   FROM provider_submissions p
+                   JOIN work_units u ON u.provider_submission_id=p.provider_submission_id
+                   WHERE p.side_effect_state IN ('IN_FLIGHT','AMBIGUOUS')
+                     AND u.status <> 'SUCCEEDED'
+                   ORDER BY u.workflow_id, u.step_id, u.created_at DESC, u.work_unit_id DESC""",
             ).fetchall()
+            self._normalize_tts_step_attempts_for_retry(con, rows, now)
             for row in rows:
                 submission_id = str(row["provider_submission_id"])
-                con.execute(
-                    """UPDATE provider_submissions SET side_effect_state='AMBIGUOUS', state_version=state_version+1
-                       WHERE provider_submission_id=? AND side_effect_state='IN_FLIGHT'""",
+                changed = False
+                changed = bool(con.execute(
+                    """UPDATE provider_submissions SET side_effect_state='REJECTED', state_version=state_version+1
+                       WHERE provider_submission_id=? AND side_effect_state IN ('IN_FLIGHT','AMBIGUOUS')""",
                     (submission_id,),
-                )
-                units = con.execute(
-                    """SELECT u.workflow_id, u.work_unit_id, u.step_id,
-                              u.created_by_attempt_id
-                       FROM work_units u WHERE u.provider_submission_id=?""",
-                    (submission_id,),
-                ).fetchall()
-                for unit in units:
-                    con.execute(
-                        """UPDATE work_units SET side_effect_state='AMBIGUOUS', status='AMBIGUOUS',
-                           state_version=state_version+1 WHERE work_unit_id=? AND side_effect_state='IN_FLIGHT'""",
-                        (unit["work_unit_id"],),
-                    )
-                    con.execute(
-                        """UPDATE step_attempts SET status='AMBIGUOUS', result_status='MIXED',
-                           error_code='SUBMISSION_AMBIGUOUS', state_version=state_version+1
-                           WHERE workflow_id=? AND attempt_id=? AND status IN ('RUNNING','PREPARING','VERIFYING')""",
-                        (unit["workflow_id"], unit["created_by_attempt_id"]),
-                    )
-                    con.execute(
-                        """UPDATE work_unit_attempts SET status='AMBIGUOUS', side_effect_state='AMBIGUOUS',
-                           state_version=state_version+1
-                           WHERE workflow_id=? AND work_unit_id=? AND status IN ('RUNNING','PREPARING','VERIFYING')""",
-                        (unit["workflow_id"], unit["work_unit_id"]),
-                    )
-                    con.execute(
-                        """UPDATE side_effect_intents SET state='NEEDS_RECONCILE', updated_at=?
-                           WHERE workflow_id=? AND work_unit_id=? AND operation_namespace='tts'""",
-                        (now, unit["workflow_id"], unit["work_unit_id"]),
-                    )
-                    con.execute(
-                        """UPDATE workflow_steps SET status='AMBIGUOUS', error_code='SUBMISSION_AMBIGUOUS',
-                           state_version=state_version+1 WHERE workflow_id=? AND step_id=?
-                           AND status IN ('PREPARING','RUNNING','VERIFYING')""",
-                        (unit["workflow_id"], unit["step_id"]),
-                    )
-                    con.execute(
-                        """UPDATE workflows SET execution_state='WAITING_USER', last_error_code='SUBMISSION_AMBIGUOUS',
-                           last_error_message='provider submission requires reconciliation',
-                           state_version=state_version+1, updated_at=?
-                           WHERE workflow_id=? AND execution_state IN ('PREPARING','RUNNING','RECOVERING')""",
-                        (now, unit["workflow_id"]),
-                    )
-                    if con.execute(
-                        """SELECT 1 FROM user_interventions
-                           WHERE workflow_id=? AND work_unit_id=? AND state IN ('OPEN','CLAIMED') LIMIT 1""",
-                        (unit["workflow_id"], unit["work_unit_id"]),
-                    ).fetchone() is None:
-                        con.execute(
-                            """INSERT INTO user_interventions(
-                                intervention_id, workflow_id, step_id, attempt_id, work_unit_id,
-                                intervention_type, reason, owner_id, state, evidence_json,
-                                expires_at, resolved_by, resolved_at, state_version, created_at, updated_at
-                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (f"intervention_{submission_id}_{unit['work_unit_id']}", unit["workflow_id"], unit["step_id"],
-                             unit["created_by_attempt_id"], unit["work_unit_id"], "RECONCILE_PROVIDER",
-                             "provider response was not observed after IN_FLIGHT commit", None, "OPEN", "{}",
-                             None, None, None, 0, now, now),
-                        )
-                    self._append_recovery_event(con, str(unit["workflow_id"]), submission_id, str(unit["work_unit_id"]))
-                    findings.append(RecoveryFinding("provider_submission", submission_id, "RECONCILE", "AMBIGUOUS"))
-            # Older desktop builds could persist the provider/unit/attempt
-            # projections as AMBIGUOUS and then exit during cleanup before the
-            # parent workflow was moved out of RUNNING.  That combination is
-            # particularly harmful: the renderer presents a live task while a
-            # later retry opens a browser only to perform read-only works-name
-            # reconciliation.  Repair the local projection on startup; this is
-            # fail-closed and never submits to the provider.
-            self._repair_ambiguous_workflow_projections(con, now, findings)
+                ).rowcount) or changed
+                workflow_id = str(row["workflow_id"])
+                work_unit_id = str(row["work_unit_id"])
+                step_id = str(row["step_id"])
+                changed = bool(con.execute(
+                    """UPDATE work_units SET side_effect_state='REJECTED', status='WAITING_RETRY',
+                              finished_at=NULL, state_version=state_version+1
+                           WHERE workflow_id=? AND work_unit_id=? AND status <> 'SUCCEEDED'
+                             AND side_effect_state IN ('IN_FLIGHT','AMBIGUOUS')""",
+                    (workflow_id, work_unit_id),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE work_unit_items SET result_status='FAILED', state_version=state_version+1
+                           WHERE workflow_id=? AND work_unit_id=?
+                             AND result_status NOT IN ('SUCCEEDED','SKIPPED')""",
+                    (workflow_id, work_unit_id),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE work_unit_segments SET result_status='FAILED'
+                           WHERE work_unit_id=? AND result_status NOT IN ('SUCCEEDED','SKIPPED')""",
+                    (work_unit_id,),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE work_items SET status='FAILED', state_version=state_version+1, updated_at=?
+                           WHERE workflow_id=? AND item_id IN (
+                               SELECT item_id FROM work_unit_items
+                                WHERE workflow_id=? AND work_unit_id=?
+                           ) AND status NOT IN ('SUCCEEDED','SKIPPED')""",
+                    (now, workflow_id, workflow_id, work_unit_id),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE work_unit_attempts SET status='WAITING_RETRY', side_effect_state='REJECTED',
+                              finished_at=?, state_version=state_version+1
+                           WHERE workflow_id=? AND work_unit_id=?
+                             AND status IN ('CREATED','PREPARING','RUNNING','VERIFYING',
+                                            'WAITING_USER','BLOCKED','RECOVERING','AMBIGUOUS')""",
+                    (now, workflow_id, work_unit_id),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE side_effect_intents SET state='ARCHIVED', updated_at=?
+                           WHERE workflow_id=? AND work_unit_id=? AND operation_namespace='tts'
+                             AND state <> 'ARCHIVED'""",
+                    (now, workflow_id, work_unit_id),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE workflow_steps SET status='WAITING_RETRY',
+                              error_code='LOCAL_SUBMISSION_NOT_CONFIRMED', retry_after=NULL,
+                              state_version=state_version+1
+                           WHERE workflow_id=? AND step_id=?
+                             AND status NOT IN ('SUCCEEDED','PERMANENT_FAILED','CANCELLED')""",
+                    (workflow_id, step_id),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE workflows SET execution_state='WAITING_RETRY', result_status='IN_PROGRESS',
+                              last_error_code='LOCAL_SUBMISSION_NOT_CONFIRMED',
+                              last_error_message='本地没有可下载结果，请重新生成',
+                              state_version=state_version+1, updated_at=?
+                           WHERE workflow_id=? AND control_state='RUNNING'
+                             AND execution_state <> 'TERMINAL'""",
+                    (now, workflow_id),
+                ).rowcount) or changed
+                changed = bool(con.execute(
+                    """UPDATE user_interventions SET state='RESOLVED', resolved_by='recovery-service',
+                              resolved_at=?, updated_at=?, state_version=state_version+1
+                           WHERE workflow_id=? AND work_unit_id=?
+                             AND intervention_type='RECONCILE_PROVIDER'
+                             AND state IN ('OPEN','CLAIMED')""",
+                    (now, now, workflow_id, work_unit_id),
+                ).rowcount) or changed
+                if changed:
+                    self._append_local_retry_event(con, workflow_id, submission_id, work_unit_id)
+                    findings.append(RecoveryFinding("provider_submission", submission_id, "RETRY", "REJECTED"))
 
             for operation_id, mapping_id, operation_key in external_in_flight:
                 operation = con.execute(
@@ -294,192 +308,86 @@ class RecoveryService:
                     findings.append(RecoveryFinding("intervention", str(row["intervention_id"]), "EXPIRE"))
         return findings
 
-    def _repair_ambiguous_workflow_projections(self, con, now, findings) -> None:
-        """Repair legacy ``RUNNING + AMBIGUOUS`` workflow projections.
+    def _normalize_tts_step_attempts_for_retry(self, con, rows, now: str) -> None:
+        """Leave one retryable step attempt when legacy rows disagree.
 
-        A provider side effect that is already AMBIGUOUS is not safe to retry.
-        The only valid local action is to surface it as WAITING_USER and make
-        every child projection agree.  The transition is limited to non-final
-        rows so a verified artifact is never demoted.
+        ``ux_active_step_attempt`` intentionally permits only one active attempt
+        for a workflow step.  Older recovery passes could leave an old
+        ``WAITING_USER`` attempt beside an ``AMBIGUOUS`` provider attempt; the
+        latter then failed while being promoted to ``WAITING_RETRY``.  Resolve
+        that projection conflict locally before applying the provider cleanup.
+        The newest unresolved unit remains the canonical retry target, while
+        other active attempts are retained as terminal audit records.
         """
 
-        rows = con.execute(
-            """SELECT DISTINCT w.workflow_id, u.workflow_group_id,
-                              u.work_unit_id, u.step_id, u.created_by_attempt_id,
-                              u.provider_submission_id,
-                              u.side_effect_state AS unit_side_effect_state,
-                              p.side_effect_state AS submission_side_effect_state
-                       FROM workflows w
-                       JOIN work_units u ON u.workflow_id=w.workflow_id
-                       LEFT JOIN provider_submissions p
-                         ON p.provider_submission_id=u.provider_submission_id
-                        AND p.workflow_group_id=u.workflow_group_id
-                       WHERE w.execution_state IN ('PREPARING','RUNNING','RECOVERING')
-                         AND u.status <> 'SUCCEEDED'
-                         AND (u.side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS')
-                              OR p.side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED','AMBIGUOUS'))""",
-        ).fetchall()
-
+        candidate_attempts: dict[tuple[str, str], list[str]] = {}
         for row in rows:
-            workflow_id = str(row["workflow_id"])
-            work_unit_id = str(row["work_unit_id"])
-            step_id = str(row["step_id"])
+            step_key = (str(row["workflow_id"]), str(row["step_id"]))
+            candidate_attempts.setdefault(step_key, [])
             attempt_id = str(row["created_by_attempt_id"] or "") or None
-            submission_id = str(row["provider_submission_id"] or "") or None
-            changed = False
+            if attempt_id and attempt_id not in candidate_attempts[step_key]:
+                candidate_attempts[step_key].append(attempt_id)
 
-            if submission_id and row["submission_side_effect_state"] in {
-                "IN_FLIGHT", "SUBMITTED", "CONFIRMED"
-            }:
-                changed = bool(con.execute(
-                    """UPDATE provider_submissions
-                          SET side_effect_state='AMBIGUOUS', state_version=state_version+1
-                        WHERE provider_submission_id=? AND workflow_group_id=?
-                          AND side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED')""",
-                    (submission_id, row["workflow_group_id"]),
-                ).rowcount) or changed
-
-            changed = bool(con.execute(
-                """UPDATE work_units
-                      SET side_effect_state='AMBIGUOUS', status='AMBIGUOUS',
-                          state_version=state_version+1
-                    WHERE workflow_id=? AND work_unit_id=?
-                      AND status <> 'SUCCEEDED'
-                      AND side_effect_state IN ('IN_FLIGHT','SUBMITTED','CONFIRMED')""",
-                (workflow_id, work_unit_id),
-            ).rowcount) or changed
-
-            changed = bool(con.execute(
-                """UPDATE work_unit_items
-                      SET result_status='AMBIGUOUS', state_version=state_version+1
-                    WHERE workflow_id=? AND work_unit_id=?
-                      AND result_status NOT IN ('SUCCEEDED','SKIPPED','AMBIGUOUS')""",
-                (workflow_id, work_unit_id),
-            ).rowcount) or changed
-            changed = bool(con.execute(
-                """UPDATE work_unit_segments
-                      SET result_status='AMBIGUOUS'
-                    WHERE work_unit_id=? AND result_status NOT IN ('SUCCEEDED','SKIPPED','AMBIGUOUS')""",
-                (work_unit_id,),
-            ).rowcount) or changed
-            changed = bool(con.execute(
-                """UPDATE work_items
-                      SET status='AMBIGUOUS', state_version=state_version+1, updated_at=?
-                    WHERE workflow_id=? AND item_id IN (
-                        SELECT item_id FROM work_unit_items
-                         WHERE workflow_id=? AND work_unit_id=?
-                    ) AND status NOT IN ('SUCCEEDED','SKIPPED','AMBIGUOUS')""",
-                (now, workflow_id, workflow_id, work_unit_id),
-            ).rowcount) or changed
-
-            if attempt_id:
-                changed = bool(con.execute(
-                    """UPDATE step_attempts
-                          SET status='AMBIGUOUS', result_status='MIXED',
-                              error_code='SUBMISSION_AMBIGUOUS',
-                              state_version=state_version+1
-                        WHERE workflow_id=? AND attempt_id=?
-                          AND status IN ('CREATED','PREPARING','RUNNING','VERIFYING',
-                                         'WAITING_RETRY','WAITING_USER','RECOVERING')""",
-                    (workflow_id, attempt_id),
-                ).rowcount) or changed
-            changed = bool(con.execute(
-                """UPDATE work_unit_attempts
-                      SET status='AMBIGUOUS', side_effect_state='AMBIGUOUS',
-                          state_version=state_version+1
-                    WHERE workflow_id=? AND work_unit_id=?
-                      AND status IN ('CREATED','PREPARING','RUNNING','VERIFYING',
-                                     'WAITING_RETRY','WAITING_USER','RECOVERING')""",
-                (workflow_id, work_unit_id),
-            ).rowcount) or changed
-            changed = bool(con.execute(
-                """UPDATE workflow_steps
-                      SET status='AMBIGUOUS', error_code='SUBMISSION_AMBIGUOUS',
-                          retry_after=NULL, state_version=state_version+1
-                    WHERE workflow_id=? AND step_id=?
-                      AND status IN ('PENDING','READY','PREPARING','RUNNING','VERIFYING',
-                                     'WAITING_RETRY','RETRYABLE_FAILED','WAITING_USER','BLOCKED')""",
-                (workflow_id, step_id),
-            ).rowcount) or changed
-
-            intent = con.execute(
-                """SELECT state FROM side_effect_intents
-                    WHERE workflow_id=? AND work_unit_id=?
-                      AND operation_namespace='tts' LIMIT 1""",
-                (workflow_id, work_unit_id),
-            ).fetchone()
-            if intent is not None and str(intent["state"]) != "NEEDS_RECONCILE":
-                con.execute(
-                    """UPDATE side_effect_intents
-                          SET state='NEEDS_RECONCILE', updated_at=?
-                        WHERE workflow_id=? AND work_unit_id=?
-                          AND operation_namespace='tts'""",
-                    (now, workflow_id, work_unit_id),
-                )
-                changed = True
-
-            updated_workflow = con.execute(
-                """UPDATE workflows
-                      SET execution_state='WAITING_USER',
-                          last_error_code='SUBMISSION_AMBIGUOUS',
-                          last_error_message='provider submission requires reconciliation',
-                          state_version=state_version+1, updated_at=?
-                    WHERE workflow_id=?
-                      AND execution_state IN ('PREPARING','RUNNING','RECOVERING')""",
-                (now, workflow_id),
-            )
-            changed = bool(updated_workflow.rowcount) or changed
-
-            if not changed:
-                continue
-
-            open_intervention = con.execute(
-                """SELECT 1 FROM user_interventions
-                    WHERE workflow_id=? AND work_unit_id=?
-                      AND state IN ('OPEN','CLAIMED') LIMIT 1""",
-                (workflow_id, work_unit_id),
-            ).fetchone()
-            if open_intervention is None:
-                intervention_id = f"intervention_repair_{work_unit_id}"
-                existing = con.execute(
-                    "SELECT 1 FROM user_interventions WHERE intervention_id=?",
-                    (intervention_id,),
-                ).fetchone()
-                if existing is None:
-                    con.execute(
-                        """INSERT INTO user_interventions(
-                            intervention_id, workflow_id, step_id, attempt_id, work_unit_id,
-                            intervention_type, reason, owner_id, state, evidence_json,
-                            expires_at, resolved_by, resolved_at, state_version, created_at, updated_at
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (intervention_id, workflow_id, step_id, attempt_id, work_unit_id,
-                         "RECONCILE_PROVIDER",
-                         "legacy workflow projection repaired after ambiguous provider submission",
-                         None, "OPEN", "{}", None, None, None, 0, now, now),
-                    )
-
-            self._append_projection_repaired_event(
-                con, workflow_id, submission_id, work_unit_id,
-            )
-            findings.append(
-                RecoveryFinding("workflow_projection", workflow_id, "REPAIR", "AMBIGUOUS")
-            )
-
-    def _append_recovery_event(self, con, workflow_id: str, submission_id: str, work_unit_id: str) -> None:
-        from .event_store import EventStore
-        from .repositories import _snapshot_from_connection
-
-        events = EventStore(self.database)
-        events.append_in_transaction(
-            con, workflow_id, "RECOVERY_REQUIRES_RECONCILE",
-            {"submission_id": submission_id, "work_unit_id": work_unit_id},
-            actor_type="RECOVERY", actor_id="recovery-service",
+        active_statuses = (
+            "'PREPARING', 'RUNNING', 'WAITING_RETRY', 'WAITING_USER',"
+            " 'RECOVERING', 'BLOCKED'"
         )
-        snapshot = _snapshot_from_connection(con, workflow_id)
-        events.write_snapshot_in_transaction(con, workflow_id, snapshot.as_dict())
+        retryable_statuses = (
+            "'CREATED', 'PREPARING', 'RUNNING', 'VERIFYING',"
+            " 'WAITING_RETRY', 'WAITING_USER', 'RECOVERING', 'BLOCKED', 'AMBIGUOUS'"
+        )
+        terminal_statuses = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
-    def _append_projection_repaired_event(
-        self, con, workflow_id: str, submission_id: str | None, work_unit_id: str
+        for (workflow_id, step_id), attempt_ids in candidate_attempts.items():
+            canonical_attempt_id = None
+            for attempt_id in attempt_ids:
+                attempt = con.execute(
+                    """SELECT status FROM step_attempts
+                       WHERE workflow_id=? AND step_id=? AND attempt_id=?""",
+                    (workflow_id, step_id, attempt_id),
+                ).fetchone()
+                if attempt is not None and str(attempt["status"]) not in terminal_statuses:
+                    canonical_attempt_id = attempt_id
+                    break
+
+            if canonical_attempt_id:
+                con.execute(
+                    f"""UPDATE step_attempts SET status='FAILED', result_status='FAILED',
+                              error_code='RECOVERY_SUPERSEDED',
+                              error_details_json='{{\"error_code\":\"RECOVERY_SUPERSEDED\"}}',
+                              finished_at=?, state_version=state_version+1
+                           WHERE workflow_id=? AND step_id=? AND attempt_id<>?
+                             AND status IN ({active_statuses})""",
+                    (now, workflow_id, step_id, canonical_attempt_id),
+                )
+                con.execute(
+                    f"""UPDATE step_attempts SET status='WAITING_RETRY', result_status='FAILED',
+                              error_code='LOCAL_SUBMISSION_NOT_CONFIRMED',
+                              error_details_json='{{\"error_code\":\"LOCAL_SUBMISSION_NOT_CONFIRMED\"}}',
+                              finished_at=?, state_version=state_version+1
+                           WHERE workflow_id=? AND step_id=? AND attempt_id=?
+                             AND status IN ({retryable_statuses})""",
+                    (now, workflow_id, step_id, canonical_attempt_id),
+                )
+            else:
+                con.execute(
+                    f"""UPDATE step_attempts SET status='FAILED', result_status='FAILED',
+                              error_code='RECOVERY_SUPERSEDED',
+                              error_details_json='{{\"error_code\":\"RECOVERY_SUPERSEDED\"}}',
+                              finished_at=?, state_version=state_version+1
+                           WHERE workflow_id=? AND step_id=?
+                             AND status IN ({active_statuses})""",
+                    (now, workflow_id, step_id),
+                )
+
+            con.execute(
+                """UPDATE workflow_steps SET current_attempt_id=?, state_version=state_version+1
+                   WHERE workflow_id=? AND step_id=? AND current_attempt_id IS NOT ?""",
+                (canonical_attempt_id, workflow_id, step_id, canonical_attempt_id),
+            )
+
+    def _append_local_retry_event(
+        self, con, workflow_id: str, submission_id: str, work_unit_id: str
     ) -> None:
         from .event_store import EventStore
         from .repositories import _snapshot_from_connection
@@ -488,11 +396,11 @@ class RecoveryService:
         events.append_in_transaction(
             con,
             workflow_id,
-            "RECOVERY_PROJECTION_REPAIRED",
+            "RECOVERY_LOCAL_RETRYABLE",
             {
                 "submission_id": submission_id,
                 "work_unit_id": work_unit_id,
-                "reason": "legacy ambiguous provider state was made visible as WAITING_USER",
+                "reason": "本地没有可下载结果，下一次显式生成将创建新的执行尝试",
             },
             actor_type="RECOVERY",
             actor_id="recovery-service",

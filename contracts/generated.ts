@@ -106,7 +106,8 @@ export interface paths {
         get: operations["getWorkflow"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Unfinished Workflow */
+        delete: operations["deleteWorkflow"];
         options?: never;
         head?: never;
         /** Patch Draft Workflow */
@@ -1189,6 +1190,8 @@ export interface components {
             /** @enum {string} */
             control_state: "RUNNING" | "PAUSE_REQUESTED" | "PAUSED" | "TERMINATING" | "TERMINATED";
             state_version: number;
+            can_delete: boolean;
+            delete_reason: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -1295,6 +1298,8 @@ export interface components {
             artifact_count: number;
             latest_event_id: string | null;
             latest_seq: number;
+            last_error_code: string | null;
+            last_error_message: string | null;
             latest_event?: components["schemas"]["WorkflowEvent"] | null;
             /** Format: date-time */
             updated_at: string;
@@ -1302,6 +1307,14 @@ export interface components {
         WorkflowEnvelope: {
             request_id: string;
             workflow: components["schemas"]["WorkflowSnapshot"];
+        };
+        WorkflowDeleteResponse: {
+            request_id: string;
+            workflow_id: string;
+            /** @constant */
+            accepted_action: "delete";
+            /** @constant */
+            deleted: true;
         };
         CommandResponse: {
             request_id: string;
@@ -1715,6 +1728,37 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    deleteWorkflow: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workflow_id: components["parameters"]["WorkflowId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Unfinished workflow and its local data were physically deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowDeleteResponse"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
         };
     };
     patchDraftWorkflow: {

@@ -97,8 +97,9 @@ class JS:
         // storage 中。重新打开持久化 Chrome profile 后，页面会先显示
         // “发现本地缓存”拦截层；它通常不是 ant-modal，也没有稳定的
         // class/role，不能只依赖通用弹窗选择器。当前 WordTTS 任务已经
-        // 在自己的数据库中保存了正文，因此这里明确选择“空白开始”，
-        // 让自动化继续输入本次任务的内容。
+        // 在自己的数据库中保存了正文，因此这里选择“不恢复本地编辑缓存”
+        // 的操作，让自动化继续输入本次任务的内容。讯飞在存在云端版本时
+        // 会把同一个操作显示为“使用云端缓存”，也必须视为可继续的分支。
         const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
         const visible = (el) => {
             const style = window.getComputedStyle(el);
@@ -119,7 +120,8 @@ class JS:
                 || text.includes('本地编辑缓存');
             const recoveryChoice = text.includes('恢复本地缓存')
                 || text.includes('是否恢复')
-                || text.includes('空白开始');
+                || text.includes('空白开始')
+                || text.includes('使用云端缓存');
             if (!cacheNotice || !recoveryChoice) continue;
             roots.push({element, size: text.length});
         }
@@ -135,7 +137,8 @@ class JS:
                 if (label === '空白开始'
                     || label === '从空白开始'
                     || label === '新建空白'
-                    || label === '不恢复缓存') {
+                    || label === '不恢复缓存'
+                    || label === '使用云端缓存') {
                     control.click();
                     return 'clicked';
                 }

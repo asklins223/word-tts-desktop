@@ -132,10 +132,12 @@ test('Store 同时提供受限的工作流快照投影，不保留配置和完�
     const store = createWorkflowStore();
     store.consume({ kind: 'snapshot', snapshot: {
         workflow_id: 'workflow-1', snapshot_seq: 2, snapshot_event_id: 'event-2',
-        state: {
-            workflow_id: 'workflow-1', status: 'ACTIVE', result_status: 'IN_PROGRESS',
+            state: {
+                workflow_id: 'workflow-1', status: 'ACTIVE', result_status: 'IN_PROGRESS',
             execution_state: 'RUNNING', control_state: 'RUNNING', cleanup_state: 'NONE',
             state_version: 8, item_count: 3, configuration_snapshot: { secret: 'nope' },
+            last_error_code: 'TRANSIENT_PROVIDER_ERROR',
+            last_error_message: 'x'.repeat(3000),
             latest_event: {
                 event_type: 'TTS_RUNTIME_PROGRESS', seq: 2,
                 payload: {
@@ -150,6 +152,8 @@ test('Store 同时提供受限的工作流快照投影，不保留配置和完�
     const projection = store.getState().workflowProjection;
     assert.equal(projection.workflow_id, 'workflow-1');
     assert.equal(projection.execution_state, 'RUNNING');
+    assert.equal(projection.last_error_code, 'TRANSIENT_PROVIDER_ERROR');
+    assert.equal(projection.last_error_message.length, 2000);
     assert.equal(projection.runtime.item_id, 'item-1');
     assert.equal(projection.runtime.completed_segments, 1);
     assert.equal(projection.configuration_snapshot, undefined);
@@ -299,6 +303,43 @@ test('workspace 投影按事件顺序推进阶段、分段计数与运行时消�
     assert.equal(workspace.runtime.itemId, 'item-3');
     assert.equal(workspace.executionState, 'RUNNING');
     assert.deepEqual(seen, ['preparing', 'running', 'running']);
+});
+
+test('workspace 投影同步工作流控制态，暂停后迟到的运行事件不能把状态改回运行中', () => {
+    const store = createWorkflowStore();
+    store.consume({ kind: 'snapshot', snapshot: {
+        workflow_id: 'workflow-1', snapshot_seq: 1, snapshot_event_id: 'event-1',
+        state: {
+            workflow_id: 'workflow-1', latest_seq: 1, execution_state: 'RUNNING',
+            control_state: 'RUNNING', result_status: 'IN_PROGRESS',
+        },
+    } });
+
+    store.consume(typedEvent(2, 'WORKFLOW_PAUSE'));
+    assert.equal(store.getState().workspace.controlState, 'PAUSE_REQUESTED');
+    assert.equal(store.getState().workflowProjection.control_state, 'PAUSE_REQUESTED');
+
+    store.consume(typedEvent(3, 'WORKFLOW_PAUSED'));
+    assert.equal(store.getState().workspace.controlState, 'PAUSED');
+    assert.equal(store.getState().workflowProjection.control_state, 'PAUSED');
+
+    store.consume(typedEvent(4, 'TTS_RUNTIME_STATUS', {
+        status: 'waiting', message: '讯飞浏览器正在处理，任务仍在运行',
+    }));
+    assert.equal(store.getState().workspace.controlState, 'PAUSED');
+    assert.equal(store.getState().workflowProjection.control_state, 'PAUSED');
+
+    store.consume(typedEvent(5, 'WORKFLOW_RESUME'));
+    assert.equal(store.getState().workspace.controlState, 'RUNNING');
+    store.consume(typedEvent(6, 'WORKFLOW_CANCEL'));
+    assert.equal(store.getState().workspace.controlState, 'TERMINATING');
+    assert.equal(store.getState().workspace.executionState, 'BLOCKED');
+    store.consume(typedEvent(7, 'WORKFLOW_CANCELLED', { result_status: 'CANCELLED', reason: '用户点击停止' }));
+    assert.equal(store.getState().workspace.controlState, 'TERMINATED');
+    assert.equal(store.getState().workspace.executionState, 'TERMINAL');
+    assert.equal(store.getState().workspace.resultStatus, 'CANCELLED');
+    assert.equal(store.getState().workflowProjection.last_error_code, 'WORKFLOW_CANCELLED');
+    assert.equal(store.getState().workflowProjection.last_error_message, '用户点击停止');
 });
 
 test('workspace 投影是有界的：超长消息被截断，诊断字段不进入状态', () => {

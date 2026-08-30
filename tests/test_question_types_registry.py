@@ -30,6 +30,7 @@ EXPECTED_ORDER = [
     "听后应答",
     "课文跟读",
     "信息转述及询问",
+    "听后记录并转述信息",
     "模仿朗读",
     "词汇",
 ]
@@ -62,6 +63,10 @@ class QuestionTypeRegistryTests(unittest.TestCase):
         self.assertEqual(detect_doc_type("7上-信息获取.docx"), "信息获取")
         self.assertEqual(detect_doc_type("听后应答-x.docx"), "听后应答")
         self.assertEqual(detect_doc_type("信息转述练习.docx"), "信息转述及询问")
+        self.assertEqual(
+            detect_doc_type("七上Starter Unit 1 Hello听后记录并转述信息专项.docx"),
+            "听后记录并转述信息",
+        )
         # Excel 文件统一归为词汇类型，优先于文件名关键词。
         self.assertEqual(detect_doc_type("单词表.xlsx"), "词汇")
         self.assertIsNone(detect_doc_type("随便命名的文档.docx"))

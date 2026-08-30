@@ -73,10 +73,18 @@ class GenerationMixin:
 
                 # 文本、连续同配置批量选区、音色/参数和内部停顿均通过
                 # 可见讯飞页面完成，并且每次套用前都有选区/标记回读校验。
-                self._prepare_composite_editor(page, work)
+                if callable(cancel_check):
+                    self._prepare_composite_editor(
+                        page, work, cancel_check=cancel_check
+                    )
+                else:
+                    self._prepare_composite_editor(page, work)
                 _check_cancel_requested(cancel_check)
                 self._mark_works_cutoff()
-                self._click_generate(page)
+                if callable(cancel_check):
+                    self._click_generate(page, cancel_check=cancel_check)
+                else:
+                    self._click_generate(page)
                 try:
                     confirm_kwargs = {"works_name": works_name}
                     if cancel_check is not None:
@@ -90,7 +98,7 @@ class GenerationMixin:
                     if self._confirm_click_succeeded or self._submission_state_uncertain:
                         raise XunfeiSubmissionAmbiguous(
                             "确认合成按钮已点击，但后续页面状态异常；"
-                            "已暂停自动重试，请稍后按作品名对账",
+                            "提交结果未拿到本地任务 ID，可直接重新生成",
                             works_name=works_name,
                         ) from confirm_error
                     raise
@@ -102,7 +110,7 @@ class GenerationMixin:
                     if self._confirm_click_succeeded or self._submission_state_uncertain:
                         raise XunfeiSubmissionAmbiguous(
                             "确认合成按钮已点击后触发频控，提交结果不确定；"
-                            "已暂停自动重试，请稍后按作品名对账",
+                            "提交结果未拿到本地任务 ID，可直接重新生成",
                             works_name=works_name,
                         )
                     raise XunfeiRateLimited("触发讯飞频控")
@@ -110,7 +118,7 @@ class GenerationMixin:
                     if self._confirm_click_succeeded or self._submission_state_uncertain:
                         raise XunfeiSubmissionAmbiguous(
                             "确认合成按钮已点击，但确认流程未完成；"
-                            "已暂停自动重试，请稍后按作品名对账",
+                            "提交结果未拿到本地任务 ID，可直接重新生成",
                             works_name=works_name,
                         )
                     raise XunfeiError("确认合成弹窗流程未完成")
@@ -121,25 +129,18 @@ class GenerationMixin:
                         timeout=30,
                         cancel_check=cancel_check,
                     )
-                    if not works_id:
-                        works_id = self._recover_works_id_by_name(
-                            page,
-                            works_name,
-                            timeout=60,
-                            cancel_check=cancel_check,
-                        )
                 except (XunfeiCancelled, XunfeiSubmissionAmbiguous):
                     raise
                 except Exception as tracking_error:
                     raise XunfeiSubmissionAmbiguous(
-                        "合成已确认提交，但追踪 worksId 时发生异常；"
-                        "已暂停自动重试，请稍后按作品名对账",
+                        "合成已确认提交，但本地未拿到任务 ID；"
+                        "不查询讯飞作品列表，可直接重新生成",
                         works_name=works_name,
                     ) from tracking_error
                 if not works_id:
                     raise XunfeiSubmissionAmbiguous(
-                        "多人配音已确认提交，但无法安全定位唯一 worksId；"
-                        "已暂停自动重试，请稍后按作品名对账",
+                        "多人配音已确认提交，但本地未拿到任务 ID；"
+                        "不查询讯飞作品列表，可直接重新生成",
                         works_name=works_name,
                     )
                 pending = {
@@ -157,7 +158,14 @@ class GenerationMixin:
                 # best-effort 操作，异常不能回到外层“提交失败”重试，否则
                 # 同一作品可能再次扣费。
                 try:
-                    self._cleanup_after_item(page)
+                    if callable(cancel_check):
+                        self._cleanup_after_item(page, cancel_check=cancel_check)
+                    else:
+                        self._cleanup_after_item(page)
+                except XunfeiCancelled:
+                    # 清理发生在 worksId 已确认之后，但取消仍必须透传到
+                    # 批处理边界，不能被“清理失败不影响提交”的保护逻辑吞掉。
+                    raise
                 except Exception as cleanup_error:
                     _log(f"[xunfei]   提交后页面清理异常（不重复提交）: {cleanup_error}")
                 return pending
@@ -179,7 +187,7 @@ class GenerationMixin:
                 if submission_confirmed:
                     raise XunfeiSubmissionAmbiguous(
                         "多人配音已确认提交，但提交结果整理时发生异常；"
-                        "已暂停自动重试，请稍后按作品名对账",
+                        "提交结果未拿到本地任务 ID，可直接重新生成",
                         works_name=works_name,
                     ) from error
                 last_error = error
@@ -214,7 +222,7 @@ class GenerationMixin:
             output_name = f".xunfei_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(OUTPUT_DIR, output_name)
         # 作品名必须在点击生成前确定并写入页面。它是 worksId 监听漏捕获
-        # 时唯一可用于安全对账的幂等键，不能留空后再随机生成。
+        # 时只用于页面展示和本地日志，不能依赖它找回远端任务。
         works_name = self._normalize_works_name(
             works_name or f"wordtts_{uuid.uuid4().hex[:16]}"
         )
@@ -235,15 +243,31 @@ class GenerationMixin:
                         raise XunfeiError("页面恢复失败")
 
                 # 同组任务命中这两个缓存时，不会重复切换音色或设置参数。
-                self._select_voice(page, voice_name, voice_key=vk)
-                self._apply_params(page, speed, pitch, volume)
+                if callable(cancel_check):
+                    self._select_voice(
+                        page, voice_name, voice_key=vk, cancel_check=cancel_check
+                    )
+                    self._apply_params(
+                        page, speed, pitch, volume, cancel_check=cancel_check
+                    )
+                else:
+                    self._select_voice(page, voice_name, voice_key=vk)
+                    self._apply_params(page, speed, pitch, volume)
 
-                if not self._input_text(page, text):
+                input_ok = (
+                    self._input_text(page, text, cancel_check=cancel_check)
+                    if callable(cancel_check)
+                    else self._input_text(page, text)
+                )
+                if not input_ok:
                     raise XunfeiError("文本输入失败")
 
                 _check_cancel_requested(cancel_check)
                 self._mark_works_cutoff()
-                self._click_generate(page)
+                if callable(cancel_check):
+                    self._click_generate(page, cancel_check=cancel_check)
+                else:
+                    self._click_generate(page)
                 try:
                     confirm_kwargs = {"works_name": works_name}
                     if cancel_check is not None:
@@ -257,7 +281,7 @@ class GenerationMixin:
                     if self._confirm_click_succeeded or self._submission_state_uncertain:
                         raise XunfeiSubmissionAmbiguous(
                             "确认合成按钮已点击，但后续页面状态异常；"
-                            "已暂停自动重试，请稍后按作品名对账",
+                            "提交结果未拿到本地任务 ID，可直接重新生成",
                             works_name=works_name,
                         ) from confirm_error
                     raise
@@ -269,7 +293,7 @@ class GenerationMixin:
                     if self._confirm_click_succeeded or self._submission_state_uncertain:
                         raise XunfeiSubmissionAmbiguous(
                             "确认合成按钮已点击后触发频控，提交结果不确定；"
-                            "已暂停自动重试，请稍后按作品名对账",
+                            "提交结果未拿到本地任务 ID，可直接重新生成",
                             works_name=works_name,
                         )
                     raise XunfeiRateLimited("触发讯飞频控")
@@ -277,7 +301,7 @@ class GenerationMixin:
                     if self._confirm_click_succeeded or self._submission_state_uncertain:
                         raise XunfeiSubmissionAmbiguous(
                             "确认合成按钮已点击，但确认流程未完成；"
-                            "已暂停自动重试，请稍后按作品名对账",
+                            "提交结果未拿到本地任务 ID，可直接重新生成",
                             works_name=works_name,
                         )
                     raise XunfeiError("确认合成弹窗流程未完成")
@@ -288,25 +312,18 @@ class GenerationMixin:
                         timeout=30,
                         cancel_check=cancel_check,
                     )
-                    if not works_id:
-                        works_id = self._recover_works_id_by_name(
-                            page,
-                            works_name,
-                            timeout=60,
-                            cancel_check=cancel_check,
-                        )
                 except (XunfeiCancelled, XunfeiSubmissionAmbiguous):
                     raise
                 except Exception as tracking_error:
                     raise XunfeiSubmissionAmbiguous(
-                        "合成已确认提交，但追踪 worksId 时发生异常；"
-                        "已暂停自动重试，请稍后按作品名对账",
+                        "合成已确认提交，但本地未拿到任务 ID；"
+                        "不查询讯飞作品列表，可直接重新生成",
                         works_name=works_name,
                     ) from tracking_error
                 if not works_id:
                     raise XunfeiSubmissionAmbiguous(
-                        "合成已确认提交，但无法安全定位唯一 worksId；"
-                        "已暂停自动重试，请稍后按作品名对账",
+                        "合成已确认提交，但本地未拿到任务 ID；"
+                        "不查询讯飞作品列表，可直接重新生成",
                         works_name=works_name,
                     )
 
@@ -327,7 +344,13 @@ class GenerationMixin:
                 # worksId 已经确认，清理失败不能被当作提交失败处理；否则
                 # 外层恢复逻辑会重新点击合成并可能产生重复计费。
                 try:
-                    self._cleanup_after_item(page)
+                    if callable(cancel_check):
+                        self._cleanup_after_item(page, cancel_check=cancel_check)
+                    else:
+                        self._cleanup_after_item(page)
+                except XunfeiCancelled:
+                    # 同上：已拿到 worksId 不代表可以忽略用户的取消。
+                    raise
                 except Exception as cleanup_error:
                     _log(f"[xunfei]   提交后页面清理异常（不重复提交）: {cleanup_error}")
                 return pending
@@ -349,7 +372,7 @@ class GenerationMixin:
                 if submission_confirmed:
                     raise XunfeiSubmissionAmbiguous(
                         "合成已确认提交，但提交结果整理时发生异常；"
-                        "已暂停自动重试，请稍后按作品名对账",
+                        "提交结果未拿到本地任务 ID，可直接重新生成",
                         works_name=works_name,
                     ) from attempt_error
                 last_error = attempt_error
@@ -433,7 +456,7 @@ class GenerationMixin:
                         f"[xunfei]   ⏳ 仍有 {len(remaining)} 条作品等待音频就绪"
                     )
                 _check_cancel_requested(cancel_check)
-                page.wait_for_timeout(2000)
+                _wait_with_cancel(page, 2.0, cancel_check=cancel_check)
 
         if remaining:
             _log(
@@ -509,9 +532,6 @@ class GenerationMixin:
                 job_id = str(job.get("job_id") or uuid.uuid4().hex)
                 try:
                     resume_works_id = str(job.get("resume_works_id") or "").strip()
-                    ambiguous_works_name = str(
-                        job.get("ambiguous_works_name") or ""
-                    ).strip()
                     if resume_works_id:
                         output_name = job.get("output_name") or (
                             f".xunfei_{uuid.uuid4().hex}.mp3"
@@ -532,40 +552,6 @@ class GenerationMixin:
                         _log(
                             f"[xunfei] ♻️ 复用已提交任务 worksId={resume_works_id} "
                             f"job={job_id}"
-                        )
-                    elif ambiguous_works_name:
-                        output_name = job.get("output_name") or (
-                            f".xunfei_{uuid.uuid4().hex}.mp3"
-                        )
-                        works_name = self._normalize_works_name(
-                            ambiguous_works_name or job.get("works_name")
-                        )
-                        recovered_works_id = self._recover_works_id_by_name(
-                            self._page,
-                            works_name,
-                            timeout=60,
-                            cancel_check=cancel_check,
-                        )
-                        if not recovered_works_id:
-                            raise XunfeiSubmissionAmbiguous(
-                                "上次已确认提交，但仍无法按作品名定位唯一 worksId；"
-                                "不会重新提交",
-                                works_name=works_name,
-                            )
-                        pending_item = {
-                            "works_id": str(recovered_works_id),
-                            "output_path": os.path.join(OUTPUT_DIR, output_name),
-                            "voice_key": str(job.get("voice_key") or DEFAULT_FEMALE),
-                            "voice_name": str(job.get("voice_name") or ""),
-                            "works_name": works_name,
-                            "speed": clamp_param(job.get("speed")),
-                            "pitch": clamp_param(job.get("pitch")),
-                            "volume": clamp_param(job.get("volume")),
-                        }
-                        resumed = True
-                        _log(
-                            f"[xunfei] ♻️ 通过作品名找回已提交任务 "
-                            f"worksId={recovered_works_id} job={job_id}"
                         )
                     else:
                         generate_kwargs = {
@@ -757,10 +743,6 @@ class GenerationMixin:
             )
             previous = resume_map.get(work_id)
             previous_id = previous.get("works_id") if isinstance(previous, dict) else None
-            previous_ambiguous = bool(
-                previous.get("ambiguous_submission")
-                or previous.get("ambiguous_works_id")
-            ) if isinstance(previous, dict) else False
             try:
                 if previous_id:
                     pending_item = {
@@ -775,49 +757,6 @@ class GenerationMixin:
                         f"[xunfei] ♻️ 复用多人配音作品 worksId={pending_item['works_id']} "
                         f"work={work_id}"
                     )
-                elif previous_ambiguous:
-                    works_name = self._normalize_works_name(
-                        (previous or {}).get("works_name") or work["works_name"]
-                    )
-                    report_progress({
-                        "work_id": work_id,
-                        "job_id": work_id,
-                        "works_name": works_name,
-                        "stage": "reconciling",
-                        "downloaded": False,
-                    })
-                    recovered_works_id = self._recover_works_id_by_name(
-                        self._page,
-                        works_name,
-                        timeout=60,
-                        cancel_check=cancel_check,
-                    )
-                    if not recovered_works_id:
-                        raise XunfeiSubmissionAmbiguous(
-                            "上次已确认多人配音提交，但仍无法按作品名定位唯一 worksId；"
-                            "不会重新提交",
-                            works_name=works_name,
-                        )
-                    pending_item = {
-                        "works_id": str(recovered_works_id),
-                        "output_path": os.path.join(OUTPUT_DIR, work["output_name"]),
-                        "works_name": works_name,
-                        "work_id": work_id,
-                        "job_id": work_id,
-                        "item_count": int(work.get("item_count") or 0),
-                    }
-                    _log(
-                        f"[xunfei] ♻️ 通过作品名找回多人配音作品 "
-                        f"worksId={recovered_works_id} work={work_id}"
-                    )
-                    report_progress({
-                        "work_id": work_id,
-                        "job_id": work_id,
-                        "works_id": str(recovered_works_id),
-                        "works_name": works_name,
-                        "stage": "reconciled",
-                        "downloaded": False,
-                    })
                 else:
                     generate_kwargs = {
                         "output_name": work.get("output_name"),
@@ -968,6 +907,8 @@ class GenerationMixin:
         speed=PARAM_DEFAULT,
         pitch=PARAM_DEFAULT,
         volume=PARAM_DEFAULT,
+        cancel_check=None,
+        progress_callback=None,
     ):
         """
         在已登录的浏览器会话中生成一条音频。
@@ -989,6 +930,7 @@ class GenerationMixin:
         """
         if not self._logged_in:
             raise XunfeiError("尚未登录，请先调用 login()")
+        _check_cancel_requested(cancel_check)
 
         vk = voice_key if voice_key else self.voice_key
         voice_name = get_voice_info(vk)["name"]
@@ -997,16 +939,25 @@ class GenerationMixin:
             output_name = f"xunfei_{vk}_{int(time.time())}.mp3"
         output_path = os.path.join(OUTPUT_DIR, output_name)
 
-        pending = self._generate_pending_one(
-            text,
-            output_name=output_name,
-            max_retries=max_retries,
-            voice_key=voice_key,
-            speed=speed,
-            pitch=pitch,
-            volume=volume,
-        )
-        result = self._download_pending_batch([pending]).get(str(pending["works_id"]))
+        generate_kwargs = {
+            "output_name": output_name,
+            "max_retries": max_retries,
+            "voice_key": voice_key,
+            "speed": speed,
+            "pitch": pitch,
+            "volume": volume,
+        }
+        if callable(cancel_check):
+            generate_kwargs["cancel_check"] = cancel_check
+        pending = self._generate_pending_one(text, **generate_kwargs)
+        _check_cancel_requested(cancel_check)
+        download_kwargs = {}
+        if callable(progress_callback):
+            download_kwargs["progress_callback"] = progress_callback
+        if callable(cancel_check):
+            download_kwargs["cancel_check"] = cancel_check
+        result = self._download_pending_batch([pending], **download_kwargs).get(str(pending["works_id"]))
+        _check_cancel_requested(cancel_check)
         output_path = pending["output_path"]
         if result and result.get("downloaded") and os.path.exists(output_path):
             _log(f"[xunfei] ✅ 生成成功 ({os.path.getsize(output_path):,} bytes)")

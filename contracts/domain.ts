@@ -41,6 +41,8 @@ export interface WorkflowSnapshot {
   artifact_count: number;
   latest_event_id: EventId | null;
   latest_seq: number;
+  last_error_code: string | null;
+  last_error_message: string | null;
   latest_event?: WorkflowEvent;
   updated_at: string;
 }
@@ -265,6 +267,13 @@ export interface CommandResponse {
   target_attempt_id: string | null;
 }
 
+export interface WorkflowDeleteResponse {
+  request_id: string;
+  workflow_id: WorkflowId;
+  accepted_action: 'delete';
+  deleted: true;
+}
+
 export interface WorkflowEvent {
   event_id: EventId;
   seq: number;
@@ -369,6 +378,7 @@ export interface DesktopWorkflowApi {
     include_item_ids?: string[];
   }): Promise<JsonObject | null>;
   archiveWorkflow(workflowId: WorkflowId, input: WorkflowCommandRequest): Promise<CommandResponse>;
+  deleteWorkflow(workflowId: WorkflowId, input: WorkflowCommandRequest): Promise<WorkflowDeleteResponse>;
   retry(workflowId: WorkflowId, input: TargetedCommandRequest): Promise<CommandResponse>;
   reconcile(workflowId: WorkflowId, input: TargetedCommandRequest): Promise<CommandResponse>;
   resolve(input: {
@@ -429,6 +439,8 @@ export interface WorkflowHistoryRecord {
   execution_state: ExecutionState;
   control_state: ControlState;
   state_version: number;
+  can_delete: boolean;
+  delete_reason: string | null;
   created_at: string;
   completed_at: string;
   updated_at: string;

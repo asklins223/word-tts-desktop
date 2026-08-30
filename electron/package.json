@@ -23,9 +23,9 @@
     "check:contracts": "npm run lint:contracts && npm run check:generated && npm run typecheck:contracts",
     "build:icons": "cd .. && node scripts/run_python.js scripts/build_app_icons.py",
     "build:python": "cd .. && node scripts/run_pyinstaller.js server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp && node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend",
-    "build": "npm run build:icons && npm run build:python && electron-builder",
-    "build:mac": "npm run build:icons && npm run build:python && electron-builder --mac",
-    "build:win": "npm run build:icons && npm run build:python && electron-builder --win"
+    "build": "npm run build:icons && npm run build:python && electron-builder --publish never",
+    "build:mac": "npm run build:icons && npm run build:python && electron-builder --mac --publish never",
+    "build:win": "npm run build:icons && npm run build:python && electron-builder --win --publish never"
   },
   "build": {
     "appId": "com.wordtts.desktop",
@@ -46,6 +46,7 @@
     "files": [
       "main.js",
       "file-dialogs.js",
+      "update-manager.js",
       "workflow-api.js",
       "workflow-proxy.js",
       "source-staging.js",
@@ -64,7 +65,10 @@
       }
     ],
     "mac": {
-      "target": "dir",
+      "target": [
+        "dir",
+        "zip"
+      ],
       "category": "public.app-category.education",
       "minimumSystemVersion": "12.0",
       "icon": "build/icon.icns",
@@ -108,8 +112,16 @@
       "shortcutName": "小猪wordTTS",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "include": "build/installer.nsh",
       "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "asklins223",
+      "repo": "word-tts-desktop",
+      "releaseType": "release",
+      "publishAutoUpdate": true
     }
   },
   "devDependencies": {
@@ -121,7 +133,11 @@
     "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "htmlparser2": "12.0.0",
+    "js-yaml": "4.3.2",
     "openapi-typescript": "7.13.0",
     "typescript": "5.9.2"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
   }
 }

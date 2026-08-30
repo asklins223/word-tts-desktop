@@ -179,6 +179,30 @@ paths:
           $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
+    delete:
+      summary: Delete Unfinished Workflow
+      operationId: deleteWorkflow
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowCommandRequest'
+      responses:
+        '200':
+          description: Unfinished workflow and its local data were physically deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowDeleteResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /workflows/active:
     get:
@@ -1882,7 +1906,7 @@ components:
         truncated: { type: boolean }
     WorkflowHistoryRecord:
       type: object
-      required: [id, workflow_id, source_filename, available_files, completed, failed, cancelled, skipped, total, pending, format, generation_mode, preview, zip_available, zip_artifact_id, failed_items, status, result_status, execution_state, control_state, state_version, created_at, completed_at, updated_at]
+      required: [id, workflow_id, source_filename, available_files, completed, failed, cancelled, skipped, total, pending, format, generation_mode, preview, zip_available, zip_artifact_id, failed_items, status, result_status, execution_state, control_state, state_version, can_delete, delete_reason, created_at, completed_at, updated_at]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -1909,6 +1933,8 @@ components:
         execution_state: { type: string, enum: [CREATED, PREPARING, RUNNING, WAITING_RETRY, WAITING_USER, RECOVERING, BLOCKED, TERMINAL] }
         control_state: { type: string, enum: [RUNNING, PAUSE_REQUESTED, PAUSED, TERMINATING, TERMINATED] }
         state_version: { type: integer, minimum: 0 }
+        can_delete: { type: boolean }
+        delete_reason: { type: [string, 'null'], maxLength: 500 }
         created_at: { type: string, format: date-time }
         completed_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -2012,7 +2038,7 @@ components:
         artifact: { $ref: '#/components/schemas/ExportZipArtifact' }
     WorkflowSnapshot:
       type: object
-      required: [workflow_id, workflow_group_id, group_state_version, parent_workflow_id, result_status, execution_state, control_state, cleanup_state, status, state_version, draft_revision, current_step_id, source_artifact_id, item_count, artifact_count, latest_event_id, latest_seq, updated_at]
+      required: [workflow_id, workflow_group_id, group_state_version, parent_workflow_id, result_status, execution_state, control_state, cleanup_state, status, state_version, draft_revision, current_step_id, source_artifact_id, item_count, artifact_count, latest_event_id, latest_seq, last_error_code, last_error_message, updated_at]
       additionalProperties: false
       properties:
         workflow_id: { type: string }
@@ -2032,6 +2058,8 @@ components:
         artifact_count: { type: integer, minimum: 0 }
         latest_event_id: { type: [string, 'null'] }
         latest_seq: { type: integer, minimum: 0 }
+        last_error_code: { type: [string, 'null'], maxLength: 128 }
+        last_error_message: { type: [string, 'null'], maxLength: 2000 }
         latest_event: { anyOf: [{ $ref: '#/components/schemas/WorkflowEvent' }, { type: 'null' }] }
         updated_at: { type: string, format: date-time }
     WorkflowEnvelope:
@@ -2040,6 +2068,15 @@ components:
       properties:
         request_id: { type: string }
         workflow: { $ref: '#/components/schemas/WorkflowSnapshot' }
+    WorkflowDeleteResponse:
+      type: object
+      required: [request_id, workflow_id, accepted_action, deleted]
+      additionalProperties: false
+      properties:
+        request_id: { type: string }
+        workflow_id: { type: string }
+        accepted_action: { type: string, const: delete }
+        deleted: { type: boolean, const: true }
     CommandResponse:
       type: object
       required: [request_id, workflow_id, accepted_action, result_status, execution_state, control_state, cleanup_state, state_version, current_snapshot, target_attempt_id]

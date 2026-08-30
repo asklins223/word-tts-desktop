@@ -123,25 +123,20 @@ def _normalize_legacy_error(error: Exception, *, works_name: str | None = None) 
     if class_name == "XunfeiSubmissionAmbiguous":
         return ProviderError(
             raw_message,
-            code="SUBMISSION_AMBIGUOUS",
+            code="LOCAL_SUBMISSION_NOT_CONFIRMED",
             details=details,
-            ambiguous=True,
+            ambiguous=False,
         )
     if class_name == "XunfeiCancelled":
         return ProviderError(
-            "讯飞浏览器任务已取消；为避免重复扣费，提交结果需要核验",
-            code="SUBMISSION_AMBIGUOUS",
+            "讯飞浏览器任务已取消，可重新生成",
+            code="LOCAL_SUBMISSION_NOT_CONFIRMED",
             details=details,
-            ambiguous=True,
+            ambiguous=False,
         )
-    # The legacy flow raises its plain XunfeiError while preparing the page or
-    # editor, before the visible "确认合成" action.  A completed/uncertain
-    # click is promoted to XunfeiSubmissionAmbiguous by the legacy flow above;
-    # keeping this pre-boundary error non-ambiguous lets the durable workflow
-    # release the failed attempt and safely retry with a changed voice/config.
-    # Unknown legacy/provider failures are also non-ambiguous by default: the
-    # engine only needs the conservative ambiguity path after an explicit
-    # submission-boundary exception above.
+    # Every failure without a durable local receipt is a local retryable
+    # failure. The workflow intentionally does not perform a provider lookup
+    # to decide whether a remote task might exist.
     return ProviderError(raw_message, details=details, ambiguous=False)
 
 
@@ -150,19 +145,6 @@ class TTSProviderPort(Protocol):
     account_scope: str
 
     def submit(self, submission_key: str, payload: Mapping[str, Any]) -> Any:
-        ...
-
-    def query(self, submission_key: str) -> Any | None:
-        ...
-
-    def query_with_context(
-        self,
-        submission_key: str,
-        context: Mapping[str, Any] | None = None,
-        *,
-        cancel_check: Callable[[], bool] | None = None,
-        progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
-    ) -> Any | None:
         ...
 
     def download(self, receipt: Any) -> bytes:
@@ -349,7 +331,6 @@ class XunfeiTTSAdapter:
         self.downloader = downloader or ArtifactDownloader()
         self.allow_real = bool(allow_real)
         self._receipts: dict[str, ProviderReceipt] = {}
-        self._submission_payloads: dict[str, dict[str, Any]] = {}
         self._last_runtime_status: str | None = None
         self.capabilities = ProviderCapabilities(
             self.provider,
@@ -357,8 +338,8 @@ class XunfeiTTSAdapter:
             "xunfei-adapter-1",
             ("composite_cut", "single_segment"),
             ("mp3",),
-            True,
-            True,
+            False,
+            False,
         )
 
     def capability_snapshot(self) -> dict[str, Any]:
@@ -466,7 +447,6 @@ class XunfeiTTSAdapter:
             key: value for key, value in dict(payload).items()
             if key not in {"_cancel_check", "_progress_callback"}
         }
-        self._submission_payloads[submission_key] = public_payload
         try:
             if self.backend is not None:
                 raw = self.backend.submit(submission_key, public_payload)
@@ -494,40 +474,6 @@ class XunfeiTTSAdapter:
             canonical_key=receipt.canonical_key,
         )
         return receipt
-
-    def query(self, submission_key: str) -> ProviderReceipt | None:
-        return self.query_with_context(submission_key, self._submission_payloads.get(submission_key))
-
-    def query_with_context(
-        self,
-        submission_key: str,
-        context: Mapping[str, Any] | None = None,
-        *,
-        cancel_check: Callable[[], bool] | None = None,
-        progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
-    ) -> ProviderReceipt | None:
-        existing = self._receipts.get(submission_key)
-        if existing is not None:
-            return existing
-        if self.backend is not None and hasattr(self.backend, "query"):
-            raw = self.backend.query(submission_key)
-            if raw is None:
-                return None
-            receipt = self._normalize_backend_receipt(submission_key, raw)
-            self._receipts[submission_key] = receipt
-            return receipt
-        if not self.allow_real:
-            return None
-        payload = dict(self._submission_payloads.get(submission_key) or {})
-        if isinstance(context, Mapping):
-            payload.update(context)
-            self._submission_payloads[submission_key] = payload
-        return self._query_legacy_xunfei(
-            submission_key,
-            payload,
-            cancel_check=cancel_check,
-            progress_callback=progress_callback,
-        )
 
     def download(self, receipt: ProviderReceipt) -> bytes:
         return self.downloader.download(receipt)
@@ -613,7 +559,7 @@ class XunfeiTTSAdapter:
             ) from exc
         if len(works) != 1:
             raise ProviderCapabilityError(
-                "讯飞多人配音计划超过单个可对账作品的安全上限；请拆分文档后重试"
+                "讯飞多人配音计划超过单个作品的安全上限；请拆分文档后重试"
             )
         work = dict(works[0])
         work.update({
@@ -771,26 +717,12 @@ class XunfeiTTSAdapter:
                 raw = _run_sync(lambda: legacy.synth_xunfei_composite(works, **kwargs))
                 result = raw.get(submission_key) if isinstance(raw, Mapping) else None
         except Exception as exc:
-            # ``begin_tts_submission`` records the durable intent before the
-            # browser is opened, but a cooperative stop while login/editor
-            # preparation is still in progress has not clicked Xunfei's
-            # confirmation button. Treat that stop like a safe transient
-            # failure. Once the session reports a confirmed/uncertain click,
-            # retain the conservative ambiguous path to prevent duplicate
-            # billing.
+            # ``XunfeiCancelled`` is a control-plane signal, not a provider
+            # failure. Normalizing it into ``LOCAL_SUBMISSION_NOT_CONFIRMED``
+            # would put the workflow back into WAITING_RETRY and let the
+            # automatic dispatcher open a new browser after a user stop.
             if type(exc).__name__ == "XunfeiCancelled":
-                active_session = getattr(legacy, "_session", None)
-                submission_confirmed = bool(
-                    getattr(active_session, "_confirm_click_succeeded", False)
-                    or getattr(active_session, "_submission_state_uncertain", False)
-                )
-                if not submission_confirmed:
-                    raise ProviderError(
-                        "讯飞浏览器任务已在提交前取消，可安全重试",
-                        code="TRANSIENT_PROVIDER_ERROR",
-                        details={"cancelled_before_confirmation": True},
-                        ambiguous=False,
-                    ) from exc
+                raise
             active_session = getattr(legacy, "_session", None)
             page_closed = False
             page = getattr(active_session, "_page", None)
@@ -810,7 +742,7 @@ class XunfeiTTSAdapter:
                 if not submission_confirmed:
                     raise ProviderError(
                         "讯飞浏览器已关闭，任务在提交前中断，可安全重试",
-                        code="TRANSIENT_PROVIDER_ERROR",
+                        code="LOCAL_SUBMISSION_NOT_CONFIRMED",
                         details={
                             "cancelled_before_confirmation": True,
                             "browser_disconnected": True,
@@ -821,10 +753,10 @@ class XunfeiTTSAdapter:
         if not isinstance(result, Mapping) or result.get("audio") is None:
             if isinstance(result, Mapping) and result.get("ambiguous_works_id"):
                 raise ProviderError(
-                    _safe_provider_message(result.get("error"), "讯飞作品已提交但暂时无法定位"),
-                    code="SUBMISSION_AMBIGUOUS",
+                    _safe_provider_message(result.get("error"), "讯飞任务未返回本地任务 ID，可重新生成"),
+                    code="LOCAL_SUBMISSION_NOT_CONFIRMED",
                     details={"works_name": result.get("works_name") or works_name},
-                    ambiguous=True,
+                    ambiguous=False,
                 )
             raise _normalize_legacy_error(ProviderError(
                 str((result or {}).get("error") if isinstance(result, Mapping) else "Xunfei composite submission failed"),
@@ -854,103 +786,6 @@ class XunfeiTTSAdapter:
             segments=segments,
             output_format="mp3",
         )
-
-    def _query_legacy_xunfei(
-        self,
-        submission_key: str,
-        payload: Mapping[str, Any],
-        *,
-        cancel_check: Callable[[], bool] | None = None,
-        progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
-    ) -> ProviderReceipt | None:
-        try:
-            import xunfei.runtime as legacy
-        except ImportError as exc:
-            raise ProviderCapabilityError("Xunfei provider package is unavailable") from exc
-        item_specs = self._legacy_item_specs(payload)
-        works = self._legacy_works(submission_key, payload)
-        works_name = str(works[0]["works_name"])
-        # This is strictly a lookup/download operation.  The legacy resume
-        # path searches the existing works list by name and never submits a
-        # second work when no unique match is found.
-        resume = {
-            submission_key: {
-                "ambiguous_submission": True,
-                "works_name": works_name,
-            },
-        }
-        profile = payload.get("profile") if isinstance(payload.get("profile"), Mapping) else {}
-        generation_mode = str(profile.get("generation_mode") or "composite_cut")
-        quality = profile.get("quality")
-        try:
-            if generation_mode == "single_segment":
-                # The legacy single-segment API has one worksId per internal
-                # speaker segment, while the durable receipt stores one
-                # submission key.  Without those per-segment ids it is unsafe
-                # to search or submit again after a process restart.
-                raise ProviderError(
-                    "逐条模式的外部作品 ID 尚未完整持久化，暂不能自动对账；不会重复提交",
-                    code="SUBMISSION_AMBIGUOUS",
-                    details={"generation_mode": generation_mode},
-                    ambiguous=True,
-                )
-            kwargs = {"resume": resume}
-            if callable(cancel_check):
-                kwargs["cancel_check"] = cancel_check
-            if callable(progress_callback):
-                kwargs["progress_callback"] = progress_callback
-            raw = _run_sync(lambda: legacy.synth_xunfei_composite(works, **kwargs))
-            result = raw.get(submission_key) if isinstance(raw, Mapping) else None
-        except Exception as exc:
-            raise _normalize_legacy_error(exc, works_name=works_name) from exc
-        if not isinstance(result, Mapping) or result.get("audio") is None:
-            if isinstance(result, Mapping) and result.get("error"):
-                raise ProviderError(
-                    _safe_provider_message(result.get("error"), "未能核验讯飞作品"),
-                    code="SUBMISSION_AMBIGUOUS",
-                    details={"works_name": result.get("works_name") or works_name},
-                    ambiguous=True,
-                )
-            return None
-        diagnostics: dict[str, Any] = {}
-        if generation_mode == "single_segment":
-            output = bytes(result["audio"])
-            segments = dict(result.get("segments") or {})
-        else:
-            output, segments, diagnostics = self._legacy_audio_outputs(
-                result["audio"], item_specs, quality=quality,
-            )
-        formal = str(result.get("works_id") or "") or None
-        temporary = str(result.get("temporary_works_id") or "") or None
-        canonical = self.tracker.observe(
-            submission_key,
-            temporary_works_id=temporary,
-            formal_works_id=formal,
-        )
-        receipt = ProviderReceipt(
-            self.provider,
-            self.account_scope,
-            submission_key,
-            formal or temporary or submission_key,
-            canonical,
-            output,
-            temporary,
-            formal,
-            {
-                "works_id": formal,
-                "temporary_works_id": temporary,
-                "works_name": result.get("works_name") or works_name,
-                "reconciled": True,
-                "format": "mp3",
-                "segment_boundaries_verified": True,
-                "cut_diagnostics": diagnostics,
-            },
-            segments=segments,
-            output_format="mp3",
-        )
-        self._receipts[submission_key] = receipt
-        return receipt
-
 
 def _run_sync(awaitable_or_factory: Any) -> Any:
     try:

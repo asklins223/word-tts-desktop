@@ -324,7 +324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_source_bytes=args.max_source_bytes,
             )
         except Exception as exc:  # preserve the external failure as evidence; never retry here.
-            report = {"status": "FAIL", "reason": str(exc)[:2000], "retry_policy": "manual_reconcile_only"}
+            report = {"status": "FAIL", "reason": str(exc)[:2000], "retry_policy": "manual_retry_only"}
 
     rendered = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     print(rendered, end="")

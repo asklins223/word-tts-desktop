@@ -38,7 +38,8 @@ _ITEM_METADATA_ALLOWLIST = {
     "material_source", "language", "sheet_name", "sheet_index", "row",
     "column", "entry_number", "sentence_number", "number", "tags",
     "operation_id", "scope_row_id", "projection", "parser_version",
-    "normalization_version",
+    "normalization_version", "voice", "voice_gender", "type_path",
+    "type_hierarchy",
     "_workflow_skip_reason",
 }
 
@@ -419,6 +420,7 @@ def build_workflow_workspace(
         ).fetchone()
         if workflow_row is None:
             raise NotFoundError(f"workflow does not exist: {workflow_id}")
+        is_tts_workflow = str(workflow_row["workflow_type"] or "").lower() == "tts"
         config, configuration_revision = _stored_configuration(workflow_row)
         source_filename = _source_filename(con, workflow_id, config)
 
@@ -627,7 +629,10 @@ def build_workflow_workspace(
             unit = item_units.get(item_id) or {}
             step_id = str(unit.get("step_id") or tts_step_id or "") or None
             side_effect = str(unit.get("side_effect_state") or "NOT_STARTED")
-            requires_reconcile = (
+            # TTS uncertainty is handled from local durable facts and retried
+            # explicitly. Only the separate external-operation workflow keeps
+            # a provider reconciliation projection.
+            requires_reconcile = not is_tts_workflow and (
                 status in {"AMBIGUOUS", "UNRESOLVED"}
                 or (
                     side_effect in {"IN_FLIGHT", "SUBMITTED", "CONFIRMED", "AMBIGUOUS"}
@@ -643,7 +648,7 @@ def build_workflow_workspace(
                 projection_blocked_ids.add(item_id)
                 blockers.append(_blocker(
                     "ITEM_STATUS_UNKNOWN", "条目状态无法确认", "服务端返回了未知条目状态，请重新同步。",
-                    severity="BLOCKING", affected_item_ids=[item_id], requires_reconcile=True,
+                    severity="BLOCKING", affected_item_ids=[item_id], requires_reconcile=not is_tts_workflow,
                 ))
             elif has_deliverable_artifact and status == "SUCCEEDED":
                 completed_ids.add(item_id)
@@ -661,11 +666,16 @@ def build_workflow_workspace(
                 blockers.append(_blocker(
                     "ITEM_ARTIFACT_CONFLICT", "条目状态与产物不一致",
                     "已存在已验证音频，但条目状态不是成功；已暂缓计入交付，请重新同步。",
-                    severity="BLOCKING", affected_item_ids=[item_id], requires_reconcile=True,
+                    severity="BLOCKING", affected_item_ids=[item_id], requires_reconcile=not is_tts_workflow,
                 ))
             elif status == "SKIPPED":
                 skipped_ids.add(item_id)
             elif status == "FAILED":
+                failed_ids.add(item_id)
+                failed_item_rows.append((item_id, dict(row), step_id))
+            elif is_tts_workflow and status in {"AMBIGUOUS", "UNRESOLVED"}:
+                # Startup recovery normally converts these legacy rows to
+                # FAILED. Keep old projections retryable during that window.
                 failed_ids.add(item_id)
                 failed_item_rows.append((item_id, dict(row), step_id))
             elif status == "CANCELLED":
@@ -673,25 +683,40 @@ def build_workflow_workspace(
             elif status == "SUCCEEDED":
                 # A durable item status alone is not a deliverable.  Keep the
                 # item pending until a READY, verified artifact is visible so
-                # the snapshot cannot advertise a false 100% completion.
+                # the snapshot cannot advertise a false 100% completion. TTS
+                # has no provider reconciliation path: expose this local gap
+                # as an ordinary retry target.
                 pending_ids.add(item_id)
                 projection_blocked_ids.add(item_id)
                 unit_id = str(unit.get("work_unit_id") or "")
                 # Keep one disabled action even when the work-unit row itself
                 # is gone.  That projection is still actionable information:
                 # the UI can explain why no safe recovery target exists.
-                artifact_recovery_units.setdefault(unit_id, unit)
-                recovery_target = _target_for_unit(unit_id or None)
-                recovery_action = _action(
-                    "SERVICE", "RECONCILE", enabled=bool(recovery_target),
-                    reason=None if recovery_target else "缺少可对账的工作单元",
-                    target=recovery_target,
-                    expected_state_version=snapshot.state_version,
-                    expected_target_state_version=(
-                        int(unit["unit_state_version"])
-                        if unit.get("unit_state_version") is not None else None
-                    ),
-                )
+                if is_tts_workflow:
+                    pending_ids.discard(item_id)
+                    failed_ids.add(item_id)
+                    failed_item_rows.append((item_id, dict(row), step_id))
+                    recovery_action = _action(
+                        "SERVICE", "RETRY", enabled=True,
+                        reason="本地没有可交付音频，请重新生成",
+                        target=_target_for_item(item_id, step_id),
+                        expected_state_version=snapshot.state_version,
+                        expected_target_state_version=int(row["state_version"]),
+                        safe_to_retry=True, retry_scope="ITEMS",
+                    )
+                else:
+                    artifact_recovery_units.setdefault(unit_id, unit)
+                    recovery_target = _target_for_unit(unit_id or None)
+                    recovery_action = _action(
+                        "SERVICE", "RECONCILE", enabled=bool(recovery_target),
+                        reason=None if recovery_target else "缺少可对账的工作单元",
+                        target=recovery_target,
+                        expected_state_version=snapshot.state_version,
+                        expected_target_state_version=(
+                            int(unit["unit_state_version"])
+                            if unit.get("unit_state_version") is not None else None
+                        ),
+                    )
                 if latest_tts and latest_tts_facts.get("base_ready") and not latest_tts_facts.get("facts_match"):
                     blockers.append(_blocker(
                         "ARTIFACT_METADATA_CONFLICT", "产物元数据不一致",
@@ -701,15 +726,19 @@ def build_workflow_workspace(
                 else:
                     blockers.append(_blocker(
                         "ARTIFACT_MISSING_OR_UNVERIFIED", "成功条目缺少可交付产物",
-                        "条目标记为成功，但服务端尚未确认对应产物可读取；请重新同步或发起对账校验。",
-                        severity="ERROR", affected_item_ids=[item_id], requires_reconcile=True,
+                        "条目标记为成功，但服务端尚未确认对应产物可读取；请重新运行任务。",
+                        severity="ERROR", affected_item_ids=[item_id], requires_reconcile=not is_tts_workflow,
                         recovery_action=recovery_action,
                     ))
             else:
                 pending_ids.add(item_id)
             if requires_reconcile:
                 unresolved_items.append(item_id)
-            retry_scope = "NONE" if requires_reconcile else ("ITEMS" if status == "FAILED" else "NONE")
+            retry_scope = "NONE" if requires_reconcile else (
+                "ITEMS" if status == "FAILED" or (
+                    is_tts_workflow and status in {"AMBIGUOUS", "UNRESOLVED"}
+                ) else "NONE"
+            )
             normalized_content = str(row["normalized_content"] or "")
             content_size_bytes = len(normalized_content.encode("utf-8"))
             stored_content_hash = str(row["content_hash"])
@@ -941,8 +970,10 @@ def build_workflow_workspace(
                 reason = "ARTIFACT_FORMAT_UNSUPPORTED" if latest_facts.get("facts_match") else "ARTIFACT_METADATA_CONFLICT"
             elif status == "SKIPPED":
                 reason = "ITEM_SKIPPED"
-            elif status in {"AMBIGUOUS", "UNRESOLVED"}:
+            elif status in {"AMBIGUOUS", "UNRESOLVED"} and not is_tts_workflow:
                 reason = "REQUIRES_RECONCILE"
+            elif status in {"AMBIGUOUS", "UNRESOLVED"}:
+                reason = "ITEM_FAILED"
             elif status == "FAILED":
                 reason = "ITEM_FAILED"
             elif status == "CANCELLED":
@@ -972,9 +1003,15 @@ def build_workflow_workspace(
             reason="生成尝试已开始，配置和条目修订已冻结" if not editable else None,
             target=workflow_target, expected_state_version=snapshot.state_version,
         ))
+        generation_is_preparing = (
+            is_tts_workflow
+            and snapshot.execution_state == "PREPARING"
+            and tts_step is not None
+        )
         can_generate = (
             not terminal and snapshot.control_state == "RUNNING"
             and snapshot.execution_state in {"CREATED", "PREPARING", "WAITING_RETRY", "WAITING_USER"}
+            and not generation_is_preparing
             and bool(item_rows) and bool(set(item_by_id) - skipped_ids)
             and not unresolved_items and not projection_blocked_ids
         )
@@ -1009,8 +1046,10 @@ def build_workflow_workspace(
                 generate_reason = f"工作流执行态为 {snapshot.execution_state}"
             elif not item_rows or not bool(set(item_by_id) - skipped_ids):
                 generate_reason = "没有可生成的条目"
+            elif generation_is_preparing:
+                generate_reason = "生成任务已接受，正在准备执行"
             elif unresolved_items:
-                generate_reason = "存在未对账的外部副作用"
+                generate_reason = "存在未完成的外部操作"
             elif projection_blocked_ids:
                 generate_reason = "存在尚未核验或状态冲突的条目"
             elif not provider_can_generate and not provider_can_start_generation and not all_items_skipped:
@@ -1027,7 +1066,7 @@ def build_workflow_workspace(
         ))
         pause_enabled = (
             not terminal and snapshot.control_state == "RUNNING"
-            and snapshot.execution_state in {"PREPARING", "RUNNING"}
+            and snapshot.execution_state in {"PREPARING", "RUNNING", "RECOVERING"}
             and bool(capabilities.get("supports_pause", False))
         )
         service_actions.append(_action(
@@ -1073,9 +1112,17 @@ def build_workflow_workspace(
         ))
         for item_id, item_row, step_id in failed_item_rows:
             unit = item_units.get(item_id) or {}
-            item_requires_reconcile = str(item_row["status"]) in {"AMBIGUOUS", "UNRESOLVED"}
+            item_requires_reconcile = not is_tts_workflow and str(item_row["status"]) in {"AMBIGUOUS", "UNRESOLVED"}
             service_actions.append(_action(
-                "SERVICE", "RETRY", enabled=(item_row["status"] == "FAILED" and not item_requires_reconcile and not ready_item_artifacts.get(item_id)),
+                "SERVICE", "RETRY", enabled=(
+                    (item_row["status"] == "FAILED" or (
+                        is_tts_workflow and (
+                            item_row["status"] in {"AMBIGUOUS", "UNRESOLVED"}
+                            or (item_row["status"] == "SUCCEEDED" and not ready_item_artifacts.get(item_id))
+                        )
+                    ))
+                    and not item_requires_reconcile and not ready_item_artifacts.get(item_id)
+                ),
                 reason=("该条目存在未决副作用，必须先对账" if item_requires_reconcile
                         else "该条目已有已验证产物，不能覆盖交付事实" if ready_item_artifacts.get(item_id)
                         else None),
@@ -1085,8 +1132,9 @@ def build_workflow_workspace(
             ))
         # A SUCCEEDED work item without a verified artifact is a corruption or
         # garbage-collection boundary, not an ordinary retryable failure. Give
-        # the user a read-only reconciliation command when its durable work
-        # unit is still available; never silently resubmit the provider call.
+        # external workflows a read-only reconciliation command when their
+        # durable work unit is still available; TTS is handled as a local
+        # retryable gap above and never queries or resubmits through recovery.
         for unit in artifact_recovery_units.values():
             unit_id = str(unit.get("work_unit_id") or "") or None
             target = _target_for_unit(unit_id)

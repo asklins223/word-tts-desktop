@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from db.migration_runner import (
     Migration,
@@ -16,6 +17,7 @@ from db.migration_runner import (
     check_database_file,
     iter_sql_statements,
     load_migrations,
+    repair_data_consistency,
     resolve_target,
 )
 from workflow.database import WorkflowDatabase
@@ -73,8 +75,17 @@ class MigrationRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "failure.db"
             con = sqlite3.connect(str(db_path), isolation_level=None)
+            repair_calls = []
             try:
-                self.assertEqual(apply_migrations(con, target=1, migrations=[migration]), 3)
+                self.assertEqual(
+                    apply_migrations(
+                        con,
+                        target=1,
+                        migrations=[migration],
+                        repair_data_consistency=lambda *args: repair_calls.append(args) or True,
+                    ),
+                    3,
+                )
                 self.assertIsNone(
                     con.execute(
                         "SELECT 1 FROM sqlite_master WHERE name='partial_side_effect'"
@@ -84,8 +95,151 @@ class MigrationRunnerTests(unittest.TestCase):
                     con.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
                     0,
                 )
+                self.assertEqual(repair_calls, [])
             finally:
                 con.close()
+
+    def test_data_consistency_repair_deletes_duplicate_before_unique_index(self) -> None:
+        base_sql = """
+        CREATE TABLE duplicate_rows (
+            id INTEGER PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO duplicate_rows(id, value) VALUES (1, 'same'), (2, 'same');
+        """
+        upgrade_sql = "CREATE UNIQUE INDEX ux_duplicate_rows_value ON duplicate_rows(value);"
+        migrations = [
+            Migration(
+                version=1,
+                name="0001_duplicate_data.sql",
+                sql=base_sql,
+                checksum=hashlib.sha256(base_sql.encode("utf-8")).hexdigest(),
+            ),
+            Migration(
+                version=2,
+                name="0002_unique_index.sql",
+                sql=upgrade_sql,
+                checksum=hashlib.sha256(upgrade_sql.encode("utf-8")).hexdigest(),
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "repair.db"
+            con = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                self.assertEqual(apply_migrations(con, target=1, migrations=migrations), 0)
+                self.assertEqual(
+                    apply_migrations(
+                        con,
+                        target=2,
+                        migrations=migrations,
+                        repair_data_consistency=repair_data_consistency,
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    con.execute("SELECT id FROM duplicate_rows ORDER BY id").fetchall(),
+                    [(1,)],
+                )
+                self.assertIsNotNone(
+                    con.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='index' AND name='ux_duplicate_rows_value'"
+                    ).fetchone()
+                )
+            finally:
+                con.close()
+
+    def test_data_consistency_repair_deletes_existing_foreign_key_orphan(self) -> None:
+        sql = """
+        CREATE TABLE fk_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE fk_child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER NOT NULL REFERENCES fk_parent(id)
+        );
+        """
+        migration = Migration(
+            version=1,
+            name="0001_foreign_key_data.sql",
+            sql=sql,
+            checksum=hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "foreign-key-repair.db"
+            con = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                self.assertEqual(apply_migrations(con, target=1, migrations=[migration]), 0)
+                con.execute("PRAGMA foreign_keys = OFF")
+                con.execute("INSERT INTO fk_child(id, parent_id) VALUES (1, 404)")
+                con.execute("PRAGMA foreign_keys = ON")
+                self.assertEqual(
+                    apply_migrations(
+                        con,
+                        target=1,
+                        migrations=[migration],
+                        repair_data_consistency=repair_data_consistency,
+                    ),
+                    0,
+                )
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM fk_child").fetchone()[0], 0)
+                self.assertEqual(con.execute("PRAGMA foreign_key_check").fetchall(), [])
+            finally:
+                con.close()
+
+    def test_workflow_database_backs_up_before_automatic_data_repair(self) -> None:
+        base_sql = """
+        CREATE TABLE startup_duplicate_rows (
+            id INTEGER PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO startup_duplicate_rows(id, value) VALUES (1, 'same'), (2, 'same');
+        """
+        upgrade_sql = (
+            "CREATE UNIQUE INDEX ux_startup_duplicate_value "
+            "ON startup_duplicate_rows(value);"
+        )
+        migrations = [
+            Migration(
+                version=1,
+                name="0001_startup_duplicate_data.sql",
+                sql=base_sql,
+                checksum=hashlib.sha256(base_sql.encode("utf-8")).hexdigest(),
+            ),
+            Migration(
+                version=2,
+                name="0002_startup_unique_index.sql",
+                sql=upgrade_sql,
+                checksum=hashlib.sha256(upgrade_sql.encode("utf-8")).hexdigest(),
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "workflow.db"
+            seed = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                self.assertEqual(apply_migrations(seed, target=1, migrations=migrations), 0)
+            finally:
+                seed.close()
+
+            database = WorkflowDatabase(db_path, profile="full")
+            try:
+                with patch("workflow.database.load_migrations", return_value=migrations):
+                    database.initialize()
+                self.assertIsNotNone(database.last_migration_backup)
+                assert database.last_migration_backup is not None
+                self.assertTrue(Path(database.last_migration_backup).is_file())
+                check = sqlite3.connect(str(db_path))
+                try:
+                    self.assertEqual(
+                        check.execute(
+                            "SELECT id FROM startup_duplicate_rows ORDER BY id"
+                        ).fetchall(),
+                        [(1,)],
+                    )
+                finally:
+                    check.close()
+            finally:
+                database.close()
 
     def test_upgrade_backup_preserves_pre_upgrade_schema_and_side_effect_journal(self) -> None:
         migrations = load_migrations()

@@ -60,6 +60,7 @@ hiddenimports = [
     'question_types.listening_response',
     'question_types.text_reading',
     'question_types.info_retelling',
+    'question_types.listening_record_retelling',
     'question_types.imitation_reading',
     'question_types.vocabulary',
     'xunfei',

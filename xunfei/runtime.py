@@ -15,7 +15,12 @@ from concurrent.futures import Future
 from functools import partial
 
 from .config import PARAM_DEFAULT, OUTPUT_DIR, clamp_param
-from .errors import XunfeiError, _log
+from .errors import (
+    XunfeiCancelled,
+    XunfeiError,
+    _check_cancel_requested,
+    _log,
+)
 from .session import XunFeiSession
 from .voice_catalog import DEFAULT_FEMALE
 
@@ -23,6 +28,7 @@ _session = None
 _session_lock = threading.Lock()
 _playwright_executor = None
 _playwright_executor_lock = threading.Lock()
+_executor_rotated_session = None
 
 
 class _DaemonSingleThreadExecutor:
@@ -107,6 +113,54 @@ def _shutdown_playwright_executor(wait=True):
         _playwright_executor = None
     if executor is not None:
         executor.shutdown(wait=wait, cancel_futures=True)
+
+
+def _rotate_playwright_executor(disconnected_session=None):
+    """Detach a stuck browser worker so a replacement session can start.
+
+    Playwright's synchronous transport can occasionally remain blocked after
+    the user closes Chrome while a page operation is in flight.  Waiting for
+    that daemon thread would leave every later ``ensure_session`` call queued
+    behind the dead page, so retire only the executor object and let its
+    already-running daemon finish on its own.  The replacement session gets a
+    fresh thread and never touches the old Playwright objects.
+    """
+
+    global _executor_rotated_session
+    if disconnected_session is not None:
+        # Several callers can observe the same close callback before the
+        # first replacement has finished.  Rotate once for that exact stale
+        # session; otherwise concurrent ensure_session calls could retire the
+        # fresh executor that the first caller just created.
+        with _session_lock:
+            if _executor_rotated_session is disconnected_session:
+                return False
+            _executor_rotated_session = disconnected_session
+    _shutdown_playwright_executor(wait=False)
+    return True
+
+
+def _session_browser_disconnected():
+    """Return the lifecycle flag without probing thread-affine Playwright APIs."""
+
+    return _disconnected_session() is not None
+
+
+def _disconnected_session():
+    """Return the current stale session, if its lifecycle callback fired."""
+
+    with _session_lock:
+        session = _session
+    if session is None:
+        return None
+    getter = getattr(session, "runtime_status_snapshot", None)
+    if not callable(getter):
+        return None
+    try:
+        status = getter()
+    except Exception:
+        return None
+    return session if isinstance(status, dict) and bool(status.get("browser_disconnected")) else None
 
 
 atexit.register(_shutdown_playwright_executor, False)
@@ -198,11 +252,39 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
 
     import asyncio
 
+    # If Chrome already reported a disconnect, the previous sync call may be
+    # stuck inside Playwright rather than merely waiting in the queue.  A
+    # replacement must not be submitted to that same executor or its browser
+    # window will never appear.
+    disconnected_session = _disconnected_session()
+    if disconnected_session is not None:
+        _rotate_playwright_executor(disconnected_session)
+
     def _locked_create():
         global _session
+        stale_disconnected = False
+        stale = None
         with _session_lock:
             if _session is not None:
-                if _session_is_healthy(_session):
+                current_status = None
+                status_getter = getattr(_session, "runtime_status_snapshot", None)
+                if callable(status_getter):
+                    try:
+                        current_status = status_getter()
+                    except Exception:
+                        current_status = None
+                current_disconnected = bool(
+                    isinstance(current_status, dict)
+                    and current_status.get("browser_disconnected")
+                )
+                # Do not run a thread-affine page health check on a new
+                # executor after rotation.  The old session belongs to the
+                # retired worker and is intentionally discarded below.
+                replace_current = (
+                    disconnected_session is not None
+                    and _session is disconnected_session
+                )
+                if not current_disconnected and not replace_current and _session_is_healthy(_session):
                     return _session
                 # A user closing the Playwright window leaves the Python
                 # session object and its profile lock alive.  Drop the global
@@ -210,11 +292,25 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
                 # Playwright executor thread before creating a replacement.
                 stale = _session
                 _discard_session_unsafe()
-                try:
-                    stale.close()
-                except Exception as error:
-                    _log(f"[xunfei] 清理失效浏览器会话异常（继续重建）: {error}")
+                stale_disconnected = current_disconnected or replace_current
+                if not stale_disconnected:
+                    try:
+                        stale.close()
+                    except Exception as error:
+                        _log(f"[xunfei] 清理失效浏览器会话异常（继续重建）: {error}")
             session = XunFeiSession(voice_key=voice_key)
+            if stale_disconnected:
+                # The stale object may still own the profile from a blocked
+                # old worker.  Let the new session reclaim only that known
+                # recovery path; it must never kill an unrelated browser on a
+                # normal first launch.
+                try:
+                    session._reclaim_profile_owner = True
+                    session._reclaim_profile_owner_pid = getattr(
+                        stale, "_profile_owner_pid", None
+                    )
+                except Exception:
+                    pass
             # Publish the candidate while login is still in progress.  If the
             # user closes the newly opened browser before login/editor
             # readiness, the adapter can inspect the same session and mark it
@@ -267,6 +363,7 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
 async def synth_xunfei(
     text, voice_key="amanda",
     speed=PARAM_DEFAULT, pitch=PARAM_DEFAULT, volume=PARAM_DEFAULT,
+    cancel_check=None, progress_callback=None,
 ):
     """
     用讯飞配音生成一条音频，返回 pydub.AudioSegment。
@@ -287,11 +384,21 @@ async def synth_xunfei(
     if not is_available():
         raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
 
-    session = await ensure_session(voice_key=voice_key)
+    _check_cancel_requested(cancel_check)
+    session = await ensure_session(
+        voice_key=voice_key,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
 
     import uuid
     output_name = f".xunfei_{uuid.uuid4().hex[:8]}.mp3"
 
+    synth_kwargs = {}
+    if callable(cancel_check):
+        synth_kwargs["cancel_check"] = cancel_check
+    if callable(progress_callback):
+        synth_kwargs["progress_callback"] = progress_callback
     result_path = await _run_playwright_sync(
         session.synth_one,
         text,
@@ -301,7 +408,10 @@ async def synth_xunfei(
         clamp_param(speed),
         clamp_param(pitch),
         clamp_param(volume),
+        **synth_kwargs,
     )
+
+    _check_cancel_requested(cancel_check)
 
     if not result_path or not os.path.exists(result_path):
         raise XunfeiError(f"讯飞配音未生成音频文件: {result_path}")
@@ -313,6 +423,7 @@ async def synth_xunfei(
 
     from pydub import AudioSegment
     seg = AudioSegment.from_file(result_path, format="mp3", codec="mp3")
+    _check_cancel_requested(cancel_check)
     dur_ms = len(seg)
     _log(f"[xunfei] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}")
     if dur_ms < 50:
@@ -372,6 +483,7 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
     from pydub import AudioSegment
 
     for job in normalized_jobs:
+        _check_cancel_requested(cancel_check)
         job_id = str(job["job_id"])
         result = raw_results.get(job_id) if isinstance(raw_results, dict) else None
         if not isinstance(result, dict) or not result.get("downloaded"):
@@ -400,6 +512,7 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
 
         path = result.get("output_path")
         try:
+            _check_cancel_requested(cancel_check)
             if not path or not os.path.exists(path):
                 raise XunfeiError(f"讯飞批量音频文件不存在: {path}")
             size = os.path.getsize(path)
@@ -410,6 +523,7 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
                 return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
 
             seg = await asyncio.to_thread(decode_file)
+            _check_cancel_requested(cancel_check)
             if len(seg) < 50:
                 raise XunfeiError(f"解码后音频时长过短 ({len(seg)}ms)")
             if seg.channels == 0 or seg.frame_rate == 0:
@@ -421,6 +535,8 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
                 f"duration={len(seg)}ms size={size:,} bytes"
             )
             decoded[job_id] = {"segment": seg, "error": None}
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             decoded[job_id] = {"segment": None, "error": str(error)}
         finally:
@@ -486,6 +602,7 @@ async def synth_xunfei_composite(
     from pydub import AudioSegment
 
     for work in normalized_works:
+        _check_cancel_requested(cancel_check)
         work_id = str(work["work_id"])
         result = raw_results.get(work_id) if isinstance(raw_results, dict) else None
         if not isinstance(result, dict) or not result.get("downloaded"):
@@ -514,6 +631,7 @@ async def synth_xunfei_composite(
 
         path = result.get("output_path")
         try:
+            _check_cancel_requested(cancel_check)
             if not path or not os.path.exists(path):
                 raise XunfeiError(f"讯飞多人配音音频文件不存在: {path}")
             size = os.path.getsize(path)
@@ -524,6 +642,7 @@ async def synth_xunfei_composite(
                 return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
 
             audio = await asyncio.to_thread(decode_file)
+            _check_cancel_requested(cancel_check)
             if len(audio) < 50:
                 raise XunfeiError(f"多人配音解码后音频过短 ({len(audio)}ms)")
             if audio.channels == 0 or audio.frame_rate == 0:
@@ -539,6 +658,8 @@ async def synth_xunfei_composite(
                 f"[xunfei] 多人配音完整作品解码完成 work={work_id}: "
                 f"duration={len(audio)}ms size={size:,} bytes"
             )
+        except XunfeiCancelled:
+            raise
         except Exception as error:
             decoded[work_id] = {
                 "audio": None,
