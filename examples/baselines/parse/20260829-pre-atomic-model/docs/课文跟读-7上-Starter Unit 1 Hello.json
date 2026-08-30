@@ -1,0 +1,1078 @@
+{
+  "source_file": "课文跟读-7上-Starter Unit 1 Hello.docx",
+  "sha256": "a93c2a9a27481271c07ebde216944151d00264d6bee8400d5c4319a4908692ec",
+  "content_detected_types": [
+    "课文跟读"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 37 条内容",
+  "parse_results": [
+    {
+      "source_file": "课文跟读-7上-Starter Unit 1 Hello.docx",
+      "doc_type": "课文跟读",
+      "item_count": 37,
+      "items": [
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 1,
+          "filename_stem": "SA句子1",
+          "voice": "female",
+          "text": "Can you say hi to the class?"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 2,
+          "filename_stem": "SA句子2",
+          "voice": "female",
+          "text": "Hi, everyone! I'm Peter Brown."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 3,
+          "filename_stem": "SA句子3",
+          "voice": "female",
+          "text": "Good morning. My name is Emma."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 4,
+          "filename_stem": "SA句子4",
+          "voice": "female",
+          "text": "So what's your name?"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 5,
+          "filename_stem": "SA句子5",
+          "voice": "female",
+          "text": "Oh, I'm Fu Xing. Nice to meet you, Emma."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 6,
+          "filename_stem": "SA句子6",
+          "voice": "female",
+          "text": "Nice to meet you too, Fu Xing!"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 1,
+          "filename_stem": "SA-段-C1-1",
+          "text": "Ms Gao: Good morning, class.",
+          "role": "Ms Gao",
+          "conversation_number": 1
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 2,
+          "filename_stem": "SA-段-C1-2",
+          "text": "Class: Good morning, Ms Gao.",
+          "role": "Class",
+          "conversation_number": 1
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 3,
+          "filename_stem": "SA-段-C1-3",
+          "text": "Ms Gao: Sit down, please.",
+          "role": "Ms Gao",
+          "conversation_number": 1
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 4,
+          "filename_stem": "SA-段-C2-4",
+          "text": "Ms Gao: Hello, Peter. Can you say hi to the class?",
+          "role": "Ms Gao",
+          "conversation_number": 2
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 5,
+          "filename_stem": "SA-段-C2-5",
+          "text": "Peter: Hi, everyone! I'm Peter Brown.",
+          "role": "Peter",
+          "conversation_number": 2
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 6,
+          "filename_stem": "SA-段-C2-6",
+          "text": "Ms Gao: Thank you, Peter.",
+          "role": "Ms Gao",
+          "conversation_number": 2
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 7,
+          "filename_stem": "SA-段-C3-7",
+          "text": "Emma: Good morning. My name is Emma.",
+          "role": "Emma",
+          "conversation_number": 3
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 8,
+          "filename_stem": "SA-段-C3-8",
+          "text": "Fu Xing: Good morning, Emma.",
+          "role": "Fu Xing",
+          "conversation_number": 3
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 9,
+          "filename_stem": "SA-段-C3-9",
+          "text": "Emma: So what's your name?",
+          "role": "Emma",
+          "conversation_number": 3
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 10,
+          "filename_stem": "SA-段-C3-10",
+          "text": "Fu Xing: Oh, I'm Fu Xing. Nice to meet you, Emma.",
+          "role": "Fu Xing",
+          "conversation_number": 3
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 11,
+          "filename_stem": "SA-段-C3-11",
+          "text": "Emma: Nice to meet you too, Fu Xing!",
+          "role": "Emma",
+          "conversation_number": 3
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 1,
+          "filename_stem": "SB句子1",
+          "voice": "female",
+          "text": "What's your name?"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 2,
+          "filename_stem": "SB句子2",
+          "voice": "female",
+          "text": "My name is Emma Miller."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 3,
+          "filename_stem": "SB句子3",
+          "voice": "female",
+          "text": "How do you spell your name?"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 4,
+          "filename_stem": "SB句子4",
+          "voice": "female",
+          "text": "You can call me Emma."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 5,
+          "filename_stem": "SB句子5",
+          "voice": "female",
+          "text": "Nice to meet you, Emma."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 6,
+          "filename_stem": "SB句子6",
+          "voice": "female",
+          "text": "How are you?"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 7,
+          "filename_stem": "SB句子7",
+          "voice": "female",
+          "text": "I'm fine, thanks."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 8,
+          "filename_stem": "SB句子8",
+          "voice": "female",
+          "text": "Oh, that's the bell. Let's go to class."
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 1,
+          "filename_stem": "SB语篇-C1-1",
+          "text": "Teng Fei: Good morning. I'm Teng Fei. What's your name?",
+          "role": "Teng Fei",
+          "conversation_number": 1
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 2,
+          "filename_stem": "SB语篇-C1-2",
+          "text": "Emma: Good morning. My name is Emma Miller.",
+          "role": "Emma",
+          "conversation_number": 1
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 3,
+          "filename_stem": "SB语篇-C1-3",
+          "text": "Teng Fei: How do you spell your name?",
+          "role": "Teng Fei",
+          "conversation_number": 1
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 4,
+          "filename_stem": "SB语篇-C1-4",
+          "text": "Emma: E-M-M-A, Emma. M-I-L-L-E-R, Miller. You can call me Emma.",
+          "role": "Emma",
+          "conversation_number": 1
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 5,
+          "filename_stem": "SB语篇-C1-5",
+          "text": "Teng Fei: Nice to meet you, Emma.",
+          "role": "Teng Fei",
+          "conversation_number": 1
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 6,
+          "filename_stem": "SB语篇-C1-6",
+          "text": "Emma: Nice to meet you too, Teng Fei.",
+          "role": "Emma",
+          "conversation_number": 1
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 1,
+          "filename_stem": "SB语篇-C2-1",
+          "text": "Helen: Hello, Wang Yaming! How are you?",
+          "role": "Helen",
+          "conversation_number": 2
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 2,
+          "filename_stem": "SB语篇-C2-2",
+          "text": "Yaming: Hi, Helen. I'm fine, thank you. And you?",
+          "role": "Yaming",
+          "conversation_number": 2
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 3,
+          "filename_stem": "SB语篇-C2-3",
+          "text": "Helen: I'm great, thanks.",
+          "role": "Helen",
+          "conversation_number": 2
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 4,
+          "filename_stem": "SB语篇-C2-4",
+          "text": "Yaming: Oh, that's the bell. Let's go to class.",
+          "role": "Yaming",
+          "conversation_number": 2
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 5,
+          "filename_stem": "SB语篇-C2-5",
+          "text": "Helen: Goodbye!",
+          "role": "Helen",
+          "conversation_number": 2
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 6,
+          "filename_stem": "SB语篇-C2-6",
+          "text": "Yaming: Bye!",
+          "role": "Yaming",
+          "conversation_number": 2
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "课文跟读",
+  "cli_result": {
+    "source_file": "课文跟读-7上-Starter Unit 1 Hello.docx",
+    "doc_type": "课文跟读",
+    "item_count": 37,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA句子1",
+        "voice": "female",
+        "text": "Can you say hi to the class?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA句子2",
+        "voice": "female",
+        "text": "Hi, everyone! I'm Peter Brown."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA句子3",
+        "voice": "female",
+        "text": "Good morning. My name is Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA句子4",
+        "voice": "female",
+        "text": "So what's your name?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA句子5",
+        "voice": "female",
+        "text": "Oh, I'm Fu Xing. Nice to meet you, Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA句子6",
+        "voice": "female",
+        "text": "Nice to meet you too, Fu Xing!"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA-段-C1-1",
+        "text": "Ms Gao: Good morning, class.",
+        "role": "Ms Gao",
+        "conversation_number": 1
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA-段-C1-2",
+        "text": "Class: Good morning, Ms Gao.",
+        "role": "Class",
+        "conversation_number": 1
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA-段-C1-3",
+        "text": "Ms Gao: Sit down, please.",
+        "role": "Ms Gao",
+        "conversation_number": 1
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA-段-C2-4",
+        "text": "Ms Gao: Hello, Peter. Can you say hi to the class?",
+        "role": "Ms Gao",
+        "conversation_number": 2
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA-段-C2-5",
+        "text": "Peter: Hi, everyone! I'm Peter Brown.",
+        "role": "Peter",
+        "conversation_number": 2
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA-段-C2-6",
+        "text": "Ms Gao: Thank you, Peter.",
+        "role": "Ms Gao",
+        "conversation_number": 2
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 7,
+        "filename_stem": "SA-段-C3-7",
+        "text": "Emma: Good morning. My name is Emma.",
+        "role": "Emma",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 8,
+        "filename_stem": "SA-段-C3-8",
+        "text": "Fu Xing: Good morning, Emma.",
+        "role": "Fu Xing",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 9,
+        "filename_stem": "SA-段-C3-9",
+        "text": "Emma: So what's your name?",
+        "role": "Emma",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 10,
+        "filename_stem": "SA-段-C3-10",
+        "text": "Fu Xing: Oh, I'm Fu Xing. Nice to meet you, Emma.",
+        "role": "Fu Xing",
+        "conversation_number": 3
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 11,
+        "filename_stem": "SA-段-C3-11",
+        "text": "Emma: Nice to meet you too, Fu Xing!",
+        "role": "Emma",
+        "conversation_number": 3
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB句子1",
+        "voice": "female",
+        "text": "What's your name?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB句子2",
+        "voice": "female",
+        "text": "My name is Emma Miller."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB句子3",
+        "voice": "female",
+        "text": "How do you spell your name?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB句子4",
+        "voice": "female",
+        "text": "You can call me Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB句子5",
+        "voice": "female",
+        "text": "Nice to meet you, Emma."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB句子6",
+        "voice": "female",
+        "text": "How are you?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 7,
+        "filename_stem": "SB句子7",
+        "voice": "female",
+        "text": "I'm fine, thanks."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 8,
+        "filename_stem": "SB句子8",
+        "voice": "female",
+        "text": "Oh, that's the bell. Let's go to class."
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB语篇-C1-1",
+        "text": "Teng Fei: Good morning. I'm Teng Fei. What's your name?",
+        "role": "Teng Fei",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB语篇-C1-2",
+        "text": "Emma: Good morning. My name is Emma Miller.",
+        "role": "Emma",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB语篇-C1-3",
+        "text": "Teng Fei: How do you spell your name?",
+        "role": "Teng Fei",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB语篇-C1-4",
+        "text": "Emma: E-M-M-A, Emma. M-I-L-L-E-R, Miller. You can call me Emma.",
+        "role": "Emma",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB语篇-C1-5",
+        "text": "Teng Fei: Nice to meet you, Emma.",
+        "role": "Teng Fei",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB语篇-C1-6",
+        "text": "Emma: Nice to meet you too, Teng Fei.",
+        "role": "Emma",
+        "conversation_number": 1
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB语篇-C2-1",
+        "text": "Helen: Hello, Wang Yaming! How are you?",
+        "role": "Helen",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB语篇-C2-2",
+        "text": "Yaming: Hi, Helen. I'm fine, thank you. And you?",
+        "role": "Yaming",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB语篇-C2-3",
+        "text": "Helen: I'm great, thanks.",
+        "role": "Helen",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB语篇-C2-4",
+        "text": "Yaming: Oh, that's the bell. Let's go to class.",
+        "role": "Yaming",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB语篇-C2-5",
+        "text": "Helen: Goodbye!",
+        "role": "Helen",
+        "conversation_number": 2
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB语篇-C2-6",
+        "text": "Yaming: Bye!",
+        "role": "Yaming",
+        "conversation_number": 2
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "句子跟读_SA句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "SA句子1.mp3",
+      "voice_override": "female",
+      "text_preview": "Can you say hi to the class?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "SA句子2.mp3",
+      "voice_override": "female",
+      "text_preview": "Hi, everyone! I'm Peter Brown.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "SA句子3.mp3",
+      "voice_override": "female",
+      "text_preview": "Good morning. My name is Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "SA句子4.mp3",
+      "voice_override": "female",
+      "text_preview": "So what's your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "SA句子5.mp3",
+      "voice_override": "female",
+      "text_preview": "Oh, I'm Fu Xing. Nice to meet you, Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "SA句子6.mp3",
+      "voice_override": "female",
+      "text_preview": "Nice to meet you too, Fu Xing!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C1-1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 1,
+      "filename": "SA-段-C1-1.mp3",
+      "voice_override": null,
+      "text_preview": "Ms Gao: Good morning, class.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C1-2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 2,
+      "filename": "SA-段-C1-2.mp3",
+      "voice_override": null,
+      "text_preview": "Class: Good morning, Ms Gao.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C1-3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 3,
+      "filename": "SA-段-C1-3.mp3",
+      "voice_override": null,
+      "text_preview": "Ms Gao: Sit down, please.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C2-4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 4,
+      "filename": "SA-段-C2-4.mp3",
+      "voice_override": null,
+      "text_preview": "Ms Gao: Hello, Peter. Can you say hi to the class?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C2-5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 5,
+      "filename": "SA-段-C2-5.mp3",
+      "voice_override": null,
+      "text_preview": "Peter: Hi, everyone! I'm Peter Brown.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C2-6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 6,
+      "filename": "SA-段-C2-6.mp3",
+      "voice_override": null,
+      "text_preview": "Ms Gao: Thank you, Peter.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C3-7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 7,
+      "filename": "SA-段-C3-7.mp3",
+      "voice_override": null,
+      "text_preview": "Emma: Good morning. My name is Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C3-8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 8,
+      "filename": "SA-段-C3-8.mp3",
+      "voice_override": null,
+      "text_preview": "Fu Xing: Good morning, Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C3-9",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 9,
+      "filename": "SA-段-C3-9.mp3",
+      "voice_override": null,
+      "text_preview": "Emma: So what's your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C3-10",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 10,
+      "filename": "SA-段-C3-10.mp3",
+      "voice_override": null,
+      "text_preview": "Fu Xing: Oh, I'm Fu Xing. Nice to meet you, Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA-段-C3-11",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 11,
+      "filename": "SA-段-C3-11.mp3",
+      "voice_override": null,
+      "text_preview": "Emma: Nice to meet you too, Fu Xing!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "SB句子1.mp3",
+      "voice_override": "female",
+      "text_preview": "What's your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "SB句子2.mp3",
+      "voice_override": "female",
+      "text_preview": "My name is Emma Miller.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "SB句子3.mp3",
+      "voice_override": "female",
+      "text_preview": "How do you spell your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "SB句子4.mp3",
+      "voice_override": "female",
+      "text_preview": "You can call me Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "SB句子5.mp3",
+      "voice_override": "female",
+      "text_preview": "Nice to meet you, Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "SB句子6.mp3",
+      "voice_override": "female",
+      "text_preview": "How are you?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "SB句子7.mp3",
+      "voice_override": "female",
+      "text_preview": "I'm fine, thanks.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "SB句子8.mp3",
+      "voice_override": "female",
+      "text_preview": "Oh, that's the bell. Let's go to class.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C1-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 1,
+      "filename": "SB语篇-C1-1.mp3",
+      "voice_override": null,
+      "text_preview": "Teng Fei: Good morning. I'm Teng Fei. What's your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C1-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 2,
+      "filename": "SB语篇-C1-2.mp3",
+      "voice_override": null,
+      "text_preview": "Emma: Good morning. My name is Emma Miller.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C1-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 3,
+      "filename": "SB语篇-C1-3.mp3",
+      "voice_override": null,
+      "text_preview": "Teng Fei: How do you spell your name?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C1-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 4,
+      "filename": "SB语篇-C1-4.mp3",
+      "voice_override": null,
+      "text_preview": "Emma: E-M-M-A, Emma. M-I-L-L-E-R, Miller. You can call me Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C1-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 5,
+      "filename": "SB语篇-C1-5.mp3",
+      "voice_override": null,
+      "text_preview": "Teng Fei: Nice to meet you, Emma.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C1-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 6,
+      "filename": "SB语篇-C1-6.mp3",
+      "voice_override": null,
+      "text_preview": "Emma: Nice to meet you too, Teng Fei.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C2-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 1,
+      "filename": "SB语篇-C2-1.mp3",
+      "voice_override": null,
+      "text_preview": "Helen: Hello, Wang Yaming! How are you?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C2-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 2,
+      "filename": "SB语篇-C2-2.mp3",
+      "voice_override": null,
+      "text_preview": "Yaming: Hi, Helen. I'm fine, thank you. And you?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C2-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 3,
+      "filename": "SB语篇-C2-3.mp3",
+      "voice_override": null,
+      "text_preview": "Helen: I'm great, thanks.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C2-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 4,
+      "filename": "SB语篇-C2-4.mp3",
+      "voice_override": null,
+      "text_preview": "Yaming: Oh, that's the bell. Let's go to class.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C2-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 5,
+      "filename": "SB语篇-C2-5.mp3",
+      "voice_override": null,
+      "text_preview": "Helen: Goodbye!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇-C2-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 6,
+      "filename": "SB语篇-C2-6.mp3",
+      "voice_override": null,
+      "text_preview": "Yaming: Bye!",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "5dec64300007188179a49a0f529371a186ab78649762d6c38b7ada1ae4376a39",
+    "cli_result": "f9f0f692c00392c412074395cc81269b4cd426459b6c3d669e8cb9a5042ac9b4",
+    "progress_items": "3014013bfa1425f3d364823f049cb99dc7ff5ddf01d73022fad5a318d73549bc"
+  }
+}

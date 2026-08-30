@@ -1,0 +1,367 @@
+{
+  "source_file": "7上-U2-信息获取.docx",
+  "sha256": "04e96202768cbefc4ba06d850bd6d5f89f464a463ca41b3e83d409ee9b462364",
+  "content_detected_types": [
+    "信息获取"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 14 条内容",
+  "parse_results": [
+    {
+      "source_file": "7上-U2-信息获取.docx",
+      "doc_type": "信息获取",
+      "item_count": 14,
+      "items": [
+        {
+          "category": "听选信息题目",
+          "number": 1,
+          "filename_stem": "问题1",
+          "voice": "male",
+          "text": "M: What are Emma’s favourite stories?"
+        },
+        {
+          "category": "听选信息题目",
+          "number": 2,
+          "filename_stem": "问题2",
+          "voice": "female",
+          "text": "W: When does Emma usually write her stories?"
+        },
+        {
+          "category": "听选信息录音稿",
+          "index": 1,
+          "text": "M: Emma, what are you reading now? There are lots of books on your desk.\nW: Just some fairy tales. They are my favourite.\nM: That sounds great. Do you also write your own stories?\nW: Sure. I often write my stories in this notebook.\nM: Wow! When do you usually write them?\nW: I usually write them in the evening. It is very quiet then."
+        },
+        {
+          "category": "听选信息题目",
+          "number": 3,
+          "filename_stem": "问题3",
+          "voice": "male",
+          "text": "M: What does the boy like doing?"
+        },
+        {
+          "category": "听选信息题目",
+          "number": 4,
+          "filename_stem": "问题4",
+          "voice": "female",
+          "text": "W: Who teaches the boy to make Chinese knots?"
+        },
+        {
+          "category": "听选信息录音稿",
+          "index": 2,
+          "text": "W: What are you making? It looks beautiful.\nM: I’m making a Chinese knot. I like making them.\nW: Who teaches you to make them?\nM: My grandma. She is very good at it.\nW: Do you need any special tools?\nM: No. We only need some red strings.\nW: That’s interesting. Maybe you can show it in our art class.\nM: Good idea. I can bring one next week."
+        },
+        {
+          "category": "听选信息题目",
+          "number": 5,
+          "filename_stem": "问题5",
+          "voice": "male",
+          "text": "M: Where does Peter usually practice?"
+        },
+        {
+          "category": "听选信息题目",
+          "number": 6,
+          "filename_stem": "问题6",
+          "voice": "female",
+          "text": "W: How many students are in the club?"
+        },
+        {
+          "category": "听选信息录音稿",
+          "index": 3,
+          "text": "W: Hi Peter, your new skates are really nice! Do you skate after school?\nM: Yes. I’m a member of the school skating club. It's really fun.\nW: That sounds very interesting. Where do you usually practice?\nM: We practice on the school playground. It’s big enough for us.\nW: How many students are there in your club?\nM: We have twenty students now.\nW: I’d love to try skating as well.\nM: Sure. You can join us this Friday."
+        },
+        {
+          "category": "回答问题题目",
+          "number": 7,
+          "filename_stem": "问题7",
+          "voice": "male",
+          "text": "M: What is the speaker's favorite club?"
+        },
+        {
+          "category": "回答问题题目",
+          "number": 8,
+          "filename_stem": "问题8",
+          "voice": "female",
+          "text": "W: When do they practice in the art room?"
+        },
+        {
+          "category": "回答问题题目",
+          "number": 9,
+          "filename_stem": "问题9",
+          "voice": "male",
+          "text": "M: Who teaches them to move the little people and animals?"
+        },
+        {
+          "category": "回答问题题目",
+          "number": 10,
+          "filename_stem": "问题10",
+          "voice": "female",
+          "text": "W: Where do they usually show their stories?"
+        },
+        {
+          "category": "回答问题录音稿",
+          "index": 1,
+          "text": "(W) Traditional arts are very popular in our school. My favorite one is the shadow play club. We tell stories with light and shadow. We practice in the art room every Thursday. We make little people and animals with paper. Mr. Lin teaches us how to make them move like real actors. It is quite amazing and everyone loves it. We usually show our stories on the school stage. Many students come to watch our shows."
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "信息获取",
+  "cli_result": {
+    "source_file": "7上-U2-信息获取.docx",
+    "doc_type": "信息获取",
+    "item_count": 14,
+    "items": [
+      {
+        "category": "听选信息题目",
+        "number": 1,
+        "filename_stem": "问题1",
+        "voice": "male",
+        "text": "M: What are Emma’s favourite stories?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 2,
+        "filename_stem": "问题2",
+        "voice": "female",
+        "text": "W: When does Emma usually write her stories?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 1,
+        "text": "M: Emma, what are you reading now? There are lots of books on your desk.\nW: Just some fairy tales. They are my favourite.\nM: That sounds great. Do you also write your own stories?\nW: Sure. I often write my stories in this notebook.\nM: Wow! When do you usually write them?\nW: I usually write them in the evening. It is very quiet then."
+      },
+      {
+        "category": "听选信息题目",
+        "number": 3,
+        "filename_stem": "问题3",
+        "voice": "male",
+        "text": "M: What does the boy like doing?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 4,
+        "filename_stem": "问题4",
+        "voice": "female",
+        "text": "W: Who teaches the boy to make Chinese knots?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 2,
+        "text": "W: What are you making? It looks beautiful.\nM: I’m making a Chinese knot. I like making them.\nW: Who teaches you to make them?\nM: My grandma. She is very good at it.\nW: Do you need any special tools?\nM: No. We only need some red strings.\nW: That’s interesting. Maybe you can show it in our art class.\nM: Good idea. I can bring one next week."
+      },
+      {
+        "category": "听选信息题目",
+        "number": 5,
+        "filename_stem": "问题5",
+        "voice": "male",
+        "text": "M: Where does Peter usually practice?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 6,
+        "filename_stem": "问题6",
+        "voice": "female",
+        "text": "W: How many students are in the club?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 3,
+        "text": "W: Hi Peter, your new skates are really nice! Do you skate after school?\nM: Yes. I’m a member of the school skating club. It's really fun.\nW: That sounds very interesting. Where do you usually practice?\nM: We practice on the school playground. It’s big enough for us.\nW: How many students are there in your club?\nM: We have twenty students now.\nW: I’d love to try skating as well.\nM: Sure. You can join us this Friday."
+      },
+      {
+        "category": "回答问题题目",
+        "number": 7,
+        "filename_stem": "问题7",
+        "voice": "male",
+        "text": "M: What is the speaker's favorite club?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 8,
+        "filename_stem": "问题8",
+        "voice": "female",
+        "text": "W: When do they practice in the art room?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 9,
+        "filename_stem": "问题9",
+        "voice": "male",
+        "text": "M: Who teaches them to move the little people and animals?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 10,
+        "filename_stem": "问题10",
+        "voice": "female",
+        "text": "W: Where do they usually show their stories?"
+      },
+      {
+        "category": "回答问题录音稿",
+        "index": 1,
+        "text": "(W) Traditional arts are very popular in our school. My favorite one is the shadow play club. We tell stories with light and shadow. We practice in the art room every Thursday. We make little people and animals with paper. Mr. Lin teaches us how to make them move like real actors. It is quite amazing and everyone loves it. We usually show our stories on the school stage. Many students come to watch our shows."
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "听选信息题目_问题1",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 1,
+      "filename": "问题1.mp3",
+      "voice_override": "male",
+      "text_preview": "M: What are Emma’s favourite stories?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题2",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 2,
+      "filename": "问题2.mp3",
+      "voice_override": "female",
+      "text_preview": "W: When does Emma usually write her stories?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息-录音稿1",
+      "doc_type": "信息获取",
+      "category": "听选信息录音稿",
+      "seq": 1,
+      "filename": "听选信息-录音稿1.mp3",
+      "voice_override": null,
+      "text_preview": "M: Emma, what are you reading now? There are lots of books on your desk. W: Just",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题3",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 3,
+      "filename": "问题3.mp3",
+      "voice_override": "male",
+      "text_preview": "M: What does the boy like doing?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题4",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 4,
+      "filename": "问题4.mp3",
+      "voice_override": "female",
+      "text_preview": "W: Who teaches the boy to make Chinese knots?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息-录音稿2",
+      "doc_type": "信息获取",
+      "category": "听选信息录音稿",
+      "seq": 2,
+      "filename": "听选信息-录音稿2.mp3",
+      "voice_override": null,
+      "text_preview": "W: What are you making? It looks beautiful. M: I’m making a Chinese knot. I like",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题5",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 5,
+      "filename": "问题5.mp3",
+      "voice_override": "male",
+      "text_preview": "M: Where does Peter usually practice?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题6",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 6,
+      "filename": "问题6.mp3",
+      "voice_override": "female",
+      "text_preview": "W: How many students are in the club?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息-录音稿3",
+      "doc_type": "信息获取",
+      "category": "听选信息录音稿",
+      "seq": 3,
+      "filename": "听选信息-录音稿3.mp3",
+      "voice_override": null,
+      "text_preview": "W: Hi Peter, your new skates are really nice! Do you skate after school? M: Yes.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题7",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 7,
+      "filename": "问题7.mp3",
+      "voice_override": "male",
+      "text_preview": "M: What is the speaker's favorite club?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题8",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 8,
+      "filename": "问题8.mp3",
+      "voice_override": "female",
+      "text_preview": "W: When do they practice in the art room?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题9",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 9,
+      "filename": "问题9.mp3",
+      "voice_override": "male",
+      "text_preview": "M: Who teaches them to move the little people and animals?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题10",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 10,
+      "filename": "问题10.mp3",
+      "voice_override": "female",
+      "text_preview": "W: Where do they usually show their stories?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题-录音稿1",
+      "doc_type": "信息获取",
+      "category": "回答问题录音稿",
+      "seq": 1,
+      "filename": "回答问题-录音稿1.mp3",
+      "voice_override": null,
+      "text_preview": "(W) Traditional arts are very popular in our school. My favorite one is the shad",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "a823241377204b397b180184c7667445ea0791166cdf3185f6afd7c3807fe49b",
+    "cli_result": "3552d3af2a9c541a5374362a325029b060e43f413aa854d3ccbc17f443ab32fa",
+    "progress_items": "d04cf0398f734581b364200cc1438b7fcc41d8b073edf27712bea42c7be52971"
+  }
+}

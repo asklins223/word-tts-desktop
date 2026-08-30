@@ -25,10 +25,10 @@
 
 当前项目已经具备两个可复用部分：
 
-- [word_tts_app.py:432](/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/word_tts_app.py:432) 已经能够解析 W/M 和自定义角色。
-- [xunfei_peiyin.py:1459](/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/xunfei_peiyin.py:1459) 已经监听多人配音相关响应并捕获作品 ID；生成提交本身必须由可见页面按钮触发。
+- [wordtts/speakers.py:52](/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/wordtts/speakers.py:52) 已经能够解析 W/M 和自定义角色。
+- [xunfei/submission_tracker.py:72](/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/xunfei/submission_tracker.py:72) 监听多人配音相关响应并捕获作品 ID；生成提交本身必须由可见页面按钮触发。
 
-目前的问题是，实际生成流程仍然在 [word_tts_app.py:762](/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/word_tts_app.py:762) 为每个片段建立独立任务。因此当前的“批量”主要优化了提交和下载流程，并没有真正减少讯飞生成次数。
+目前的问题是，实际生成流程仍然在 [wordtts/batch.py:326](/Users/asklins/Documents/xiaozhu_workspace/edge-tts-webui-main/wordtts/batch.py:326) 处理多人配音合并作品。因此当前的“批量”主要优化了合并作品的提交和下载流程，并没有改变最终按题目恢复音频的交付格式。
 
 ## 三、多人配音内容构造
 

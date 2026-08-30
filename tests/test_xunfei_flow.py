@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
+import os
+import signal
 import tempfile
 import threading
 import time
@@ -8,8 +11,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import xunfei_peiyin as xunfei
-from xunfei_peiyin import XunFeiSession
+import xunfei
+import xunfei.config as xunfei_config
+import xunfei.downloads as xunfei_downloads
+import xunfei.runtime as xunfei_runtime
+from xunfei import XunFeiSession
 
 
 class _FakeKeyboard:
@@ -76,6 +82,21 @@ class _PostConfirmPage:
 
 
 class XunfeiFlowTests(unittest.TestCase):
+    def test_package_preserves_public_config_exports(self):
+        for name in (
+            "IS_MAC",
+            "MAX_TRACKED_SUBMISSION_REQUESTS",
+            "MUTE_AUDIO_SCRIPT",
+            "STEALTH_SCRIPT",
+            "WORKS_ID_FINAL_GRACE_SECONDS",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, xunfei.__all__)
+                self.assertEqual(
+                    getattr(xunfei, name),
+                    getattr(xunfei_config, name),
+                )
+
     def test_common_voice_without_speaker_number_is_resolved_by_page(self):
         self.assertIsNone(
             xunfei.XunFeiSession._speaker_number(
@@ -127,6 +148,205 @@ class XunfeiFlowTests(unittest.TestCase):
         ])
         self.assertEqual([row["item_index"] for row in rows], [0, 0, 1])
         self.assertEqual(boundaries, [(1, 2000)])
+
+    def test_composite_pause_insertion_opens_menu_and_inserts_target_marker(self):
+        """停顿入口先开菜单时，必须点击目标时长并回读页面节点。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <style>
+          #pause-menu { position: fixed; left: 20px; top: 40px; }
+          .ssml-editor { width: 640px; border: 1px solid #999; }
+        </style>
+        <div id="toolbar">
+          <button id="pause-trigger" type="button" aria-label="停顿">停顿</button>
+          <div id="pause-menu" style="display:none">
+            <div class="cursor-pointer" data-value="500">0.5s</div>
+            <div class="cursor-pointer" data-value="2000">2 秒</div>
+          </div>
+        </div>
+        <div class="ssml-editor" contenteditable="true">
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">Amanda</b>
+            <span class="range-annotation-content speaker-content">First line.</span>
+          </span></p>
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">George</b>
+            <span class="range-annotation-content speaker-content">Second line.</span>
+          </span></p>
+        </div>
+        <script>
+          // 真实编辑器的工具栏会在 mousedown 时保留 Selection，避免
+          // 点击菜单后选区被工具栏自身夺走；测试桩也模拟这个页面契约。
+          const savedSelections = new Map();
+          const saveSelection = () => {
+            const selection = window.getSelection();
+            if (!selection || !selection.rangeCount) return;
+            savedSelections.set('pause', selection.getRangeAt(0).cloneRange());
+          };
+          document.getElementById('pause-trigger').addEventListener('mousedown', (event) => {
+            saveSelection();
+            event.preventDefault();
+          });
+          document.getElementById('pause-trigger').onclick = () => {
+            document.getElementById('pause-menu').style.display = 'block';
+          };
+          document.querySelectorAll('#pause-menu [data-value]').forEach((option) => {
+            option.addEventListener('mousedown', (event) => {
+              const range = savedSelections.get('pause');
+              if (range) {
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+              }
+              event.preventDefault();
+            });
+            option.onclick = () => {
+              const selection = window.getSelection();
+              if (!selection || !selection.rangeCount) return;
+              const range = selection.getRangeAt(0);
+              const anchor = selection.anchorNode;
+              const paragraph = anchor && (anchor.parentElement || anchor).closest('p');
+              if (!paragraph || !range.collapsed) return;
+              const marker = document.createElement('span');
+              marker.className = 'ssml-tag pause-marker';
+              marker.setAttribute('data-type', 'break');
+              marker.setAttribute('data-value', option.dataset.value);
+              range.insertNode(marker);
+            };
+          });
+        </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                XunFeiSession._insert_composite_pause(page, 0, 2000)
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]').count(),
+                    1,
+                )
+                self.assertEqual(
+                    XunFeiSession._read_composite_pause_issues(
+                        page, [(0, 2000)]
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('.speaker-content').inner_text(),
+                    'First line.',
+                )
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]')
+                    .evaluate("el => el.previousSibling && el.previousSibling.textContent"),
+                    'First line.',
+                )
+            finally:
+                browser.close()
+
+    def test_composite_pause_fast_path_succeeds_without_heavy_fallback(self):
+        """工具栏直接带 2s 按钮的页面：折叠光标主路径必须完成插入。
+
+        该测试同时是“主路径优先”的逻辑证据——重型兜底
+        （原生 select_text + 整页元数据扫描 + 停顿菜单路径）在此场景下
+        一次都不应被调用，单处停顿的协议往返保持原脚本水平。
+        """
+        from playwright.sync_api import sync_playwright
+        from unittest import mock
+
+        html = """
+        <style>.ssml-editor { width: 640px; border: 1px solid #999; }</style>
+        <div id="toolbar">
+          <button id="pause-2s" type="button">2s</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true">
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">Amanda</b>
+            <span class="range-annotation-content speaker-content">First line.</span>
+          </span></p>
+          <p><span class="ssml-text-mark-speaker">
+            <b class="ssml-tag" data-type="range_anchor">George</b>
+            <span class="range-annotation-content speaker-content">Second line.</span>
+          </span></p>
+        </div>
+        <script>
+          const savedSelection = { range: null };
+          document.getElementById('pause-2s').addEventListener('mousedown', (event) => {
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount) {
+              savedSelection.range = selection.getRangeAt(0).cloneRange();
+            }
+            event.preventDefault();
+          });
+          document.getElementById('pause-2s').onclick = () => {
+            const selection = window.getSelection();
+            if (!selection || !selection.rangeCount) return;
+            const range = selection.getRangeAt(0);
+            const anchor = selection.anchorNode;
+            const paragraph = anchor && (anchor.parentElement || anchor).closest('p');
+            if (!paragraph || !range.collapsed) return;
+            const marker = document.createElement('span');
+            marker.className = 'ssml-tag pause-marker';
+            marker.setAttribute('data-type', 'break');
+            marker.setAttribute('data-value', '2000');
+            range.insertNode(marker);
+          };
+        </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                with mock.patch.object(
+                    XunFeiSession,
+                    "_click_composite_pause_control",
+                    side_effect=AssertionError("heavy fallback must not run when the fast path works"),
+                ), mock.patch.object(
+                    XunFeiSession,
+                    "_click_composite_ui_control",
+                    wraps=XunFeiSession._click_composite_ui_control,
+                ) as direct_click:
+                    XunFeiSession._insert_composite_pause(page, 0, 2000)
+                direct_click.assert_called()
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]').count(),
+                    1,
+                )
+                self.assertEqual(
+                    page.locator('.ssml-editor p').nth(0)
+                    .locator('[data-type="break"][data-value="2000"]')
+                    .evaluate("el => el.previousSibling && el.previousSibling.textContent"),
+                    'First line.',
+                )
+                self.assertEqual(
+                    XunFeiSession._read_composite_pause_issues(page, [(0, 2000)]),
+                    [],
+                )
+            finally:
+                browser.close()
+
+    def test_composite_pause_duration_matching_rejects_wrong_duration(self):
+        self.assertTrue(
+            XunFeiSession._composite_pause_metadata_matches(
+                {"text": "插入停顿 2 秒"}, 2000
+            )
+        )
+        self.assertTrue(
+            XunFeiSession._composite_pause_metadata_matches(
+                {"dataType": "break", "dataValue": "2"}, 2000
+            )
+        )
+        self.assertFalse(
+            XunFeiSession._composite_pause_metadata_matches(
+                {"text": "1s"}, 2000
+            )
+        )
 
     def test_composite_rows_batch_only_contiguous_equal_signatures(self):
         session = XunFeiSession()
@@ -532,8 +752,8 @@ class XunfeiFlowTests(unittest.TestCase):
         recover.assert_not_called()
         self.assertEqual(pending["works_id"], "paid-once")
 
-    def test_confirmed_single_submit_without_works_id_is_not_retried(self):
-        """确认按钮已成功点击但漏捕获 ID 时，最多只能进入对账。"""
+    def test_confirmed_single_submit_without_works_id_is_local_retryable(self):
+        """确认按钮已成功点击但漏捕获 ID 时，不查询讯飞作品列表。"""
         session = XunFeiSession()
         session._logged_in = True
         page = mock.Mock()
@@ -547,7 +767,6 @@ class XunfeiFlowTests(unittest.TestCase):
                 mock.patch.object(session, "_click_generate") as click_generate, \
                 mock.patch.object(session, "_confirm_synth", return_value="ok"), \
                 mock.patch.object(session, "_consume_works_id", return_value=None), \
-                mock.patch.object(session, "_recover_works_id_by_name", return_value=None), \
                 mock.patch.object(session, "_recover_and_retry") as recover:
             with self.assertRaises(xunfei.XunfeiSubmissionAmbiguous) as raised:
                 session._generate_pending_one(
@@ -561,8 +780,8 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertTrue(raised.exception.submission_confirmed)
         self.assertTrue(raised.exception.works_name)
 
-    def test_confirmed_composite_submit_without_works_id_is_not_retried(self):
-        """多人配音确认成功但漏捕获 ID 也不能走通用重试。"""
+    def test_confirmed_composite_submit_without_works_id_is_local_retryable(self):
+        """多人配音确认成功但漏捕获 ID 时，不查询讯飞作品列表。"""
         session = XunFeiSession()
         session._logged_in = True
         page = mock.Mock()
@@ -581,7 +800,6 @@ class XunfeiFlowTests(unittest.TestCase):
                 mock.patch.object(session, "_click_generate") as click_generate, \
                 mock.patch.object(session, "_confirm_synth", return_value="ok"), \
                 mock.patch.object(session, "_consume_works_id", return_value=None), \
-                mock.patch.object(session, "_recover_works_id_by_name", return_value=None), \
                 mock.patch.object(session, "_recover_and_retry") as recover:
             with self.assertRaises(xunfei.XunfeiSubmissionAmbiguous):
                 session._generate_pending_composite(work, max_retries=3)
@@ -632,12 +850,13 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(result["ambiguous-job"]["works_name"], "wordtts_paid_once")
         self.assertTrue(any(event.get("ambiguous_works_id") for event in events))
 
-    def test_batch_reconciles_ambiguous_name_without_submitting_again(self):
+    def test_batch_regenerates_ambiguous_submission_without_lookup(self):
         session = XunFeiSession()
         session._logged_in = True
-        recovered = mock.Mock(return_value="works-paid-once")
-        generated = mock.Mock(side_effect=AssertionError("不能重新提交"))
-        session._recover_works_id_by_name = recovered
+        generated = mock.Mock(return_value={
+            "works_id": "works-fresh",
+            "output_path": "/tmp/works-fresh.mp3",
+        })
         session._generate_pending_one = generated
         session._download_pending_batch = lambda pending: {
             item["works_id"]: {**item, "downloaded": True}
@@ -652,17 +871,17 @@ class XunfeiFlowTests(unittest.TestCase):
             "ambiguous_works_name": "wordtts_paid_once",
         }])
 
-        generated.assert_not_called()
-        recovered.assert_called_once()
+        generated.assert_called_once()
         self.assertTrue(result["resume-ambiguous"]["downloaded"])
-        self.assertEqual(result["resume-ambiguous"]["works_id"], "works-paid-once")
+        self.assertEqual(result["resume-ambiguous"]["works_id"], "works-fresh")
 
-    def test_composite_reconciles_ambiguous_name_without_submitting_again(self):
+    def test_composite_regenerates_ambiguous_submission_without_lookup(self):
         session = XunFeiSession()
         session._logged_in = True
-        recovered = mock.Mock(return_value="composite-paid-once")
-        generated = mock.Mock(side_effect=AssertionError("不能重新提交多人作品"))
-        session._recover_works_id_by_name = recovered
+        generated = mock.Mock(return_value={
+            "works_id": "composite-fresh",
+            "output_path": "/tmp/composite-fresh.mp3",
+        })
         session._generate_pending_composite = generated
         session._download_pending_batch = lambda pending, **_kwargs: {
             item["works_id"]: {**item, "downloaded": True}
@@ -684,12 +903,11 @@ class XunfeiFlowTests(unittest.TestCase):
             },
         )
 
-        generated.assert_not_called()
-        recovered.assert_called_once()
+        generated.assert_called_once()
         self.assertTrue(result["composite-resume-ambiguous"]["downloaded"])
         self.assertEqual(
             result["composite-resume-ambiguous"]["works_id"],
-            "composite-paid-once",
+            "composite-fresh",
         )
 
     def test_batch_cancel_check_stops_before_next_submission(self):
@@ -944,29 +1162,94 @@ class XunfeiFlowTests(unittest.TestCase):
             browser.close()
 
     def test_existing_sync_session_is_checked_off_the_asyncio_loop(self):
-        original_session = xunfei._session
-        original_available = xunfei.is_available
-        original_health = xunfei._session_is_healthy
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_health = xunfei_runtime._session_is_healthy
         seen_threads = []
         fake_session = _HealthyFakeSession()
-        xunfei._session = fake_session
-        xunfei.is_available = lambda: True
+        xunfei_runtime._session = fake_session
+        xunfei_runtime.is_available = lambda: True
 
         def health_check(session):
             seen_threads.append(threading.current_thread())
             return session is fake_session
 
-        xunfei._session_is_healthy = health_check
+        xunfei_runtime._session_is_healthy = health_check
         try:
             result = asyncio.run(xunfei.ensure_session())
         finally:
-            xunfei._session = original_session
-            xunfei.is_available = original_available
-            xunfei._session_is_healthy = original_health
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime._session_is_healthy = original_health
 
         self.assertIs(result, fake_session)
         self.assertEqual(len(seen_threads), 1)
         self.assertIsNot(seen_threads[0], threading.current_thread())
+
+    def test_disconnected_session_retires_stuck_executor_before_rebuild(self):
+        """浏览器断开后，重建不能排在旧 Playwright 调用后面。"""
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_session_class = xunfei_runtime.XunFeiSession
+        original_executor = xunfei_runtime._playwright_executor
+        original_rotated_session = xunfei_runtime._executor_rotated_session
+        old_executor = mock.Mock()
+        replacement_executor = mock.Mock()
+        created = []
+
+        class DisconnectedSession:
+            _profile_owner_pid = 24680
+
+            def runtime_status_snapshot(self):
+                return {"logged_in": False, "browser_disconnected": True}
+
+            def close(self):
+                raise AssertionError("a disconnected session must not be closed on the replacement worker")
+
+        class FreshSession:
+            def __init__(self, voice_key="amanda"):
+                self.voice_key = voice_key
+                self._reclaim_profile_owner = False
+                self._reclaim_profile_owner_pid = None
+                created.append(self)
+
+            def login(self, **_kwargs):
+                return None
+
+        def submit(function, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(function(*args, **kwargs))
+            except BaseException as error:
+                future.set_exception(error)
+            return future
+
+        replacement_executor.submit.side_effect = submit
+        xunfei_runtime._session = DisconnectedSession()
+        xunfei_runtime._playwright_executor = old_executor
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime.XunFeiSession = FreshSession
+        try:
+            with mock.patch.object(
+                xunfei_runtime,
+                "_get_playwright_executor",
+                return_value=replacement_executor,
+            ):
+                result = asyncio.run(xunfei.ensure_session())
+        finally:
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime.XunFeiSession = original_session_class
+            xunfei_runtime._playwright_executor = original_executor
+            xunfei_runtime._executor_rotated_session = original_rotated_session
+
+        self.assertEqual(old_executor.shutdown.call_args.kwargs, {
+            "wait": False,
+            "cancel_futures": True,
+        })
+        self.assertIs(result, created[0])
+        self.assertTrue(result._reclaim_profile_owner)
+        self.assertEqual(result._reclaim_profile_owner_pid, 24680)
 
     def test_all_playwright_sync_calls_share_one_dedicated_thread(self):
         seen_threads = []
@@ -975,8 +1258,8 @@ class XunfeiFlowTests(unittest.TestCase):
             seen_threads.append(threading.current_thread())
 
         async def run_calls():
-            await xunfei._run_playwright_sync(record_thread)
-            await xunfei._run_playwright_sync(record_thread)
+            await xunfei_runtime._run_playwright_sync(record_thread)
+            await xunfei_runtime._run_playwright_sync(record_thread)
 
         asyncio.run(run_calls())
 
@@ -1039,6 +1322,130 @@ class XunfeiFlowTests(unittest.TestCase):
             "ai_modal",
         )
         self.assertGreaterEqual(delayed_page.calls, 2)
+
+    def test_interrupted_xunfei_draft_prompt_is_dismissed_before_reuse(self):
+        """中断后复用持久浏览器时，不能让讯飞本地缓存提示拦住新任务。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div id="draft-prompt" style="display:block;width:420px;height:180px">
+          <strong>发现本地缓存</strong>
+          <p>检测到上一次编辑内容，是否恢复？</p>
+          <button id="blank" type="button"
+                  onclick="document.getElementById('draft-prompt').remove()">
+            空白开始
+          </button>
+          <button type="button">恢复本地缓存</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true"></div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            session = XunFeiSession()
+
+            self.assertTrue(session._dismiss_local_draft_prompt(page, timeout=1))
+            self.assertEqual(page.locator("#draft-prompt").count(), 0)
+            self.assertEqual(page.locator(".ssml-editor").count(), 1)
+            browser.close()
+
+    def test_xunfei_cloud_cache_prompt_variant_is_dismissed_before_reuse(self):
+        """讯飞存在云端草稿时，仍应选择清除本地草稿并继续当前任务。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div id="draft-prompt" style="display:block;width:420px;height:180px">
+          <strong>发现本地缓存</strong>
+          <p>检测到上一次编辑内容，是否恢复？</p>
+          <button id="cloud" type="button"
+                  onclick="document.getElementById('draft-prompt').remove()">
+            使用云端缓存
+          </button>
+          <button type="button">恢复本地缓存</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true"></div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            session = XunFeiSession()
+
+            self.assertTrue(session._dismiss_local_draft_prompt(page, timeout=1))
+            self.assertEqual(page.locator("#draft-prompt").count(), 0)
+            browser.close()
+
+    def test_startup_cleanup_does_not_report_disconnect_for_normal_error(self):
+        """清理启动异常时不能凭空设置浏览器断开标记。"""
+        session = XunFeiSession()
+        session.close()
+        self.assertFalse(session._browser_disconnected)
+
+    def test_stale_profile_lock_is_cleared_but_live_lock_is_preserved(self):
+        """重试只清理已退出进程留下的 Chrome 锁。"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            (profile / "SingletonLock").symlink_to("host-2147483647")
+            (profile / "SingletonCookie").symlink_to("cookie-target")
+            (profile / "SingletonSocket").symlink_to("socket-target")
+
+            self.assertTrue(XunFeiSession._clear_stale_profile_lock(profile))
+            self.assertFalse(os.path.lexists(profile / "SingletonLock"))
+            self.assertFalse(os.path.lexists(profile / "SingletonCookie"))
+            self.assertFalse(os.path.lexists(profile / "SingletonSocket"))
+
+            (profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
+            self.assertFalse(XunFeiSession._clear_stale_profile_lock(profile))
+            self.assertTrue(os.path.lexists(profile / "SingletonLock"))
+
+    def test_dedicated_live_profile_owner_can_be_reclaimed_without_killing_other_processes(self):
+        """只回收命令行明确指向讯飞配置目录的 Chrome。"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            owner_pid = 24680
+            (profile / "SingletonLock").symlink_to(f"host-{owner_pid}")
+            command = f"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir={profile}"
+            with mock.patch.object(
+                XunFeiSession,
+                "_profile_lock_owner_command",
+                return_value=command,
+            ), mock.patch.object(
+                XunFeiSession,
+                "_profile_lock_owner_alive",
+                side_effect=[True, False],
+            ), mock.patch("xunfei.session.os.kill") as kill, mock.patch(
+                "xunfei.session.time.sleep"
+            ):
+                self.assertTrue(
+                    XunFeiSession._terminate_profile_owner(
+                        profile,
+                        expected_pid=owner_pid,
+                    )
+                )
+
+            kill.assert_called_once_with(owner_pid, signal.SIGTERM)
+
+    def test_profile_owner_reclaim_fails_closed_for_unrelated_process(self):
+        """无法证明是 Chrome 且属于该配置目录时绝不发送终止信号。"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            owner_pid = 24680
+            (profile / "SingletonLock").symlink_to(f"host-{owner_pid}")
+            command = f"/usr/bin/python --user-data-dir={profile}"
+            with mock.patch.object(
+                XunFeiSession,
+                "_profile_lock_owner_command",
+                return_value=command,
+            ), mock.patch("xunfei.session.os.kill") as kill:
+                self.assertFalse(
+                    XunFeiSession._terminate_profile_owner(
+                        profile,
+                        expected_pid=owner_pid,
+                    )
+                )
+
+            kill.assert_not_called()
 
     def test_order_modal_does_not_wait_for_missing_ai_switch_again(self):
         """订单支付弹窗出现后，不应再次等待不存在的作品设置开关。"""
@@ -1337,6 +1744,31 @@ class XunfeiFlowTests(unittest.TestCase):
             "c9b3e6ea75dccb702f69104c1d94d771",
         )
 
+    def test_signed_api_post_uses_split_signing_module(self):
+        session = XunFeiSession()
+        param = {"needCount": 1, "pageIndex": 1, "pageSize": 50, "worksName": ""}
+        response = {"data": {"code": 0, "userWorksList": []}}
+
+        with mock.patch.object(
+            xunfei_downloads,
+            "_safe_eval",
+            side_effect=[
+                {"userId": "user-1", "sessid": "session-1"},
+                response,
+            ],
+        ) as safe_eval:
+            result = session._signed_api_post(
+                object(), xunfei.API_WORKS_LIST_URL, param
+            )
+
+        self.assertEqual(result, response["data"])
+        request_payload = safe_eval.call_args_list[1].args[2]
+        request_url, request_param, base, headers = request_payload
+        self.assertEqual(request_url, xunfei.API_WORKS_LIST_URL)
+        self.assertEqual(request_param, param)
+        self.assertEqual(headers["authorization"], "session-1")
+        self.assertEqual(headers["sign"], xunfei._build_api_sign(param, base))
+
     def test_works_id_matching_is_exact(self):
         session = XunFeiSession()
 
@@ -1549,7 +1981,7 @@ class XunfeiFlowTests(unittest.TestCase):
         with mock.patch.object(session, "_wait_for_pending_ready", return_value={}), \
                 mock.patch.object(session, "_fetch_works_list_pages", return_value=[]), \
                 mock.patch.object(session, "_fetch_sign_url_in_page", return_value=None), \
-                mock.patch.object(xunfei, "_safe_eval", return_value=True):
+                mock.patch.object(xunfei_downloads, "_safe_eval", return_value=True):
             result = session._download_pending_batch(pending)
 
         self.assertTrue(result["missing-works"]["works_id_invalid"])
@@ -1777,7 +2209,7 @@ class XunfeiFlowTests(unittest.TestCase):
                         "_download_selected_rows",
                         return_value=[FakeDownload()],
                     ), \
-                    mock.patch.object(xunfei, "_safe_eval", return_value=True):
+                        mock.patch.object(xunfei_downloads, "_safe_eval", return_value=True):
                 results = session._download_pending_batch(pending)
 
             self.assertFalse(results["works-a"]["downloaded"])
@@ -1804,7 +2236,7 @@ class XunfeiFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = str(Path(temp_dir, "audio.mp3"))
             with mock.patch.object(
-                xunfei.urllib.request,
+                xunfei_downloads.urllib.request,
                 "urlopen",
                 return_value=FakeResponse(),
             ):
@@ -1840,10 +2272,10 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "goto" for call in calls))
 
     def test_concurrent_first_session_creation_reuses_one_sync_session(self):
-        original_session = xunfei._session
-        original_available = xunfei.is_available
-        original_health = xunfei._session_is_healthy
-        original_session_class = xunfei.XunFeiSession
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_health = xunfei_runtime._session_is_healthy
+        original_session_class = xunfei_runtime.XunFeiSession
         created = []
 
         class FakeSession:
@@ -1858,10 +2290,10 @@ class XunfeiFlowTests(unittest.TestCase):
             def login(self, login_timeout=300):
                 return None
 
-        xunfei._session = None
-        xunfei.is_available = lambda: True
-        xunfei._session_is_healthy = lambda session: session is not None
-        xunfei.XunFeiSession = FakeSession
+        xunfei_runtime._session = None
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime._session_is_healthy = lambda session: session is not None
+        xunfei_runtime.XunFeiSession = FakeSession
         try:
             async def create_both():
                 return await asyncio.gather(
@@ -1871,13 +2303,42 @@ class XunfeiFlowTests(unittest.TestCase):
 
             first, second = asyncio.run(create_both())
         finally:
-            xunfei._session = original_session
-            xunfei.is_available = original_available
-            xunfei._session_is_healthy = original_health
-            xunfei.XunFeiSession = original_session_class
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime._session_is_healthy = original_health
+            xunfei_runtime.XunFeiSession = original_session_class
 
         self.assertIs(first, second)
         self.assertEqual(len(created), 1)
+
+    def test_failed_login_keeps_candidate_session_for_disconnect_classification(self):
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_session_class = xunfei_runtime.XunFeiSession
+
+        class FailedLoginSession:
+            def __init__(self, voice_key="amanda"):
+                self.voice_key = voice_key
+                self._browser_disconnected = False
+
+            def login(self, **_kwargs):
+                raise RuntimeError("Target page, context or browser has been closed")
+
+            def close(self):
+                self._browser_disconnected = True
+
+        xunfei_runtime._session = None
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime.XunFeiSession = FailedLoginSession
+        try:
+            with self.assertRaises(RuntimeError):
+                asyncio.run(xunfei.ensure_session())
+            self.assertIsInstance(xunfei_runtime._session, FailedLoginSession)
+            self.assertTrue(xunfei_runtime._session._browser_disconnected)
+        finally:
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime.XunFeiSession = original_session_class
 
 
 if __name__ == "__main__":

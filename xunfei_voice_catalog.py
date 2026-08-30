@@ -15,6 +15,7 @@ import time
 import uuid
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -47,6 +48,13 @@ DEFAULT_FEMALE_KEY = "amanda"
 DEFAULT_MALE_KEY = "george"
 DEFAULT_FEMALE_NAME = "英语-Amanda"
 DEFAULT_MALE_NAME = "英语-George"
+
+# 音色卡片和分类按钮共用这组业务优先级；同一语言分组内继续保留接口
+# 返回顺序，两个内置默认音色会额外置于英语分组最前。
+VOICE_LANGUAGE_PRIORITY = (
+    ("英语", ("英语", "english")),
+    ("多语种", ("多语种", "multilingual")),
+)
 
 # qry_tags 的结果是相对稳定的筛选字典。抓取过一次后固定快照，避免每次
 # 启动都依赖登录态请求；每次 common/list 刷新仍会按当前音色数量计算标签
@@ -310,7 +318,7 @@ def fetch_flat_list_speakers(timeout: float = 10) -> list[dict[str, Any]]:
     """按 fetch_xunfei_voices.py 的 flat/list 接口抓取完整音色列表。"""
     records: list[dict[str, Any]] = []
     page = 1
-    size = 100
+    size = 40
     max_pages = 50
     completed = False
 
@@ -346,6 +354,75 @@ def fetch_flat_list_speakers(timeout: float = 10) -> list[dict[str, Any]]:
 
     # 中途请求失败时不返回半截目录，交给上层回退到最近一次成功缓存。
     return records if completed else []
+
+
+def _raw_audio_url(raw: dict[str, Any]) -> str:
+    """读取 flat/list 记录中的示例音频地址。"""
+    for field in ("audioUrl", "audio_url", "previewAudioUrl", "preview_audio_url"):
+        value = str(raw.get(field) or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return ""
+
+
+def merge_preview_audio(
+    common_speakers: Iterable[dict[str, Any]],
+    flat_speakers: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把 flat/list 的示例音频合并回 common/list 基础音色卡片。
+
+    ``common/list`` 是当前应用的展示与选择来源，记录只有基础音色的
+    ``commonId``；``flat/list`` 的具体变体则通过 ``commonSpeaker.commonId``
+    关联，并提供可直接播放的 ``audioUrl``。同一基础音色可能有多个变体，
+    按 flat/list 返回顺序使用第一个可用示例，保持与网页默认变体一致。
+    """
+    by_common_id: dict[str, dict[str, Any]] = {}
+    by_common_name: dict[str, dict[str, Any]] = {}
+
+    for raw in flat_speakers:
+        if not isinstance(raw, dict):
+            continue
+        audio_url = _raw_audio_url(raw)
+        if not audio_url:
+            continue
+        common_id = _raw_common_id(raw)
+        candidate = {
+            "audioUrl": audio_url,
+            "commonId": common_id,
+        }
+        if common_id not in (None, ""):
+            by_common_id.setdefault(str(common_id), candidate)
+        common_name = _raw_common_name(raw).casefold()
+        if common_name:
+            by_common_name.setdefault(common_name, candidate)
+
+    merged: list[dict[str, Any]] = []
+    for raw in common_speakers:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        common_id = _raw_common_id(item)
+        candidate = (
+            by_common_id.get(str(common_id))
+            if common_id not in (None, "")
+            else None
+        )
+        if candidate is None:
+            common_name = _raw_common_name(item).casefold()
+            name_candidate = by_common_name.get(common_name) if common_name else None
+            candidate_common_id = name_candidate.get("commonId") if name_candidate else None
+            # 名称只做兼容兜底；如果两边都提供了不同的 commonId，
+            # 拒绝跨基础音色误配示例音频。
+            if name_candidate and (
+                common_id in (None, "")
+                or candidate_common_id in (None, "")
+                or str(candidate_common_id) == str(common_id)
+            ):
+                candidate = name_candidate
+        if candidate and not _raw_audio_url(item):
+            item["audioUrl"] = candidate["audioUrl"]
+        merged.append(item)
+    return merged
 
 
 def fetch_common_list_speakers(timeout: float = 10) -> list[dict[str, Any]]:
@@ -761,6 +838,23 @@ def _tag_values(value: Any) -> list[str]:
     return _text_values(value)
 
 
+def _values_contain_label(values: Iterable[Any], labels: Iterable[str]) -> bool:
+    """在一组接口字段中按不区分大小写的包含关系匹配标签。"""
+    normalized_labels = [
+        str(label).strip().casefold()
+        for label in labels
+        if str(label).strip()
+    ]
+    if not normalized_labels:
+        return False
+    for value in values:
+        for text in _tag_values(value):
+            normalized_text = str(text).strip().casefold()
+            if normalized_text and any(label in normalized_text for label in normalized_labels):
+                return True
+    return False
+
+
 def _unique_text(values: Iterable[str], limit: int = 12) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -851,7 +945,14 @@ def normalize_voice(raw: dict[str, Any]) -> dict[str, Any] | None:
         tag_values.extend(_tag_values(common_speaker.get(field)))
     tags = _unique_text(tag_values)
     language = _unique_text(language_values, limit=3)
-    categories = _unique_text([*tags, *language], limit=16)
+    priority_categories = [
+        label
+        for label, aliases in VOICE_LANGUAGE_PRIORITY
+        if _values_contain_label([name, *language_values, *tag_values], aliases)
+    ]
+    # 将排序所依据的语言分类写回规范化数据，保证分类计数和前端筛选
+    # 与卡片排序使用同一套识别规则，即使接口只在名称中携带语言信息。
+    categories = _unique_text([*priority_categories, *tags, *language], limit=16)
 
     gender_label = {"female": "女声", "male": "男声"}.get(gender)
     if gender_label and gender_label not in categories:
@@ -959,6 +1060,33 @@ def _fallback_voice(key: str, name: str, gender: str) -> dict[str, Any]:
     }
 
 
+def _voice_has_language_label(voice: dict[str, Any], labels: Iterable[str]) -> bool:
+    """在名称、语言和标签中识别英语/多语种相关音色。"""
+    return _values_contain_label(
+        (voice.get(field) for field in ("name", "speaker_language", "language", "tags", "categories")),
+        labels,
+    )
+
+
+def _voice_sort_key(voice: dict[str, Any]) -> tuple[int, int]:
+    """英语优先、多语种其次；同组内保持 common/list 的原始顺序。"""
+    if voice.get("key") in {DEFAULT_FEMALE_KEY, DEFAULT_MALE_KEY}:
+        # 这两个内置 key 的业务含义固定为英语，即使上游偶发省略语言字段，
+        # 也不能让默认音色掉到普通音色之后。
+        language_priority = 0
+    else:
+        language_priority = len(VOICE_LANGUAGE_PRIORITY)
+        for priority, (_label, aliases) in enumerate(VOICE_LANGUAGE_PRIORITY):
+            if _voice_has_language_label(voice, aliases):
+                language_priority = priority
+                break
+    default_priority = {
+        DEFAULT_FEMALE_KEY: 0,
+        DEFAULT_MALE_KEY: 1,
+    }.get(voice.get("key"), 2)
+    return language_priority, default_priority
+
+
 def _normalize_voice_entries(
     raw_voices: Iterable[dict[str, Any]],
     *,
@@ -988,12 +1116,7 @@ def _normalize_voice_entries(
 
     voices = list(voices_by_key.values())
     if sort:
-        voices.sort(
-            key=lambda item: (
-                item["key"] not in {"amanda", "george"},
-                item["name"].casefold(),
-            )
-        )
+        voices.sort(key=_voice_sort_key)
     return voices
 
 
@@ -1195,13 +1318,20 @@ def _build_voice_filters(
             count_by_filter.setdefault(label, 0)
 
     filters = [{"key": "all", "label": "全部", "count": len(voices)}]
-    for key, label in (("female", "女声"), ("male", "男声")):
-        filters.append({"key": key, "label": label, "count": count_by_filter.get(key, 0)})
     categories_by_label = {
         label: {"key": f"tag:{label}", "label": label, "count": count}
         for label, count in count_by_filter.items()
         if label not in {"all", "female", "male"}
     }
+    language_priority_labels = tuple(label for label, _aliases in VOICE_LANGUAGE_PRIORITY)
+    language_priority = [
+        categories_by_label[label]
+        for label in language_priority_labels
+        if label in categories_by_label
+    ]
+    filters.extend(language_priority)
+    for key, label in (("female", "女声"), ("male", "男声")):
+        filters.append({"key": key, "label": label, "count": count_by_filter.get(key, 0)})
     provider_order = _tag_category_labels(tag_categories)
     categories = sorted(
         (
@@ -1213,22 +1343,31 @@ def _build_voice_filters(
     preferred_labels = (
         "最热", "最新", "新闻播报", "解说", "商业广告", "情感陪伴",
         "教育课件", "角色演绎", "客服对话", "短视频", "地道方言",
-        "多语种", "超拟人", "童声",
+        "超拟人", "童声",
     )
     preferred = [
         categories_by_label[label]
         for label in provider_order
-        if label in categories_by_label
+        if label in categories_by_label and label not in language_priority_labels
     ]
     preferred_labels_set = {item["label"] for item in preferred}
     preferred.extend(
         item
         for item in categories
-        if item["label"] in preferred_labels and item["label"] not in preferred_labels_set
+        if (
+            item["label"] in preferred_labels
+            and item["label"] not in language_priority_labels
+            and item["label"] not in preferred_labels_set
+        )
     )
     preferred_keys = {item["key"] for item in preferred}
+    priority_keys = {item["key"] for item in language_priority}
     filters.extend(preferred)
-    filters.extend(item for item in categories if item["key"] not in preferred_keys)
+    filters.extend(
+        item
+        for item in categories
+        if item["key"] not in preferred_keys | priority_keys
+    )
     # 标签栏本身支持横向滚动；不要截断 qry_tags 快照，否则新闻主持、
     # 广告营销和多语种下的子标签会在目录刷新后再次丢失。
     return filters
@@ -1266,11 +1405,11 @@ def normalize_catalog(
         if not common_inputs:
             common_inputs = raw_voice_list
 
-    # common/list 的顺序就是多人配音页面的顺序；不要按名称排序，否则“最热/最新”
-    # 卡片会被打乱。默认英语-Amanda/英语-George 仍由
-    # _normalize_voice_entries 追加为
-    # 离线可用的内置角色，避免已有文档配置失效。
-    voices = _normalize_voice_entries(common_inputs, source=source, sort=False)
+    # 先按英语、多语种、其他音色分组，再保留每组的 common/list 原始顺序，
+    # 这样英语和多语种优先，同时不会破坏服务端“最热/最新”的相对顺序。
+    # 默认英语-Amanda/英语-George 仍由 _normalize_voice_entries 追加为离线
+    # 可用的内置角色，避免已有文档配置失效。
+    voices = _normalize_voice_entries(common_inputs, source=source, sort=True)
     composite_voices = list(voices)
     voice_aliases = _build_voice_aliases(
         voices,
@@ -1349,6 +1488,31 @@ def _load_legacy_catalog_payload(
         except (OSError, ValueError, TypeError):
             continue
     return [], []
+
+
+def _load_cached_preview_records(
+    base_dir: str,
+    resource_dir: str | None,
+) -> list[dict[str, Any]]:
+    """读取各级目录缓存中的试听地址，供在线刷新补齐短暂缺失项。"""
+    records: list[dict[str, Any]] = []
+    for path in _cache_candidates(base_dir, resource_dir):
+        try:
+            with open(path, "r", encoding="utf-8") as source:
+                payload = json.load(source)
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for field in ("voices", "composite_voices"):
+            values = payload.get(field)
+            if not isinstance(values, list):
+                continue
+            records.extend(
+                item for item in values
+                if isinstance(item, dict) and _raw_audio_url(item)
+            )
+    return records
 
 
 def _catalog_uses_common_list(meta: dict[str, Any]) -> bool:
@@ -1431,7 +1595,17 @@ def refresh_catalog(
     ``common/list`` 是页面卡片的唯一主来源；标签使用已抓取的固定快照，
     不在每次刷新时重复请求需要登录态的 ``qry_tags``。
     """
-    common = fetch_common_list_speakers(timeout=timeout)
+    # common/list 决定当前 App 的基础音色顺序；flat/list 只补充同一基础
+    # 音色的试听地址。两个请求并行执行，避免增加配置页首屏等待时间。
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        common_future = executor.submit(fetch_common_list_speakers, timeout)
+        flat_future = executor.submit(fetch_flat_list_speakers, timeout)
+        common = common_future.result()
+        try:
+            flat = flat_future.result()
+        except Exception:
+            # 示例音频是增强能力；flat/list 失败时仍应保留可配置的基础目录。
+            flat = []
     if not common:
         raise RuntimeError("讯飞多人配音音色接口未返回有效目录")
     tag_categories = _copy_tag_categories(FIXED_TAG_CATEGORIES)
@@ -1439,11 +1613,18 @@ def refresh_catalog(
         base_dir,
         resource_dir,
     )
+    # 当前 flat/list 优先；缓存只用于补齐接口短暂失败或分页不完整时
+    # 暂时缺少的音频地址，避免一次刷新把已有试听能力全部清空。
+    cached_preview_records = _load_cached_preview_records(base_dir, resource_dir)
     catalog = normalize_catalog(
-        common,
+        merge_preview_audio(common, [*flat, *cached_preview_records]),
         tag_categories=tag_categories,
         fetched_at=datetime.now().isoformat(),
         source="live",
+    )
+    catalog["_meta"]["preview_audio_endpoint"] = SPEAKER_FLAT_LIST_URL
+    catalog["_meta"]["preview_audio_count"] = sum(
+        bool(item.get("audio_url")) for item in catalog.get("voices") or []
     )
     catalog["voice_aliases"] = _build_voice_aliases(
         catalog.get("voices") or [],

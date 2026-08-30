@@ -1,0 +1,2089 @@
+{
+  "source_file": "课文跟读-7上U2.docx",
+  "sha256": "f20043719d7f0fa9d97599c06f8422acef4d84e2a8604e9748209b4601243ac4",
+  "content_detected_types": [
+    "课文跟读"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 74 条内容",
+  "parse_results": [
+    {
+      "source_file": "课文跟读-7上U2.docx",
+      "doc_type": "课文跟读",
+      "item_count": 74,
+      "items": [
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 1,
+          "text": "Rock music is coming out of my computer.",
+          "voice": "male",
+          "filename_stem": "U-句子1"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 2,
+          "text": "As a rock music lover, I play the electric guitar in the school band.",
+          "voice": "male",
+          "filename_stem": "U-句子2"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 3,
+          "text": "Sometimes I write songs and share them online.",
+          "voice": "male",
+          "filename_stem": "U-句子3"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 4,
+          "text": "There is so much fun in music.",
+          "voice": "male",
+          "filename_stem": "U-句子4"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 5,
+          "text": "Right at this moment, the sound of Grandpa’s erhu cuts in.",
+          "voice": "male",
+          "filename_stem": "U-句子5"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 6,
+          "text": "Music is also my grandpa’s hobby.",
+          "voice": "male",
+          "filename_stem": "U-句子6"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 7,
+          "text": "He likes playing the erhu in the park with his friends.",
+          "voice": "male",
+          "filename_stem": "U-句子7"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 8,
+          "text": "An idea suddenly hits me: “Why don’t we put our music together?”",
+          "voice": "male",
+          "filename_stem": "U-句子8"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 9,
+          "text": "We can learn from different kinds of music because they bring us together.",
+          "voice": "male",
+          "filename_stem": "U-句子9"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 10,
+          "text": "“Grandpa!” I rush into his room.",
+          "voice": "male",
+          "filename_stem": "U-句子10"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 11,
+          "text": "I decide to take part in the school art festival with Grandpa this year.",
+          "voice": "male",
+          "filename_stem": "U-句子11"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 12,
+          "text": "After a week’s practice, we are on the stage.",
+          "voice": "male",
+          "filename_stem": "U-句子12"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 13,
+          "text": "I nod to Grandpa and we fire up our instruments.",
+          "voice": "male",
+          "filename_stem": "U-句子13"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 14,
+          "text": "It feels great to enjoy our hobby together.",
+          "voice": "male",
+          "filename_stem": "U-句子14"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 1,
+          "text": "Rock music is coming out of my computer.",
+          "voice": "male",
+          "filename_stem": "U-段落1"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 2,
+          "text": "As a rock music lover, I play the electric guitar and share songs online.",
+          "voice": "male",
+          "filename_stem": "U-段落2"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 3,
+          "text": "Grandpa likes a different kind of music.",
+          "voice": "male",
+          "filename_stem": "U-段落3"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 4,
+          "text": "He plays the erhu and sings Beijing opera with friends.",
+          "voice": "male",
+          "filename_stem": "U-段落4"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 5,
+          "text": "An idea suddenly hits me: “Why don’t we put our music together?”",
+          "voice": "male",
+          "filename_stem": "U-段落5"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 6,
+          "text": "After a week’s practice, Grandpa and I take part in the school art festival.",
+          "voice": "male",
+          "filename_stem": "U-段落6"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 7,
+          "text": "We fire up our instruments on the stage.",
+          "voice": "male",
+          "filename_stem": "U-段落7"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 8,
+          "text": "Everybody moves with our music, and we enjoy our hobby together.",
+          "voice": "male",
+          "filename_stem": "U-段落8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 1,
+          "text": "At home, rock music is playing on Li Ming’s computer.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 2,
+          "text": "He loves rock music and plays the electric guitar in the school band.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 3,
+          "text": "Sometimes he writes songs and shares them online.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 4,
+          "text": "Music brings him a lot of fun.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 5,
+          "text": "At this moment, the sound of Grandpa’s erhu cuts in.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 6,
+          "text": "Li Ming knows that music is Grandpa’s hobby too.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 7,
+          "text": "Grandpa likes playing the erhu in the park with his friends, but his music is very different from rock music.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-7"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 8,
+          "text": "An idea suddenly hits Li Ming: “Why don’t we put our music together?”",
+          "voice": "male",
+          "filename_stem": "U-语篇1-8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 9,
+          "text": "This idea makes him excited.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 10,
+          "text": "Then he rushes into Grandpa’s room.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-10"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 11,
+          "text": "This year, Li Ming decides to take part in the school art festival with Grandpa.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-11"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 12,
+          "text": "After a week’s practice, they are on the stage.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-12"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 13,
+          "text": "Li Ming nods to Grandpa, and they fire up their instruments.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-13"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 14,
+          "text": "Everybody moves with their music.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-14"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 0,
+          "sentence_number": 15,
+          "text": "It feels great to enjoy their hobby together.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-15"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 1,
+          "text": "Suddenly, a door appears in the wall.",
+          "voice": "male",
+          "filename_stem": "R-句子1"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 2,
+          "text": "Emma shakes her head and stops writing.",
+          "voice": "male",
+          "filename_stem": "R-句子2"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 3,
+          "text": "There are no old classmates here.",
+          "voice": "male",
+          "filename_stem": "R-句子3"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 4,
+          "text": "She feels a bit lonely.",
+          "voice": "male",
+          "filename_stem": "R-句子4"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 5,
+          "text": "Emma likes writing magic stories.",
+          "voice": "male",
+          "filename_stem": "R-句子5"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 6,
+          "text": "She wants to make friends and share the joy of writing.",
+          "voice": "male",
+          "filename_stem": "R-句子6"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 7,
+          "text": "An idea hits her.",
+          "voice": "male",
+          "filename_stem": "R-句子7"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 8,
+          "text": "Please write more!",
+          "voice": "male",
+          "filename_stem": "R-句子8"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 9,
+          "text": "Emma puts the notebook on a shelf and leaves.",
+          "voice": "male",
+          "filename_stem": "R-句子9"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 10,
+          "text": "A week later, Emma’s notebook is still on the shelf in the library.",
+          "voice": "male",
+          "filename_stem": "R-句子10"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 11,
+          "text": "There are pages of new writing by different people!",
+          "voice": "male",
+          "filename_stem": "R-句子11"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 12,
+          "text": "How about starting a writing group?",
+          "voice": "male",
+          "filename_stem": "R-句子12"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 13,
+          "text": "Let’s meet here on Wednesday after lunch.",
+          "voice": "male",
+          "filename_stem": "R-句子13"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 14,
+          "text": "As a result, Emma makes friends through writing.",
+          "voice": "male",
+          "filename_stem": "R-句子14"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 15,
+          "text": "It’s the best ending to my story.",
+          "voice": "male",
+          "filename_stem": "R-句子15"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 1,
+          "text": "Emma is new at this school and feels a bit lonely.",
+          "voice": "male",
+          "filename_stem": "R-段落1"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 2,
+          "text": "She likes writing magic stories and wants to make friends.",
+          "voice": "male",
+          "filename_stem": "R-段落2"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 3,
+          "text": "In the library, an idea hits her.",
+          "voice": "male",
+          "filename_stem": "R-段落3"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 4,
+          "text": "She writes in her notebook, “Do you like the story? Please write more!”",
+          "voice": "male",
+          "filename_stem": "R-段落4"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 5,
+          "text": "Then she puts it on a shelf and leaves.",
+          "voice": "male",
+          "filename_stem": "R-段落5"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 6,
+          "text": "A week later, she opens it and sees pages of new writing.",
+          "voice": "male",
+          "filename_stem": "R-段落6"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 7,
+          "text": "A note suggests starting a writing group.",
+          "voice": "male",
+          "filename_stem": "R-段落7"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 8,
+          "text": "It is the best ending to her story.",
+          "voice": "male",
+          "filename_stem": "R-段落8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 1,
+          "text": "Emma is in the library with her notebook.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 2,
+          "text": "In her magic story, a door suddenly appears in the wall.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 3,
+          "text": "She reads the line again, shakes her head and stops writing.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 4,
+          "text": "As a new student, Emma does not know many classmates yet, so she feels a bit lonely.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 5,
+          "text": "Emma likes writing magic stories.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 6,
+          "text": "She wants to make friends and share the joy of writing.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 7,
+          "text": "Then an idea hits her: she can use her notebook.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-7"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 8,
+          "text": "She writes a message for other students: “Hello! Do you like the story? Please write more!”",
+          "voice": "female",
+          "filename_stem": "R-语篇1-8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 9,
+          "text": "After that, Emma puts the notebook on a shelf and leaves.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 10,
+          "text": "A week later, Emma’s notebook is still on the shelf in the library.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-10"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 11,
+          "text": "She opens it nervously.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-11"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 12,
+          "text": "There are pages of new writing by different people.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-12"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 13,
+          "text": "On the last page, someone writes, “How about starting a writing group? Let’s meet here on Wednesday after lunch.”",
+          "voice": "female",
+          "filename_stem": "R-语篇1-13"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 14,
+          "text": "Emma smiles and thinks, “It’s the best ending to my story.”",
+          "voice": "female",
+          "filename_stem": "R-语篇1-14"
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "课文跟读",
+  "cli_result": {
+    "source_file": "课文跟读-7上U2.docx",
+    "doc_type": "课文跟读",
+    "item_count": 74,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 1,
+        "text": "Rock music is coming out of my computer.",
+        "voice": "male",
+        "filename_stem": "U-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 2,
+        "text": "As a rock music lover, I play the electric guitar in the school band.",
+        "voice": "male",
+        "filename_stem": "U-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 3,
+        "text": "Sometimes I write songs and share them online.",
+        "voice": "male",
+        "filename_stem": "U-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 4,
+        "text": "There is so much fun in music.",
+        "voice": "male",
+        "filename_stem": "U-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 5,
+        "text": "Right at this moment, the sound of Grandpa’s erhu cuts in.",
+        "voice": "male",
+        "filename_stem": "U-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 6,
+        "text": "Music is also my grandpa’s hobby.",
+        "voice": "male",
+        "filename_stem": "U-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 7,
+        "text": "He likes playing the erhu in the park with his friends.",
+        "voice": "male",
+        "filename_stem": "U-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 8,
+        "text": "An idea suddenly hits me: “Why don’t we put our music together?”",
+        "voice": "male",
+        "filename_stem": "U-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 9,
+        "text": "We can learn from different kinds of music because they bring us together.",
+        "voice": "male",
+        "filename_stem": "U-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 10,
+        "text": "“Grandpa!” I rush into his room.",
+        "voice": "male",
+        "filename_stem": "U-句子10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 11,
+        "text": "I decide to take part in the school art festival with Grandpa this year.",
+        "voice": "male",
+        "filename_stem": "U-句子11"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 12,
+        "text": "After a week’s practice, we are on the stage.",
+        "voice": "male",
+        "filename_stem": "U-句子12"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 13,
+        "text": "I nod to Grandpa and we fire up our instruments.",
+        "voice": "male",
+        "filename_stem": "U-句子13"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 14,
+        "text": "It feels great to enjoy our hobby together.",
+        "voice": "male",
+        "filename_stem": "U-句子14"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 1,
+        "text": "Rock music is coming out of my computer.",
+        "voice": "male",
+        "filename_stem": "U-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 2,
+        "text": "As a rock music lover, I play the electric guitar and share songs online.",
+        "voice": "male",
+        "filename_stem": "U-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 3,
+        "text": "Grandpa likes a different kind of music.",
+        "voice": "male",
+        "filename_stem": "U-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 4,
+        "text": "He plays the erhu and sings Beijing opera with friends.",
+        "voice": "male",
+        "filename_stem": "U-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 5,
+        "text": "An idea suddenly hits me: “Why don’t we put our music together?”",
+        "voice": "male",
+        "filename_stem": "U-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 6,
+        "text": "After a week’s practice, Grandpa and I take part in the school art festival.",
+        "voice": "male",
+        "filename_stem": "U-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 7,
+        "text": "We fire up our instruments on the stage.",
+        "voice": "male",
+        "filename_stem": "U-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 8,
+        "text": "Everybody moves with our music, and we enjoy our hobby together.",
+        "voice": "male",
+        "filename_stem": "U-段落8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 1,
+        "text": "At home, rock music is playing on Li Ming’s computer.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "He loves rock music and plays the electric guitar in the school band.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "Sometimes he writes songs and shares them online.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "Music brings him a lot of fun.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "At this moment, the sound of Grandpa’s erhu cuts in.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "Li Ming knows that music is Grandpa’s hobby too.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "Grandpa likes playing the erhu in the park with his friends, but his music is very different from rock music.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "An idea suddenly hits Li Ming: “Why don’t we put our music together?”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "This idea makes him excited.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "Then he rushes into Grandpa’s room.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "This year, Li Ming decides to take part in the school art festival with Grandpa.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "After a week’s practice, they are on the stage.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "Li Ming nods to Grandpa, and they fire up their instruments.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "Everybody moves with their music.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-14"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 0,
+        "sentence_number": 15,
+        "text": "It feels great to enjoy their hobby together.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-15"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 1,
+        "text": "Suddenly, a door appears in the wall.",
+        "voice": "male",
+        "filename_stem": "R-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 2,
+        "text": "Emma shakes her head and stops writing.",
+        "voice": "male",
+        "filename_stem": "R-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 3,
+        "text": "There are no old classmates here.",
+        "voice": "male",
+        "filename_stem": "R-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 4,
+        "text": "She feels a bit lonely.",
+        "voice": "male",
+        "filename_stem": "R-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 5,
+        "text": "Emma likes writing magic stories.",
+        "voice": "male",
+        "filename_stem": "R-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 6,
+        "text": "She wants to make friends and share the joy of writing.",
+        "voice": "male",
+        "filename_stem": "R-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 7,
+        "text": "An idea hits her.",
+        "voice": "male",
+        "filename_stem": "R-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 8,
+        "text": "Please write more!",
+        "voice": "male",
+        "filename_stem": "R-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 9,
+        "text": "Emma puts the notebook on a shelf and leaves.",
+        "voice": "male",
+        "filename_stem": "R-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 10,
+        "text": "A week later, Emma’s notebook is still on the shelf in the library.",
+        "voice": "male",
+        "filename_stem": "R-句子10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 11,
+        "text": "There are pages of new writing by different people!",
+        "voice": "male",
+        "filename_stem": "R-句子11"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 12,
+        "text": "How about starting a writing group?",
+        "voice": "male",
+        "filename_stem": "R-句子12"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 13,
+        "text": "Let’s meet here on Wednesday after lunch.",
+        "voice": "male",
+        "filename_stem": "R-句子13"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 14,
+        "text": "As a result, Emma makes friends through writing.",
+        "voice": "male",
+        "filename_stem": "R-句子14"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 15,
+        "text": "It’s the best ending to my story.",
+        "voice": "male",
+        "filename_stem": "R-句子15"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 1,
+        "text": "Emma is new at this school and feels a bit lonely.",
+        "voice": "male",
+        "filename_stem": "R-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 2,
+        "text": "She likes writing magic stories and wants to make friends.",
+        "voice": "male",
+        "filename_stem": "R-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 3,
+        "text": "In the library, an idea hits her.",
+        "voice": "male",
+        "filename_stem": "R-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 4,
+        "text": "She writes in her notebook, “Do you like the story? Please write more!”",
+        "voice": "male",
+        "filename_stem": "R-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 5,
+        "text": "Then she puts it on a shelf and leaves.",
+        "voice": "male",
+        "filename_stem": "R-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 6,
+        "text": "A week later, she opens it and sees pages of new writing.",
+        "voice": "male",
+        "filename_stem": "R-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 7,
+        "text": "A note suggests starting a writing group.",
+        "voice": "male",
+        "filename_stem": "R-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 8,
+        "text": "It is the best ending to her story.",
+        "voice": "male",
+        "filename_stem": "R-段落8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 1,
+        "text": "Emma is in the library with her notebook.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "In her magic story, a door suddenly appears in the wall.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "She reads the line again, shakes her head and stops writing.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "As a new student, Emma does not know many classmates yet, so she feels a bit lonely.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "Emma likes writing magic stories.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "She wants to make friends and share the joy of writing.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "Then an idea hits her: she can use her notebook.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "She writes a message for other students: “Hello! Do you like the story? Please write more!”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "After that, Emma puts the notebook on a shelf and leaves.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "A week later, Emma’s notebook is still on the shelf in the library.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "She opens it nervously.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "There are pages of new writing by different people.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "On the last page, someone writes, “How about starting a writing group? Let’s meet here on Wednesday after lunch.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "Emma smiles and thinks, “It’s the best ending to my story.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-14"
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "句子跟读_U-句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "U-句子1.mp3",
+      "voice_override": "male",
+      "text_preview": "Rock music is coming out of my computer.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "U-句子2.mp3",
+      "voice_override": "male",
+      "text_preview": "As a rock music lover, I play the electric guitar in the school band.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "U-句子3.mp3",
+      "voice_override": "male",
+      "text_preview": "Sometimes I write songs and share them online.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "U-句子4.mp3",
+      "voice_override": "male",
+      "text_preview": "There is so much fun in music.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "U-句子5.mp3",
+      "voice_override": "male",
+      "text_preview": "Right at this moment, the sound of Grandpa’s erhu cuts in.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "U-句子6.mp3",
+      "voice_override": "male",
+      "text_preview": "Music is also my grandpa’s hobby.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "U-句子7.mp3",
+      "voice_override": "male",
+      "text_preview": "He likes playing the erhu in the park with his friends.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "U-句子8.mp3",
+      "voice_override": "male",
+      "text_preview": "An idea suddenly hits me: “Why don’t we put our music together?”",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "U-句子9.mp3",
+      "voice_override": "male",
+      "text_preview": "We can learn from different kinds of music because they bring us together.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子10",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 10,
+      "filename": "U-句子10.mp3",
+      "voice_override": "male",
+      "text_preview": "“Grandpa!” I rush into his room.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子11",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 11,
+      "filename": "U-句子11.mp3",
+      "voice_override": "male",
+      "text_preview": "I decide to take part in the school art festival with Grandpa this year.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子12",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 12,
+      "filename": "U-句子12.mp3",
+      "voice_override": "male",
+      "text_preview": "After a week’s practice, we are on the stage.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子13",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 13,
+      "filename": "U-句子13.mp3",
+      "voice_override": "male",
+      "text_preview": "I nod to Grandpa and we fire up our instruments.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子14",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 14,
+      "filename": "U-句子14.mp3",
+      "voice_override": "male",
+      "text_preview": "It feels great to enjoy our hobby together.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 1,
+      "filename": "U-段落1.mp3",
+      "voice_override": "male",
+      "text_preview": "Rock music is coming out of my computer.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 2,
+      "filename": "U-段落2.mp3",
+      "voice_override": "male",
+      "text_preview": "As a rock music lover, I play the electric guitar and share songs online.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 3,
+      "filename": "U-段落3.mp3",
+      "voice_override": "male",
+      "text_preview": "Grandpa likes a different kind of music.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 4,
+      "filename": "U-段落4.mp3",
+      "voice_override": "male",
+      "text_preview": "He plays the erhu and sings Beijing opera with friends.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 5,
+      "filename": "U-段落5.mp3",
+      "voice_override": "male",
+      "text_preview": "An idea suddenly hits me: “Why don’t we put our music together?”",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 6,
+      "filename": "U-段落6.mp3",
+      "voice_override": "male",
+      "text_preview": "After a week’s practice, Grandpa and I take part in the school art festival.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 7,
+      "filename": "U-段落7.mp3",
+      "voice_override": "male",
+      "text_preview": "We fire up our instruments on the stage.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 8,
+      "filename": "U-段落8.mp3",
+      "voice_override": "male",
+      "text_preview": "Everybody moves with our music, and we enjoy our hobby together.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 1,
+      "filename": "U-语篇1-1.mp3",
+      "voice_override": "male",
+      "text_preview": "At home, rock music is playing on Li Ming’s computer.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 2,
+      "filename": "U-语篇1-2.mp3",
+      "voice_override": "male",
+      "text_preview": "He loves rock music and plays the electric guitar in the school band.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 3,
+      "filename": "U-语篇1-3.mp3",
+      "voice_override": "male",
+      "text_preview": "Sometimes he writes songs and shares them online.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 4,
+      "filename": "U-语篇1-4.mp3",
+      "voice_override": "male",
+      "text_preview": "Music brings him a lot of fun.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 5,
+      "filename": "U-语篇1-5.mp3",
+      "voice_override": "male",
+      "text_preview": "At this moment, the sound of Grandpa’s erhu cuts in.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 6,
+      "filename": "U-语篇1-6.mp3",
+      "voice_override": "male",
+      "text_preview": "Li Ming knows that music is Grandpa’s hobby too.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 7,
+      "filename": "U-语篇1-7.mp3",
+      "voice_override": "male",
+      "text_preview": "Grandpa likes playing the erhu in the park with his friends, but his music is ve",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 8,
+      "filename": "U-语篇1-8.mp3",
+      "voice_override": "male",
+      "text_preview": "An idea suddenly hits Li Ming: “Why don’t we put our music together?”",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 9,
+      "filename": "U-语篇1-9.mp3",
+      "voice_override": "male",
+      "text_preview": "This idea makes him excited.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 10,
+      "filename": "U-语篇1-10.mp3",
+      "voice_override": "male",
+      "text_preview": "Then he rushes into Grandpa’s room.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 11,
+      "filename": "U-语篇1-11.mp3",
+      "voice_override": "male",
+      "text_preview": "This year, Li Ming decides to take part in the school art festival with Grandpa.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-12",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 12,
+      "filename": "U-语篇1-12.mp3",
+      "voice_override": "male",
+      "text_preview": "After a week’s practice, they are on the stage.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-13",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 13,
+      "filename": "U-语篇1-13.mp3",
+      "voice_override": "male",
+      "text_preview": "Li Ming nods to Grandpa, and they fire up their instruments.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-14",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 14,
+      "filename": "U-语篇1-14.mp3",
+      "voice_override": "male",
+      "text_preview": "Everybody moves with their music.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-15",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 15,
+      "filename": "U-语篇1-15.mp3",
+      "voice_override": "male",
+      "text_preview": "It feels great to enjoy their hobby together.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "R-句子1.mp3",
+      "voice_override": "male",
+      "text_preview": "Suddenly, a door appears in the wall.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "R-句子2.mp3",
+      "voice_override": "male",
+      "text_preview": "Emma shakes her head and stops writing.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "R-句子3.mp3",
+      "voice_override": "male",
+      "text_preview": "There are no old classmates here.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "R-句子4.mp3",
+      "voice_override": "male",
+      "text_preview": "She feels a bit lonely.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "R-句子5.mp3",
+      "voice_override": "male",
+      "text_preview": "Emma likes writing magic stories.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "R-句子6.mp3",
+      "voice_override": "male",
+      "text_preview": "She wants to make friends and share the joy of writing.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "R-句子7.mp3",
+      "voice_override": "male",
+      "text_preview": "An idea hits her.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "R-句子8.mp3",
+      "voice_override": "male",
+      "text_preview": "Please write more!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "R-句子9.mp3",
+      "voice_override": "male",
+      "text_preview": "Emma puts the notebook on a shelf and leaves.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子10",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 10,
+      "filename": "R-句子10.mp3",
+      "voice_override": "male",
+      "text_preview": "A week later, Emma’s notebook is still on the shelf in the library.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子11",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 11,
+      "filename": "R-句子11.mp3",
+      "voice_override": "male",
+      "text_preview": "There are pages of new writing by different people!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子12",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 12,
+      "filename": "R-句子12.mp3",
+      "voice_override": "male",
+      "text_preview": "How about starting a writing group?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子13",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 13,
+      "filename": "R-句子13.mp3",
+      "voice_override": "male",
+      "text_preview": "Let’s meet here on Wednesday after lunch.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子14",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 14,
+      "filename": "R-句子14.mp3",
+      "voice_override": "male",
+      "text_preview": "As a result, Emma makes friends through writing.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子15",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 15,
+      "filename": "R-句子15.mp3",
+      "voice_override": "male",
+      "text_preview": "It’s the best ending to my story.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 9,
+      "filename": "R-段落1.mp3",
+      "voice_override": "male",
+      "text_preview": "Emma is new at this school and feels a bit lonely.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 10,
+      "filename": "R-段落2.mp3",
+      "voice_override": "male",
+      "text_preview": "She likes writing magic stories and wants to make friends.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 11,
+      "filename": "R-段落3.mp3",
+      "voice_override": "male",
+      "text_preview": "In the library, an idea hits her.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 12,
+      "filename": "R-段落4.mp3",
+      "voice_override": "male",
+      "text_preview": "She writes in her notebook, “Do you like the story? Please write more!”",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 13,
+      "filename": "R-段落5.mp3",
+      "voice_override": "male",
+      "text_preview": "Then she puts it on a shelf and leaves.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 14,
+      "filename": "R-段落6.mp3",
+      "voice_override": "male",
+      "text_preview": "A week later, she opens it and sees pages of new writing.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 15,
+      "filename": "R-段落7.mp3",
+      "voice_override": "male",
+      "text_preview": "A note suggests starting a writing group.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 16,
+      "filename": "R-段落8.mp3",
+      "voice_override": "male",
+      "text_preview": "It is the best ending to her story.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 16,
+      "filename": "R-语篇1-1.mp3",
+      "voice_override": "female",
+      "text_preview": "Emma is in the library with her notebook.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 17,
+      "filename": "R-语篇1-2.mp3",
+      "voice_override": "female",
+      "text_preview": "In her magic story, a door suddenly appears in the wall.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 18,
+      "filename": "R-语篇1-3.mp3",
+      "voice_override": "female",
+      "text_preview": "She reads the line again, shakes her head and stops writing.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 19,
+      "filename": "R-语篇1-4.mp3",
+      "voice_override": "female",
+      "text_preview": "As a new student, Emma does not know many classmates yet, so she feels a bit lon",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 20,
+      "filename": "R-语篇1-5.mp3",
+      "voice_override": "female",
+      "text_preview": "Emma likes writing magic stories.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 21,
+      "filename": "R-语篇1-6.mp3",
+      "voice_override": "female",
+      "text_preview": "She wants to make friends and share the joy of writing.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 22,
+      "filename": "R-语篇1-7.mp3",
+      "voice_override": "female",
+      "text_preview": "Then an idea hits her: she can use her notebook.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 23,
+      "filename": "R-语篇1-8.mp3",
+      "voice_override": "female",
+      "text_preview": "She writes a message for other students: “Hello! Do you like the story? Please w",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 24,
+      "filename": "R-语篇1-9.mp3",
+      "voice_override": "female",
+      "text_preview": "After that, Emma puts the notebook on a shelf and leaves.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 25,
+      "filename": "R-语篇1-10.mp3",
+      "voice_override": "female",
+      "text_preview": "A week later, Emma’s notebook is still on the shelf in the library.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 26,
+      "filename": "R-语篇1-11.mp3",
+      "voice_override": "female",
+      "text_preview": "She opens it nervously.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-12",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 27,
+      "filename": "R-语篇1-12.mp3",
+      "voice_override": "female",
+      "text_preview": "There are pages of new writing by different people.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-13",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 28,
+      "filename": "R-语篇1-13.mp3",
+      "voice_override": "female",
+      "text_preview": "On the last page, someone writes, “How about starting a writing group? Let’s mee",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-14",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 29,
+      "filename": "R-语篇1-14.mp3",
+      "voice_override": "female",
+      "text_preview": "Emma smiles and thinks, “It’s the best ending to my story.”",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "ded41633bc3301d2acb95404ddb689dacefd3beb22bc7552e71103b3b6646f94",
+    "cli_result": "496a7f0c3d90ce5957fd6282fa866ae77fb73dc7c7faf95e3d9b8628dd42ad62",
+    "progress_items": "3049f0ddc05528daf102350b8b2369a2b452e139609165eb1759b5abb102e1b2"
+  }
+}

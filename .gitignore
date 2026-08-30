@@ -139,6 +139,7 @@ electron/node_modules/
 electron/server_backend_build/
 electron/server_backend_build_tmp/
 electron/release/
+release-notes.md
 .build_bin/
 
 # WordTTS 应用图标：源图与各平台打包产物必须进入干净检出和 CI。
@@ -182,3 +183,6 @@ secrets.txt
 /788.mp3
 /788_realtime_match_preview.mp3
 /Snipaste.png
+
+# 本地 AI 工具状态
+.impeccable/

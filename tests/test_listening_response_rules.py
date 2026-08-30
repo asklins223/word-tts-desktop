@@ -8,13 +8,13 @@ from pathlib import Path
 from docx import Document
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "word_parser"))
+sys.path.insert(0, str(ROOT))
 
-from word_parser import (  # noqa: E402
+from question_types import (  # noqa: E402
     ListeningResponseParser,
     parse_document_auto,
 )
-import word_tts_app as core  # noqa: E402
+import wordtts as core  # noqa: E402
 
 
 class ListeningResponseRuleTests(unittest.TestCase):

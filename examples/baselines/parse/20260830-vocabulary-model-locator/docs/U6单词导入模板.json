@@ -1,0 +1,2193 @@
+{
+  "source_file": "U6单词导入模板.xlsx",
+  "sha256": "fe8b8fbce9331deb34199dc4cb07c38387576b9c0e853da47d61d2d1602f5a40",
+  "content_detected_types": [
+    "词汇"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 80 条内容",
+  "parse_results": [
+    {
+      "source_file": "U6单词导入模板.xlsx",
+      "doc_type": "词汇",
+      "item_count": 80,
+      "items": [
+        {
+          "category": "单词",
+          "number": 1,
+          "filename_stem": "单词1",
+          "voice": "female",
+          "text": "pigeon",
+          "source_locator": "工作表/Sheet1/行/2/单词"
+        },
+        {
+          "category": "例句",
+          "number": 1,
+          "filename_stem": "句子1",
+          "voice": "female",
+          "text": "A pigeon is standing near the window.",
+          "source_locator": "工作表/Sheet1/行/2/例句"
+        },
+        {
+          "category": "单词",
+          "number": 2,
+          "filename_stem": "单词2",
+          "voice": "female",
+          "text": "surprise",
+          "source_locator": "工作表/Sheet1/行/3/单词"
+        },
+        {
+          "category": "例句",
+          "number": 2,
+          "filename_stem": "句子2",
+          "voice": "female",
+          "text": "The birthday gift was a lovely surprise.",
+          "source_locator": "工作表/Sheet1/行/3/例句"
+        },
+        {
+          "category": "单词",
+          "number": 3,
+          "filename_stem": "单词3",
+          "voice": "female",
+          "text": "droppings",
+          "source_locator": "工作表/Sheet1/行/4/单词"
+        },
+        {
+          "category": "例句",
+          "number": 3,
+          "filename_stem": "句子3",
+          "voice": "female",
+          "text": "There are bird droppings on the bench.",
+          "source_locator": "工作表/Sheet1/行/4/例句"
+        },
+        {
+          "category": "单词",
+          "number": 4,
+          "filename_stem": "单词4",
+          "voice": "female",
+          "text": "boring",
+          "source_locator": "工作表/Sheet1/行/5/单词"
+        },
+        {
+          "category": "例句",
+          "number": 4,
+          "filename_stem": "句子4",
+          "voice": "female",
+          "text": "The film is boring.",
+          "source_locator": "工作表/Sheet1/行/5/例句"
+        },
+        {
+          "category": "单词",
+          "number": 5,
+          "filename_stem": "单词5",
+          "voice": "female",
+          "text": "feed",
+          "source_locator": "工作表/Sheet1/行/6/单词"
+        },
+        {
+          "category": "例句",
+          "number": 5,
+          "filename_stem": "句子5",
+          "voice": "female",
+          "text": "We feed the rabbits every morning.",
+          "source_locator": "工作表/Sheet1/行/6/例句"
+        },
+        {
+          "category": "单词",
+          "number": 6,
+          "filename_stem": "单词6",
+          "voice": "female",
+          "text": "madly",
+          "source_locator": "工作表/Sheet1/行/7/单词"
+        },
+        {
+          "category": "例句",
+          "number": 6,
+          "filename_stem": "句子6",
+          "voice": "female",
+          "text": "The birds are flying madly to her.",
+          "source_locator": "工作表/Sheet1/行/7/例句"
+        },
+        {
+          "category": "单词",
+          "number": 7,
+          "filename_stem": "单词7",
+          "voice": "female",
+          "text": "scary",
+          "source_locator": "工作表/Sheet1/行/8/单词"
+        },
+        {
+          "category": "例句",
+          "number": 7,
+          "filename_stem": "句子7",
+          "voice": "female",
+          "text": "The snake looks scary.",
+          "source_locator": "工作表/Sheet1/行/8/例句"
+        },
+        {
+          "category": "单词",
+          "number": 8,
+          "filename_stem": "单词8",
+          "voice": "female",
+          "text": "research",
+          "source_locator": "工作表/Sheet1/行/9/单词"
+        },
+        {
+          "category": "例句",
+          "number": 8,
+          "filename_stem": "句子8",
+          "voice": "female",
+          "text": "Our class is doing some research on birds.",
+          "source_locator": "工作表/Sheet1/行/9/例句"
+        },
+        {
+          "category": "单词",
+          "number": 9,
+          "filename_stem": "单词9",
+          "voice": "female",
+          "text": "recognise",
+          "source_locator": "工作表/Sheet1/行/10/单词"
+        },
+        {
+          "category": "例句",
+          "number": 9,
+          "filename_stem": "句子9",
+          "voice": "female",
+          "text": "I can recognise my teacher from her voice.",
+          "source_locator": "工作表/Sheet1/行/10/例句"
+        },
+        {
+          "category": "单词",
+          "number": 10,
+          "filename_stem": "单词10",
+          "voice": "female",
+          "text": "themselves",
+          "source_locator": "工作表/Sheet1/行/11/单词"
+        },
+        {
+          "category": "例句",
+          "number": 10,
+          "filename_stem": "句子10",
+          "voice": "female",
+          "text": "The children made lunch by themselves.",
+          "source_locator": "工作表/Sheet1/行/11/例句"
+        },
+        {
+          "category": "单词",
+          "number": 11,
+          "filename_stem": "单词11",
+          "voice": "female",
+          "text": "mirror",
+          "source_locator": "工作表/Sheet1/行/12/单词"
+        },
+        {
+          "category": "例句",
+          "number": 11,
+          "filename_stem": "句子11",
+          "voice": "female",
+          "text": "She looks at herself in the mirror.",
+          "source_locator": "工作表/Sheet1/行/12/例句"
+        },
+        {
+          "category": "单词",
+          "number": 12,
+          "filename_stem": "单词12",
+          "voice": "female",
+          "text": "itself",
+          "source_locator": "工作表/Sheet1/行/13/单词"
+        },
+        {
+          "category": "例句",
+          "number": 12,
+          "filename_stem": "句子12",
+          "voice": "female",
+          "text": "The cat can clean itself.",
+          "source_locator": "工作表/Sheet1/行/13/例句"
+        },
+        {
+          "category": "单词",
+          "number": 13,
+          "filename_stem": "单词13",
+          "voice": "female",
+          "text": "maybe",
+          "source_locator": "工作表/Sheet1/行/14/单词"
+        },
+        {
+          "category": "例句",
+          "number": 13,
+          "filename_stem": "句子13",
+          "voice": "female",
+          "text": "Maybe we can visit the museum tomorrow.",
+          "source_locator": "工作表/Sheet1/行/14/例句"
+        },
+        {
+          "category": "单词",
+          "number": 14,
+          "filename_stem": "单词14",
+          "voice": "female",
+          "text": "several",
+          "source_locator": "工作表/Sheet1/行/15/单词"
+        },
+        {
+          "category": "例句",
+          "number": 14,
+          "filename_stem": "句子14",
+          "voice": "female",
+          "text": "Several students are watching the birds.",
+          "source_locator": "工作表/Sheet1/行/15/例句"
+        },
+        {
+          "category": "单词",
+          "number": 15,
+          "filename_stem": "单词15",
+          "voice": "female",
+          "text": "kilometre",
+          "source_locator": "工作表/Sheet1/行/16/单词"
+        },
+        {
+          "category": "例句",
+          "number": 15,
+          "filename_stem": "句子15",
+          "voice": "female",
+          "text": "The island is one kilometre from here.",
+          "source_locator": "工作表/Sheet1/行/16/例句"
+        },
+        {
+          "category": "单词",
+          "number": 16,
+          "filename_stem": "单词16",
+          "voice": "female",
+          "text": "speed",
+          "source_locator": "工作表/Sheet1/行/17/单词"
+        },
+        {
+          "category": "例句",
+          "number": 16,
+          "filename_stem": "句子16",
+          "voice": "female",
+          "text": "The train is moving at high speed.",
+          "source_locator": "工作表/Sheet1/行/17/例句"
+        },
+        {
+          "category": "单词",
+          "number": 17,
+          "filename_stem": "单词17",
+          "voice": "female",
+          "text": "amazing",
+          "source_locator": "工作表/Sheet1/行/18/单词"
+        },
+        {
+          "category": "例句",
+          "number": 17,
+          "filename_stem": "句子17",
+          "voice": "female",
+          "text": "The rescue dog did an amazing job.",
+          "source_locator": "工作表/Sheet1/行/18/例句"
+        },
+        {
+          "category": "单词",
+          "number": 18,
+          "filename_stem": "单词18",
+          "voice": "female",
+          "text": "enough",
+          "source_locator": "工作表/Sheet1/行/19/单词"
+        },
+        {
+          "category": "例句",
+          "number": 18,
+          "filename_stem": "句子18",
+          "voice": "female",
+          "text": "There was enough food for everyone.",
+          "source_locator": "工作表/Sheet1/行/19/例句"
+        },
+        {
+          "category": "单词",
+          "number": 19,
+          "filename_stem": "单词19",
+          "voice": "female",
+          "text": "beaver",
+          "source_locator": "工作表/Sheet1/行/20/单词"
+        },
+        {
+          "category": "例句",
+          "number": 19,
+          "filename_stem": "句子19",
+          "voice": "female",
+          "text": "A beaver is building a dam.",
+          "source_locator": "工作表/Sheet1/行/20/例句"
+        },
+        {
+          "category": "单词",
+          "number": 20,
+          "filename_stem": "单词20",
+          "voice": "female",
+          "text": "wolf",
+          "source_locator": "工作表/Sheet1/行/21/单词"
+        },
+        {
+          "category": "例句",
+          "number": 20,
+          "filename_stem": "句子20",
+          "voice": "female",
+          "text": "A wolf is walking through the forest.",
+          "source_locator": "工作表/Sheet1/行/21/例句"
+        },
+        {
+          "category": "单词",
+          "number": 21,
+          "filename_stem": "单词21",
+          "voice": "female",
+          "text": "engineer",
+          "source_locator": "工作表/Sheet1/行/22/单词"
+        },
+        {
+          "category": "例句",
+          "number": 21,
+          "filename_stem": "句子21",
+          "voice": "female",
+          "text": "My uncle is an engineer.",
+          "source_locator": "工作表/Sheet1/行/22/例句"
+        },
+        {
+          "category": "单词",
+          "number": 22,
+          "filename_stem": "单词22",
+          "voice": "female",
+          "text": "hero",
+          "source_locator": "工作表/Sheet1/行/23/单词"
+        },
+        {
+          "category": "例句",
+          "number": 22,
+          "filename_stem": "句子22",
+          "voice": "female",
+          "text": "Firefighters are real heroes.",
+          "source_locator": "工作表/Sheet1/行/23/例句"
+        },
+        {
+          "category": "单词",
+          "number": 23,
+          "filename_stem": "单词23",
+          "voice": "female",
+          "text": "rescue",
+          "source_locator": "工作表/Sheet1/行/24/单词"
+        },
+        {
+          "category": "例句",
+          "number": 23,
+          "filename_stem": "句子23",
+          "voice": "female",
+          "text": "The rescue took three hours.",
+          "source_locator": "工作表/Sheet1/行/24/例句"
+        },
+        {
+          "category": "单词",
+          "number": 24,
+          "filename_stem": "单词24",
+          "voice": "female",
+          "text": "earthquake",
+          "source_locator": "工作表/Sheet1/行/25/单词"
+        },
+        {
+          "category": "例句",
+          "number": 24,
+          "filename_stem": "句子24",
+          "voice": "female",
+          "text": "The earthquake damaged many houses.",
+          "source_locator": "工作表/Sheet1/行/25/例句"
+        },
+        {
+          "category": "单词",
+          "number": 25,
+          "filename_stem": "单词25",
+          "voice": "female",
+          "text": "missing",
+          "source_locator": "工作表/Sheet1/行/26/单词"
+        },
+        {
+          "category": "例句",
+          "number": 25,
+          "filename_stem": "句子25",
+          "voice": "female",
+          "text": "The police are looking for the missing child.",
+          "source_locator": "工作表/Sheet1/行/26/例句"
+        },
+        {
+          "category": "单词",
+          "number": 26,
+          "filename_stem": "单词26",
+          "voice": "female",
+          "text": "save",
+          "source_locator": "工作表/Sheet1/行/27/单词"
+        },
+        {
+          "category": "例句",
+          "number": 26,
+          "filename_stem": "句子26",
+          "voice": "female",
+          "text": "The doctor saved the boy.",
+          "source_locator": "工作表/Sheet1/行/27/例句"
+        },
+        {
+          "category": "单词",
+          "number": 27,
+          "filename_stem": "单词27",
+          "voice": "female",
+          "text": "dead",
+          "source_locator": "工作表/Sheet1/行/28/单词"
+        },
+        {
+          "category": "例句",
+          "number": 27,
+          "filename_stem": "句子27",
+          "voice": "female",
+          "text": "The cat was dead when we found it.",
+          "source_locator": "工作表/Sheet1/行/28/例句"
+        },
+        {
+          "category": "单词",
+          "number": 28,
+          "filename_stem": "单词28",
+          "voice": "female",
+          "text": "dodo",
+          "source_locator": "工作表/Sheet1/行/29/单词"
+        },
+        {
+          "category": "例句",
+          "number": 28,
+          "filename_stem": "句子28",
+          "voice": "female",
+          "text": "A dodo was a large bird that could not fly.",
+          "source_locator": "工作表/Sheet1/行/29/例句"
+        },
+        {
+          "category": "单词",
+          "number": 29,
+          "filename_stem": "单词29",
+          "voice": "female",
+          "text": "character",
+          "source_locator": "工作表/Sheet1/行/30/单词"
+        },
+        {
+          "category": "例句",
+          "number": 29,
+          "filename_stem": "句子29",
+          "voice": "female",
+          "text": "Alice is my favourite character in the story.",
+          "source_locator": "工作表/Sheet1/行/30/例句"
+        },
+        {
+          "category": "单词",
+          "number": 30,
+          "filename_stem": "单词30",
+          "voice": "female",
+          "text": "museum",
+          "source_locator": "工作表/Sheet1/行/31/单词"
+        },
+        {
+          "category": "例句",
+          "number": 30,
+          "filename_stem": "句子30",
+          "voice": "female",
+          "text": "We are going to the museum this weekend.",
+          "source_locator": "工作表/Sheet1/行/31/例句"
+        },
+        {
+          "category": "单词",
+          "number": 31,
+          "filename_stem": "单词31",
+          "voice": "female",
+          "text": "island",
+          "source_locator": "工作表/Sheet1/行/32/单词"
+        },
+        {
+          "category": "例句",
+          "number": 31,
+          "filename_stem": "句子31",
+          "voice": "female",
+          "text": "Many birds live on the island.",
+          "source_locator": "工作表/Sheet1/行/32/例句"
+        },
+        {
+          "category": "单词",
+          "number": 32,
+          "filename_stem": "单词32",
+          "voice": "female",
+          "text": "ocean",
+          "source_locator": "工作表/Sheet1/行/33/单词"
+        },
+        {
+          "category": "例句",
+          "number": 32,
+          "filename_stem": "句子32",
+          "voice": "female",
+          "text": "The ship is sailing across the ocean.",
+          "source_locator": "工作表/Sheet1/行/33/例句"
+        },
+        {
+          "category": "单词",
+          "number": 33,
+          "filename_stem": "单词33",
+          "voice": "female",
+          "text": "plenty",
+          "source_locator": "工作表/Sheet1/行/34/单词"
+        },
+        {
+          "category": "例句",
+          "number": 33,
+          "filename_stem": "句子33",
+          "voice": "female",
+          "text": "Do not worry—we have plenty of time.",
+          "source_locator": "工作表/Sheet1/行/34/例句"
+        },
+        {
+          "category": "单词",
+          "number": 34,
+          "filename_stem": "单词34",
+          "voice": "female",
+          "text": "friendly",
+          "source_locator": "工作表/Sheet1/行/35/单词"
+        },
+        {
+          "category": "例句",
+          "number": 34,
+          "filename_stem": "句子34",
+          "voice": "female",
+          "text": "The guide was friendly to us.",
+          "source_locator": "工作表/Sheet1/行/35/例句"
+        },
+        {
+          "category": "单词",
+          "number": 35,
+          "filename_stem": "单词35",
+          "voice": "female",
+          "text": "peaceful",
+          "source_locator": "工作表/Sheet1/行/36/单词"
+        },
+        {
+          "category": "例句",
+          "number": 35,
+          "filename_stem": "句子35",
+          "voice": "female",
+          "text": "People want to live a peaceful life.",
+          "source_locator": "工作表/Sheet1/行/36/例句"
+        },
+        {
+          "category": "单词",
+          "number": 36,
+          "filename_stem": "单词36",
+          "voice": "female",
+          "text": "arrive",
+          "source_locator": "工作表/Sheet1/行/37/单词"
+        },
+        {
+          "category": "例句",
+          "number": 36,
+          "filename_stem": "句子36",
+          "voice": "female",
+          "text": "The bus will arrive at ten.",
+          "source_locator": "工作表/Sheet1/行/37/例句"
+        },
+        {
+          "category": "单词",
+          "number": 37,
+          "filename_stem": "单词37",
+          "voice": "female",
+          "text": "forest",
+          "source_locator": "工作表/Sheet1/行/38/单词"
+        },
+        {
+          "category": "例句",
+          "number": 37,
+          "filename_stem": "句子37",
+          "voice": "female",
+          "text": "Many wild animals live in the forest.",
+          "source_locator": "工作表/Sheet1/行/38/例句"
+        },
+        {
+          "category": "单词",
+          "number": 38,
+          "filename_stem": "单词38",
+          "voice": "female",
+          "text": "hunt",
+          "source_locator": "工作表/Sheet1/行/39/单词"
+        },
+        {
+          "category": "例句",
+          "number": 38,
+          "filename_stem": "句子38",
+          "voice": "female",
+          "text": "It is wrong to hunt wild animals.",
+          "source_locator": "工作表/Sheet1/行/39/例句"
+        },
+        {
+          "category": "单词",
+          "number": 39,
+          "filename_stem": "单词39",
+          "voice": "female",
+          "text": "full",
+          "source_locator": "工作表/Sheet1/行/40/单词"
+        },
+        {
+          "category": "例句",
+          "number": 39,
+          "filename_stem": "句子39",
+          "voice": "female",
+          "text": "The box is full of books.",
+          "source_locator": "工作表/Sheet1/行/40/例句"
+        },
+        {
+          "category": "单词",
+          "number": 40,
+          "filename_stem": "单词40",
+          "voice": "female",
+          "text": "fantastic",
+          "source_locator": "工作表/Sheet1/行/41/单词"
+        },
+        {
+          "category": "例句",
+          "number": 40,
+          "filename_stem": "句子40",
+          "voice": "female",
+          "text": "We had a fantastic day at the zoo.",
+          "source_locator": "工作表/Sheet1/行/41/例句"
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "词汇",
+  "cli_result": {
+    "source_file": "U6单词导入模板.xlsx",
+    "doc_type": "词汇",
+    "item_count": 80,
+    "items": [
+      {
+        "category": "单词",
+        "number": 1,
+        "filename_stem": "单词1",
+        "voice": "female",
+        "text": "pigeon",
+        "source_locator": "工作表/Sheet1/行/2/单词"
+      },
+      {
+        "category": "例句",
+        "number": 1,
+        "filename_stem": "句子1",
+        "voice": "female",
+        "text": "A pigeon is standing near the window.",
+        "source_locator": "工作表/Sheet1/行/2/例句"
+      },
+      {
+        "category": "单词",
+        "number": 2,
+        "filename_stem": "单词2",
+        "voice": "female",
+        "text": "surprise",
+        "source_locator": "工作表/Sheet1/行/3/单词"
+      },
+      {
+        "category": "例句",
+        "number": 2,
+        "filename_stem": "句子2",
+        "voice": "female",
+        "text": "The birthday gift was a lovely surprise.",
+        "source_locator": "工作表/Sheet1/行/3/例句"
+      },
+      {
+        "category": "单词",
+        "number": 3,
+        "filename_stem": "单词3",
+        "voice": "female",
+        "text": "droppings",
+        "source_locator": "工作表/Sheet1/行/4/单词"
+      },
+      {
+        "category": "例句",
+        "number": 3,
+        "filename_stem": "句子3",
+        "voice": "female",
+        "text": "There are bird droppings on the bench.",
+        "source_locator": "工作表/Sheet1/行/4/例句"
+      },
+      {
+        "category": "单词",
+        "number": 4,
+        "filename_stem": "单词4",
+        "voice": "female",
+        "text": "boring",
+        "source_locator": "工作表/Sheet1/行/5/单词"
+      },
+      {
+        "category": "例句",
+        "number": 4,
+        "filename_stem": "句子4",
+        "voice": "female",
+        "text": "The film is boring.",
+        "source_locator": "工作表/Sheet1/行/5/例句"
+      },
+      {
+        "category": "单词",
+        "number": 5,
+        "filename_stem": "单词5",
+        "voice": "female",
+        "text": "feed",
+        "source_locator": "工作表/Sheet1/行/6/单词"
+      },
+      {
+        "category": "例句",
+        "number": 5,
+        "filename_stem": "句子5",
+        "voice": "female",
+        "text": "We feed the rabbits every morning.",
+        "source_locator": "工作表/Sheet1/行/6/例句"
+      },
+      {
+        "category": "单词",
+        "number": 6,
+        "filename_stem": "单词6",
+        "voice": "female",
+        "text": "madly",
+        "source_locator": "工作表/Sheet1/行/7/单词"
+      },
+      {
+        "category": "例句",
+        "number": 6,
+        "filename_stem": "句子6",
+        "voice": "female",
+        "text": "The birds are flying madly to her.",
+        "source_locator": "工作表/Sheet1/行/7/例句"
+      },
+      {
+        "category": "单词",
+        "number": 7,
+        "filename_stem": "单词7",
+        "voice": "female",
+        "text": "scary",
+        "source_locator": "工作表/Sheet1/行/8/单词"
+      },
+      {
+        "category": "例句",
+        "number": 7,
+        "filename_stem": "句子7",
+        "voice": "female",
+        "text": "The snake looks scary.",
+        "source_locator": "工作表/Sheet1/行/8/例句"
+      },
+      {
+        "category": "单词",
+        "number": 8,
+        "filename_stem": "单词8",
+        "voice": "female",
+        "text": "research",
+        "source_locator": "工作表/Sheet1/行/9/单词"
+      },
+      {
+        "category": "例句",
+        "number": 8,
+        "filename_stem": "句子8",
+        "voice": "female",
+        "text": "Our class is doing some research on birds.",
+        "source_locator": "工作表/Sheet1/行/9/例句"
+      },
+      {
+        "category": "单词",
+        "number": 9,
+        "filename_stem": "单词9",
+        "voice": "female",
+        "text": "recognise",
+        "source_locator": "工作表/Sheet1/行/10/单词"
+      },
+      {
+        "category": "例句",
+        "number": 9,
+        "filename_stem": "句子9",
+        "voice": "female",
+        "text": "I can recognise my teacher from her voice.",
+        "source_locator": "工作表/Sheet1/行/10/例句"
+      },
+      {
+        "category": "单词",
+        "number": 10,
+        "filename_stem": "单词10",
+        "voice": "female",
+        "text": "themselves",
+        "source_locator": "工作表/Sheet1/行/11/单词"
+      },
+      {
+        "category": "例句",
+        "number": 10,
+        "filename_stem": "句子10",
+        "voice": "female",
+        "text": "The children made lunch by themselves.",
+        "source_locator": "工作表/Sheet1/行/11/例句"
+      },
+      {
+        "category": "单词",
+        "number": 11,
+        "filename_stem": "单词11",
+        "voice": "female",
+        "text": "mirror",
+        "source_locator": "工作表/Sheet1/行/12/单词"
+      },
+      {
+        "category": "例句",
+        "number": 11,
+        "filename_stem": "句子11",
+        "voice": "female",
+        "text": "She looks at herself in the mirror.",
+        "source_locator": "工作表/Sheet1/行/12/例句"
+      },
+      {
+        "category": "单词",
+        "number": 12,
+        "filename_stem": "单词12",
+        "voice": "female",
+        "text": "itself",
+        "source_locator": "工作表/Sheet1/行/13/单词"
+      },
+      {
+        "category": "例句",
+        "number": 12,
+        "filename_stem": "句子12",
+        "voice": "female",
+        "text": "The cat can clean itself.",
+        "source_locator": "工作表/Sheet1/行/13/例句"
+      },
+      {
+        "category": "单词",
+        "number": 13,
+        "filename_stem": "单词13",
+        "voice": "female",
+        "text": "maybe",
+        "source_locator": "工作表/Sheet1/行/14/单词"
+      },
+      {
+        "category": "例句",
+        "number": 13,
+        "filename_stem": "句子13",
+        "voice": "female",
+        "text": "Maybe we can visit the museum tomorrow.",
+        "source_locator": "工作表/Sheet1/行/14/例句"
+      },
+      {
+        "category": "单词",
+        "number": 14,
+        "filename_stem": "单词14",
+        "voice": "female",
+        "text": "several",
+        "source_locator": "工作表/Sheet1/行/15/单词"
+      },
+      {
+        "category": "例句",
+        "number": 14,
+        "filename_stem": "句子14",
+        "voice": "female",
+        "text": "Several students are watching the birds.",
+        "source_locator": "工作表/Sheet1/行/15/例句"
+      },
+      {
+        "category": "单词",
+        "number": 15,
+        "filename_stem": "单词15",
+        "voice": "female",
+        "text": "kilometre",
+        "source_locator": "工作表/Sheet1/行/16/单词"
+      },
+      {
+        "category": "例句",
+        "number": 15,
+        "filename_stem": "句子15",
+        "voice": "female",
+        "text": "The island is one kilometre from here.",
+        "source_locator": "工作表/Sheet1/行/16/例句"
+      },
+      {
+        "category": "单词",
+        "number": 16,
+        "filename_stem": "单词16",
+        "voice": "female",
+        "text": "speed",
+        "source_locator": "工作表/Sheet1/行/17/单词"
+      },
+      {
+        "category": "例句",
+        "number": 16,
+        "filename_stem": "句子16",
+        "voice": "female",
+        "text": "The train is moving at high speed.",
+        "source_locator": "工作表/Sheet1/行/17/例句"
+      },
+      {
+        "category": "单词",
+        "number": 17,
+        "filename_stem": "单词17",
+        "voice": "female",
+        "text": "amazing",
+        "source_locator": "工作表/Sheet1/行/18/单词"
+      },
+      {
+        "category": "例句",
+        "number": 17,
+        "filename_stem": "句子17",
+        "voice": "female",
+        "text": "The rescue dog did an amazing job.",
+        "source_locator": "工作表/Sheet1/行/18/例句"
+      },
+      {
+        "category": "单词",
+        "number": 18,
+        "filename_stem": "单词18",
+        "voice": "female",
+        "text": "enough",
+        "source_locator": "工作表/Sheet1/行/19/单词"
+      },
+      {
+        "category": "例句",
+        "number": 18,
+        "filename_stem": "句子18",
+        "voice": "female",
+        "text": "There was enough food for everyone.",
+        "source_locator": "工作表/Sheet1/行/19/例句"
+      },
+      {
+        "category": "单词",
+        "number": 19,
+        "filename_stem": "单词19",
+        "voice": "female",
+        "text": "beaver",
+        "source_locator": "工作表/Sheet1/行/20/单词"
+      },
+      {
+        "category": "例句",
+        "number": 19,
+        "filename_stem": "句子19",
+        "voice": "female",
+        "text": "A beaver is building a dam.",
+        "source_locator": "工作表/Sheet1/行/20/例句"
+      },
+      {
+        "category": "单词",
+        "number": 20,
+        "filename_stem": "单词20",
+        "voice": "female",
+        "text": "wolf",
+        "source_locator": "工作表/Sheet1/行/21/单词"
+      },
+      {
+        "category": "例句",
+        "number": 20,
+        "filename_stem": "句子20",
+        "voice": "female",
+        "text": "A wolf is walking through the forest.",
+        "source_locator": "工作表/Sheet1/行/21/例句"
+      },
+      {
+        "category": "单词",
+        "number": 21,
+        "filename_stem": "单词21",
+        "voice": "female",
+        "text": "engineer",
+        "source_locator": "工作表/Sheet1/行/22/单词"
+      },
+      {
+        "category": "例句",
+        "number": 21,
+        "filename_stem": "句子21",
+        "voice": "female",
+        "text": "My uncle is an engineer.",
+        "source_locator": "工作表/Sheet1/行/22/例句"
+      },
+      {
+        "category": "单词",
+        "number": 22,
+        "filename_stem": "单词22",
+        "voice": "female",
+        "text": "hero",
+        "source_locator": "工作表/Sheet1/行/23/单词"
+      },
+      {
+        "category": "例句",
+        "number": 22,
+        "filename_stem": "句子22",
+        "voice": "female",
+        "text": "Firefighters are real heroes.",
+        "source_locator": "工作表/Sheet1/行/23/例句"
+      },
+      {
+        "category": "单词",
+        "number": 23,
+        "filename_stem": "单词23",
+        "voice": "female",
+        "text": "rescue",
+        "source_locator": "工作表/Sheet1/行/24/单词"
+      },
+      {
+        "category": "例句",
+        "number": 23,
+        "filename_stem": "句子23",
+        "voice": "female",
+        "text": "The rescue took three hours.",
+        "source_locator": "工作表/Sheet1/行/24/例句"
+      },
+      {
+        "category": "单词",
+        "number": 24,
+        "filename_stem": "单词24",
+        "voice": "female",
+        "text": "earthquake",
+        "source_locator": "工作表/Sheet1/行/25/单词"
+      },
+      {
+        "category": "例句",
+        "number": 24,
+        "filename_stem": "句子24",
+        "voice": "female",
+        "text": "The earthquake damaged many houses.",
+        "source_locator": "工作表/Sheet1/行/25/例句"
+      },
+      {
+        "category": "单词",
+        "number": 25,
+        "filename_stem": "单词25",
+        "voice": "female",
+        "text": "missing",
+        "source_locator": "工作表/Sheet1/行/26/单词"
+      },
+      {
+        "category": "例句",
+        "number": 25,
+        "filename_stem": "句子25",
+        "voice": "female",
+        "text": "The police are looking for the missing child.",
+        "source_locator": "工作表/Sheet1/行/26/例句"
+      },
+      {
+        "category": "单词",
+        "number": 26,
+        "filename_stem": "单词26",
+        "voice": "female",
+        "text": "save",
+        "source_locator": "工作表/Sheet1/行/27/单词"
+      },
+      {
+        "category": "例句",
+        "number": 26,
+        "filename_stem": "句子26",
+        "voice": "female",
+        "text": "The doctor saved the boy.",
+        "source_locator": "工作表/Sheet1/行/27/例句"
+      },
+      {
+        "category": "单词",
+        "number": 27,
+        "filename_stem": "单词27",
+        "voice": "female",
+        "text": "dead",
+        "source_locator": "工作表/Sheet1/行/28/单词"
+      },
+      {
+        "category": "例句",
+        "number": 27,
+        "filename_stem": "句子27",
+        "voice": "female",
+        "text": "The cat was dead when we found it.",
+        "source_locator": "工作表/Sheet1/行/28/例句"
+      },
+      {
+        "category": "单词",
+        "number": 28,
+        "filename_stem": "单词28",
+        "voice": "female",
+        "text": "dodo",
+        "source_locator": "工作表/Sheet1/行/29/单词"
+      },
+      {
+        "category": "例句",
+        "number": 28,
+        "filename_stem": "句子28",
+        "voice": "female",
+        "text": "A dodo was a large bird that could not fly.",
+        "source_locator": "工作表/Sheet1/行/29/例句"
+      },
+      {
+        "category": "单词",
+        "number": 29,
+        "filename_stem": "单词29",
+        "voice": "female",
+        "text": "character",
+        "source_locator": "工作表/Sheet1/行/30/单词"
+      },
+      {
+        "category": "例句",
+        "number": 29,
+        "filename_stem": "句子29",
+        "voice": "female",
+        "text": "Alice is my favourite character in the story.",
+        "source_locator": "工作表/Sheet1/行/30/例句"
+      },
+      {
+        "category": "单词",
+        "number": 30,
+        "filename_stem": "单词30",
+        "voice": "female",
+        "text": "museum",
+        "source_locator": "工作表/Sheet1/行/31/单词"
+      },
+      {
+        "category": "例句",
+        "number": 30,
+        "filename_stem": "句子30",
+        "voice": "female",
+        "text": "We are going to the museum this weekend.",
+        "source_locator": "工作表/Sheet1/行/31/例句"
+      },
+      {
+        "category": "单词",
+        "number": 31,
+        "filename_stem": "单词31",
+        "voice": "female",
+        "text": "island",
+        "source_locator": "工作表/Sheet1/行/32/单词"
+      },
+      {
+        "category": "例句",
+        "number": 31,
+        "filename_stem": "句子31",
+        "voice": "female",
+        "text": "Many birds live on the island.",
+        "source_locator": "工作表/Sheet1/行/32/例句"
+      },
+      {
+        "category": "单词",
+        "number": 32,
+        "filename_stem": "单词32",
+        "voice": "female",
+        "text": "ocean",
+        "source_locator": "工作表/Sheet1/行/33/单词"
+      },
+      {
+        "category": "例句",
+        "number": 32,
+        "filename_stem": "句子32",
+        "voice": "female",
+        "text": "The ship is sailing across the ocean.",
+        "source_locator": "工作表/Sheet1/行/33/例句"
+      },
+      {
+        "category": "单词",
+        "number": 33,
+        "filename_stem": "单词33",
+        "voice": "female",
+        "text": "plenty",
+        "source_locator": "工作表/Sheet1/行/34/单词"
+      },
+      {
+        "category": "例句",
+        "number": 33,
+        "filename_stem": "句子33",
+        "voice": "female",
+        "text": "Do not worry—we have plenty of time.",
+        "source_locator": "工作表/Sheet1/行/34/例句"
+      },
+      {
+        "category": "单词",
+        "number": 34,
+        "filename_stem": "单词34",
+        "voice": "female",
+        "text": "friendly",
+        "source_locator": "工作表/Sheet1/行/35/单词"
+      },
+      {
+        "category": "例句",
+        "number": 34,
+        "filename_stem": "句子34",
+        "voice": "female",
+        "text": "The guide was friendly to us.",
+        "source_locator": "工作表/Sheet1/行/35/例句"
+      },
+      {
+        "category": "单词",
+        "number": 35,
+        "filename_stem": "单词35",
+        "voice": "female",
+        "text": "peaceful",
+        "source_locator": "工作表/Sheet1/行/36/单词"
+      },
+      {
+        "category": "例句",
+        "number": 35,
+        "filename_stem": "句子35",
+        "voice": "female",
+        "text": "People want to live a peaceful life.",
+        "source_locator": "工作表/Sheet1/行/36/例句"
+      },
+      {
+        "category": "单词",
+        "number": 36,
+        "filename_stem": "单词36",
+        "voice": "female",
+        "text": "arrive",
+        "source_locator": "工作表/Sheet1/行/37/单词"
+      },
+      {
+        "category": "例句",
+        "number": 36,
+        "filename_stem": "句子36",
+        "voice": "female",
+        "text": "The bus will arrive at ten.",
+        "source_locator": "工作表/Sheet1/行/37/例句"
+      },
+      {
+        "category": "单词",
+        "number": 37,
+        "filename_stem": "单词37",
+        "voice": "female",
+        "text": "forest",
+        "source_locator": "工作表/Sheet1/行/38/单词"
+      },
+      {
+        "category": "例句",
+        "number": 37,
+        "filename_stem": "句子37",
+        "voice": "female",
+        "text": "Many wild animals live in the forest.",
+        "source_locator": "工作表/Sheet1/行/38/例句"
+      },
+      {
+        "category": "单词",
+        "number": 38,
+        "filename_stem": "单词38",
+        "voice": "female",
+        "text": "hunt",
+        "source_locator": "工作表/Sheet1/行/39/单词"
+      },
+      {
+        "category": "例句",
+        "number": 38,
+        "filename_stem": "句子38",
+        "voice": "female",
+        "text": "It is wrong to hunt wild animals.",
+        "source_locator": "工作表/Sheet1/行/39/例句"
+      },
+      {
+        "category": "单词",
+        "number": 39,
+        "filename_stem": "单词39",
+        "voice": "female",
+        "text": "full",
+        "source_locator": "工作表/Sheet1/行/40/单词"
+      },
+      {
+        "category": "例句",
+        "number": 39,
+        "filename_stem": "句子39",
+        "voice": "female",
+        "text": "The box is full of books.",
+        "source_locator": "工作表/Sheet1/行/40/例句"
+      },
+      {
+        "category": "单词",
+        "number": 40,
+        "filename_stem": "单词40",
+        "voice": "female",
+        "text": "fantastic",
+        "source_locator": "工作表/Sheet1/行/41/单词"
+      },
+      {
+        "category": "例句",
+        "number": 40,
+        "filename_stem": "句子40",
+        "voice": "female",
+        "text": "We had a fantastic day at the zoo.",
+        "source_locator": "工作表/Sheet1/行/41/例句"
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "单词_单词1",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 1,
+      "filename": "单词1.mp3",
+      "voice_override": "female",
+      "text_preview": "pigeon",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子1",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 1,
+      "filename": "句子1.mp3",
+      "voice_override": "female",
+      "text_preview": "A pigeon is standing near the window.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词2",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 2,
+      "filename": "单词2.mp3",
+      "voice_override": "female",
+      "text_preview": "surprise",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子2",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 2,
+      "filename": "句子2.mp3",
+      "voice_override": "female",
+      "text_preview": "The birthday gift was a lovely surprise.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词3",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 3,
+      "filename": "单词3.mp3",
+      "voice_override": "female",
+      "text_preview": "droppings",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子3",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 3,
+      "filename": "句子3.mp3",
+      "voice_override": "female",
+      "text_preview": "There are bird droppings on the bench.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词4",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 4,
+      "filename": "单词4.mp3",
+      "voice_override": "female",
+      "text_preview": "boring",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子4",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 4,
+      "filename": "句子4.mp3",
+      "voice_override": "female",
+      "text_preview": "The film is boring.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词5",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 5,
+      "filename": "单词5.mp3",
+      "voice_override": "female",
+      "text_preview": "feed",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子5",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 5,
+      "filename": "句子5.mp3",
+      "voice_override": "female",
+      "text_preview": "We feed the rabbits every morning.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词6",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 6,
+      "filename": "单词6.mp3",
+      "voice_override": "female",
+      "text_preview": "madly",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子6",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 6,
+      "filename": "句子6.mp3",
+      "voice_override": "female",
+      "text_preview": "The birds are flying madly to her.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词7",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 7,
+      "filename": "单词7.mp3",
+      "voice_override": "female",
+      "text_preview": "scary",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子7",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 7,
+      "filename": "句子7.mp3",
+      "voice_override": "female",
+      "text_preview": "The snake looks scary.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词8",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 8,
+      "filename": "单词8.mp3",
+      "voice_override": "female",
+      "text_preview": "research",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子8",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 8,
+      "filename": "句子8.mp3",
+      "voice_override": "female",
+      "text_preview": "Our class is doing some research on birds.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词9",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 9,
+      "filename": "单词9.mp3",
+      "voice_override": "female",
+      "text_preview": "recognise",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子9",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 9,
+      "filename": "句子9.mp3",
+      "voice_override": "female",
+      "text_preview": "I can recognise my teacher from her voice.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词10",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 10,
+      "filename": "单词10.mp3",
+      "voice_override": "female",
+      "text_preview": "themselves",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子10",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 10,
+      "filename": "句子10.mp3",
+      "voice_override": "female",
+      "text_preview": "The children made lunch by themselves.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词11",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 11,
+      "filename": "单词11.mp3",
+      "voice_override": "female",
+      "text_preview": "mirror",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子11",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 11,
+      "filename": "句子11.mp3",
+      "voice_override": "female",
+      "text_preview": "She looks at herself in the mirror.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词12",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 12,
+      "filename": "单词12.mp3",
+      "voice_override": "female",
+      "text_preview": "itself",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子12",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 12,
+      "filename": "句子12.mp3",
+      "voice_override": "female",
+      "text_preview": "The cat can clean itself.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词13",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 13,
+      "filename": "单词13.mp3",
+      "voice_override": "female",
+      "text_preview": "maybe",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子13",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 13,
+      "filename": "句子13.mp3",
+      "voice_override": "female",
+      "text_preview": "Maybe we can visit the museum tomorrow.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词14",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 14,
+      "filename": "单词14.mp3",
+      "voice_override": "female",
+      "text_preview": "several",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子14",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 14,
+      "filename": "句子14.mp3",
+      "voice_override": "female",
+      "text_preview": "Several students are watching the birds.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词15",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 15,
+      "filename": "单词15.mp3",
+      "voice_override": "female",
+      "text_preview": "kilometre",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子15",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 15,
+      "filename": "句子15.mp3",
+      "voice_override": "female",
+      "text_preview": "The island is one kilometre from here.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词16",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 16,
+      "filename": "单词16.mp3",
+      "voice_override": "female",
+      "text_preview": "speed",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子16",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 16,
+      "filename": "句子16.mp3",
+      "voice_override": "female",
+      "text_preview": "The train is moving at high speed.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词17",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 17,
+      "filename": "单词17.mp3",
+      "voice_override": "female",
+      "text_preview": "amazing",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子17",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 17,
+      "filename": "句子17.mp3",
+      "voice_override": "female",
+      "text_preview": "The rescue dog did an amazing job.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词18",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 18,
+      "filename": "单词18.mp3",
+      "voice_override": "female",
+      "text_preview": "enough",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子18",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 18,
+      "filename": "句子18.mp3",
+      "voice_override": "female",
+      "text_preview": "There was enough food for everyone.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词19",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 19,
+      "filename": "单词19.mp3",
+      "voice_override": "female",
+      "text_preview": "beaver",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子19",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 19,
+      "filename": "句子19.mp3",
+      "voice_override": "female",
+      "text_preview": "A beaver is building a dam.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词20",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 20,
+      "filename": "单词20.mp3",
+      "voice_override": "female",
+      "text_preview": "wolf",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子20",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 20,
+      "filename": "句子20.mp3",
+      "voice_override": "female",
+      "text_preview": "A wolf is walking through the forest.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词21",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 21,
+      "filename": "单词21.mp3",
+      "voice_override": "female",
+      "text_preview": "engineer",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子21",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 21,
+      "filename": "句子21.mp3",
+      "voice_override": "female",
+      "text_preview": "My uncle is an engineer.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词22",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 22,
+      "filename": "单词22.mp3",
+      "voice_override": "female",
+      "text_preview": "hero",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子22",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 22,
+      "filename": "句子22.mp3",
+      "voice_override": "female",
+      "text_preview": "Firefighters are real heroes.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词23",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 23,
+      "filename": "单词23.mp3",
+      "voice_override": "female",
+      "text_preview": "rescue",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子23",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 23,
+      "filename": "句子23.mp3",
+      "voice_override": "female",
+      "text_preview": "The rescue took three hours.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词24",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 24,
+      "filename": "单词24.mp3",
+      "voice_override": "female",
+      "text_preview": "earthquake",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子24",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 24,
+      "filename": "句子24.mp3",
+      "voice_override": "female",
+      "text_preview": "The earthquake damaged many houses.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词25",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 25,
+      "filename": "单词25.mp3",
+      "voice_override": "female",
+      "text_preview": "missing",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子25",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 25,
+      "filename": "句子25.mp3",
+      "voice_override": "female",
+      "text_preview": "The police are looking for the missing child.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词26",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 26,
+      "filename": "单词26.mp3",
+      "voice_override": "female",
+      "text_preview": "save",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子26",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 26,
+      "filename": "句子26.mp3",
+      "voice_override": "female",
+      "text_preview": "The doctor saved the boy.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词27",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 27,
+      "filename": "单词27.mp3",
+      "voice_override": "female",
+      "text_preview": "dead",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子27",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 27,
+      "filename": "句子27.mp3",
+      "voice_override": "female",
+      "text_preview": "The cat was dead when we found it.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词28",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 28,
+      "filename": "单词28.mp3",
+      "voice_override": "female",
+      "text_preview": "dodo",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子28",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 28,
+      "filename": "句子28.mp3",
+      "voice_override": "female",
+      "text_preview": "A dodo was a large bird that could not fly.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词29",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 29,
+      "filename": "单词29.mp3",
+      "voice_override": "female",
+      "text_preview": "character",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子29",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 29,
+      "filename": "句子29.mp3",
+      "voice_override": "female",
+      "text_preview": "Alice is my favourite character in the story.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词30",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 30,
+      "filename": "单词30.mp3",
+      "voice_override": "female",
+      "text_preview": "museum",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子30",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 30,
+      "filename": "句子30.mp3",
+      "voice_override": "female",
+      "text_preview": "We are going to the museum this weekend.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词31",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 31,
+      "filename": "单词31.mp3",
+      "voice_override": "female",
+      "text_preview": "island",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子31",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 31,
+      "filename": "句子31.mp3",
+      "voice_override": "female",
+      "text_preview": "Many birds live on the island.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词32",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 32,
+      "filename": "单词32.mp3",
+      "voice_override": "female",
+      "text_preview": "ocean",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子32",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 32,
+      "filename": "句子32.mp3",
+      "voice_override": "female",
+      "text_preview": "The ship is sailing across the ocean.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词33",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 33,
+      "filename": "单词33.mp3",
+      "voice_override": "female",
+      "text_preview": "plenty",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子33",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 33,
+      "filename": "句子33.mp3",
+      "voice_override": "female",
+      "text_preview": "Do not worry—we have plenty of time.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词34",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 34,
+      "filename": "单词34.mp3",
+      "voice_override": "female",
+      "text_preview": "friendly",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子34",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 34,
+      "filename": "句子34.mp3",
+      "voice_override": "female",
+      "text_preview": "The guide was friendly to us.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词35",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 35,
+      "filename": "单词35.mp3",
+      "voice_override": "female",
+      "text_preview": "peaceful",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子35",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 35,
+      "filename": "句子35.mp3",
+      "voice_override": "female",
+      "text_preview": "People want to live a peaceful life.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词36",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 36,
+      "filename": "单词36.mp3",
+      "voice_override": "female",
+      "text_preview": "arrive",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子36",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 36,
+      "filename": "句子36.mp3",
+      "voice_override": "female",
+      "text_preview": "The bus will arrive at ten.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词37",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 37,
+      "filename": "单词37.mp3",
+      "voice_override": "female",
+      "text_preview": "forest",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子37",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 37,
+      "filename": "句子37.mp3",
+      "voice_override": "female",
+      "text_preview": "Many wild animals live in the forest.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词38",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 38,
+      "filename": "单词38.mp3",
+      "voice_override": "female",
+      "text_preview": "hunt",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子38",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 38,
+      "filename": "句子38.mp3",
+      "voice_override": "female",
+      "text_preview": "It is wrong to hunt wild animals.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词39",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 39,
+      "filename": "单词39.mp3",
+      "voice_override": "female",
+      "text_preview": "full",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子39",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 39,
+      "filename": "句子39.mp3",
+      "voice_override": "female",
+      "text_preview": "The box is full of books.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "单词_单词40",
+      "doc_type": "词汇",
+      "category": "单词",
+      "seq": 40,
+      "filename": "单词40.mp3",
+      "voice_override": "female",
+      "text_preview": "fantastic",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "例句_句子40",
+      "doc_type": "词汇",
+      "category": "例句",
+      "seq": 40,
+      "filename": "句子40.mp3",
+      "voice_override": "female",
+      "text_preview": "We had a fantastic day at the zoo.",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "61884ab18ac791fd915b52e6188a3a724bf325678bef299b19fc9edfa65e2a9c",
+    "cli_result": "625c61654a46ca092bb6465e0e4535827b71804f057e53c02548a81ab8ef073e",
+    "progress_items": "80e5338b6d739ac8ebe11c6dc0c71b636ffa46a63c398597ec29bec444de632e"
+  }
+}

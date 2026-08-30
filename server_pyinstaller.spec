@@ -29,9 +29,12 @@ from PyInstaller.utils.hooks import collect_data_files
 # 数据文件（资源）
 # ============================================================================
 datas = [
-    # word_parser 没有 __init__.py；运行时会把这个目录加入 sys.path。
-    # 其余本地 Python 模块均由 Analysis 作为代码模块收集，不再重复作为 data 打包。
-    ('word_parser/word_parser.py', 'word_parser'),
+    # 迁移运行器通过 ``Path(__file__).parent / 'migrations'`` 在运行时
+    # 读取 SQL。db 本身不是一个带 package data 的第三方包，因此必须显式
+    # 将迁移目录放进 frozen backend；否则首个 /api/v1/workflows 请求会在
+    # 初始化数据库时抛出 ``MigrationError: no migration files found``，
+    # Electron 端只能看到没有诊断信息的 HTTP 500。
+    ('db/migrations', 'db/migrations'),
     # 首次启动在线刷新失败时使用的音色目录种子缓存。
     ('resources/voices.json', 'resources'),
 ]
@@ -44,10 +47,36 @@ datas += collect_data_files('playwright', include_py_files=False)
 binaries = []
 hiddenimports = [
     # 这些导入位于容错分支内，显式列出以避免 PyInstaller 将其判为可选。
-    # word_parser.py 作为 data 加载，Analysis 看不到它对 python-docx / openpyxl 的导入。
+    # openpyxl 在 question_types.vocabulary 中是 try/except 导入。
     'docx',
     'openpyxl',
-    'xunfei_peiyin',
+    # 题型切片包：wordtts.config 静态导入 question_types，正常会被 Analysis
+    # 跟随；显式列出以防切片被误判为可选依赖。
+    'question_types',
+    'question_types.base',
+    'question_types.text_utils',
+    'question_types.info_acquisition',
+    'question_types.listening_selection',
+    'question_types.listening_response',
+    'question_types.text_reading',
+    'question_types.info_retelling',
+    'question_types.listening_record_retelling',
+    'question_types.imitation_reading',
+    'question_types.vocabulary',
+    'xunfei',
+    'xunfei.config',
+    'xunfei.errors',
+    'xunfei.signing',
+    'xunfei.voice_catalog',
+    'xunfei.page_scripts',
+    'xunfei.page_actions',
+    'xunfei.downloads',
+    'xunfei.composite_actions',
+    'xunfei.generation',
+    'xunfei.submission_tracker',
+    'xunfei.helpers',
+    'xunfei.session',
+    'xunfei.runtime',
     'xunfei_voice_catalog',
     # 只使用同步 Playwright API。playwright 自带的官方 PyInstaller hook
     # 会收集 driver/package；下方在 Analysis 后剔除重复的 Node 可执行文件。
@@ -67,7 +96,12 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    # The project package is also named ``workflow``.  pyinstaller-hooks-contrib
+    # ships a hook for an unrelated PyPI distribution with the same name and
+    # otherwise attempts to copy metadata that is not installed in the build
+    # environment.  The project-local hook keeps our package importable while
+    # shadowing that unrelated metadata hook.
+    hookspath=[os.path.join(globals().get('SPECPATH', os.getcwd()), 'pyinstaller_hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
@@ -132,7 +166,11 @@ if not any(
     for entry in _analysis_entries
 ):
     raise RuntimeError('imageio-ffmpeg 的 FFmpeg 二进制未被收集')
-
+if not any(
+    _normalized_target(entry) == 'db/migrations/0001_foundation.sql'
+    for entry in _analysis_entries
+):
+    raise RuntimeError('数据库迁移 SQL 未被收集，无法启动工作流 API')
 print(f"[spec] 已移除 Playwright 内置 Node: {len(_removed_playwright_node)} 个文件")
 
 pyz = PYZ(a.pure)

@@ -1,0 +1,171 @@
+{
+  "source_file": "听后选择-7上 Starter Unit 1 Hello!.docx",
+  "sha256": "ec5517a609e8636d9d27f1b87d9bad197f2b3359f115d3503a13fef9faac46c3",
+  "content_detected_types": [
+    "听后选择"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 6 条内容",
+  "parse_results": [
+    {
+      "source_file": "听后选择-7上 Starter Unit 1 Hello!.docx",
+      "doc_type": "听后选择",
+      "item_count": 6,
+      "items": [
+        {
+          "category": "听后选择录音稿",
+          "index": 1,
+          "question_index": 1,
+          "text": "W: Good morning, Peter! How are you?\nM: I’m fine, thanks."
+        },
+        {
+          "category": "听后选择录音稿",
+          "index": 2,
+          "question_index": 2,
+          "text": "M: Hello! I’m Jack. What’s your name?\nW: Hi, my name is Emma Miller. You can call me Emma."
+        },
+        {
+          "category": "听后选择录音稿",
+          "index": 3,
+          "question_index": 3,
+          "text": "W: How do you spell your name, Peter?\nM: P-E-T-E-R, Peter."
+        },
+        {
+          "category": "听后选择录音稿",
+          "index": 4,
+          "question_index": 4,
+          "text": "M: Oh, that’s the bell.\nW: Let’s go to class."
+        },
+        {
+          "category": "听后选择录音稿",
+          "index": 5,
+          "question_index": 5,
+          "text": "W: Good morning. I’m Helen Brown. What’s your name?\nM: My name is Tom Green. You can call me Tom.\nW: Nice to meet you, Tom.\nM: Nice to meet you too, Helen.\nW: Are you in Class 2?\nM: Yes, I am."
+        },
+        {
+          "category": "听后选择录音稿",
+          "index": 6,
+          "question_index": 6,
+          "text": "W: Hello, Ben. Can you say hi to the class?\nM: Hi, everyone! I’m Ben Smith.\nW: Thank you, Ben. How do you spell your last name?\nM: S-M-I-T-H, Smith.\nW: Nice to meet you, Ben.\nM: Nice to meet you too, Ms Gao.\nW: Please sit down.\nM: Thank you, Ms Gao."
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "听后选择",
+  "cli_result": {
+    "source_file": "听后选择-7上 Starter Unit 1 Hello!.docx",
+    "doc_type": "听后选择",
+    "item_count": 6,
+    "items": [
+      {
+        "category": "听后选择录音稿",
+        "index": 1,
+        "question_index": 1,
+        "text": "W: Good morning, Peter! How are you?\nM: I’m fine, thanks."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 2,
+        "question_index": 2,
+        "text": "M: Hello! I’m Jack. What’s your name?\nW: Hi, my name is Emma Miller. You can call me Emma."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 3,
+        "question_index": 3,
+        "text": "W: How do you spell your name, Peter?\nM: P-E-T-E-R, Peter."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 4,
+        "question_index": 4,
+        "text": "M: Oh, that’s the bell.\nW: Let’s go to class."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 5,
+        "question_index": 5,
+        "text": "W: Good morning. I’m Helen Brown. What’s your name?\nM: My name is Tom Green. You can call me Tom.\nW: Nice to meet you, Tom.\nM: Nice to meet you too, Helen.\nW: Are you in Class 2?\nM: Yes, I am."
+      },
+      {
+        "category": "听后选择录音稿",
+        "index": 6,
+        "question_index": 6,
+        "text": "W: Hello, Ben. Can you say hi to the class?\nM: Hi, everyone! I’m Ben Smith.\nW: Thank you, Ben. How do you spell your last name?\nM: S-M-I-T-H, Smith.\nW: Nice to meet you, Ben.\nM: Nice to meet you too, Ms Gao.\nW: Please sit down.\nM: Thank you, Ms Gao."
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "听后选择-录音稿1",
+      "doc_type": "听后选择",
+      "category": "听后选择录音稿",
+      "seq": 1,
+      "filename": "听后选择-录音稿1.mp3",
+      "voice_override": null,
+      "text_preview": "W: Good morning, Peter! How are you? M: I’m fine, thanks.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后选择-录音稿2",
+      "doc_type": "听后选择",
+      "category": "听后选择录音稿",
+      "seq": 2,
+      "filename": "听后选择-录音稿2.mp3",
+      "voice_override": null,
+      "text_preview": "M: Hello! I’m Jack. What’s your name? W: Hi, my name is Emma Miller. You can cal",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后选择-录音稿3",
+      "doc_type": "听后选择",
+      "category": "听后选择录音稿",
+      "seq": 3,
+      "filename": "听后选择-录音稿3.mp3",
+      "voice_override": null,
+      "text_preview": "W: How do you spell your name, Peter? M: P-E-T-E-R, Peter.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后选择-录音稿4",
+      "doc_type": "听后选择",
+      "category": "听后选择录音稿",
+      "seq": 4,
+      "filename": "听后选择-录音稿4.mp3",
+      "voice_override": null,
+      "text_preview": "M: Oh, that’s the bell. W: Let’s go to class.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后选择-录音稿5",
+      "doc_type": "听后选择",
+      "category": "听后选择录音稿",
+      "seq": 5,
+      "filename": "听后选择-录音稿5.mp3",
+      "voice_override": null,
+      "text_preview": "W: Good morning. I’m Helen Brown. What’s your name? M: My name is Tom Green. You",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听后选择-录音稿6",
+      "doc_type": "听后选择",
+      "category": "听后选择录音稿",
+      "seq": 6,
+      "filename": "听后选择-录音稿6.mp3",
+      "voice_override": null,
+      "text_preview": "W: Hello, Ben. Can you say hi to the class? M: Hi, everyone! I’m Ben Smith. W: T",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "5c8596493c60be090787f6cfd0e8456e846a70fa21939718ba5af83a16da896b",
+    "cli_result": "c5e3aac3d6c9698fa4d036f4c6a5f0b4c37906f5a25066a3815149320528f992",
+    "progress_items": "c537c70e63e733ba5dbebdaea16a459de28f8a641458e482f647a95346027404"
+  }
+}

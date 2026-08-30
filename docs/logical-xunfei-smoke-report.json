@@ -1,0 +1,51 @@
+{
+  "backend_query_calls": 0,
+  "backend_submit_calls": 1,
+  "item_count": 1,
+  "network_calls": 0,
+  "page_calls": 0,
+  "provider": {
+    "account_scope": "logical-smoke",
+    "backend": "_LogicalXunfeiBackend",
+    "capability_version": "xunfei-adapter-1",
+    "formats": [
+      "mp3"
+    ],
+    "generation_modes": [
+      "composite_cut",
+      "single_segment"
+    ],
+    "provider": "xunfei",
+    "real_calls_enabled": false,
+    "supports_query": true,
+    "supports_resume": true
+  },
+  "result": {
+    "artifact_ids": [
+      "artifact_3115daa7d07a4ba983cfaa54eafe35e1",
+      "artifact_8410f8de530147a880998a4d3997b643"
+    ],
+    "attempt_id": "attempt_09f4900c46bd4a8994e79666763c1574",
+    "error_code": null,
+    "error_details": null,
+    "error_message": null,
+    "receipt_id": "receipt_49aacd21b6ab49398e12d0dca81aa9ec",
+    "reused": false,
+    "status": "SUCCEEDED",
+    "step_id": "step_515d2012602b4b5e918ffce6b6fe73d7",
+    "submission_id": "submission_9a3678408d1645be8304e5c80c56b0a5",
+    "work_unit_id": "unit_ec61832ee37142b6a07ad87e6abf085f",
+    "workflow_id": "workflow_ed0c5ebf913a4d0187ce1d985f1b14da"
+  },
+  "runtime": {
+    "platform": "macOS-26.6.1-arm64-arm-64bit",
+    "python": "3.12.14"
+  },
+  "side_effect_policy": "LOGICAL_ONLY_NO_NETWORK",
+  "source": {
+    "filename": "信息转述及询问信息 7上- U1.docx",
+    "size_bytes": 26685
+  },
+  "status": "PASS",
+  "workflow_id": "workflow_ed0c5ebf913a4d0187ce1d985f1b14da"
+}

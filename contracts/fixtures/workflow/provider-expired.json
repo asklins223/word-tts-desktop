@@ -1,0 +1,22 @@
+{
+  "name": "provider-expired",
+  "expected": { "view": "voice", "terminal": false, "generate_enabled": false, "reconnect_enabled": true },
+  "schema_version": 1,
+  "source_filename": "provider-expired.docx",
+  "snapshot": { "workflow_id": "fixture-provider-expired", "workflow_group_id": "fixture-group-provider-expired", "group_state_version": 1, "parent_workflow_id": null, "result_status": "IN_PROGRESS", "execution_state": "PREPARING", "control_state": "RUNNING", "cleanup_state": "NONE", "status": "ACTIVE", "state_version": 4, "draft_revision": 1, "current_step_id": "step-tts", "source_artifact_id": "artifact-source-provider-expired", "item_count": 1, "artifact_count": 0, "latest_event_id": "event-provider-expired-4", "latest_seq": 4, "updated_at": "2026-08-30T00:00:04Z" },
+  "progress": { "total": 1, "completed": 0, "failed": 0, "cancelled": 0, "skipped": 0, "pending": 1, "deliverable": 0, "percent": 0, "deliverable_percent": 0 },
+  "blockers": [ { "code": "PROVIDER_EXPIRED", "title": "讯飞登录已过期", "message": "请重新登录讯飞后再提交生成任务。", "severity": "ERROR", "affected_item_ids": [], "retryable": true, "safe_to_retry": true, "retry_scope": "WORKFLOW", "requires_reconcile": false, "recovery_action": null } ],
+  "available_actions": [
+    { "kind": "SERVICE", "type": "GENERATE", "enabled": false, "reason": "讯飞登录已过期", "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-provider-expired" }, "expected_state_version": 4, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "SERVICE", "type": "SAVE_CONFIGURATION", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-provider-expired" }, "expected_state_version": 4, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "UI", "type": "RECONNECT", "enabled": true, "reason": null, "target": null, "expected_state_version": null, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "UI", "type": "OPEN_VIEW", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-provider-expired" }, "expected_state_version": null, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": false, "retry_scope": "NONE" }
+  ],
+  "current_target": null,
+  "items": [ { "item_id": "item-provider-expired-1", "item_identity_key": "fixture-provider-expired:1", "sequence": 0, "item_type": "question", "normalized_content": "登录过期时不得自动重发", "content_ref": null, "source_locator": "第 1 段", "metadata": { "doc_type": "问答题" }, "skip_reason": null, "content_hash": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "status": "PENDING", "role": "default", "voice_key": null, "attempt_count": 0, "error_code": null, "user_message": null, "retry_scope": "NONE", "requires_reconcile": false, "artifact_ids": [], "updated_at": "2026-08-30T00:00:04Z" } ],
+  "artifacts": [],
+  "configuration": { "configuration_revision": 1, "configuration_hash": "abababababababababababababababababababababababababababababababab", "effective": { "provider": "xunfei", "generation_mode": "composite_cut", "format": "mp3", "quality": "standard", "preview": false, "preview_limit": null, "rate": 0, "pitch": 0, "volume": 0, "default_female_voice": "female", "default_male_voice": "male", "role_voices": {}, "role_configs": {} }, "source_priority": {}, "frozen_fields": [] },
+  "provider": { "provider": "xunfei", "status": "EXPIRED", "ready": false, "reason": "讯飞登录已过期，请重新连接", "can_generate": false },
+  "delivery": { "zip_artifact_id": null, "zip_available": false, "included_item_ids": [], "excluded_item_ids": ["item-provider-expired-1"], "exclusion_reasons": { "item-provider-expired-1": "NOT_GENERATED" } },
+  "sync": { "state_version": 4, "last_event_id": "event-provider-expired-4", "requires_resync": false }
+}

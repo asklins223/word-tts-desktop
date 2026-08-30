@@ -27,6 +27,13 @@ on:
     tags:
       - 'v*'
 
+# Windows and macOS are separate workflows but both upsert the same GitHub
+# Release for a tag. Serialize them so the two release writers cannot race
+# while creating the release or uploading its metadata.
+concurrency:
+  group: wordtts-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
@@ -56,7 +63,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          # Electron 43 的构建工具要求 Node >= 22.12。
+          # 项目 engines 固定要求 Node.js 24.x。
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
@@ -65,10 +72,12 @@ jobs:
         id: version
         shell: pwsh
         working-directory: electron
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
-          $requested = "${{ github.event.inputs.version }}"
-          if ([string]::IsNullOrWhiteSpace($requested) -and "${{ github.ref_type }}" -eq "tag") {
-            $requested = "${{ github.ref_name }}".TrimStart("v")
+          $requested = $env:REQUESTED_VERSION
+          if ([string]::IsNullOrWhiteSpace($requested) -and $env:GITHUB_REF_TYPE -eq "tag") {
+            $requested = ($env:GITHUB_REF_NAME).TrimStart("v")
           }
           if (-not [string]::IsNullOrWhiteSpace($requested)) {
             if ($requested -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
@@ -86,6 +95,12 @@ jobs:
           "version=$resolved" >> $env:GITHUB_OUTPUT
           Write-Host "本次构建版本: $resolved"
 
+      - name: Validate update policy
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: node scripts/validate_update_policy.js
+
       # ======================================================================
       # 4. 安装 Python 依赖
       # ======================================================================
@@ -95,7 +110,7 @@ jobs:
           python -m pip install -r requirements_electron.txt
 
       # ======================================================================
-      # 5. 安装 Playwright Chromium 浏览器（讯飞配音浏览器自动化需要）
+      # 5. 安装 Playwright Chromium（仅作为打包资源；默认 smoke 不访问第三方页面）
       # ======================================================================
       - name: Install Playwright browsers
         run: python -m playwright install chromium
@@ -110,6 +125,13 @@ jobs:
       - name: Test Electron native file dialogs
         working-directory: electron
         run: npm test
+
+      - name: Check workflow contracts
+        working-directory: electron
+        run: npm run check:contracts
+
+      - name: Run logical workflow smoke (no page/network)
+        run: python tools/xunfei_smoke.py --logical-only --source "examples/documents/信息转述及询问信息 7上- U1.docx" --max-items 100
 
       - name: Audit packaged runtime dependencies
         working-directory: electron
@@ -142,7 +164,7 @@ jobs:
           Write-Host "后端打包成功"
           Get-ChildItem -Path "electron/server_backend_build/server_backend" | Select-Object Name, Length | Format-Table
 
-      - name: Smoke test packaged backend
+      - name: Smoke test packaged backend (local-only)
         shell: pwsh
         run: |
           $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -164,7 +186,7 @@ jobs:
                 exit 1
               }
               try {
-                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -Headers @{"X-WordTTS-Token" = $token} -TimeoutSec 2
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/v1/health" -Headers @{"X-Desktop-Capability" = $token} -TimeoutSec 2
                 if ($health.status -eq "ok" -and $health.app -eq "wordtts" -and $health.version -eq "${{ steps.version.outputs.version }}") {
                   $ready = $true
                   break
@@ -193,58 +215,115 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
 
-      - name: Smoke test unpacked desktop app
+      - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
         run: |
+          # 这里只验证打包文件存在；不启动页面，不登录讯飞，
+          # 不访问第三方页面，不执行真实 Provider smoke。
           $exe = Resolve-Path "electron/release/win-unpacked/小猪wordTTS.exe"
           $backend = Resolve-Path "electron/release/win-unpacked/resources/server_backend/server_backend.exe"
-          $previousNodePath = $env:PLAYWRIGHT_NODEJS_PATH
-          $previousElectronNodeMode = $env:ELECTRON_RUN_AS_NODE
-          try {
-            $env:PLAYWRIGHT_NODEJS_PATH = "$exe"
-            $env:ELECTRON_RUN_AS_NODE = "1"
-            & $backend --smoke-playwright
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Playwright/Chromium 打包冒烟测试失败，代码: $LASTEXITCODE"
-              exit 1
-            }
-          } finally {
-            if ($null -eq $previousNodePath) {
-              Remove-Item Env:PLAYWRIGHT_NODEJS_PATH -ErrorAction SilentlyContinue
-            } else {
-              $env:PLAYWRIGHT_NODEJS_PATH = $previousNodePath
-            }
-            if ($null -eq $previousElectronNodeMode) {
-              Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-            } else {
-              $env:ELECTRON_RUN_AS_NODE = $previousElectronNodeMode
-            }
+          if (-not (Test-Path $exe)) { Write-Error "未找到 Electron 可执行文件"; exit 1 }
+          if (-not (Test-Path $backend)) { Write-Error "未找到打包后端可执行文件"; exit 1 }
+          Write-Host "Electron 与后端打包文件校验通过"
+          & $backend --smoke-playwright
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "打包后端 Playwright/Chromium 冒烟失败"
+            exit 1
           }
-          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
-          if (-not $process.WaitForExit(120000)) {
-            Write-Warning "Electron 桌面端到端冒烟测试超时，输出应用诊断日志"
-            $smokeLog = Join-Path $env:TEMP "wordtts-electron-smoke.log"
-            if (Test-Path $smokeLog) {
-              Get-Content $smokeLog -Tail 120
-            } else {
-              Write-Warning "未找到 Electron 冒烟诊断日志: $smokeLog"
-            }
-            & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+          Write-Host "打包后端 Playwright/Chromium 冒烟测试通过"
+          $smoke = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -WorkingDirectory (Split-Path $exe) -PassThru
+          if (-not $smoke.WaitForExit(120000)) {
             Write-Error "Electron 桌面端到端冒烟测试超时"
+            & taskkill.exe /PID $smoke.Id /T /F 2>$null | Out-Null
             exit 1
           }
-          if ($process.ExitCode -ne 0) {
-            Write-Warning "Electron 桌面端到端冒烟测试失败，输出应用诊断日志"
-            $smokeLog = Join-Path $env:TEMP "wordtts-electron-smoke.log"
-            if (Test-Path $smokeLog) {
-              Get-Content $smokeLog -Tail 160
-            } else {
-              Write-Warning "未找到 Electron 冒烟诊断日志: $smokeLog"
+          if ($smoke.ExitCode -ne 0) {
+            Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($smoke.ExitCode)"
+            exit 1
+          }
+          Write-Host "Electron 桌面端到端冒烟测试通过"
+
+      - name: Smoke test NSIS install, reinstall and uninstall
+        shell: pwsh
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $installerName = "小猪wordTTS-Setup-$env:UPDATE_VERSION-x64.exe"
+          $installer = Get-Item -LiteralPath (Join-Path "electron/release" $installerName) -ErrorAction SilentlyContinue
+          if (-not $installer) {
+            Write-Error "未找到本次版本的 NSIS 安装包: $installerName"
+            exit 1
+          }
+
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("wordtts-installer-smoke-" + [guid]::NewGuid().ToString("N"))
+          $installDir = Join-Path $smokeRoot "小猪wordTTS"
+          $installerArgs = @("/S", "/D=$installDir")
+          New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
+
+          function Invoke-CheckedProcess {
+            param(
+              [Parameter(Mandatory = $true)][string]$FilePath,
+              [string[]]$Arguments = @(),
+              [int]$TimeoutMs = 120000
+            )
+
+            $process = Start-Process `
+              -FilePath $FilePath `
+              -ArgumentList $Arguments `
+              -WorkingDirectory (Split-Path -Parent $FilePath) `
+              -PassThru
+            try {
+              if (-not $process.WaitForExit($TimeoutMs)) {
+                & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+                throw "进程超时: $FilePath"
+              }
+              if ($process.ExitCode -ne 0) {
+                throw "进程失败，代码 $($process.ExitCode): $FilePath"
+              }
+            } finally {
+              if (-not $process.HasExited) {
+                & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+              }
             }
-            Write-Error "Electron 桌面端到端冒烟测试失败，代码: $($process.ExitCode)"
-            exit 1
           }
-          Write-Host "Electron 桌面界面端到端冒烟测试通过"
+
+          try {
+            Write-Host "执行 NSIS 全新安装: $($installer.FullName)"
+            Invoke-CheckedProcess -FilePath $installer.FullName -Arguments $installerArgs
+
+            $appExe = Get-ChildItem -Path $smokeRoot -Filter "小猪wordTTS.exe" -File -Recurse |
+              Select-Object -First 1
+            if (-not $appExe) {
+              throw "安装完成后未找到小猪wordTTS.exe"
+            }
+            Write-Host "安装文件校验通过: $($appExe.FullName)"
+
+            $uninstaller = Get-ChildItem -Path $smokeRoot -Filter "Uninstall *.exe" -File -Recurse |
+              Select-Object -First 1
+            if (-not $uninstaller) {
+              throw "安装完成后未找到卸载程序"
+            }
+
+            Invoke-CheckedProcess -FilePath $appExe.FullName -Arguments @("--smoke-test")
+            Write-Host "已安装应用启动冒烟测试通过"
+
+            Write-Host "执行同版本覆盖安装，验证重装路径"
+            Invoke-CheckedProcess -FilePath $installer.FullName -Arguments $installerArgs
+            if (-not (Test-Path -LiteralPath $appExe.FullName)) {
+              throw "覆盖安装后应用文件丢失"
+            }
+
+            Write-Host "执行静默卸载"
+            Invoke-CheckedProcess -FilePath $uninstaller.FullName -Arguments @("/S")
+            if (Test-Path -LiteralPath $appExe.FullName) {
+              throw "卸载完成后应用文件仍存在"
+            }
+            Write-Host "NSIS 安装、重装、卸载生命周期测试通过"
+          } finally {
+            if (Test-Path -LiteralPath $smokeRoot) {
+              Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
 
       # ======================================================================
       # 8. 上传构建产物
@@ -252,15 +331,18 @@ jobs:
       - name: Find installer
         id: find-installer
         shell: pwsh
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $installer = Get-ChildItem -Path "electron/release" -Filter "*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch 'unpacked' } | Select-Object -First 1
+          $installerName = "小猪wordTTS-Setup-$env:UPDATE_VERSION-x64.exe"
+          $installer = Get-Item -LiteralPath (Join-Path "electron/release" $installerName) -ErrorAction SilentlyContinue
           if ($installer) {
             Write-Host "找到安装包: $($installer.FullName)"
             Write-Host "大小: $([math]::Round($installer.Length / 1MB, 2)) MB"
             echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
             echo "installer_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Error "未找到 NSIS 安装包；拒绝发布脱离 resources 目录后无法独立运行的 unpacked 可执行文件"
+            Write-Error "未找到本次版本 NSIS 安装包 $installerName；拒绝发布脱离 resources 目录后无法独立运行的 unpacked 可执行文件"
             exit 1
           }
 
@@ -269,10 +351,23 @@ jobs:
         with:
           name: 小猪wordTTS-Windows
           path: |
-            electron/release/*.exe
+            ${{ steps.find-installer.outputs.installer_path }}
             electron/release/*.blockmap
           retention-days: 30
           if-no-files-found: error
+
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/extract_release_notes.js
+
+      - name: Prepare auto-update metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/prepare_update_metadata.js --platform win32
 
       # ======================================================================
       # 9. （tag 触发）发布 GitHub Release
@@ -283,11 +378,12 @@ jobs:
         with:
           files: |
             ${{ steps.find-installer.outputs.installer_path }}
+            electron/release/latest.yml
             electron/release/*.blockmap
           name: 小猪wordTTS ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          body_path: CHANGELOG.md
+          body_path: release-notes.md
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

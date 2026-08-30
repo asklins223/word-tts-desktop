@@ -103,6 +103,11 @@ if !errorlevel! neq 0 (
 )
 for /f "delims=" %%v in ('node --version 2^>^&1') do set "NODE_VER=%%v"
 echo   Node.js: !NODE_VER!
+for /f "delims=" %%v in ('node -p "process.versions.node.split('.')[0]" 2^>^&1') do set "NODE_MAJOR=%%v"
+if not "!NODE_MAJOR!"=="24" (
+    call :err "项目构建要求 Node.js 24.x，当前为 !NODE_VER!；请使用 Node 24 后重试"
+    exit /b 1
+)
 
 REM ---- electron-builder ----
 if not exist "%ELECTRON_DIR%\node_modules\electron-builder" (
@@ -194,7 +199,16 @@ if exist "%ELECTRON_DIR%\release\win-unpacked" rmdir /s /q "%ELECTRON_DIR%\relea
 del /q "%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*.exe" >nul 2>&1
 
 pushd "%ELECTRON_DIR%"
-call npx electron-builder --win
+set "PACKAGE_VERSION="
+for /f "delims=" %%v in ('node -p "require('./package.json').version"') do set "PACKAGE_VERSION=%%v"
+popd
+if not defined PACKAGE_VERSION (
+    call :err "无法读取 electron/package.json 版本号"
+    exit /b 1
+)
+
+pushd "%ELECTRON_DIR%"
+call npx electron-builder --win --publish never
 set "BUILD_EXIT=!errorlevel!"
 popd
 
@@ -203,24 +217,45 @@ if !BUILD_EXIT! neq 0 (
     exit /b 1
 )
 
-REM 查找构建产物
-set "EXE_PATH="
-for %%f in ("%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*-x64.exe") do (
-    if not defined EXE_PATH set "EXE_PATH=%%f"
+REM 在最终 win-unpacked 应用生成后验证 Playwright driver、Chromium 和
+REM Electron Node 回退路径；PyInstaller 目录阶段没有旁边的 Electron exe，
+REM 因此不能提前执行这项检查。
+set "PACKAGED_BACKEND=%ELECTRON_DIR%\release\win-unpacked\resources\server_backend\server_backend.exe"
+if not exist "!PACKAGED_BACKEND!" (
+    call :err "未找到最终包内后端，无法执行 Playwright 冒烟"
+    exit /b 1
 )
+call :log "验证打包 Playwright/Chromium..."
+"!PACKAGED_BACKEND!" --smoke-playwright
+if !errorlevel! neq 0 (
+    call :err "打包后端 Playwright/Chromium 冒烟失败"
+    exit /b 1
+)
+call :log "打包后端 Playwright/Chromium 冒烟测试通过"
 
-if not defined EXE_PATH (
-    REM 检查 win-unpacked 目录
-    if exist "%ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe" (
-        call :log "构建产物 (unpacked): %ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe"
-        call :warn "未找到 NSIS 安装包，可直接使用 win-unpacked 目录"
-    ) else (
-        call :err "未找到构建产物"
-        exit /b 1
-    )
-) else (
-    call :log "构建产物: !EXE_PATH!"
+REM 验证最终 Electron 壳、主进程、Preload、Renderer 和后端启动协议。
+REM --smoke-test 强制离线，不登录讯飞、不产生第三方副作用。
+set "PACKAGED_ELECTRON=%ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe"
+if not exist "!PACKAGED_ELECTRON!" (
+    call :err "未找到最终 Electron 可执行文件，无法执行桌面冒烟"
+    exit /b 1
 )
+call :log "验证打包 Electron 桌面端..."
+start "" /wait "!PACKAGED_ELECTRON!" --smoke-test
+if !errorlevel! neq 0 (
+    call :err "打包 Electron 桌面冒烟失败"
+    exit /b 1
+)
+call :log "打包 Electron 桌面冒烟测试通过"
+
+REM 只接受当前 package.json 版本对应的 NSIS 安装包；unpacked 目录不能
+REM 作为用户分发包，也没有 electron-updater 所需的安装器语义。
+set "EXE_PATH=%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-!PACKAGE_VERSION!-x64.exe"
+if not exist "!EXE_PATH!" (
+    call :err "未找到当前版本 NSIS 安装包: !EXE_PATH!"
+    exit /b 1
+)
+call :log "构建产物: !EXE_PATH!"
 
 call :log "打包完成 OK"
 

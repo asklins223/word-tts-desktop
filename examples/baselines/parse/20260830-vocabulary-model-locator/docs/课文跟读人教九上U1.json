@@ -1,0 +1,2004 @@
+{
+  "source_file": "课文跟读人教九上U1.docx",
+  "sha256": "c5d3370ba3508aaaed541f1ab6b7cd7d7694553c86ac043f12a175673a3bd0b8",
+  "content_detected_types": [
+    "课文跟读"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 73 条内容",
+  "parse_results": [
+    {
+      "source_file": "课文跟读人教九上U1.docx",
+      "doc_type": "课文跟读",
+      "item_count": 73,
+      "items": [
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 1,
+          "filename_stem": "SA句子1",
+          "voice": "female",
+          "text": "How has life changed in your hometown over the last 20 years?"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 2,
+          "filename_stem": "SA句子2",
+          "voice": "female",
+          "text": "Many young people used to work in big cities."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 3,
+          "filename_stem": "SA句子3",
+          "voice": "female",
+          "text": "Now, more of them have come back to live and work here."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 4,
+          "filename_stem": "SA句子4",
+          "voice": "female",
+          "text": "I used to grow a few vegetables on a small farm to sell at the local market."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 5,
+          "filename_stem": "SA句子5",
+          "voice": "female",
+          "text": "Now, I have large, high-tech greenhouses."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 6,
+          "filename_stem": "SA句子6",
+          "voice": "female",
+          "text": "There, I grow tons of fruit and vegetables, and sell them in large cities."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 7,
+          "filename_stem": "SA句子7",
+          "voice": "female",
+          "text": "Our village has become a tourist attraction."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 8,
+          "filename_stem": "SA句子8",
+          "voice": "female",
+          "text": "We also sell products online to people all over China."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 9,
+          "filename_stem": "SA句子9",
+          "voice": "female",
+          "text": "And our village has just built a new hospital and a library."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section A",
+          "number": 10,
+          "filename_stem": "SA句子10",
+          "voice": "female",
+          "text": "Together you are building a new socialist village."
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 1,
+          "filename_stem": "SA段落1",
+          "text": "Reporter: How has life changed in your hometown over the last 20 years?",
+          "role": "Reporter"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 2,
+          "filename_stem": "SA段落2",
+          "text": "Mr Yan: Oh, it has changed quite a lot! Many young people used to work in big cities. Now, more of them have come back to live and work here.",
+          "role": "Mr Yan"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 3,
+          "filename_stem": "SA段落3",
+          "text": "Reporter: Great! Have there been any other changes?",
+          "role": "Reporter"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 4,
+          "filename_stem": "SA段落4",
+          "text": "Ms Wu: Yes, we've changed the way we farm. I used to grow a few vegetables on a small farm to sell at the local market. Now, I have large, high-tech greenhouses. There, I grow tons of fruit and vegetables, and sell them in large cities.",
+          "role": "Ms Wu"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 5,
+          "filename_stem": "SA段落5",
+          "text": "Reporter: Wow, the new highway and railway must have helped a lot!",
+          "role": "Reporter"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 6,
+          "filename_stem": "SA段落6",
+          "text": "Mr Yan: Oh, they have! Our village has become a tourist attraction. We can now sell local products to tourists. We also sell products online to people all over China.",
+          "role": "Mr Yan"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 7,
+          "filename_stem": "SA段落7",
+          "text": "Reporter: Have these changes greatly improved your lives?",
+          "role": "Reporter"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 8,
+          "filename_stem": "SA段落8",
+          "text": "Ms Wu: Yes! We now have new houses. And our village has just built a new hospital and a library.",
+          "role": "Ms Wu"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Section A",
+          "number": 9,
+          "filename_stem": "SA段落9",
+          "text": "Reporter: Wonderful! Together you are building a new socialist village.",
+          "role": "Reporter"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 1,
+          "filename_stem": "SB句子1",
+          "voice": "female",
+          "text": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 2,
+          "filename_stem": "SB句子2",
+          "voice": "female",
+          "text": "Before then, the only transport links between Mombasa, Kenya's main port, and Nairobi, Kenya's capital, were rough roads and an old railway line built in 1901."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 3,
+          "filename_stem": "SB句子3",
+          "voice": "female",
+          "text": "It took 10 hours to get to Nairobi from Mombasa by train."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 4,
+          "filename_stem": "SB句子4",
+          "voice": "female",
+          "text": "However, the new railway, built with China's help, has already cut the travel time between Mombasa and Nairobi to about four hours for passengers."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 5,
+          "filename_stem": "SB句子5",
+          "voice": "female",
+          "text": "Now, more than two million people use it every year."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 6,
+          "filename_stem": "SB句子6",
+          "voice": "female",
+          "text": "Local Kenyans have benefited a lot from the new railway."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 7,
+          "filename_stem": "SB句子7",
+          "voice": "female",
+          "text": "Many changes have taken place in the town over the last few years, and the people who live here have become rich."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 8,
+          "filename_stem": "SB句子8",
+          "voice": "female",
+          "text": "I am able to get to places on time and make business deals with ease."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 9,
+          "filename_stem": "SB句子9",
+          "voice": "female",
+          "text": "The railway has also made the transport of food easier."
+        },
+        {
+          "category": "句子跟读",
+          "section": "Section B",
+          "number": 10,
+          "filename_stem": "SB句子10",
+          "voice": "female",
+          "text": "As a result, people now have more fresh food to eat."
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 1,
+          "filename_stem": "SB语篇1",
+          "text": "On the Fast Track",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 2,
+          "filename_stem": "SB语篇2",
+          "text": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 3,
+          "filename_stem": "SB语篇3",
+          "text": "Before then, the only transport links between Mombasa, Kenya's main port, and Nairobi, Kenya's capital, were rough roads and an old railway line built in 1901.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 4,
+          "filename_stem": "SB语篇4",
+          "text": "The old trains were very slow.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 5,
+          "filename_stem": "SB语篇5",
+          "text": "It took 10 hours to get to Nairobi from Mombasa by train.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 6,
+          "filename_stem": "SB语篇6",
+          "text": "However, the new railway, built with China's help, has already cut the travel time between Mombasa and Nairobi to about four hours for passengers.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 7,
+          "filename_stem": "SB语篇7",
+          "text": "Now, more than two million people use it every year.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 8,
+          "filename_stem": "SB语篇8",
+          "text": "Local Kenyans have benefited a lot from the new railway.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 9,
+          "filename_stem": "SB语篇9",
+          "text": "A government worker said, \"I'm very happy with the new railway built by our Chinese friends. Many changes have taken place in the town over the last few years, and the people who live here have become rich.\"",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 10,
+          "filename_stem": "SB语篇10",
+          "text": "A businessman said, \"My experience of using the train since 2017 has been good. It is very convenient and doesn't cost much money. I am able to get to places on time and make business deals with ease.\"",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 11,
+          "filename_stem": "SB语篇11",
+          "text": "The railway has also made the transport of food easier.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 12,
+          "filename_stem": "SB语篇12",
+          "text": "\"Food used to take hundreds of lorries to carry between the two cities, but now it takes only two or three trains,\" said a supermarket manager.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 13,
+          "filename_stem": "SB语篇13",
+          "text": "As a result, people now have more fresh food to eat.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Section B",
+          "number": 14,
+          "filename_stem": "SB语篇14",
+          "text": "Although China and Kenya are far away from each other, the railway shows how different countries can work together to build a better world.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 1,
+          "filename_stem": "RP语篇1",
+          "text": "Love My Hometown, Build My Hometown",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 2,
+          "filename_stem": "RP语篇2",
+          "text": "With a deep love for their hometown, people of different ages and professions are contributing to its development and growing along with it.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 3,
+          "filename_stem": "RP语篇3",
+          "text": "Today, let us explore three such stories.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 4,
+          "filename_stem": "RP语篇4",
+          "text": "The watermelon farmer",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 5,
+          "filename_stem": "RP语篇5",
+          "text": "Liu Guanghui is an agricultural technology expert in watermelon farming.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 6,
+          "filename_stem": "RP语篇6",
+          "text": "Although he is more than 70 years old, he still spends most of his days working in the sun on the farmland.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 7,
+          "filename_stem": "RP语篇7",
+          "text": "He wears a wide hat, and his skin is brown from the sun.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 8,
+          "filename_stem": "RP语篇8",
+          "text": "He loves farming and has spent his life researching ways to improve it.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 9,
+          "filename_stem": "RP语篇9",
+          "text": "On his days off, Guanghui provides local farmers with technical training and guidance for free.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 10,
+          "filename_stem": "RP语篇10",
+          "text": "With joint efforts of the government, farmers, and experts like him, the farming economy in the province has grown by more than one billion yuan over the years.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 11,
+          "filename_stem": "RP语篇11",
+          "text": "The flower live-streamer",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 12,
+          "filename_stem": "RP语篇12",
+          "text": "Jiang Hui's friends and fellow villagers call her the \"flower girl\".",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 13,
+          "filename_stem": "RP语篇13",
+          "text": "When she was young, Hui often visited her aunt's flower field after school, where she learnt how to grow flowers.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 14,
+          "filename_stem": "RP语篇14",
+          "text": "She also showed great talent in putting different flowers together beautifully.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 15,
+          "filename_stem": "RP语篇15",
+          "text": "After graduating from university, Hui decided to return to her hometown and start her own flower business.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 16,
+          "filename_stem": "RP语篇16",
+          "text": "To promote sales, she started to sell her flowers online.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 17,
+          "filename_stem": "RP语篇17",
+          "text": "It was hard at first, but she didn't give up.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 18,
+          "filename_stem": "RP语篇18",
+          "text": "She always patiently explained and offered practical advice to customers.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 19,
+          "filename_stem": "RP语篇19",
+          "text": "Gradually, her online shop became more popular.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 20,
+          "filename_stem": "RP语篇20",
+          "text": "She also helped and taught other villagers how to sell agricultural products online.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 21,
+          "filename_stem": "RP语篇21",
+          "text": "\"Many people now know about the agricultural products from our town,\" Hui said with a big smile.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 22,
+          "filename_stem": "RP语篇22",
+          "text": "\"This makes all the hard work worthwhile!\"",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 23,
+          "filename_stem": "RP语篇23",
+          "text": "The village teacher",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 24,
+          "filename_stem": "RP语篇24",
+          "text": "When Yuan Bailing was a little girl, it took her almost an hour to get to school each day, but she loved school so much that she never missed it.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 25,
+          "filename_stem": "RP语篇25",
+          "text": "As she grew up, she witnessed how her village changed greatly over the years.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 26,
+          "filename_stem": "RP语篇26",
+          "text": "Better roads and bridges have been built.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 27,
+          "filename_stem": "RP语篇27",
+          "text": "Now it takes only ten minutes for children to get to school.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 28,
+          "filename_stem": "RP语篇28",
+          "text": "As the first person from her village to graduate from university, Bailing decided to return to her hometown to become a teacher.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 29,
+          "filename_stem": "RP语篇29",
+          "text": "She wants to help more children get a good education and be part of her hometown's growth and development.",
+          "voice": "female"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading Plus",
+          "number": 30,
+          "filename_stem": "RP语篇30",
+          "text": "Though the area still needs further development, through the courage and hard work of its people—like Bailing—it has a bright future ahead.",
+          "voice": "female"
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "课文跟读",
+  "cli_result": {
+    "source_file": "课文跟读人教九上U1.docx",
+    "doc_type": "课文跟读",
+    "item_count": 73,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA句子1",
+        "voice": "female",
+        "text": "How has life changed in your hometown over the last 20 years?"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA句子2",
+        "voice": "female",
+        "text": "Many young people used to work in big cities."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA句子3",
+        "voice": "female",
+        "text": "Now, more of them have come back to live and work here."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA句子4",
+        "voice": "female",
+        "text": "I used to grow a few vegetables on a small farm to sell at the local market."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA句子5",
+        "voice": "female",
+        "text": "Now, I have large, high-tech greenhouses."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA句子6",
+        "voice": "female",
+        "text": "There, I grow tons of fruit and vegetables, and sell them in large cities."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 7,
+        "filename_stem": "SA句子7",
+        "voice": "female",
+        "text": "Our village has become a tourist attraction."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 8,
+        "filename_stem": "SA句子8",
+        "voice": "female",
+        "text": "We also sell products online to people all over China."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 9,
+        "filename_stem": "SA句子9",
+        "voice": "female",
+        "text": "And our village has just built a new hospital and a library."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section A",
+        "number": 10,
+        "filename_stem": "SA句子10",
+        "voice": "female",
+        "text": "Together you are building a new socialist village."
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 1,
+        "filename_stem": "SA段落1",
+        "text": "Reporter: How has life changed in your hometown over the last 20 years?",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 2,
+        "filename_stem": "SA段落2",
+        "text": "Mr Yan: Oh, it has changed quite a lot! Many young people used to work in big cities. Now, more of them have come back to live and work here.",
+        "role": "Mr Yan"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 3,
+        "filename_stem": "SA段落3",
+        "text": "Reporter: Great! Have there been any other changes?",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 4,
+        "filename_stem": "SA段落4",
+        "text": "Ms Wu: Yes, we've changed the way we farm. I used to grow a few vegetables on a small farm to sell at the local market. Now, I have large, high-tech greenhouses. There, I grow tons of fruit and vegetables, and sell them in large cities.",
+        "role": "Ms Wu"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 5,
+        "filename_stem": "SA段落5",
+        "text": "Reporter: Wow, the new highway and railway must have helped a lot!",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 6,
+        "filename_stem": "SA段落6",
+        "text": "Mr Yan: Oh, they have! Our village has become a tourist attraction. We can now sell local products to tourists. We also sell products online to people all over China.",
+        "role": "Mr Yan"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 7,
+        "filename_stem": "SA段落7",
+        "text": "Reporter: Have these changes greatly improved your lives?",
+        "role": "Reporter"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 8,
+        "filename_stem": "SA段落8",
+        "text": "Ms Wu: Yes! We now have new houses. And our village has just built a new hospital and a library.",
+        "role": "Ms Wu"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Section A",
+        "number": 9,
+        "filename_stem": "SA段落9",
+        "text": "Reporter: Wonderful! Together you are building a new socialist village.",
+        "role": "Reporter"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB句子1",
+        "voice": "female",
+        "text": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB句子2",
+        "voice": "female",
+        "text": "Before then, the only transport links between Mombasa, Kenya's main port, and Nairobi, Kenya's capital, were rough roads and an old railway line built in 1901."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB句子3",
+        "voice": "female",
+        "text": "It took 10 hours to get to Nairobi from Mombasa by train."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB句子4",
+        "voice": "female",
+        "text": "However, the new railway, built with China's help, has already cut the travel time between Mombasa and Nairobi to about four hours for passengers."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB句子5",
+        "voice": "female",
+        "text": "Now, more than two million people use it every year."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB句子6",
+        "voice": "female",
+        "text": "Local Kenyans have benefited a lot from the new railway."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 7,
+        "filename_stem": "SB句子7",
+        "voice": "female",
+        "text": "Many changes have taken place in the town over the last few years, and the people who live here have become rich."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 8,
+        "filename_stem": "SB句子8",
+        "voice": "female",
+        "text": "I am able to get to places on time and make business deals with ease."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 9,
+        "filename_stem": "SB句子9",
+        "voice": "female",
+        "text": "The railway has also made the transport of food easier."
+      },
+      {
+        "category": "句子跟读",
+        "section": "Section B",
+        "number": 10,
+        "filename_stem": "SB句子10",
+        "voice": "female",
+        "text": "As a result, people now have more fresh food to eat."
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 1,
+        "filename_stem": "SB语篇1",
+        "text": "On the Fast Track",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 2,
+        "filename_stem": "SB语篇2",
+        "text": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 3,
+        "filename_stem": "SB语篇3",
+        "text": "Before then, the only transport links between Mombasa, Kenya's main port, and Nairobi, Kenya's capital, were rough roads and an old railway line built in 1901.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 4,
+        "filename_stem": "SB语篇4",
+        "text": "The old trains were very slow.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 5,
+        "filename_stem": "SB语篇5",
+        "text": "It took 10 hours to get to Nairobi from Mombasa by train.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 6,
+        "filename_stem": "SB语篇6",
+        "text": "However, the new railway, built with China's help, has already cut the travel time between Mombasa and Nairobi to about four hours for passengers.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 7,
+        "filename_stem": "SB语篇7",
+        "text": "Now, more than two million people use it every year.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 8,
+        "filename_stem": "SB语篇8",
+        "text": "Local Kenyans have benefited a lot from the new railway.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 9,
+        "filename_stem": "SB语篇9",
+        "text": "A government worker said, \"I'm very happy with the new railway built by our Chinese friends. Many changes have taken place in the town over the last few years, and the people who live here have become rich.\"",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 10,
+        "filename_stem": "SB语篇10",
+        "text": "A businessman said, \"My experience of using the train since 2017 has been good. It is very convenient and doesn't cost much money. I am able to get to places on time and make business deals with ease.\"",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 11,
+        "filename_stem": "SB语篇11",
+        "text": "The railway has also made the transport of food easier.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 12,
+        "filename_stem": "SB语篇12",
+        "text": "\"Food used to take hundreds of lorries to carry between the two cities, but now it takes only two or three trains,\" said a supermarket manager.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 13,
+        "filename_stem": "SB语篇13",
+        "text": "As a result, people now have more fresh food to eat.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Section B",
+        "number": 14,
+        "filename_stem": "SB语篇14",
+        "text": "Although China and Kenya are far away from each other, the railway shows how different countries can work together to build a better world.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 1,
+        "filename_stem": "RP语篇1",
+        "text": "Love My Hometown, Build My Hometown",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 2,
+        "filename_stem": "RP语篇2",
+        "text": "With a deep love for their hometown, people of different ages and professions are contributing to its development and growing along with it.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 3,
+        "filename_stem": "RP语篇3",
+        "text": "Today, let us explore three such stories.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 4,
+        "filename_stem": "RP语篇4",
+        "text": "The watermelon farmer",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 5,
+        "filename_stem": "RP语篇5",
+        "text": "Liu Guanghui is an agricultural technology expert in watermelon farming.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 6,
+        "filename_stem": "RP语篇6",
+        "text": "Although he is more than 70 years old, he still spends most of his days working in the sun on the farmland.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 7,
+        "filename_stem": "RP语篇7",
+        "text": "He wears a wide hat, and his skin is brown from the sun.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 8,
+        "filename_stem": "RP语篇8",
+        "text": "He loves farming and has spent his life researching ways to improve it.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 9,
+        "filename_stem": "RP语篇9",
+        "text": "On his days off, Guanghui provides local farmers with technical training and guidance for free.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 10,
+        "filename_stem": "RP语篇10",
+        "text": "With joint efforts of the government, farmers, and experts like him, the farming economy in the province has grown by more than one billion yuan over the years.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 11,
+        "filename_stem": "RP语篇11",
+        "text": "The flower live-streamer",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 12,
+        "filename_stem": "RP语篇12",
+        "text": "Jiang Hui's friends and fellow villagers call her the \"flower girl\".",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 13,
+        "filename_stem": "RP语篇13",
+        "text": "When she was young, Hui often visited her aunt's flower field after school, where she learnt how to grow flowers.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 14,
+        "filename_stem": "RP语篇14",
+        "text": "She also showed great talent in putting different flowers together beautifully.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 15,
+        "filename_stem": "RP语篇15",
+        "text": "After graduating from university, Hui decided to return to her hometown and start her own flower business.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 16,
+        "filename_stem": "RP语篇16",
+        "text": "To promote sales, she started to sell her flowers online.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 17,
+        "filename_stem": "RP语篇17",
+        "text": "It was hard at first, but she didn't give up.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 18,
+        "filename_stem": "RP语篇18",
+        "text": "She always patiently explained and offered practical advice to customers.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 19,
+        "filename_stem": "RP语篇19",
+        "text": "Gradually, her online shop became more popular.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 20,
+        "filename_stem": "RP语篇20",
+        "text": "She also helped and taught other villagers how to sell agricultural products online.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 21,
+        "filename_stem": "RP语篇21",
+        "text": "\"Many people now know about the agricultural products from our town,\" Hui said with a big smile.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 22,
+        "filename_stem": "RP语篇22",
+        "text": "\"This makes all the hard work worthwhile!\"",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 23,
+        "filename_stem": "RP语篇23",
+        "text": "The village teacher",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 24,
+        "filename_stem": "RP语篇24",
+        "text": "When Yuan Bailing was a little girl, it took her almost an hour to get to school each day, but she loved school so much that she never missed it.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 25,
+        "filename_stem": "RP语篇25",
+        "text": "As she grew up, she witnessed how her village changed greatly over the years.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 26,
+        "filename_stem": "RP语篇26",
+        "text": "Better roads and bridges have been built.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 27,
+        "filename_stem": "RP语篇27",
+        "text": "Now it takes only ten minutes for children to get to school.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 28,
+        "filename_stem": "RP语篇28",
+        "text": "As the first person from her village to graduate from university, Bailing decided to return to her hometown to become a teacher.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 29,
+        "filename_stem": "RP语篇29",
+        "text": "She wants to help more children get a good education and be part of her hometown's growth and development.",
+        "voice": "female"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading Plus",
+        "number": 30,
+        "filename_stem": "RP语篇30",
+        "text": "Though the area still needs further development, through the courage and hard work of its people—like Bailing—it has a bright future ahead.",
+        "voice": "female"
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "句子跟读_SA句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "SA句子1.mp3",
+      "voice_override": "female",
+      "text_preview": "How has life changed in your hometown over the last 20 years?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "SA句子2.mp3",
+      "voice_override": "female",
+      "text_preview": "Many young people used to work in big cities.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "SA句子3.mp3",
+      "voice_override": "female",
+      "text_preview": "Now, more of them have come back to live and work here.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "SA句子4.mp3",
+      "voice_override": "female",
+      "text_preview": "I used to grow a few vegetables on a small farm to sell at the local market.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "SA句子5.mp3",
+      "voice_override": "female",
+      "text_preview": "Now, I have large, high-tech greenhouses.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "SA句子6.mp3",
+      "voice_override": "female",
+      "text_preview": "There, I grow tons of fruit and vegetables, and sell them in large cities.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "SA句子7.mp3",
+      "voice_override": "female",
+      "text_preview": "Our village has become a tourist attraction.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "SA句子8.mp3",
+      "voice_override": "female",
+      "text_preview": "We also sell products online to people all over China.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "SA句子9.mp3",
+      "voice_override": "female",
+      "text_preview": "And our village has just built a new hospital and a library.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SA句子10",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 10,
+      "filename": "SA句子10.mp3",
+      "voice_override": "female",
+      "text_preview": "Together you are building a new socialist village.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 1,
+      "filename": "SA段落1.mp3",
+      "voice_override": null,
+      "text_preview": "Reporter: How has life changed in your hometown over the last 20 years?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 2,
+      "filename": "SA段落2.mp3",
+      "voice_override": null,
+      "text_preview": "Mr Yan: Oh, it has changed quite a lot! Many young people used to work in big ci",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 3,
+      "filename": "SA段落3.mp3",
+      "voice_override": null,
+      "text_preview": "Reporter: Great! Have there been any other changes?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 4,
+      "filename": "SA段落4.mp3",
+      "voice_override": null,
+      "text_preview": "Ms Wu: Yes, we've changed the way we farm. I used to grow a few vegetables on a ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 5,
+      "filename": "SA段落5.mp3",
+      "voice_override": null,
+      "text_preview": "Reporter: Wow, the new highway and railway must have helped a lot!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 6,
+      "filename": "SA段落6.mp3",
+      "voice_override": null,
+      "text_preview": "Mr Yan: Oh, they have! Our village has become a tourist attraction. We can now s",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 7,
+      "filename": "SA段落7.mp3",
+      "voice_override": null,
+      "text_preview": "Reporter: Have these changes greatly improved your lives?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 8,
+      "filename": "SA段落8.mp3",
+      "voice_override": null,
+      "text_preview": "Ms Wu: Yes! We now have new houses. And our village has just built a new hospita",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_SA段落9",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 9,
+      "filename": "SA段落9.mp3",
+      "voice_override": null,
+      "text_preview": "Reporter: Wonderful! Together you are building a new socialist village.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "SB句子1.mp3",
+      "voice_override": "female",
+      "text_preview": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "SB句子2.mp3",
+      "voice_override": "female",
+      "text_preview": "Before then, the only transport links between Mombasa, Kenya's main port, and Na",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "SB句子3.mp3",
+      "voice_override": "female",
+      "text_preview": "It took 10 hours to get to Nairobi from Mombasa by train.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "SB句子4.mp3",
+      "voice_override": "female",
+      "text_preview": "However, the new railway, built with China's help, has already cut the travel ti",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "SB句子5.mp3",
+      "voice_override": "female",
+      "text_preview": "Now, more than two million people use it every year.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "SB句子6.mp3",
+      "voice_override": "female",
+      "text_preview": "Local Kenyans have benefited a lot from the new railway.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "SB句子7.mp3",
+      "voice_override": "female",
+      "text_preview": "Many changes have taken place in the town over the last few years, and the peopl",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "SB句子8.mp3",
+      "voice_override": "female",
+      "text_preview": "I am able to get to places on time and make business deals with ease.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "SB句子9.mp3",
+      "voice_override": "female",
+      "text_preview": "The railway has also made the transport of food easier.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_SB句子10",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 10,
+      "filename": "SB句子10.mp3",
+      "voice_override": "female",
+      "text_preview": "As a result, people now have more fresh food to eat.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 1,
+      "filename": "SB语篇1.mp3",
+      "voice_override": "female",
+      "text_preview": "On the Fast Track",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 2,
+      "filename": "SB语篇2.mp3",
+      "voice_override": "female",
+      "text_preview": "In 2017, the new 480-kilometre Mombasa-Nairobi railway was opened.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 3,
+      "filename": "SB语篇3.mp3",
+      "voice_override": "female",
+      "text_preview": "Before then, the only transport links between Mombasa, Kenya's main port, and Na",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 4,
+      "filename": "SB语篇4.mp3",
+      "voice_override": "female",
+      "text_preview": "The old trains were very slow.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 5,
+      "filename": "SB语篇5.mp3",
+      "voice_override": "female",
+      "text_preview": "It took 10 hours to get to Nairobi from Mombasa by train.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 6,
+      "filename": "SB语篇6.mp3",
+      "voice_override": "female",
+      "text_preview": "However, the new railway, built with China's help, has already cut the travel ti",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 7,
+      "filename": "SB语篇7.mp3",
+      "voice_override": "female",
+      "text_preview": "Now, more than two million people use it every year.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 8,
+      "filename": "SB语篇8.mp3",
+      "voice_override": "female",
+      "text_preview": "Local Kenyans have benefited a lot from the new railway.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 9,
+      "filename": "SB语篇9.mp3",
+      "voice_override": "female",
+      "text_preview": "A government worker said, \"I'm very happy with the new railway built by our Chin",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 10,
+      "filename": "SB语篇10.mp3",
+      "voice_override": "female",
+      "text_preview": "A businessman said, \"My experience of using the train since 2017 has been good. ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 11,
+      "filename": "SB语篇11.mp3",
+      "voice_override": "female",
+      "text_preview": "The railway has also made the transport of food easier.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇12",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 12,
+      "filename": "SB语篇12.mp3",
+      "voice_override": "female",
+      "text_preview": "\"Food used to take hundreds of lorries to carry between the two cities, but now ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇13",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 13,
+      "filename": "SB语篇13.mp3",
+      "voice_override": "female",
+      "text_preview": "As a result, people now have more fresh food to eat.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_SB语篇14",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 14,
+      "filename": "SB语篇14.mp3",
+      "voice_override": "female",
+      "text_preview": "Although China and Kenya are far away from each other, the railway shows how dif",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 1,
+      "filename": "RP语篇1.mp3",
+      "voice_override": "female",
+      "text_preview": "Love My Hometown, Build My Hometown",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 2,
+      "filename": "RP语篇2.mp3",
+      "voice_override": "female",
+      "text_preview": "With a deep love for their hometown, people of different ages and professions ar",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 3,
+      "filename": "RP语篇3.mp3",
+      "voice_override": "female",
+      "text_preview": "Today, let us explore three such stories.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 4,
+      "filename": "RP语篇4.mp3",
+      "voice_override": "female",
+      "text_preview": "The watermelon farmer",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 5,
+      "filename": "RP语篇5.mp3",
+      "voice_override": "female",
+      "text_preview": "Liu Guanghui is an agricultural technology expert in watermelon farming.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 6,
+      "filename": "RP语篇6.mp3",
+      "voice_override": "female",
+      "text_preview": "Although he is more than 70 years old, he still spends most of his days working ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 7,
+      "filename": "RP语篇7.mp3",
+      "voice_override": "female",
+      "text_preview": "He wears a wide hat, and his skin is brown from the sun.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 8,
+      "filename": "RP语篇8.mp3",
+      "voice_override": "female",
+      "text_preview": "He loves farming and has spent his life researching ways to improve it.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 9,
+      "filename": "RP语篇9.mp3",
+      "voice_override": "female",
+      "text_preview": "On his days off, Guanghui provides local farmers with technical training and gui",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 10,
+      "filename": "RP语篇10.mp3",
+      "voice_override": "female",
+      "text_preview": "With joint efforts of the government, farmers, and experts like him, the farming",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 11,
+      "filename": "RP语篇11.mp3",
+      "voice_override": "female",
+      "text_preview": "The flower live-streamer",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇12",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 12,
+      "filename": "RP语篇12.mp3",
+      "voice_override": "female",
+      "text_preview": "Jiang Hui's friends and fellow villagers call her the \"flower girl\".",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇13",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 13,
+      "filename": "RP语篇13.mp3",
+      "voice_override": "female",
+      "text_preview": "When she was young, Hui often visited her aunt's flower field after school, wher",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇14",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 14,
+      "filename": "RP语篇14.mp3",
+      "voice_override": "female",
+      "text_preview": "She also showed great talent in putting different flowers together beautifully.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇15",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 15,
+      "filename": "RP语篇15.mp3",
+      "voice_override": "female",
+      "text_preview": "After graduating from university, Hui decided to return to her hometown and star",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇16",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 16,
+      "filename": "RP语篇16.mp3",
+      "voice_override": "female",
+      "text_preview": "To promote sales, she started to sell her flowers online.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇17",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 17,
+      "filename": "RP语篇17.mp3",
+      "voice_override": "female",
+      "text_preview": "It was hard at first, but she didn't give up.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇18",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 18,
+      "filename": "RP语篇18.mp3",
+      "voice_override": "female",
+      "text_preview": "She always patiently explained and offered practical advice to customers.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇19",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 19,
+      "filename": "RP语篇19.mp3",
+      "voice_override": "female",
+      "text_preview": "Gradually, her online shop became more popular.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇20",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 20,
+      "filename": "RP语篇20.mp3",
+      "voice_override": "female",
+      "text_preview": "She also helped and taught other villagers how to sell agricultural products onl",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇21",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 21,
+      "filename": "RP语篇21.mp3",
+      "voice_override": "female",
+      "text_preview": "\"Many people now know about the agricultural products from our town,\" Hui said w",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇22",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 22,
+      "filename": "RP语篇22.mp3",
+      "voice_override": "female",
+      "text_preview": "\"This makes all the hard work worthwhile!\"",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇23",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 23,
+      "filename": "RP语篇23.mp3",
+      "voice_override": "female",
+      "text_preview": "The village teacher",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇24",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 24,
+      "filename": "RP语篇24.mp3",
+      "voice_override": "female",
+      "text_preview": "When Yuan Bailing was a little girl, it took her almost an hour to get to school",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇25",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 25,
+      "filename": "RP语篇25.mp3",
+      "voice_override": "female",
+      "text_preview": "As she grew up, she witnessed how her village changed greatly over the years.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇26",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 26,
+      "filename": "RP语篇26.mp3",
+      "voice_override": "female",
+      "text_preview": "Better roads and bridges have been built.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇27",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 27,
+      "filename": "RP语篇27.mp3",
+      "voice_override": "female",
+      "text_preview": "Now it takes only ten minutes for children to get to school.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇28",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 28,
+      "filename": "RP语篇28.mp3",
+      "voice_override": "female",
+      "text_preview": "As the first person from her village to graduate from university, Bailing decide",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇29",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 29,
+      "filename": "RP语篇29.mp3",
+      "voice_override": "female",
+      "text_preview": "She wants to help more children get a good education and be part of her hometown",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_RP语篇30",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 30,
+      "filename": "RP语篇30.mp3",
+      "voice_override": "female",
+      "text_preview": "Though the area still needs further development, through the courage and hard wo",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "de726d4e1e4a3255e2a00c47de57f09afff7b47d68de0c013061e10f29d96419",
+    "cli_result": "33eb5faef8069cf5543ff454498e4f4aa4f8eb387171a39423b7123598e5d3fe",
+    "progress_items": "d96f1f7b4e654e324c1a20b356106c265788c3b3b4abe8ffff88db931a078c23"
+  }
+}

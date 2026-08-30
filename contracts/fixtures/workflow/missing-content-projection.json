@@ -1,0 +1,21 @@
+{
+  "name": "missing-content-projection",
+  "expected": { "view": "voice", "primary_action": "GENERATE", "terminal": false, "normalized_content": null, "source_locator": null, "content_ref": true, "editable_before_load": false },
+  "schema_version": 1,
+  "source_filename": "projection-gap.docx",
+  "snapshot": { "workflow_id": "fixture-missing-content-projection", "workflow_group_id": "fixture-group-missing-content", "group_state_version": 1, "parent_workflow_id": null, "result_status": "IN_PROGRESS", "execution_state": "CREATED", "control_state": "RUNNING", "cleanup_state": "NONE", "status": "ACTIVE", "state_version": 2, "draft_revision": 1, "current_step_id": "step-tts", "source_artifact_id": "artifact-source-missing-content", "item_count": 1, "artifact_count": 0, "latest_event_id": null, "latest_seq": 0, "updated_at": "2026-08-30T00:00:02Z" },
+  "progress": { "total": 1, "completed": 0, "failed": 0, "cancelled": 0, "skipped": 0, "pending": 1, "deliverable": 0, "percent": 0, "deliverable_percent": 0 },
+  "blockers": [],
+  "available_actions": [
+    { "kind": "SERVICE", "type": "SAVE_CONFIGURATION", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-missing-content-projection" }, "expected_state_version": 2, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "SERVICE", "type": "GENERATE", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-missing-content-projection" }, "expected_state_version": 2, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": true, "retry_scope": "WORKFLOW" },
+    { "kind": "UI", "type": "OPEN_VIEW", "enabled": true, "reason": null, "target": { "target_type": "WORKFLOW", "workflow_id": "fixture-missing-content-projection" }, "expected_state_version": null, "expected_target_state_version": null, "expected_group_state_version": null, "safe_to_retry": false, "retry_scope": "NONE" }
+  ],
+  "current_target": null,
+  "items": [ { "item_id": "item-missing-content-1", "item_identity_key": "fixture-missing-content-projection:1", "sequence": 0, "item_type": "document", "normalized_content": null, "content_ref": { "content_id": "content-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size_bytes": 20000, "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "max_response_bytes": 65536 }, "source_locator": null, "metadata": { "doc_type": "未知" }, "skip_reason": null, "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "PENDING", "role": null, "voice_key": null, "attempt_count": 0, "error_code": null, "user_message": null, "retry_scope": "NONE", "requires_reconcile": false, "artifact_ids": [], "updated_at": "2026-08-30T00:00:02Z" } ],
+  "artifacts": [],
+  "configuration": { "configuration_revision": 1, "configuration_hash": "abababababababababababababababababababababababababababababababab", "effective": { "provider": "xunfei", "generation_mode": "composite_cut", "format": "mp3", "quality": "standard", "preview": false, "preview_limit": null, "rate": 0, "pitch": 0, "volume": 0, "default_female_voice": "female", "default_male_voice": "male", "role_voices": {}, "role_configs": {} }, "source_priority": {}, "frozen_fields": [] },
+  "provider": { "provider": "xunfei", "status": "READY", "ready": true, "reason": "Provider 已就绪", "can_generate": true },
+  "delivery": { "zip_artifact_id": null, "zip_available": false, "included_item_ids": [], "excluded_item_ids": ["item-missing-content-1"], "exclusion_reasons": { "item-missing-content-1": "NOT_GENERATED" } },
+  "sync": { "state_version": 2, "last_event_id": null, "requires_resync": false }
+}

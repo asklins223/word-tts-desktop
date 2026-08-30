@@ -1,83 +1,19 @@
 #!/usr/bin/env python3
-"""Generate 小猪wordTTS PNG, macOS ICNS, and Windows ICO assets from one source."""
+"""Generate 小猪wordTTS PNG, macOS ICNS, and Windows ICO assets from a full-bleed source."""
 
 from __future__ import annotations
 
 import argparse
-import math
 import os
-from collections import deque
 from pathlib import Path
 
-from PIL import Image, ImageFilter
+from PIL import Image
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT_DIR / "electron" / "build" / "icon-source.png"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "electron" / "build"
 DEFAULT_RENDERER_ICON = ROOT_DIR / "electron" / "renderer" / "assets" / "app-icon.png"
-
-
-def remove_connected_light_background(image: Image.Image) -> Image.Image:
-    """Remove only the light backdrop connected to the canvas edge.
-
-    Image-generated icon sources often contain an opaque white area outside the
-    rounded-square artwork. A connected flood fill avoids erasing cream-colored
-    details inside the pig, desk, or laptop.
-    """
-
-    rgba = image.convert("RGBA")
-    rgb = rgba.convert("RGB")
-    width, height = rgb.size
-    pixels = rgb.load()
-    alpha = Image.new("L", (width, height), 255)
-    alpha_pixels = alpha.load()
-    visited = bytearray(width * height)
-    queue: deque[tuple[int, int]] = deque()
-
-    corner_samples = [
-        pixels[0, 0],
-        pixels[width - 1, 0],
-        pixels[0, height - 1],
-        pixels[width - 1, height - 1],
-    ]
-    key = tuple(round(sum(sample[channel] for sample in corner_samples) / 4) for channel in range(3))
-    threshold = 48.0
-
-    def is_background(x: int, y: int) -> bool:
-        color = pixels[x, y]
-        distance = math.sqrt(sum((color[channel] - key[channel]) ** 2 for channel in range(3)))
-        return distance <= threshold
-
-    def enqueue(x: int, y: int) -> None:
-        index = y * width + x
-        if visited[index] or not is_background(x, y):
-            return
-        visited[index] = 1
-        queue.append((x, y))
-
-    for x in range(width):
-        enqueue(x, 0)
-        enqueue(x, height - 1)
-    for y in range(height):
-        enqueue(0, y)
-        enqueue(width - 1, y)
-
-    while queue:
-        x, y = queue.popleft()
-        alpha_pixels[x, y] = 0
-        if x > 0:
-            enqueue(x - 1, y)
-        if x + 1 < width:
-            enqueue(x + 1, y)
-        if y > 0:
-            enqueue(x, y - 1)
-        if y + 1 < height:
-            enqueue(x, y + 1)
-
-    alpha = alpha.filter(ImageFilter.GaussianBlur(0.55))
-    rgba.putalpha(alpha)
-    return rgba
 
 
 def resized(image: Image.Image, size: int) -> Image.Image:
@@ -92,7 +28,9 @@ def build_icons(source: Path, output_dir: Path, renderer_icon_path: Path) -> Non
     with Image.open(source) as opened:
         if opened.width != opened.height:
             raise ValueError(f"Icon source must be square, got {opened.size}")
-        icon = resized(remove_connected_light_background(opened), 1024)
+        # The source is intentionally full-bleed: preserve its sky-blue corners
+        # instead of flood-filling the edge color into transparency.
+        icon = resized(opened.convert("RGBA"), 1024)
 
     png_path = output_dir / "icon.png"
     ico_path = output_dir / "icon.ico"

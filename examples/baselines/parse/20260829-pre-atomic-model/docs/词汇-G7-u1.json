@@ -1,0 +1,16 @@
+{
+  "source_file": "词汇-G7-u1.docx",
+  "sha256": "dd5b8a10cb1e583bce74bbf6037a082082782740119d2120f082ab6d6227bafe",
+  "content_detected_types": [],
+  "auto_summary": "未识别到任何题型内容",
+  "parse_results": [],
+  "cli_filename_type": null,
+  "cli_result": null,
+  "cli_error": null,
+  "progress_items": [],
+  "fingerprints": {
+    "parse_results": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "cli_result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "progress_items": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  }
+}
