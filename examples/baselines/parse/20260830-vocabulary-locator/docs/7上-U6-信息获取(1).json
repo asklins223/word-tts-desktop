@@ -1,0 +1,367 @@
+{
+  "source_file": "7上-U6-信息获取(1).docx",
+  "sha256": "543afe92fccf6e4d28fd406af9c1a406a20197d333f2dbd518afbcaa215c86c5",
+  "content_detected_types": [
+    "信息获取"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 14 条内容",
+  "parse_results": [
+    {
+      "source_file": "7上-U6-信息获取(1).docx",
+      "doc_type": "信息获取",
+      "item_count": 14,
+      "items": [
+        {
+          "category": "听选信息题目",
+          "number": 1,
+          "filename_stem": "问题1",
+          "voice": "male",
+          "text": "M: What are the two goats doing?"
+        },
+        {
+          "category": "听选信息题目",
+          "number": 2,
+          "filename_stem": "问题2",
+          "voice": "female",
+          "text": "W: Where are the rabbits?"
+        },
+        {
+          "category": "听选信息录音稿",
+          "index": 1,
+          "text": "W: I love this farm, and I’m so happy to visit it with you guys again.\nM: Really? Look, the goats are running around a big box.\nW: Yes, they can get water from the box.\nM: I want to see the rabbits too. Do you remember where they are?\nW: Yes, they are near the farm gate.\nM: Great. I hope we can see them later."
+        },
+        {
+          "category": "听选信息题目",
+          "number": 3,
+          "filename_stem": "问题3",
+          "voice": "male",
+          "text": "M: Where is the young elephant?"
+        },
+        {
+          "category": "听选信息题目",
+          "number": 4,
+          "filename_stem": "问题4",
+          "voice": "female",
+          "text": "W: Why is the young elephant moving her ears?"
+        },
+        {
+          "category": "听选信息录音稿",
+          "index": 2,
+          "text": "M: Excuse me, do you work with the elephants here?\nW: Yes, I do. How can I help you?\nM: I heard there is a young elephant here, but I cannot find her. Where is she?\nW: She is standing beside the large rock.\nM: I can see her now. Why is she moving her ears so often?\nW: Moving her ears helps her keep cool in hot weather.\nM: That’s interesting. Thank you for your explanation.\nW: You’re welcome."
+        },
+        {
+          "category": "听选信息题目",
+          "number": 5,
+          "filename_stem": "问题5",
+          "voice": "male",
+          "text": "M: What is Rocky looking for?"
+        },
+        {
+          "category": "听选信息题目",
+          "number": 6,
+          "filename_stem": "问题6",
+          "voice": "female",
+          "text": "W: Who is telling Rocky what to do?"
+        },
+        {
+          "category": "听选信息录音稿",
+          "index": 3,
+          "text": "W: Welcome to our rescue dog training centre, and today Rocky will show us part of a rescue dog’s job.\nM: Great. What is Rocky looking for among those bags?\nW: He is looking for a bag with a special smell.\nM: Oh, he is checking all the bags one by one.\nW: Yes, his strong nose helps him find the right bag quickly.\nM: Who is the man telling Rocky what to do?\nW: That is Mr Lee, and he works with the dogs here.\nM: I see. We will watch from here and keep quiet."
+        },
+        {
+          "category": "回答问题题目",
+          "number": 7,
+          "filename_stem": "问题7",
+          "voice": "male",
+          "text": "M: What is the name of the school program?"
+        },
+        {
+          "category": "回答问题题目",
+          "number": 8,
+          "filename_stem": "问题8",
+          "voice": "female",
+          "text": "W: Where is Max leading Ms Green?"
+        },
+        {
+          "category": "回答问题题目",
+          "number": 9,
+          "filename_stem": "问题9",
+          "voice": "male",
+          "text": "M: How does Ms Green make Max start walking again?"
+        },
+        {
+          "category": "回答问题题目",
+          "number": 10,
+          "filename_stem": "问题10",
+          "voice": "female",
+          "text": "W: Why are guide dogs helpful in busy public places?"
+        },
+        {
+          "category": "回答问题录音稿",
+          "index": 1,
+          "text": "(W) Today is our school’s Open Day. As part of the “Animal Helpers Program”, the school invites Ms Green, who cannot see, and her guide dog, Max. Ms Green is showing us how Max helps her. He is leading her safely around chairs. When Max sees a bag in their way, he stops. After a student moves it, Ms Green says, “Forward,” and Max starts walking again. Our class claps when they finish. Guide dogs help people walk safely in busy public places. They are not only friendly animals but also helpful partners."
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "信息获取",
+  "cli_result": {
+    "source_file": "7上-U6-信息获取(1).docx",
+    "doc_type": "信息获取",
+    "item_count": 14,
+    "items": [
+      {
+        "category": "听选信息题目",
+        "number": 1,
+        "filename_stem": "问题1",
+        "voice": "male",
+        "text": "M: What are the two goats doing?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 2,
+        "filename_stem": "问题2",
+        "voice": "female",
+        "text": "W: Where are the rabbits?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 1,
+        "text": "W: I love this farm, and I’m so happy to visit it with you guys again.\nM: Really? Look, the goats are running around a big box.\nW: Yes, they can get water from the box.\nM: I want to see the rabbits too. Do you remember where they are?\nW: Yes, they are near the farm gate.\nM: Great. I hope we can see them later."
+      },
+      {
+        "category": "听选信息题目",
+        "number": 3,
+        "filename_stem": "问题3",
+        "voice": "male",
+        "text": "M: Where is the young elephant?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 4,
+        "filename_stem": "问题4",
+        "voice": "female",
+        "text": "W: Why is the young elephant moving her ears?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 2,
+        "text": "M: Excuse me, do you work with the elephants here?\nW: Yes, I do. How can I help you?\nM: I heard there is a young elephant here, but I cannot find her. Where is she?\nW: She is standing beside the large rock.\nM: I can see her now. Why is she moving her ears so often?\nW: Moving her ears helps her keep cool in hot weather.\nM: That’s interesting. Thank you for your explanation.\nW: You’re welcome."
+      },
+      {
+        "category": "听选信息题目",
+        "number": 5,
+        "filename_stem": "问题5",
+        "voice": "male",
+        "text": "M: What is Rocky looking for?"
+      },
+      {
+        "category": "听选信息题目",
+        "number": 6,
+        "filename_stem": "问题6",
+        "voice": "female",
+        "text": "W: Who is telling Rocky what to do?"
+      },
+      {
+        "category": "听选信息录音稿",
+        "index": 3,
+        "text": "W: Welcome to our rescue dog training centre, and today Rocky will show us part of a rescue dog’s job.\nM: Great. What is Rocky looking for among those bags?\nW: He is looking for a bag with a special smell.\nM: Oh, he is checking all the bags one by one.\nW: Yes, his strong nose helps him find the right bag quickly.\nM: Who is the man telling Rocky what to do?\nW: That is Mr Lee, and he works with the dogs here.\nM: I see. We will watch from here and keep quiet."
+      },
+      {
+        "category": "回答问题题目",
+        "number": 7,
+        "filename_stem": "问题7",
+        "voice": "male",
+        "text": "M: What is the name of the school program?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 8,
+        "filename_stem": "问题8",
+        "voice": "female",
+        "text": "W: Where is Max leading Ms Green?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 9,
+        "filename_stem": "问题9",
+        "voice": "male",
+        "text": "M: How does Ms Green make Max start walking again?"
+      },
+      {
+        "category": "回答问题题目",
+        "number": 10,
+        "filename_stem": "问题10",
+        "voice": "female",
+        "text": "W: Why are guide dogs helpful in busy public places?"
+      },
+      {
+        "category": "回答问题录音稿",
+        "index": 1,
+        "text": "(W) Today is our school’s Open Day. As part of the “Animal Helpers Program”, the school invites Ms Green, who cannot see, and her guide dog, Max. Ms Green is showing us how Max helps her. He is leading her safely around chairs. When Max sees a bag in their way, he stops. After a student moves it, Ms Green says, “Forward,” and Max starts walking again. Our class claps when they finish. Guide dogs help people walk safely in busy public places. They are not only friendly animals but also helpful partners."
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "听选信息题目_问题1",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 1,
+      "filename": "问题1.mp3",
+      "voice_override": "male",
+      "text_preview": "M: What are the two goats doing?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题2",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 2,
+      "filename": "问题2.mp3",
+      "voice_override": "female",
+      "text_preview": "W: Where are the rabbits?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息-录音稿1",
+      "doc_type": "信息获取",
+      "category": "听选信息录音稿",
+      "seq": 1,
+      "filename": "听选信息-录音稿1.mp3",
+      "voice_override": null,
+      "text_preview": "W: I love this farm, and I’m so happy to visit it with you guys again. M: Really",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题3",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 3,
+      "filename": "问题3.mp3",
+      "voice_override": "male",
+      "text_preview": "M: Where is the young elephant?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题4",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 4,
+      "filename": "问题4.mp3",
+      "voice_override": "female",
+      "text_preview": "W: Why is the young elephant moving her ears?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息-录音稿2",
+      "doc_type": "信息获取",
+      "category": "听选信息录音稿",
+      "seq": 2,
+      "filename": "听选信息-录音稿2.mp3",
+      "voice_override": null,
+      "text_preview": "M: Excuse me, do you work with the elephants here? W: Yes, I do. How can I help ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题5",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 5,
+      "filename": "问题5.mp3",
+      "voice_override": "male",
+      "text_preview": "M: What is Rocky looking for?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息题目_问题6",
+      "doc_type": "信息获取",
+      "category": "听选信息题目",
+      "seq": 6,
+      "filename": "问题6.mp3",
+      "voice_override": "female",
+      "text_preview": "W: Who is telling Rocky what to do?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "听选信息-录音稿3",
+      "doc_type": "信息获取",
+      "category": "听选信息录音稿",
+      "seq": 3,
+      "filename": "听选信息-录音稿3.mp3",
+      "voice_override": null,
+      "text_preview": "W: Welcome to our rescue dog training centre, and today Rocky will show us part ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题7",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 7,
+      "filename": "问题7.mp3",
+      "voice_override": "male",
+      "text_preview": "M: What is the name of the school program?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题8",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 8,
+      "filename": "问题8.mp3",
+      "voice_override": "female",
+      "text_preview": "W: Where is Max leading Ms Green?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题9",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 9,
+      "filename": "问题9.mp3",
+      "voice_override": "male",
+      "text_preview": "M: How does Ms Green make Max start walking again?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题题目_问题10",
+      "doc_type": "信息获取",
+      "category": "回答问题题目",
+      "seq": 10,
+      "filename": "问题10.mp3",
+      "voice_override": "female",
+      "text_preview": "W: Why are guide dogs helpful in busy public places?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "回答问题-录音稿1",
+      "doc_type": "信息获取",
+      "category": "回答问题录音稿",
+      "seq": 1,
+      "filename": "回答问题-录音稿1.mp3",
+      "voice_override": null,
+      "text_preview": "(W) Today is our school’s Open Day. As part of the “Animal Helpers Program”, the",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "77ced70a10134862c410c6b74599a41e94f01544b6fe39f958b2e460e280161c",
+    "cli_result": "2382360c2ab377d6292b78a3156a1c1d0a4bc31af2361c39f9c4bd3927b9bd28",
+    "progress_items": "c36cdbd6c4c2a2bb9f10f824fdc590e8e3075976a2eab8e5f864c5261a9fdfe7"
+  }
+}
