@@ -2,7 +2,7 @@
 
 import re
 
-from question_types.base import BaseParser, QuestionType
+from question_types.base import BaseParser
 from question_types.text_utils import is_chinese, sanitize
 
 

@@ -1,8 +1,11 @@
-"""题型注册表测试：新增题型切片后，各派生映射应自动保持一致。
+"""题型注册表测试：各派生视图与唯一权威注册表保持一致。
 
-新增题型的正确姿势是新增一个 question_types 切片模块并注册到
-QUESTION_TYPES；本测试保证注册表派生的解析映射、内容识别、展示
-颜色、文件名识别与音色策略保持完整，防止切片元数据漏写。
+新增题型的正确姿势（方案 2A 单一权威注册表）：
+1. question_model.model 注册 QuestionFamily + QuestionSubType；
+2. 新建解析器切片（BaseParser 子类）；
+3. question_types.__init__ 的 PARSERS_BY_FAMILY 绑定一行。
+本测试保证派生的解析映射、内容识别、展示颜色、文件名识别与
+音色兼容视图完整无缺；切片不再各自声明 QUESTION_TYPE。
 """
 from __future__ import annotations
 
@@ -50,7 +53,7 @@ class QuestionTypeRegistryTests(unittest.TestCase):
             self.assertIn(question_type.key, TYPE_COLORS)
             self.assertIn(question_type.key, CONTENT_MARKERS)
 
-    def test_type_colors_are_derived_from_slices(self):
+    def test_type_colors_are_derived_from_family_registry(self):
         self.assertEqual(TYPE_COLORS["信息获取"], "#0e7490")
         self.assertEqual(TYPE_COLORS["词汇"], "#1e40af")
         self.assertEqual(len(TYPE_COLORS), len(QUESTION_TYPES))
@@ -72,8 +75,10 @@ class QuestionTypeRegistryTests(unittest.TestCase):
         # 词汇只支持 Excel 模板，没有内容识别标记。
         self.assertEqual(CONTENT_MARKERS.get("词汇", ()), ())
 
-    def test_force_female_categories_are_derived_from_slices(self):
-        # 词汇切片声明「单词/例句」强制默认女声；其余题型不强制。
+    def test_force_female_categories_are_derived_from_family_registry(self):
+        # 词汇 family 声明「单词/例句」强制默认女声；其余题型不强制。
+        # 源头：FAMILY_REGISTRY["vocabulary"].female_categories →
+        # QUESTION_TYPES.force_female_categories → wordtts WORD_CATEGORIES。
         self.assertEqual(sorted(wordtts.config.WORD_CATEGORIES), ["例句", "单词"])
 
 
