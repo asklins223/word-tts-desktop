@@ -514,7 +514,8 @@ test('生成页提供停止入口，并把配置冻结竞态收敛到接管流�
 });
 
 test('解析或取消完成后新建任务按钮不会残留禁用状态', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8')
+        .replace(/\r\n/g, '\n');
     assert.match(source, /function syncRestartButtonState\(sourceBusy = null\)/);
     assert.match(source, /const active = Boolean\(parsing \|\| isParsing \|\| sourceImportInFlight\)/);
     assert.match(source, /function resetGenerateState\(\) \{[\s\S]*?syncRestartButtonState\(\);/);
