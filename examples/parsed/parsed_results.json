@@ -266,560 +266,640 @@
         "number": 1,
         "filename_stem": "单词1",
         "voice": "female",
-        "text": "pigeon"
+        "text": "pigeon",
+        "source_locator": "工作表/Sheet1/行/2/单词"
       },
       {
         "category": "例句",
         "number": 1,
         "filename_stem": "句子1",
         "voice": "female",
-        "text": "A pigeon is standing near the window."
+        "text": "A pigeon is standing near the window.",
+        "source_locator": "工作表/Sheet1/行/2/例句"
       },
       {
         "category": "单词",
         "number": 2,
         "filename_stem": "单词2",
         "voice": "female",
-        "text": "surprise"
+        "text": "surprise",
+        "source_locator": "工作表/Sheet1/行/3/单词"
       },
       {
         "category": "例句",
         "number": 2,
         "filename_stem": "句子2",
         "voice": "female",
-        "text": "The birthday gift was a lovely surprise."
+        "text": "The birthday gift was a lovely surprise.",
+        "source_locator": "工作表/Sheet1/行/3/例句"
       },
       {
         "category": "单词",
         "number": 3,
         "filename_stem": "单词3",
         "voice": "female",
-        "text": "droppings"
+        "text": "droppings",
+        "source_locator": "工作表/Sheet1/行/4/单词"
       },
       {
         "category": "例句",
         "number": 3,
         "filename_stem": "句子3",
         "voice": "female",
-        "text": "There are bird droppings on the bench."
+        "text": "There are bird droppings on the bench.",
+        "source_locator": "工作表/Sheet1/行/4/例句"
       },
       {
         "category": "单词",
         "number": 4,
         "filename_stem": "单词4",
         "voice": "female",
-        "text": "boring"
+        "text": "boring",
+        "source_locator": "工作表/Sheet1/行/5/单词"
       },
       {
         "category": "例句",
         "number": 4,
         "filename_stem": "句子4",
         "voice": "female",
-        "text": "The film is boring."
+        "text": "The film is boring.",
+        "source_locator": "工作表/Sheet1/行/5/例句"
       },
       {
         "category": "单词",
         "number": 5,
         "filename_stem": "单词5",
         "voice": "female",
-        "text": "feed"
+        "text": "feed",
+        "source_locator": "工作表/Sheet1/行/6/单词"
       },
       {
         "category": "例句",
         "number": 5,
         "filename_stem": "句子5",
         "voice": "female",
-        "text": "We feed the rabbits every morning."
+        "text": "We feed the rabbits every morning.",
+        "source_locator": "工作表/Sheet1/行/6/例句"
       },
       {
         "category": "单词",
         "number": 6,
         "filename_stem": "单词6",
         "voice": "female",
-        "text": "madly"
+        "text": "madly",
+        "source_locator": "工作表/Sheet1/行/7/单词"
       },
       {
         "category": "例句",
         "number": 6,
         "filename_stem": "句子6",
         "voice": "female",
-        "text": "The birds are flying madly to her."
+        "text": "The birds are flying madly to her.",
+        "source_locator": "工作表/Sheet1/行/7/例句"
       },
       {
         "category": "单词",
         "number": 7,
         "filename_stem": "单词7",
         "voice": "female",
-        "text": "scary"
+        "text": "scary",
+        "source_locator": "工作表/Sheet1/行/8/单词"
       },
       {
         "category": "例句",
         "number": 7,
         "filename_stem": "句子7",
         "voice": "female",
-        "text": "The snake looks scary."
+        "text": "The snake looks scary.",
+        "source_locator": "工作表/Sheet1/行/8/例句"
       },
       {
         "category": "单词",
         "number": 8,
         "filename_stem": "单词8",
         "voice": "female",
-        "text": "research"
+        "text": "research",
+        "source_locator": "工作表/Sheet1/行/9/单词"
       },
       {
         "category": "例句",
         "number": 8,
         "filename_stem": "句子8",
         "voice": "female",
-        "text": "Our class is doing some research on birds."
+        "text": "Our class is doing some research on birds.",
+        "source_locator": "工作表/Sheet1/行/9/例句"
       },
       {
         "category": "单词",
         "number": 9,
         "filename_stem": "单词9",
         "voice": "female",
-        "text": "recognise"
+        "text": "recognise",
+        "source_locator": "工作表/Sheet1/行/10/单词"
       },
       {
         "category": "例句",
         "number": 9,
         "filename_stem": "句子9",
         "voice": "female",
-        "text": "I can recognise my teacher from her voice."
+        "text": "I can recognise my teacher from her voice.",
+        "source_locator": "工作表/Sheet1/行/10/例句"
       },
       {
         "category": "单词",
         "number": 10,
         "filename_stem": "单词10",
         "voice": "female",
-        "text": "themselves"
+        "text": "themselves",
+        "source_locator": "工作表/Sheet1/行/11/单词"
       },
       {
         "category": "例句",
         "number": 10,
         "filename_stem": "句子10",
         "voice": "female",
-        "text": "The children made lunch by themselves."
+        "text": "The children made lunch by themselves.",
+        "source_locator": "工作表/Sheet1/行/11/例句"
       },
       {
         "category": "单词",
         "number": 11,
         "filename_stem": "单词11",
         "voice": "female",
-        "text": "mirror"
+        "text": "mirror",
+        "source_locator": "工作表/Sheet1/行/12/单词"
       },
       {
         "category": "例句",
         "number": 11,
         "filename_stem": "句子11",
         "voice": "female",
-        "text": "She looks at herself in the mirror."
+        "text": "She looks at herself in the mirror.",
+        "source_locator": "工作表/Sheet1/行/12/例句"
       },
       {
         "category": "单词",
         "number": 12,
         "filename_stem": "单词12",
         "voice": "female",
-        "text": "itself"
+        "text": "itself",
+        "source_locator": "工作表/Sheet1/行/13/单词"
       },
       {
         "category": "例句",
         "number": 12,
         "filename_stem": "句子12",
         "voice": "female",
-        "text": "The cat can clean itself."
+        "text": "The cat can clean itself.",
+        "source_locator": "工作表/Sheet1/行/13/例句"
       },
       {
         "category": "单词",
         "number": 13,
         "filename_stem": "单词13",
         "voice": "female",
-        "text": "maybe"
+        "text": "maybe",
+        "source_locator": "工作表/Sheet1/行/14/单词"
       },
       {
         "category": "例句",
         "number": 13,
         "filename_stem": "句子13",
         "voice": "female",
-        "text": "Maybe we can visit the museum tomorrow."
+        "text": "Maybe we can visit the museum tomorrow.",
+        "source_locator": "工作表/Sheet1/行/14/例句"
       },
       {
         "category": "单词",
         "number": 14,
         "filename_stem": "单词14",
         "voice": "female",
-        "text": "several"
+        "text": "several",
+        "source_locator": "工作表/Sheet1/行/15/单词"
       },
       {
         "category": "例句",
         "number": 14,
         "filename_stem": "句子14",
         "voice": "female",
-        "text": "Several students are watching the birds."
+        "text": "Several students are watching the birds.",
+        "source_locator": "工作表/Sheet1/行/15/例句"
       },
       {
         "category": "单词",
         "number": 15,
         "filename_stem": "单词15",
         "voice": "female",
-        "text": "kilometre"
+        "text": "kilometre",
+        "source_locator": "工作表/Sheet1/行/16/单词"
       },
       {
         "category": "例句",
         "number": 15,
         "filename_stem": "句子15",
         "voice": "female",
-        "text": "The island is one kilometre from here."
+        "text": "The island is one kilometre from here.",
+        "source_locator": "工作表/Sheet1/行/16/例句"
       },
       {
         "category": "单词",
         "number": 16,
         "filename_stem": "单词16",
         "voice": "female",
-        "text": "speed"
+        "text": "speed",
+        "source_locator": "工作表/Sheet1/行/17/单词"
       },
       {
         "category": "例句",
         "number": 16,
         "filename_stem": "句子16",
         "voice": "female",
-        "text": "The train is moving at high speed."
+        "text": "The train is moving at high speed.",
+        "source_locator": "工作表/Sheet1/行/17/例句"
       },
       {
         "category": "单词",
         "number": 17,
         "filename_stem": "单词17",
         "voice": "female",
-        "text": "amazing"
+        "text": "amazing",
+        "source_locator": "工作表/Sheet1/行/18/单词"
       },
       {
         "category": "例句",
         "number": 17,
         "filename_stem": "句子17",
         "voice": "female",
-        "text": "The rescue dog did an amazing job."
+        "text": "The rescue dog did an amazing job.",
+        "source_locator": "工作表/Sheet1/行/18/例句"
       },
       {
         "category": "单词",
         "number": 18,
         "filename_stem": "单词18",
         "voice": "female",
-        "text": "enough"
+        "text": "enough",
+        "source_locator": "工作表/Sheet1/行/19/单词"
       },
       {
         "category": "例句",
         "number": 18,
         "filename_stem": "句子18",
         "voice": "female",
-        "text": "There was enough food for everyone."
+        "text": "There was enough food for everyone.",
+        "source_locator": "工作表/Sheet1/行/19/例句"
       },
       {
         "category": "单词",
         "number": 19,
         "filename_stem": "单词19",
         "voice": "female",
-        "text": "beaver"
+        "text": "beaver",
+        "source_locator": "工作表/Sheet1/行/20/单词"
       },
       {
         "category": "例句",
         "number": 19,
         "filename_stem": "句子19",
         "voice": "female",
-        "text": "A beaver is building a dam."
+        "text": "A beaver is building a dam.",
+        "source_locator": "工作表/Sheet1/行/20/例句"
       },
       {
         "category": "单词",
         "number": 20,
         "filename_stem": "单词20",
         "voice": "female",
-        "text": "wolf"
+        "text": "wolf",
+        "source_locator": "工作表/Sheet1/行/21/单词"
       },
       {
         "category": "例句",
         "number": 20,
         "filename_stem": "句子20",
         "voice": "female",
-        "text": "A wolf is walking through the forest."
+        "text": "A wolf is walking through the forest.",
+        "source_locator": "工作表/Sheet1/行/21/例句"
       },
       {
         "category": "单词",
         "number": 21,
         "filename_stem": "单词21",
         "voice": "female",
-        "text": "engineer"
+        "text": "engineer",
+        "source_locator": "工作表/Sheet1/行/22/单词"
       },
       {
         "category": "例句",
         "number": 21,
         "filename_stem": "句子21",
         "voice": "female",
-        "text": "My uncle is an engineer."
+        "text": "My uncle is an engineer.",
+        "source_locator": "工作表/Sheet1/行/22/例句"
       },
       {
         "category": "单词",
         "number": 22,
         "filename_stem": "单词22",
         "voice": "female",
-        "text": "hero"
+        "text": "hero",
+        "source_locator": "工作表/Sheet1/行/23/单词"
       },
       {
         "category": "例句",
         "number": 22,
         "filename_stem": "句子22",
         "voice": "female",
-        "text": "Firefighters are real heroes."
+        "text": "Firefighters are real heroes.",
+        "source_locator": "工作表/Sheet1/行/23/例句"
       },
       {
         "category": "单词",
         "number": 23,
         "filename_stem": "单词23",
         "voice": "female",
-        "text": "rescue"
+        "text": "rescue",
+        "source_locator": "工作表/Sheet1/行/24/单词"
       },
       {
         "category": "例句",
         "number": 23,
         "filename_stem": "句子23",
         "voice": "female",
-        "text": "The rescue took three hours."
+        "text": "The rescue took three hours.",
+        "source_locator": "工作表/Sheet1/行/24/例句"
       },
       {
         "category": "单词",
         "number": 24,
         "filename_stem": "单词24",
         "voice": "female",
-        "text": "earthquake"
+        "text": "earthquake",
+        "source_locator": "工作表/Sheet1/行/25/单词"
       },
       {
         "category": "例句",
         "number": 24,
         "filename_stem": "句子24",
         "voice": "female",
-        "text": "The earthquake damaged many houses."
+        "text": "The earthquake damaged many houses.",
+        "source_locator": "工作表/Sheet1/行/25/例句"
       },
       {
         "category": "单词",
         "number": 25,
         "filename_stem": "单词25",
         "voice": "female",
-        "text": "missing"
+        "text": "missing",
+        "source_locator": "工作表/Sheet1/行/26/单词"
       },
       {
         "category": "例句",
         "number": 25,
         "filename_stem": "句子25",
         "voice": "female",
-        "text": "The police are looking for the missing child."
+        "text": "The police are looking for the missing child.",
+        "source_locator": "工作表/Sheet1/行/26/例句"
       },
       {
         "category": "单词",
         "number": 26,
         "filename_stem": "单词26",
         "voice": "female",
-        "text": "save"
+        "text": "save",
+        "source_locator": "工作表/Sheet1/行/27/单词"
       },
       {
         "category": "例句",
         "number": 26,
         "filename_stem": "句子26",
         "voice": "female",
-        "text": "The doctor saved the boy."
+        "text": "The doctor saved the boy.",
+        "source_locator": "工作表/Sheet1/行/27/例句"
       },
       {
         "category": "单词",
         "number": 27,
         "filename_stem": "单词27",
         "voice": "female",
-        "text": "dead"
+        "text": "dead",
+        "source_locator": "工作表/Sheet1/行/28/单词"
       },
       {
         "category": "例句",
         "number": 27,
         "filename_stem": "句子27",
         "voice": "female",
-        "text": "The cat was dead when we found it."
+        "text": "The cat was dead when we found it.",
+        "source_locator": "工作表/Sheet1/行/28/例句"
       },
       {
         "category": "单词",
         "number": 28,
         "filename_stem": "单词28",
         "voice": "female",
-        "text": "dodo"
+        "text": "dodo",
+        "source_locator": "工作表/Sheet1/行/29/单词"
       },
       {
         "category": "例句",
         "number": 28,
         "filename_stem": "句子28",
         "voice": "female",
-        "text": "A dodo was a large bird that could not fly."
+        "text": "A dodo was a large bird that could not fly.",
+        "source_locator": "工作表/Sheet1/行/29/例句"
       },
       {
         "category": "单词",
         "number": 29,
         "filename_stem": "单词29",
         "voice": "female",
-        "text": "character"
+        "text": "character",
+        "source_locator": "工作表/Sheet1/行/30/单词"
       },
       {
         "category": "例句",
         "number": 29,
         "filename_stem": "句子29",
         "voice": "female",
-        "text": "Alice is my favourite character in the story."
+        "text": "Alice is my favourite character in the story.",
+        "source_locator": "工作表/Sheet1/行/30/例句"
       },
       {
         "category": "单词",
         "number": 30,
         "filename_stem": "单词30",
         "voice": "female",
-        "text": "museum"
+        "text": "museum",
+        "source_locator": "工作表/Sheet1/行/31/单词"
       },
       {
         "category": "例句",
         "number": 30,
         "filename_stem": "句子30",
         "voice": "female",
-        "text": "We are going to the museum this weekend."
+        "text": "We are going to the museum this weekend.",
+        "source_locator": "工作表/Sheet1/行/31/例句"
       },
       {
         "category": "单词",
         "number": 31,
         "filename_stem": "单词31",
         "voice": "female",
-        "text": "island"
+        "text": "island",
+        "source_locator": "工作表/Sheet1/行/32/单词"
       },
       {
         "category": "例句",
         "number": 31,
         "filename_stem": "句子31",
         "voice": "female",
-        "text": "Many birds live on the island."
+        "text": "Many birds live on the island.",
+        "source_locator": "工作表/Sheet1/行/32/例句"
       },
       {
         "category": "单词",
         "number": 32,
         "filename_stem": "单词32",
         "voice": "female",
-        "text": "ocean"
+        "text": "ocean",
+        "source_locator": "工作表/Sheet1/行/33/单词"
       },
       {
         "category": "例句",
         "number": 32,
         "filename_stem": "句子32",
         "voice": "female",
-        "text": "The ship is sailing across the ocean."
+        "text": "The ship is sailing across the ocean.",
+        "source_locator": "工作表/Sheet1/行/33/例句"
       },
       {
         "category": "单词",
         "number": 33,
         "filename_stem": "单词33",
         "voice": "female",
-        "text": "plenty"
+        "text": "plenty",
+        "source_locator": "工作表/Sheet1/行/34/单词"
       },
       {
         "category": "例句",
         "number": 33,
         "filename_stem": "句子33",
         "voice": "female",
-        "text": "Do not worry—we have plenty of time."
+        "text": "Do not worry—we have plenty of time.",
+        "source_locator": "工作表/Sheet1/行/34/例句"
       },
       {
         "category": "单词",
         "number": 34,
         "filename_stem": "单词34",
         "voice": "female",
-        "text": "friendly"
+        "text": "friendly",
+        "source_locator": "工作表/Sheet1/行/35/单词"
       },
       {
         "category": "例句",
         "number": 34,
         "filename_stem": "句子34",
         "voice": "female",
-        "text": "The guide was friendly to us."
+        "text": "The guide was friendly to us.",
+        "source_locator": "工作表/Sheet1/行/35/例句"
       },
       {
         "category": "单词",
         "number": 35,
         "filename_stem": "单词35",
         "voice": "female",
-        "text": "peaceful"
+        "text": "peaceful",
+        "source_locator": "工作表/Sheet1/行/36/单词"
       },
       {
         "category": "例句",
         "number": 35,
         "filename_stem": "句子35",
         "voice": "female",
-        "text": "People want to live a peaceful life."
+        "text": "People want to live a peaceful life.",
+        "source_locator": "工作表/Sheet1/行/36/例句"
       },
       {
         "category": "单词",
         "number": 36,
         "filename_stem": "单词36",
         "voice": "female",
-        "text": "arrive"
+        "text": "arrive",
+        "source_locator": "工作表/Sheet1/行/37/单词"
       },
       {
         "category": "例句",
         "number": 36,
         "filename_stem": "句子36",
         "voice": "female",
-        "text": "The bus will arrive at ten."
+        "text": "The bus will arrive at ten.",
+        "source_locator": "工作表/Sheet1/行/37/例句"
       },
       {
         "category": "单词",
         "number": 37,
         "filename_stem": "单词37",
         "voice": "female",
-        "text": "forest"
+        "text": "forest",
+        "source_locator": "工作表/Sheet1/行/38/单词"
       },
       {
         "category": "例句",
         "number": 37,
         "filename_stem": "句子37",
         "voice": "female",
-        "text": "Many wild animals live in the forest."
+        "text": "Many wild animals live in the forest.",
+        "source_locator": "工作表/Sheet1/行/38/例句"
       },
       {
         "category": "单词",
         "number": 38,
         "filename_stem": "单词38",
         "voice": "female",
-        "text": "hunt"
+        "text": "hunt",
+        "source_locator": "工作表/Sheet1/行/39/单词"
       },
       {
         "category": "例句",
         "number": 38,
         "filename_stem": "句子38",
         "voice": "female",
-        "text": "It is wrong to hunt wild animals."
+        "text": "It is wrong to hunt wild animals.",
+        "source_locator": "工作表/Sheet1/行/39/例句"
       },
       {
         "category": "单词",
         "number": 39,
         "filename_stem": "单词39",
         "voice": "female",
-        "text": "full"
+        "text": "full",
+        "source_locator": "工作表/Sheet1/行/40/单词"
       },
       {
         "category": "例句",
         "number": 39,
         "filename_stem": "句子39",
         "voice": "female",
-        "text": "The box is full of books."
+        "text": "The box is full of books.",
+        "source_locator": "工作表/Sheet1/行/40/例句"
       },
       {
         "category": "单词",
         "number": 40,
         "filename_stem": "单词40",
         "voice": "female",
-        "text": "fantastic"
+        "text": "fantastic",
+        "source_locator": "工作表/Sheet1/行/41/单词"
       },
       {
         "category": "例句",
         "number": 40,
         "filename_stem": "句子40",
         "voice": "female",
-        "text": "We had a fantastic day at the zoo."
+        "text": "We had a fantastic day at the zoo.",
+        "source_locator": "工作表/Sheet1/行/41/例句"
       }
     ]
   },
@@ -832,6 +912,24 @@
         "category": "信息转述录音稿",
         "index": 1,
         "text": "(W) I’m Emma, a junior high student. In our class, we have plan cards to help us challenge a new project. Every student can write a useful plan on it, so I write a plan about public speaking. We usually put the cards on the bookshelf so everyone can see it. Ben saw my card and wanted to try my plan too. So every day after lunch, Ben and I practise speaking in a small group. I think this can help us speak better."
+      }
+    ],
+    "tasks": [
+      {
+        "task_kind": "retelling",
+        "reference_answer": "Let me tell you about Emma’s plan card. In Emma’s class, plan cards help students challenge a new project. Emma wrote a plan about public speaking, and they put the cards on the bookshelf so everyone can see. Ben saw her card and wanted to try her plan, so they practise speaking in a small group after lunch every day."
+      },
+      {
+        "task_kind": "asking",
+        "number": 11,
+        "prompt": "这个计划可能有什么困难？",
+        "reference_answer": "What problem may you have with your plan?"
+      },
+      {
+        "task_kind": "asking",
+        "number": 12,
+        "prompt": "你会怎样让计划更好？",
+        "reference_answer": "How will you make your plan better?"
       }
     ]
   },
@@ -875,6 +973,168 @@
         "index": 6,
         "question_index": 6,
         "text": "W: Hello, Ben. Can you say hi to the class?\nM: Hi, everyone! I’m Ben Smith.\nW: Thank you, Ben. How do you spell your last name?\nM: S-M-I-T-H, Smith.\nW: Nice to meet you, Ben.\nM: Nice to meet you too, Ms Gao.\nW: Please sit down.\nM: Thank you, Ms Gao."
+      }
+    ],
+    "questions": [
+      {
+        "number": 1,
+        "stem": "How is Peter?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "He is tired."
+          },
+          {
+            "option_id": "B",
+            "text": "He is not well."
+          },
+          {
+            "option_id": "C",
+            "text": "He is fine."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 1
+      },
+      {
+        "number": 2,
+        "stem": "What is the girl’s last name?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "Emma."
+          },
+          {
+            "option_id": "B",
+            "text": "Miller."
+          },
+          {
+            "option_id": "C",
+            "text": "Smith."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 2
+      },
+      {
+        "number": 3,
+        "stem": "How does the boy spell his name?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "P-E-T-E-R."
+          },
+          {
+            "option_id": "B",
+            "text": "P-E-T-A-R."
+          },
+          {
+            "option_id": "C",
+            "text": "P-E-T-E-N."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 3
+      },
+      {
+        "number": 4,
+        "stem": "What will the two students do next?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "Say hi to the class."
+          },
+          {
+            "option_id": "B",
+            "text": "Spell their names."
+          },
+          {
+            "option_id": "C",
+            "text": "Go to class."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 4
+      },
+      {
+        "number": 5,
+        "stem": "What is the girl’s first name?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "Helen."
+          },
+          {
+            "option_id": "B",
+            "text": "Brown."
+          },
+          {
+            "option_id": "C",
+            "text": "Ella."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 5
+      },
+      {
+        "number": 6,
+        "stem": "Which class is Tom in?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "Class 1."
+          },
+          {
+            "option_id": "B",
+            "text": "Class 2."
+          },
+          {
+            "option_id": "C",
+            "text": "Class 3."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 5
+      },
+      {
+        "number": 7,
+        "stem": "Who asks Ben to say hi to the class?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "Helen."
+          },
+          {
+            "option_id": "B",
+            "text": "Emma."
+          },
+          {
+            "option_id": "C",
+            "text": "Ms Gao."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 6
+      },
+      {
+        "number": 8,
+        "stem": "What is Ben’s last name?",
+        "options": [
+          {
+            "option_id": "A",
+            "text": "Smith."
+          },
+          {
+            "option_id": "B",
+            "text": "Brown."
+          },
+          {
+            "option_id": "C",
+            "text": "Miller."
+          }
+        ],
+        "answer": null,
+        "script_ordinal": 6
       }
     ]
   },
