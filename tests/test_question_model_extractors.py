@@ -280,20 +280,26 @@ class TestRegistryAlignment:
             assert qt.force_female_categories == family.female_categories
 
     def test_new_family_without_extractor_degrades_gracefully(self):
-        """注册新 family 但未写抽取器：温和降级（诊断占位），不报错。"""
-        from question_model.model import QuestionFamily
+        """运行时注册新 family 但未写抽取器：温和降级（诊断占位），不报错。"""
+        from question_model.model import QuestionFamily, register_family
         from question_model import FAMILY_REGISTRY
         test_family = QuestionFamily(
             code="demo_new_family", display_name="演示新题型",
             color="#000000")
-        FAMILY_REGISTRY[test_family.code] = test_family
+        register_family(test_family)
         try:
             candidate = extract_candidate("演示新题型", {"items": []}, "doc")
             assert candidate.type_code == "demo_new_family"
             assert candidate.entities == ()
             assert "family_extractor_not_registered" in candidate.diagnostics
+            # 中文名与 code 双向可查
+            assert extract_candidate("demo_new_family", {"items": []}, "doc") \
+                .type_code == "demo_new_family"
         finally:
             FAMILY_REGISTRY.pop(test_family.code, None)
+            QUESTION_TYPE_CODES.pop("演示新题型", None)
+            from question_model.model import FAMILY_BY_NAME
+            FAMILY_BY_NAME.pop("演示新题型", None)
 
     def test_family_sub_types_cover_all_families(self):
         """每个大题型至少有一个小题型；family 代码必须有效。"""
@@ -478,3 +484,33 @@ class TestInfoRetellingBusinessFields:
             "examples", "documents", "信息转述及询问信息 7上- U1.docx")
         results, _ = parse_document_once(path)
         assert results[0]["item_count"] == 1
+
+
+class TestVocabularyLocatorPassthrough:
+    """词汇行级定位贯通：解析器 source_locator 优先于自造定位（方案 9.1）。"""
+
+    def _live_candidate(self):
+        from question_types.segmenter import parse_document_once
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "examples", "documents", "U6单词导入模板.xlsx")
+        results, _ = parse_document_once(path)
+        return extract_candidate("词汇", results[0], "U6单词导入模板")
+
+    def test_parser_locator_wins_over_synthetic(self):
+        candidate = self._live_candidate()
+        units = [e for e in candidate.entities if e.content_kind == "vocabulary"]
+        assert len(units) == 80
+        assert units[0].source_locator == "工作表/Sheet1/行/2/单词"
+        assert "行/" in units[-1].source_locator
+        assert not any("词条" in e.source_locator for e in units)
+
+    def test_fallback_locator_without_parser_field(self):
+        """旧解析结果（无 source_locator 字段）回退自造定位，id 稳定。"""
+        legacy_result = {"items": [
+            {"category": "单词", "number": 1, "text": "pigeon"},
+        ]}
+        candidate = extract_candidate("词汇", legacy_result, "旧样例")
+        unit = candidate.entities[0]
+        assert unit.source_locator == "单词/词条1"
+        assert unit.content_unit_id == "content:旧样例:单词-词条1"

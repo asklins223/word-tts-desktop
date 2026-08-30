@@ -1,0 +1,2020 @@
+{
+  "source_file": "课文跟读-G7-3.docx",
+  "sha256": "c322d807289d9ec1d6ad86eb7321ecb3ae3f0f5b53afea046eaded04cf51b97e",
+  "content_detected_types": [
+    "课文跟读"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 71 条内容",
+  "parse_results": [
+    {
+      "source_file": "课文跟读-G7-3.docx",
+      "doc_type": "课文跟读",
+      "item_count": 71,
+      "items": [
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 1,
+          "text": "It's a story about the love between a father and his son.",
+          "voice": "male",
+          "filename_stem": "U-句子1"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 2,
+          "text": "For years, the father served as the postman for this area.",
+          "voice": "male",
+          "filename_stem": "U-句子2"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 3,
+          "text": "He was often absent from home and the son seldom saw him.",
+          "voice": "male",
+          "filename_stem": "U-句子3"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 4,
+          "text": "Now the son is taking over his father’s position.",
+          "voice": "male",
+          "filename_stem": "U-句子4"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 5,
+          "text": "The father goes with him on his first day of work.",
+          "voice": "male",
+          "filename_stem": "U-句子5"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 6,
+          "text": "Along the way, they start to see into each other’s hearts.",
+          "voice": "male",
+          "filename_stem": "U-句子6"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 7,
+          "text": "For the first time, the son carries his father across a cold river.",
+          "voice": "male",
+          "filename_stem": "U-句子7"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 8,
+          "text": "It brings back the father’s memory of carrying the son on his back.",
+          "voice": "male",
+          "filename_stem": "U-句子8"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 9,
+          "text": "His love may be silent. But like a mountain, it is always there.",
+          "voice": "male",
+          "filename_stem": "U-句子9"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 1,
+          "text": "Postmen in the Mountains tells a touching story about love between a father and his son.",
+          "voice": "male",
+          "filename_stem": "U-段落1"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 2,
+          "text": "The father works as a postman in the mountains and is often absent from home.",
+          "voice": "male",
+          "filename_stem": "U-段落2"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 3,
+          "text": "When the father grows old, his son takes over his job.",
+          "voice": "male",
+          "filename_stem": "U-段落3"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 4,
+          "text": "On the son’s first trip, the father goes with him.",
+          "voice": "male",
+          "filename_stem": "U-段落4"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 5,
+          "text": "At a cold river, the son carries his father on his back.",
+          "voice": "male",
+          "filename_stem": "U-段落5"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 6,
+          "text": "This reminds the father of carrying his little boy years ago.",
+          "voice": "male",
+          "filename_stem": "U-段落6"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 7,
+          "text": "The father seldom speaks about his love, but his actions show it.",
+          "voice": "male",
+          "filename_stem": "U-段落7"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 8,
+          "text": "His love is silent, strong and always there, like a mountain.",
+          "voice": "male",
+          "filename_stem": "U-段落8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 1,
+          "text": "Postmen in the Mountains shows the silent love between a father and his son.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 2,
+          "text": "On a quiet mountain road, the son begins his first journey as a postman, with his father walking behind him.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 3,
+          "text": "For many years, the father worked as a postman in this area.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 4,
+          "text": "His job often kept him away from home, so the son seldom saw him and did not know him very well.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 5,
+          "text": "Now the son is taking over his father’s job.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 6,
+          "text": "As they deliver letters along the mountain road, they spend more time together and slowly begin to understand each other better.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 7,
+          "text": "When they reach a cold river, the son carries his father across on his back.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-7"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 8,
+          "text": "This reminds the father of carrying his little son many years ago.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 9,
+          "text": "He suddenly sees that his boy has grown into a strong young man, and tears come into his eyes.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 10,
+          "text": "The father seldom shows his love with words, hugs or kisses.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-10"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 11,
+          "text": "His love is silent, but it is always there, strong and steady like a mountain.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-11"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 1,
+          "text": "We all know about “problem teenagers”.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 2,
+          "text": "But do you know that some teenagers have “problem parents”?",
+          "voice": "female",
+          "filename_stem": "U-语篇2-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 3,
+          "text": "So, today we are going to talk about these “problem parents”.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 4,
+          "text": "For example, Tina’s mother is an actress at a park.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 5,
+          "text": "Every day, she dresses up as a queen.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 6,
+          "text": "Cool, right?",
+          "voice": "female",
+          "filename_stem": "U-语篇2-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 7,
+          "text": "But Tina doesn’t think so.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-7"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 8,
+          "text": "Her mother often goes to pick her up in this dress.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 9,
+          "text": "Tina is not happy about it.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 10,
+          "text": "It is always a good idea for Tina to have a good talk with her mother.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-10"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 1,
+          "text": "They are always close to each other.",
+          "voice": "male",
+          "filename_stem": "R-句子1"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 2,
+          "text": "Robert has a serious disease and cannot move at all.",
+          "voice": "male",
+          "filename_stem": "R-句子2"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 3,
+          "text": "He has to stay at home every day and he often feels lonely.",
+          "voice": "male",
+          "filename_stem": "R-句子3"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 4,
+          "text": "John sees Robert’s sad face and wants to help.",
+          "voice": "male",
+          "filename_stem": "R-句子4"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 5,
+          "text": "One day, he finds a way.",
+          "voice": "male",
+          "filename_stem": "R-句子5"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 6,
+          "text": "He puts Robert in a trailer and pulls it along with his bike.",
+          "voice": "male",
+          "filename_stem": "R-句子6"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 7,
+          "text": "A big, bright smile appears on Robert’s face.",
+          "voice": "male",
+          "filename_stem": "R-句子7"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 8,
+          "text": "It is hard for John to pull Robert’s trailer. But John refuses to race without his brother.",
+          "voice": "male",
+          "filename_stem": "R-句子8"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 9,
+          "text": "But for the brothers, some things are more important than winning.",
+          "voice": "male",
+          "filename_stem": "R-句子9"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 10,
+          "text": "“I feel happy because I can race with my brother,” Robert says.",
+          "voice": "male",
+          "filename_stem": "R-句子10"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 1,
+          "text": "John and Robert Taylor are close brothers.",
+          "voice": "male",
+          "filename_stem": "R-段落1"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 2,
+          "text": "Robert has a serious illness and cannot move by himself, so he often stays at home and feels lonely.",
+          "voice": "male",
+          "filename_stem": "R-段落2"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 3,
+          "text": "John wants to help his brother play like other children.",
+          "voice": "male",
+          "filename_stem": "R-段落3"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 4,
+          "text": "He puts Robert in a special trailer and pulls it with his bike.",
+          "voice": "male",
+          "filename_stem": "R-段落4"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 5,
+          "text": "Soon, they begin to take part in bike races together.",
+          "voice": "male",
+          "filename_stem": "R-段落5"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 6,
+          "text": "Pulling the trailer is difficult, but John never leaves Robert behind.",
+          "voice": "male",
+          "filename_stem": "R-段落6"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 7,
+          "text": "He refuses to race without his brother.",
+          "voice": "male",
+          "filename_stem": "R-段落7"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 8,
+          "text": "They may not always win, but that is not important to them.",
+          "voice": "male",
+          "filename_stem": "R-段落8"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 9,
+          "text": "For the brothers, the love between them powers their bike.",
+          "voice": "male",
+          "filename_stem": "R-段落9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 1,
+          "text": "While other children play outside, Robert Taylor has to stay at home.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 2,
+          "text": "He has a serious disease and cannot move at all.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 3,
+          "text": "Robert sometimes feels lonely and hopes to join the other kids.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 4,
+          "text": "His brother John notices Robert’s sad face and thinks about how to help.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 5,
+          "text": "One day, he finds a way.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 6,
+          "text": "He puts Robert in a trailer and pulls it along with his bike.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 7,
+          "text": "During their first race, a big, bright smile appears on Robert’s face.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-7"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 8,
+          "text": "For the first time, he feels like the other kids.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 9,
+          "text": "That first race becomes the start of many more races.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 10,
+          "text": "Pulling Robert’s trailer is hard for John, but he refuses to race without his brother.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-10"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 11,
+          "text": "They do not often win, yet they enjoy every race and the time together.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-11"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 12,
+          "text": "For John and Robert, the result is not the most important thing.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-12"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 13,
+          "text": "The love between them powers their bike.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-13"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 14,
+          "text": "In their story, love always wins.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-14"
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "课文跟读",
+  "cli_result": {
+    "source_file": "课文跟读-G7-3.docx",
+    "doc_type": "课文跟读",
+    "item_count": 71,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 1,
+        "text": "It's a story about the love between a father and his son.",
+        "voice": "male",
+        "filename_stem": "U-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 2,
+        "text": "For years, the father served as the postman for this area.",
+        "voice": "male",
+        "filename_stem": "U-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 3,
+        "text": "He was often absent from home and the son seldom saw him.",
+        "voice": "male",
+        "filename_stem": "U-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 4,
+        "text": "Now the son is taking over his father’s position.",
+        "voice": "male",
+        "filename_stem": "U-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 5,
+        "text": "The father goes with him on his first day of work.",
+        "voice": "male",
+        "filename_stem": "U-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 6,
+        "text": "Along the way, they start to see into each other’s hearts.",
+        "voice": "male",
+        "filename_stem": "U-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 7,
+        "text": "For the first time, the son carries his father across a cold river.",
+        "voice": "male",
+        "filename_stem": "U-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 8,
+        "text": "It brings back the father’s memory of carrying the son on his back.",
+        "voice": "male",
+        "filename_stem": "U-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 9,
+        "text": "His love may be silent. But like a mountain, it is always there.",
+        "voice": "male",
+        "filename_stem": "U-句子9"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 1,
+        "text": "Postmen in the Mountains tells a touching story about love between a father and his son.",
+        "voice": "male",
+        "filename_stem": "U-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 2,
+        "text": "The father works as a postman in the mountains and is often absent from home.",
+        "voice": "male",
+        "filename_stem": "U-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 3,
+        "text": "When the father grows old, his son takes over his job.",
+        "voice": "male",
+        "filename_stem": "U-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 4,
+        "text": "On the son’s first trip, the father goes with him.",
+        "voice": "male",
+        "filename_stem": "U-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 5,
+        "text": "At a cold river, the son carries his father on his back.",
+        "voice": "male",
+        "filename_stem": "U-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 6,
+        "text": "This reminds the father of carrying his little boy years ago.",
+        "voice": "male",
+        "filename_stem": "U-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 7,
+        "text": "The father seldom speaks about his love, but his actions show it.",
+        "voice": "male",
+        "filename_stem": "U-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 8,
+        "text": "His love is silent, strong and always there, like a mountain.",
+        "voice": "male",
+        "filename_stem": "U-段落8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 1,
+        "text": "Postmen in the Mountains shows the silent love between a father and his son.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 2,
+        "text": "On a quiet mountain road, the son begins his first journey as a postman, with his father walking behind him.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 3,
+        "text": "For many years, the father worked as a postman in this area.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 4,
+        "text": "His job often kept him away from home, so the son seldom saw him and did not know him very well.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 5,
+        "text": "Now the son is taking over his father’s job.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 6,
+        "text": "As they deliver letters along the mountain road, they spend more time together and slowly begin to understand each other better.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 7,
+        "text": "When they reach a cold river, the son carries his father across on his back.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 8,
+        "text": "This reminds the father of carrying his little son many years ago.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 9,
+        "text": "He suddenly sees that his boy has grown into a strong young man, and tears come into his eyes.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 10,
+        "text": "The father seldom shows his love with words, hugs or kisses.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 11,
+        "text": "His love is silent, but it is always there, strong and steady like a mountain.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 1,
+        "text": "We all know about “problem teenagers”.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 2,
+        "text": "But do you know that some teenagers have “problem parents”?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 3,
+        "text": "So, today we are going to talk about these “problem parents”.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 4,
+        "text": "For example, Tina’s mother is an actress at a park.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 5,
+        "text": "Every day, she dresses up as a queen.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 6,
+        "text": "Cool, right?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 7,
+        "text": "But Tina doesn’t think so.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 8,
+        "text": "Her mother often goes to pick her up in this dress.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 9,
+        "text": "Tina is not happy about it.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 10,
+        "text": "It is always a good idea for Tina to have a good talk with her mother.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 1,
+        "text": "They are always close to each other.",
+        "voice": "male",
+        "filename_stem": "R-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 2,
+        "text": "Robert has a serious disease and cannot move at all.",
+        "voice": "male",
+        "filename_stem": "R-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 3,
+        "text": "He has to stay at home every day and he often feels lonely.",
+        "voice": "male",
+        "filename_stem": "R-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 4,
+        "text": "John sees Robert’s sad face and wants to help.",
+        "voice": "male",
+        "filename_stem": "R-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 5,
+        "text": "One day, he finds a way.",
+        "voice": "male",
+        "filename_stem": "R-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 6,
+        "text": "He puts Robert in a trailer and pulls it along with his bike.",
+        "voice": "male",
+        "filename_stem": "R-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 7,
+        "text": "A big, bright smile appears on Robert’s face.",
+        "voice": "male",
+        "filename_stem": "R-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 8,
+        "text": "It is hard for John to pull Robert’s trailer. But John refuses to race without his brother.",
+        "voice": "male",
+        "filename_stem": "R-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 9,
+        "text": "But for the brothers, some things are more important than winning.",
+        "voice": "male",
+        "filename_stem": "R-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 10,
+        "text": "“I feel happy because I can race with my brother,” Robert says.",
+        "voice": "male",
+        "filename_stem": "R-句子10"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 1,
+        "text": "John and Robert Taylor are close brothers.",
+        "voice": "male",
+        "filename_stem": "R-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 2,
+        "text": "Robert has a serious illness and cannot move by himself, so he often stays at home and feels lonely.",
+        "voice": "male",
+        "filename_stem": "R-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 3,
+        "text": "John wants to help his brother play like other children.",
+        "voice": "male",
+        "filename_stem": "R-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 4,
+        "text": "He puts Robert in a special trailer and pulls it with his bike.",
+        "voice": "male",
+        "filename_stem": "R-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 5,
+        "text": "Soon, they begin to take part in bike races together.",
+        "voice": "male",
+        "filename_stem": "R-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 6,
+        "text": "Pulling the trailer is difficult, but John never leaves Robert behind.",
+        "voice": "male",
+        "filename_stem": "R-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 7,
+        "text": "He refuses to race without his brother.",
+        "voice": "male",
+        "filename_stem": "R-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 8,
+        "text": "They may not always win, but that is not important to them.",
+        "voice": "male",
+        "filename_stem": "R-段落8"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 9,
+        "text": "For the brothers, the love between them powers their bike.",
+        "voice": "male",
+        "filename_stem": "R-段落9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 1,
+        "text": "While other children play outside, Robert Taylor has to stay at home.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "He has a serious disease and cannot move at all.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "Robert sometimes feels lonely and hopes to join the other kids.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "His brother John notices Robert’s sad face and thinks about how to help.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "One day, he finds a way.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "He puts Robert in a trailer and pulls it along with his bike.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "During their first race, a big, bright smile appears on Robert’s face.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "For the first time, he feels like the other kids.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "That first race becomes the start of many more races.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "Pulling Robert’s trailer is hard for John, but he refuses to race without his brother.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "They do not often win, yet they enjoy every race and the time together.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "For John and Robert, the result is not the most important thing.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "The love between them powers their bike.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "In their story, love always wins.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-14"
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "句子跟读_U-句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "U-句子1.mp3",
+      "voice_override": "male",
+      "text_preview": "It's a story about the love between a father and his son.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "U-句子2.mp3",
+      "voice_override": "male",
+      "text_preview": "For years, the father served as the postman for this area.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "U-句子3.mp3",
+      "voice_override": "male",
+      "text_preview": "He was often absent from home and the son seldom saw him.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "U-句子4.mp3",
+      "voice_override": "male",
+      "text_preview": "Now the son is taking over his father’s position.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "U-句子5.mp3",
+      "voice_override": "male",
+      "text_preview": "The father goes with him on his first day of work.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "U-句子6.mp3",
+      "voice_override": "male",
+      "text_preview": "Along the way, they start to see into each other’s hearts.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "U-句子7.mp3",
+      "voice_override": "male",
+      "text_preview": "For the first time, the son carries his father across a cold river.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "U-句子8.mp3",
+      "voice_override": "male",
+      "text_preview": "It brings back the father’s memory of carrying the son on his back.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "U-句子9.mp3",
+      "voice_override": "male",
+      "text_preview": "His love may be silent. But like a mountain, it is always there.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 1,
+      "filename": "U-段落1.mp3",
+      "voice_override": "male",
+      "text_preview": "Postmen in the Mountains tells a touching story about love between a father and ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 2,
+      "filename": "U-段落2.mp3",
+      "voice_override": "male",
+      "text_preview": "The father works as a postman in the mountains and is often absent from home.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 3,
+      "filename": "U-段落3.mp3",
+      "voice_override": "male",
+      "text_preview": "When the father grows old, his son takes over his job.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 4,
+      "filename": "U-段落4.mp3",
+      "voice_override": "male",
+      "text_preview": "On the son’s first trip, the father goes with him.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 5,
+      "filename": "U-段落5.mp3",
+      "voice_override": "male",
+      "text_preview": "At a cold river, the son carries his father on his back.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 6,
+      "filename": "U-段落6.mp3",
+      "voice_override": "male",
+      "text_preview": "This reminds the father of carrying his little boy years ago.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 7,
+      "filename": "U-段落7.mp3",
+      "voice_override": "male",
+      "text_preview": "The father seldom speaks about his love, but his actions show it.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 8,
+      "filename": "U-段落8.mp3",
+      "voice_override": "male",
+      "text_preview": "His love is silent, strong and always there, like a mountain.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 1,
+      "filename": "U-语篇1-1.mp3",
+      "voice_override": "male",
+      "text_preview": "Postmen in the Mountains shows the silent love between a father and his son.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 2,
+      "filename": "U-语篇1-2.mp3",
+      "voice_override": "male",
+      "text_preview": "On a quiet mountain road, the son begins his first journey as a postman, with hi",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 3,
+      "filename": "U-语篇1-3.mp3",
+      "voice_override": "male",
+      "text_preview": "For many years, the father worked as a postman in this area.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 4,
+      "filename": "U-语篇1-4.mp3",
+      "voice_override": "male",
+      "text_preview": "His job often kept him away from home, so the son seldom saw him and did not kno",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 5,
+      "filename": "U-语篇1-5.mp3",
+      "voice_override": "male",
+      "text_preview": "Now the son is taking over his father’s job.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 6,
+      "filename": "U-语篇1-6.mp3",
+      "voice_override": "male",
+      "text_preview": "As they deliver letters along the mountain road, they spend more time together a",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 7,
+      "filename": "U-语篇1-7.mp3",
+      "voice_override": "male",
+      "text_preview": "When they reach a cold river, the son carries his father across on his back.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 8,
+      "filename": "U-语篇1-8.mp3",
+      "voice_override": "male",
+      "text_preview": "This reminds the father of carrying his little son many years ago.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 9,
+      "filename": "U-语篇1-9.mp3",
+      "voice_override": "male",
+      "text_preview": "He suddenly sees that his boy has grown into a strong young man, and tears come ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 10,
+      "filename": "U-语篇1-10.mp3",
+      "voice_override": "male",
+      "text_preview": "The father seldom shows his love with words, hugs or kisses.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 11,
+      "filename": "U-语篇1-11.mp3",
+      "voice_override": "male",
+      "text_preview": "His love is silent, but it is always there, strong and steady like a mountain.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 12,
+      "filename": "U-语篇2-1.mp3",
+      "voice_override": "female",
+      "text_preview": "We all know about “problem teenagers”.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 13,
+      "filename": "U-语篇2-2.mp3",
+      "voice_override": "female",
+      "text_preview": "But do you know that some teenagers have “problem parents”?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 14,
+      "filename": "U-语篇2-3.mp3",
+      "voice_override": "female",
+      "text_preview": "So, today we are going to talk about these “problem parents”.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 15,
+      "filename": "U-语篇2-4.mp3",
+      "voice_override": "female",
+      "text_preview": "For example, Tina’s mother is an actress at a park.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 16,
+      "filename": "U-语篇2-5.mp3",
+      "voice_override": "female",
+      "text_preview": "Every day, she dresses up as a queen.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 17,
+      "filename": "U-语篇2-6.mp3",
+      "voice_override": "female",
+      "text_preview": "Cool, right?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 18,
+      "filename": "U-语篇2-7.mp3",
+      "voice_override": "female",
+      "text_preview": "But Tina doesn’t think so.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 19,
+      "filename": "U-语篇2-8.mp3",
+      "voice_override": "female",
+      "text_preview": "Her mother often goes to pick her up in this dress.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 20,
+      "filename": "U-语篇2-9.mp3",
+      "voice_override": "female",
+      "text_preview": "Tina is not happy about it.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 21,
+      "filename": "U-语篇2-10.mp3",
+      "voice_override": "female",
+      "text_preview": "It is always a good idea for Tina to have a good talk with her mother.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "R-句子1.mp3",
+      "voice_override": "male",
+      "text_preview": "They are always close to each other.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "R-句子2.mp3",
+      "voice_override": "male",
+      "text_preview": "Robert has a serious disease and cannot move at all.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "R-句子3.mp3",
+      "voice_override": "male",
+      "text_preview": "He has to stay at home every day and he often feels lonely.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "R-句子4.mp3",
+      "voice_override": "male",
+      "text_preview": "John sees Robert’s sad face and wants to help.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "R-句子5.mp3",
+      "voice_override": "male",
+      "text_preview": "One day, he finds a way.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "R-句子6.mp3",
+      "voice_override": "male",
+      "text_preview": "He puts Robert in a trailer and pulls it along with his bike.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "R-句子7.mp3",
+      "voice_override": "male",
+      "text_preview": "A big, bright smile appears on Robert’s face.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "R-句子8.mp3",
+      "voice_override": "male",
+      "text_preview": "It is hard for John to pull Robert’s trailer. But John refuses to race without h",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "R-句子9.mp3",
+      "voice_override": "male",
+      "text_preview": "But for the brothers, some things are more important than winning.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子10",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 10,
+      "filename": "R-句子10.mp3",
+      "voice_override": "male",
+      "text_preview": "“I feel happy because I can race with my brother,” Robert says.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 9,
+      "filename": "R-段落1.mp3",
+      "voice_override": "male",
+      "text_preview": "John and Robert Taylor are close brothers.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 10,
+      "filename": "R-段落2.mp3",
+      "voice_override": "male",
+      "text_preview": "Robert has a serious illness and cannot move by himself, so he often stays at ho",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 11,
+      "filename": "R-段落3.mp3",
+      "voice_override": "male",
+      "text_preview": "John wants to help his brother play like other children.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 12,
+      "filename": "R-段落4.mp3",
+      "voice_override": "male",
+      "text_preview": "He puts Robert in a special trailer and pulls it with his bike.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 13,
+      "filename": "R-段落5.mp3",
+      "voice_override": "male",
+      "text_preview": "Soon, they begin to take part in bike races together.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 14,
+      "filename": "R-段落6.mp3",
+      "voice_override": "male",
+      "text_preview": "Pulling the trailer is difficult, but John never leaves Robert behind.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 15,
+      "filename": "R-段落7.mp3",
+      "voice_override": "male",
+      "text_preview": "He refuses to race without his brother.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 16,
+      "filename": "R-段落8.mp3",
+      "voice_override": "male",
+      "text_preview": "They may not always win, but that is not important to them.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落9",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 17,
+      "filename": "R-段落9.mp3",
+      "voice_override": "male",
+      "text_preview": "For the brothers, the love between them powers their bike.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 22,
+      "filename": "R-语篇1-1.mp3",
+      "voice_override": "female",
+      "text_preview": "While other children play outside, Robert Taylor has to stay at home.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 23,
+      "filename": "R-语篇1-2.mp3",
+      "voice_override": "female",
+      "text_preview": "He has a serious disease and cannot move at all.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 24,
+      "filename": "R-语篇1-3.mp3",
+      "voice_override": "female",
+      "text_preview": "Robert sometimes feels lonely and hopes to join the other kids.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 25,
+      "filename": "R-语篇1-4.mp3",
+      "voice_override": "female",
+      "text_preview": "His brother John notices Robert’s sad face and thinks about how to help.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 26,
+      "filename": "R-语篇1-5.mp3",
+      "voice_override": "female",
+      "text_preview": "One day, he finds a way.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 27,
+      "filename": "R-语篇1-6.mp3",
+      "voice_override": "female",
+      "text_preview": "He puts Robert in a trailer and pulls it along with his bike.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 28,
+      "filename": "R-语篇1-7.mp3",
+      "voice_override": "female",
+      "text_preview": "During their first race, a big, bright smile appears on Robert’s face.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 29,
+      "filename": "R-语篇1-8.mp3",
+      "voice_override": "female",
+      "text_preview": "For the first time, he feels like the other kids.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 30,
+      "filename": "R-语篇1-9.mp3",
+      "voice_override": "female",
+      "text_preview": "That first race becomes the start of many more races.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 31,
+      "filename": "R-语篇1-10.mp3",
+      "voice_override": "female",
+      "text_preview": "Pulling Robert’s trailer is hard for John, but he refuses to race without his br",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 32,
+      "filename": "R-语篇1-11.mp3",
+      "voice_override": "female",
+      "text_preview": "They do not often win, yet they enjoy every race and the time together.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-12",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 33,
+      "filename": "R-语篇1-12.mp3",
+      "voice_override": "female",
+      "text_preview": "For John and Robert, the result is not the most important thing.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-13",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 34,
+      "filename": "R-语篇1-13.mp3",
+      "voice_override": "female",
+      "text_preview": "The love between them powers their bike.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-14",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 35,
+      "filename": "R-语篇1-14.mp3",
+      "voice_override": "female",
+      "text_preview": "In their story, love always wins.",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "e4eceb4597efb3b96c6a810d88383c4cb52d70b4df0a13a5add43dd9f4bb058b",
+    "cli_result": "37d0286ee2408194a25b1cc7cbb31646289d12901c4d61ea30c3296e680b2202",
+    "progress_items": "56314894c77e00657a0b0a8bb4ba745f7a5820cf4d32dcbb1d34c8e0293c5a38"
+  }
+}

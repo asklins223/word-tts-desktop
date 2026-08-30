@@ -125,6 +125,18 @@ FAMILY_DISPLAY_NAMES_BY_CODE = {f.code: f.display_name for f in FAMILY_REGISTRY.
 FAMILY_BY_NAME = dict(QUESTION_TYPE_CODES)
 
 
+def register_family(family: QuestionFamily) -> None:
+    """运行时注册新大题型（测试/插件扩展路径），同步维护全部派生索引。
+
+    仅影响 question_model 侧（候选抽取/落库）；question_types 的解析
+    视图在模块加载时构造，运行时注册的题型需重启或重载后参与解析。
+    """
+    FAMILY_REGISTRY[family.code] = family
+    QUESTION_TYPE_CODES[family.display_name] = family.code
+    FAMILY_BY_NAME[family.display_name] = family.code
+    FAMILY_DISPLAY_NAMES_BY_CODE[family.code] = family.display_name
+
+
 @dataclass(frozen=True)
 class QuestionSubType:
     """小题型注册表条目：业务能力/音色/命名/题量校验的最小挂载粒度。

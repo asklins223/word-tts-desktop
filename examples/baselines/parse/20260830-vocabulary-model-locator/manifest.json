@@ -1,0 +1,310 @@
+{
+  "label": "20260830-vocabulary-model-locator",
+  "captured_at_utc": "2026-08-30T00:44:06.616256+00:00",
+  "git_commit": "2ca563c65247434bc60629b597ce4d4f0cfbaef2",
+  "git_dirty_files": [
+    "DESIGN.md",
+    "PRODUCT.md",
+    "README.md",
+    "api/workflow_routes.py",
+    "application/workflow_service.py",
+    "contracts/domain.ts",
+    "contracts/generated.ts",
+    "contracts/openapi.yaml",
+    "docs/assets/",
+    "docs/frontend-ui-redesign-plan.md",
+    "electron/build/icon-source.png",
+    "electron/build/icon.icns",
+    "electron/build/icon.ico",
+    "electron/build/icon.png",
+    "electron/file-dialogs.js",
+    "electron/main.js",
+    "electron/preload.js",
+    "electron/renderer/app.js",
+    "electron/renderer/assets/app-icon.png",
+    "electron/renderer/index.html",
+    "electron/renderer/styles.css",
+    "electron/renderer/workflow-adapter.js",
+    "electron/renderer/workflow-command-coordinator.js",
+    "electron/renderer/workflow-reducer.js",
+    "electron/renderer/workflow-store.js",
+    "electron/source-staging.js",
+    "electron/test/file-dialogs.test.js",
+    "electron/test/source-staging.test.js",
+    "electron/test/workflow-artifact-transport.test.js",
+    "electron/test/workflow-command-coordinator.test.js",
+    "electron/test/workflow-reducer.test.js",
+    "electron/test/workflow-store.test.js",
+    "electron/workflow-api.js",
+    "electron/workflow-artifact-transport.js",
+    "question_model/__init__.py",
+    "question_model/extractors.py",
+    "question_model/model.py",
+    "question_types/segmenter.py",
+    "scripts/build_app_icons.py",
+    "tests/test_application_service.py",
+    "tests/test_question_model_extractors.py",
+    "tests/test_segmenter.py",
+    "tests/test_workflow_api.py",
+    "tests/test_workflow_runtime.py",
+    "workflow/repositories.py",
+    "workflow/workspace.py"
+  ],
+  "data_format_version": "1",
+  "parser_version": 14,
+  "audio_algorithm_version": 8,
+  "question_type_registry": [
+    "信息获取",
+    "听后选择",
+    "听后应答",
+    "课文跟读",
+    "信息转述及询问",
+    "模仿朗读",
+    "词汇"
+  ],
+  "default_tts_config": {
+    "config_version": 5,
+    "generation_mode": "composite_cut",
+    "rate": 50,
+    "volume": 50,
+    "pitch": 50,
+    "format": "mp3",
+    "quality": "128 kbps（标准）",
+    "preview": false,
+    "default_female_voice": "amanda",
+    "default_male_voice": "george",
+    "voice_configs": {
+      "amanda": {
+        "rate": 50,
+        "volume": 50,
+        "pitch": 50
+      },
+      "george": {
+        "rate": 35,
+        "volume": 50,
+        "pitch": 50
+      }
+    },
+    "role_configs": {
+      "__default_female__": {
+        "rate": 50,
+        "volume": 50,
+        "pitch": 50
+      },
+      "__default_male__": {
+        "rate": 35,
+        "volume": 50,
+        "pitch": 50
+      }
+    },
+    "role_voices": {},
+    "audio_algorithm_version": 8,
+    "parser_version": 14
+  },
+  "totals": {
+    "documents": 13,
+    "items_by_category": {
+      "例句": 40,
+      "信息转述录音稿": 1,
+      "单词": 40,
+      "句子跟读": 111,
+      "听后应答录音稿": 7,
+      "听后选择录音稿": 6,
+      "听选信息录音稿": 6,
+      "听选信息题目": 12,
+      "回答问题录音稿": 2,
+      "回答问题题目": 8,
+      "模仿朗读-外网": 4,
+      "模仿朗读-教材": 2,
+      "段落跟读": 70,
+      "语篇跟读": 156
+    },
+    "items_total": 465
+  },
+  "documents": [
+    {
+      "source_file": "7上-U2-信息获取.docx",
+      "sha256": "04e96202768cbefc4ba06d850bd6d5f89f464a463ca41b3e83d409ee9b462364",
+      "content_detected_types": [
+        "信息获取"
+      ],
+      "cli_filename_type": "信息获取",
+      "item_count": 14,
+      "fingerprints": {
+        "parse_results": "a823241377204b397b180184c7667445ea0791166cdf3185f6afd7c3807fe49b",
+        "cli_result": "3552d3af2a9c541a5374362a325029b060e43f413aa854d3ccbc17f443ab32fa",
+        "progress_items": "d04cf0398f734581b364200cc1438b7fcc41d8b073edf27712bea42c7be52971"
+      }
+    },
+    {
+      "source_file": "7上-U6-信息获取(1).docx",
+      "sha256": "543afe92fccf6e4d28fd406af9c1a406a20197d333f2dbd518afbcaa215c86c5",
+      "content_detected_types": [
+        "信息获取"
+      ],
+      "cli_filename_type": "信息获取",
+      "item_count": 14,
+      "fingerprints": {
+        "parse_results": "77ced70a10134862c410c6b74599a41e94f01544b6fe39f958b2e460e280161c",
+        "cli_result": "2382360c2ab377d6292b78a3156a1c1d0a4bc31af2361c39f9c4bd3927b9bd28",
+        "progress_items": "c36cdbd6c4c2a2bb9f10f824fdc590e8e3075976a2eab8e5f864c5261a9fdfe7"
+      }
+    },
+    {
+      "source_file": "S1-听后应答.docx",
+      "sha256": "528ea1d1844fb0d03f6ec13009b9553c04e2a6974e57358ddcb521eead7a8eab",
+      "content_detected_types": [
+        "听后应答"
+      ],
+      "cli_filename_type": "听后应答",
+      "item_count": 7,
+      "fingerprints": {
+        "parse_results": "f956d1c19682cdd6347ba124e5abc726f1c668704de32dbc8fb2a7d36c77830f",
+        "cli_result": "02e6b692a5633a28029d4c3def8ab0d6007a7f07c8b877be19b1d7efec53dc67",
+        "progress_items": "e4b65c2b82eaa0b6ac68a5c798c50c443033ab9309ba2a75aedfe49bcc60da99"
+      }
+    },
+    {
+      "source_file": "U6单词导入模板.xlsx",
+      "sha256": "fe8b8fbce9331deb34199dc4cb07c38387576b9c0e853da47d61d2d1602f5a40",
+      "content_detected_types": [
+        "词汇"
+      ],
+      "cli_filename_type": "词汇",
+      "item_count": 80,
+      "fingerprints": {
+        "parse_results": "61884ab18ac791fd915b52e6188a3a724bf325678bef299b19fc9edfa65e2a9c",
+        "cli_result": "625c61654a46ca092bb6465e0e4535827b71804f057e53c02548a81ab8ef073e",
+        "progress_items": "80e5338b6d739ac8ebe11c6dc0c71b636ffa46a63c398597ec29bec444de632e"
+      }
+    },
+    {
+      "source_file": "信息转述及询问信息 7上- U1.docx",
+      "sha256": "94da3203156071349077847caae9e75b9df21726ca81950870e5fe4a18dc60b4",
+      "content_detected_types": [
+        "信息转述及询问"
+      ],
+      "cli_filename_type": "信息转述及询问",
+      "item_count": 1,
+      "fingerprints": {
+        "parse_results": "4a7aa1bc0aa8f55311a55d9a19e36e103c1339891883d4ad24e3f13dd9ccfa2e",
+        "cli_result": "6d0cd41ec7bc4905c8d072676e2b22f3f4c383e0a8a05dba63a6e9f9308e42e2",
+        "progress_items": "0244f8b7ad12655479c4a426403e74fb0e3474bdd72db24021c855ac7a2ee7f1"
+      }
+    },
+    {
+      "source_file": "听后选择-7上 Starter Unit 1 Hello!.docx",
+      "sha256": "ec5517a609e8636d9d27f1b87d9bad197f2b3359f115d3503a13fef9faac46c3",
+      "content_detected_types": [
+        "听后选择"
+      ],
+      "cli_filename_type": "听后选择",
+      "item_count": 6,
+      "fingerprints": {
+        "parse_results": "a6a5ee114f3bc90417195d673af165cd1c4f7290d509fb23dd701a4a45012351",
+        "cli_result": "e4a2a250d5ceee19078ffed65635733647ab41f2fe6397a85a4e9ce7ba309d6f",
+        "progress_items": "c537c70e63e733ba5dbebdaea16a459de28f8a641458e482f647a95346027404"
+      }
+    },
+    {
+      "source_file": "模仿朗读-7上-U5-U6.docx",
+      "sha256": "e9aaf7e1e00bc894822b16b08f0b0451b2442fa1e3b6ea1cf06c0bd46eaaa0bd",
+      "content_detected_types": [
+        "模仿朗读"
+      ],
+      "cli_filename_type": "模仿朗读",
+      "item_count": 6,
+      "fingerprints": {
+        "parse_results": "bc965b6046c5415d03e823f4583f7cfe1856888acbfee35540de2838cc327508",
+        "cli_result": "de2ad8289ef2b47250cb58f2a6cdfde473bc14e9163310df919f47f3d7492c83",
+        "progress_items": "9417771c06d22220541c7e6e032039ebd0f7ea6eefcdcaf7715902f669178564"
+      }
+    },
+    {
+      "source_file": "词汇-G7-u1.docx",
+      "sha256": "dd5b8a10cb1e583bce74bbf6037a082082782740119d2120f082ab6d6227bafe",
+      "content_detected_types": [],
+      "cli_filename_type": null,
+      "item_count": 0,
+      "fingerprints": {
+        "parse_results": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "cli_result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "progress_items": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    {
+      "source_file": "课文跟读-7上-Starter Unit 1 Hello.docx",
+      "sha256": "a93c2a9a27481271c07ebde216944151d00264d6bee8400d5c4319a4908692ec",
+      "content_detected_types": [
+        "课文跟读"
+      ],
+      "cli_filename_type": "课文跟读",
+      "item_count": 37,
+      "fingerprints": {
+        "parse_results": "5dec64300007188179a49a0f529371a186ab78649762d6c38b7ada1ae4376a39",
+        "cli_result": "f9f0f692c00392c412074395cc81269b4cd426459b6c3d669e8cb9a5042ac9b4",
+        "progress_items": "3014013bfa1425f3d364823f049cb99dc7ff5ddf01d73022fad5a318d73549bc"
+      }
+    },
+    {
+      "source_file": "课文跟读-7上U2.docx",
+      "sha256": "f20043719d7f0fa9d97599c06f8422acef4d84e2a8604e9748209b4601243ac4",
+      "content_detected_types": [
+        "课文跟读"
+      ],
+      "cli_filename_type": "课文跟读",
+      "item_count": 74,
+      "fingerprints": {
+        "parse_results": "ded41633bc3301d2acb95404ddb689dacefd3beb22bc7552e71103b3b6646f94",
+        "cli_result": "496a7f0c3d90ce5957fd6282fa866ae77fb73dc7c7faf95e3d9b8628dd42ad62",
+        "progress_items": "3049f0ddc05528daf102350b8b2369a2b452e139609165eb1759b5abb102e1b2"
+      }
+    },
+    {
+      "source_file": "课文跟读-G7-1.docx",
+      "sha256": "060d137a691c4e1f796ff8d9816f7eb5cce1c522e998be6a5fd9e8e06da43d01",
+      "content_detected_types": [
+        "课文跟读"
+      ],
+      "cli_filename_type": "课文跟读",
+      "item_count": 82,
+      "fingerprints": {
+        "parse_results": "22a05163d65c1adb9d3901d6c3e7c464170c6536662639d97290f782356b31d1",
+        "cli_result": "cb144f65ddd0814ddf4bed165798ce9bd8051970a6a9630cc4138226601e4391",
+        "progress_items": "7b4b0c16d86ee34100ca605a1984ef5c0c65bd56959f775836a89754d1080e99"
+      }
+    },
+    {
+      "source_file": "课文跟读-G7-3.docx",
+      "sha256": "c322d807289d9ec1d6ad86eb7321ecb3ae3f0f5b53afea046eaded04cf51b97e",
+      "content_detected_types": [
+        "课文跟读"
+      ],
+      "cli_filename_type": "课文跟读",
+      "item_count": 71,
+      "fingerprints": {
+        "parse_results": "e4eceb4597efb3b96c6a810d88383c4cb52d70b4df0a13a5add43dd9f4bb058b",
+        "cli_result": "37d0286ee2408194a25b1cc7cbb31646289d12901c4d61ea30c3296e680b2202",
+        "progress_items": "56314894c77e00657a0b0a8bb4ba745f7a5820cf4d32dcbb1d34c8e0293c5a38"
+      }
+    },
+    {
+      "source_file": "课文跟读人教九上U1.docx",
+      "sha256": "c5d3370ba3508aaaed541f1ab6b7cd7d7694553c86ac043f12a175673a3bd0b8",
+      "content_detected_types": [
+        "课文跟读"
+      ],
+      "cli_filename_type": "课文跟读",
+      "item_count": 73,
+      "fingerprints": {
+        "parse_results": "de726d4e1e4a3255e2a00c47de57f09afff7b47d68de0c013061e10f29d96419",
+        "cli_result": "33eb5faef8069cf5543ff454498e4f4aa4f8eb387171a39423b7123598e5d3fe",
+        "progress_items": "d96f1f7b4e654e324c1a20b356106c265788c3b3b4abe8ffff88db931a078c23"
+      }
+    }
+  ],
+  "fingerprints": {
+    "parse_results_all": "0fdb05d03d1bb3bd721b2cb1817c0c9ec318c4b7c38a964a7a52c0c992f6b604",
+    "progress_items_all": "95428bad5f96c6f564584030ecdbe92b8d64ce419dc7905b8cfcc58cbb3e9c88"
+  }
+}

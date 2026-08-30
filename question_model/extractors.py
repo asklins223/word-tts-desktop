@@ -436,11 +436,14 @@ def _extract_vocabulary(result: dict, source_key: str) -> ParseCandidate:
         category = raw.get("category", "")
         if category not in VOCABULARY_ENTRY_KINDS:
             continue
+        # 优先用解析器提供的行级定位（工作表/Sheet/行/N），
+        # 旧解析结果无该字段时回退到自造定位
+        entity_locator = raw.get("source_locator") or locator
         units.append(ContentUnit(
-            content_unit_id=build_identity("content", source_key, locator),
+            content_unit_id=build_identity("content", source_key, entity_locator),
             content_kind="vocabulary",
             text=raw["text"],
-            source_locator=locator,
+            source_locator=entity_locator,
             entry_kind=VOCABULARY_ENTRY_KINDS[category],
             entry_number=raw.get("number"),
             resolution_state=ResolutionState.DRAFT,
@@ -483,15 +486,11 @@ def extract_candidate(doc_type: str, result: dict, source_key: str) -> ParseCand
     注册了 family 但尚未实现抽取器：返回带诊断的空候选（不抛错）；
     完全未注册的题型：抛 KeyError（识别失败应显式暴露）。
     """
-    from .model import FAMILY_REGISTRY
+    from .model import FAMILY_BY_NAME, FAMILY_REGISTRY
 
     family_code = doc_type
     if family_code not in FAMILY_REGISTRY:
-        family_code = next(
-            (code for code, family in FAMILY_REGISTRY.items()
-             if family.display_name == doc_type),
-            doc_type,
-        )
+        family_code = FAMILY_BY_NAME.get(doc_type, doc_type)
     if family_code not in FAMILY_REGISTRY:
         raise KeyError(f"未注册的大题型: {doc_type}")
     extractor = EXTRACTORS.get(family_code)

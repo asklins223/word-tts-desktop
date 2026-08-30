@@ -1,0 +1,2319 @@
+{
+  "source_file": "课文跟读-G7-1.docx",
+  "sha256": "060d137a691c4e1f796ff8d9816f7eb5cce1c522e998be6a5fd9e8e06da43d01",
+  "content_detected_types": [
+    "课文跟读"
+  ],
+  "auto_summary": "检测到 1 种题型，成功提取 82 条内容",
+  "parse_results": [
+    {
+      "source_file": "课文跟读-G7-1.docx",
+      "doc_type": "课文跟读",
+      "item_count": 82,
+      "items": [
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 1,
+          "text": "Learning without thinking is of no use.",
+          "voice": "male",
+          "filename_stem": "U-句子1"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 2,
+          "text": "Ms Chen writes the sentence on the blackboard and says, “Please write this down.”",
+          "voice": "male",
+          "filename_stem": "U-句子2"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 3,
+          "text": "I write down the first word and stop.",
+          "voice": "male",
+          "filename_stem": "U-句子3"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 4,
+          "text": "But is it OK to point out the mistake?",
+          "voice": "male",
+          "filename_stem": "U-句子4"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 5,
+          "text": "Is that polite, in the first lesson?",
+          "voice": "male",
+          "filename_stem": "U-句子5"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 6,
+          "text": "Questions jump into my mind.",
+          "voice": "male",
+          "filename_stem": "U-句子6"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 7,
+          "text": "I look up at Ms Chen.",
+          "voice": "male",
+          "filename_stem": "U-句子7"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 8,
+          "text": "My eyes meet hers.",
+          "voice": "male",
+          "filename_stem": "U-句子8"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 9,
+          "text": "But then I think about the meaning of the sentence.",
+          "voice": "male",
+          "filename_stem": "U-句子9"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 10,
+          "text": "I put up my hand.",
+          "voice": "male",
+          "filename_stem": "U-句子10"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 11,
+          "text": "“Ms Chen, there’s a mistake,” I say.",
+          "voice": "male",
+          "filename_stem": "U-句子11"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 12,
+          "text": "That sentence is from Confucius, not from Mencius.",
+          "voice": "male",
+          "filename_stem": "U-句子12"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 13,
+          "text": "You need to think more in your learning.",
+          "voice": "male",
+          "filename_stem": "U-句子13"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Understanding Idea",
+          "number": 14,
+          "text": "Speaking up in the first lesson is a problem for Wang Han.",
+          "voice": "male",
+          "filename_stem": "U-句子14"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 1,
+          "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks us to write it down.",
+          "voice": "male",
+          "filename_stem": "U-段落1"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 2,
+          "text": "I begin to write, but I stop after the first word.",
+          "voice": "male",
+          "filename_stem": "U-段落2"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 3,
+          "text": "Questions jump into my mind.",
+          "voice": "male",
+          "filename_stem": "U-段落3"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 4,
+          "text": "But then I think about the meaning of the sentence.",
+          "voice": "male",
+          "filename_stem": "U-段落4"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 5,
+          "text": "I put up my hand.",
+          "voice": "male",
+          "filename_stem": "U-段落5"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 6,
+          "text": "“Ms Chen, there’s a mistake,” I say.",
+          "voice": "male",
+          "filename_stem": "U-段落6"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 7,
+          "text": "Ms Chen says yes and that is the first lesson for everybody.",
+          "voice": "male",
+          "filename_stem": "U-段落7"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Understanding Idea",
+          "sentence_number": 8,
+          "text": "Learning will be more difficult, so we need to think more in our learning.",
+          "voice": "male",
+          "filename_stem": "U-段落8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 1,
+          "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks the students to write it down.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 2,
+          "text": "Wang Han starts to write, but he soon stops.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 3,
+          "text": "He finds something wrong with the sentence.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 4,
+          "text": "He wants to point out the mistake, but he is not sure.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 5,
+          "text": "Is it polite to do that in the first lesson?",
+          "voice": "male",
+          "filename_stem": "U-语篇1-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 6,
+          "text": "Many questions jump into his mind.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 7,
+          "text": "He looks up at Ms Chen and feels nervous.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-7"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 8,
+          "text": "Then Wang Han thinks about the meaning of the sentence.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 9,
+          "text": "At last, he puts up his hand and says, “Ms Chen, there’s a mistake. That sentence is from Confucius, not from Mencius.”",
+          "voice": "male",
+          "filename_stem": "U-语篇1-9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 10,
+          "text": "Ms Chen smiles and says, “Well done, Wang Han.”",
+          "voice": "male",
+          "filename_stem": "U-语篇1-10"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 11,
+          "text": "She says, “In fact, this is my first lesson for all of you.”",
+          "voice": "male",
+          "filename_stem": "U-语篇1-11"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 12,
+          "text": "In junior high school, learning will be more difficult.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-12"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 13,
+          "text": "Students need to think more in their learning.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-13"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 1,
+          "sentence_number": 14,
+          "text": "For Wang Han and his classmates, it is really an important lesson.",
+          "voice": "male",
+          "filename_stem": "U-语篇1-14"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 1,
+          "text": "Welcome to Students’ Union Radio!",
+          "voice": "female",
+          "filename_stem": "U-语篇2-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 2,
+          "text": "The new school year is beginning.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 3,
+          "text": "What are the new student’s problems?",
+          "voice": "female",
+          "filename_stem": "U-语篇2-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 4,
+          "text": "Let’s take a look.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 5,
+          "text": "For many years, the biggest problems is: They have more subjects and more homework.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 6,
+          "text": "They also have many activities.",
+          "voice": "female",
+          "filename_stem": "U-语篇2-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Understanding Idea",
+          "discourse_number": 2,
+          "sentence_number": 7,
+          "text": "So how can they make good use for their time?",
+          "voice": "female",
+          "filename_stem": "U-语篇2-7"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 1,
+          "text": "Mia, how do you feel about your first day in junior high tomorrow?",
+          "voice": "male",
+          "filename_stem": "R-句子1"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 2,
+          "text": "Well, I’m a little nervous.",
+          "voice": "male",
+          "filename_stem": "R-句子2"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 3,
+          "text": "Don’t worry.",
+          "voice": "male",
+          "filename_stem": "R-句子3"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 4,
+          "text": "We’ve got something for you!",
+          "voice": "male",
+          "filename_stem": "R-句子4"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 5,
+          "text": "We want to share some thoughts with you.",
+          "voice": "male",
+          "filename_stem": "R-句子5"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 6,
+          "text": "Time flies!",
+          "voice": "male",
+          "filename_stem": "R-句子6"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 7,
+          "text": "Are you ready for your new life?",
+          "voice": "male",
+          "filename_stem": "R-句子7"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 8,
+          "text": "Primary school is like a small pool.",
+          "voice": "male",
+          "filename_stem": "R-句子8"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 9,
+          "text": "Dad and Mum can protect your boat from winds.",
+          "voice": "male",
+          "filename_stem": "R-句子9"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 10,
+          "text": "But junior high is like a river.",
+          "voice": "male",
+          "filename_stem": "R-句子10"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 11,
+          "text": "You will face new problems.",
+          "voice": "male",
+          "filename_stem": "R-句子11"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 12,
+          "text": "But sometimes you have to sail your boat by yourself.",
+          "voice": "male",
+          "filename_stem": "R-句子12"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 13,
+          "text": "Just try your best and work hard.",
+          "voice": "male",
+          "filename_stem": "R-句子13"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 14,
+          "text": "You will go through storms towards the sea.",
+          "voice": "male",
+          "filename_stem": "R-句子14"
+        },
+        {
+          "category": "句子跟读",
+          "section": "Reading for writing",
+          "number": 15,
+          "text": "One way is to face problems bravely.",
+          "voice": "male",
+          "filename_stem": "R-句子15"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 1,
+          "text": "Before junior high starts, Mia got a letter from Dad and Mum.",
+          "voice": "male",
+          "filename_stem": "R-段落1"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 2,
+          "text": "Primary school is like a small pool.",
+          "voice": "male",
+          "filename_stem": "R-段落2"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 3,
+          "text": "Mia’s boat is safe there, and her parents can protect her boat from winds.",
+          "voice": "male",
+          "filename_stem": "R-段落3"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 4,
+          "text": "But junior high is like a river.",
+          "voice": "male",
+          "filename_stem": "R-段落4"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 5,
+          "text": "It is wide and the water moves fast.",
+          "voice": "male",
+          "filename_stem": "R-段落5"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 6,
+          "text": "Mia will face new problems.",
+          "voice": "male",
+          "filename_stem": "R-段落6"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 7,
+          "text": "Her parents are still there to help, but sometimes she has to sail her boat by herself.",
+          "voice": "male",
+          "filename_stem": "R-段落7"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 8,
+          "text": "She should try her best and work hard.",
+          "voice": "male",
+          "filename_stem": "R-段落8"
+        },
+        {
+          "category": "段落跟读",
+          "section": "Reading for writing",
+          "sentence_number": 9,
+          "text": "Then she can go through storms towards the sea.",
+          "voice": "male",
+          "filename_stem": "R-段落9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 1,
+          "text": "Before Mia’s first day in junior high, Dad asks her how she feels about her new life.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-1"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 2,
+          "text": "Mia says she is a little nervous.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-2"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 3,
+          "text": "Mum tells her, “Don’t worry.”",
+          "voice": "female",
+          "filename_stem": "R-语篇1-3"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 4,
+          "text": "Then Dad and Mum give her a paper boat latter.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-4"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 5,
+          "text": "They want to share some thoughts with her.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-5"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 6,
+          "text": "In the letter, they say, “Time flies! You are now in junior high. Are you ready for your new life?”",
+          "voice": "female",
+          "filename_stem": "R-语篇1-6"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 7,
+          "text": "They tell Mia that primary school is like a small pool.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-7"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 8,
+          "text": "Her boat is safe there, and Dad and Mum can protect it from winds.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-8"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 9,
+          "text": "But junior high is like a river.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-9"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 10,
+          "text": "It is wide, and the water moves fast.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-10"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 11,
+          "text": "Mia will face new problems.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-11"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 12,
+          "text": "Her parents are still there to help, but sometimes she has to sail her boat by herself.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-12"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 13,
+          "text": "At the end of the letter, they say, “Just try your best and work hard. You will go through storms towards the sea.”",
+          "voice": "female",
+          "filename_stem": "R-语篇1-13"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 14,
+          "text": "Mia reads the letter and feels loved.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-14"
+        },
+        {
+          "category": "语篇跟读",
+          "section": "Reading for writing",
+          "discourse_number": 0,
+          "sentence_number": 15,
+          "text": "She is ready for her new journey.",
+          "voice": "female",
+          "filename_stem": "R-语篇1-15"
+        }
+      ]
+    }
+  ],
+  "cli_filename_type": "课文跟读",
+  "cli_result": {
+    "source_file": "课文跟读-G7-1.docx",
+    "doc_type": "课文跟读",
+    "item_count": 82,
+    "items": [
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 1,
+        "text": "Learning without thinking is of no use.",
+        "voice": "male",
+        "filename_stem": "U-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 2,
+        "text": "Ms Chen writes the sentence on the blackboard and says, “Please write this down.”",
+        "voice": "male",
+        "filename_stem": "U-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 3,
+        "text": "I write down the first word and stop.",
+        "voice": "male",
+        "filename_stem": "U-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 4,
+        "text": "But is it OK to point out the mistake?",
+        "voice": "male",
+        "filename_stem": "U-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 5,
+        "text": "Is that polite, in the first lesson?",
+        "voice": "male",
+        "filename_stem": "U-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 6,
+        "text": "Questions jump into my mind.",
+        "voice": "male",
+        "filename_stem": "U-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 7,
+        "text": "I look up at Ms Chen.",
+        "voice": "male",
+        "filename_stem": "U-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 8,
+        "text": "My eyes meet hers.",
+        "voice": "male",
+        "filename_stem": "U-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 9,
+        "text": "But then I think about the meaning of the sentence.",
+        "voice": "male",
+        "filename_stem": "U-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 10,
+        "text": "I put up my hand.",
+        "voice": "male",
+        "filename_stem": "U-句子10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 11,
+        "text": "“Ms Chen, there’s a mistake,” I say.",
+        "voice": "male",
+        "filename_stem": "U-句子11"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 12,
+        "text": "That sentence is from Confucius, not from Mencius.",
+        "voice": "male",
+        "filename_stem": "U-句子12"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 13,
+        "text": "You need to think more in your learning.",
+        "voice": "male",
+        "filename_stem": "U-句子13"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Understanding Idea",
+        "number": 14,
+        "text": "Speaking up in the first lesson is a problem for Wang Han.",
+        "voice": "male",
+        "filename_stem": "U-句子14"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 1,
+        "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks us to write it down.",
+        "voice": "male",
+        "filename_stem": "U-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 2,
+        "text": "I begin to write, but I stop after the first word.",
+        "voice": "male",
+        "filename_stem": "U-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 3,
+        "text": "Questions jump into my mind.",
+        "voice": "male",
+        "filename_stem": "U-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 4,
+        "text": "But then I think about the meaning of the sentence.",
+        "voice": "male",
+        "filename_stem": "U-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 5,
+        "text": "I put up my hand.",
+        "voice": "male",
+        "filename_stem": "U-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 6,
+        "text": "“Ms Chen, there’s a mistake,” I say.",
+        "voice": "male",
+        "filename_stem": "U-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 7,
+        "text": "Ms Chen says yes and that is the first lesson for everybody.",
+        "voice": "male",
+        "filename_stem": "U-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Understanding Idea",
+        "sentence_number": 8,
+        "text": "Learning will be more difficult, so we need to think more in our learning.",
+        "voice": "male",
+        "filename_stem": "U-段落8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 1,
+        "text": "In the first English lesson, Ms Chen writes a sentence on the blackboard and asks the students to write it down.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 2,
+        "text": "Wang Han starts to write, but he soon stops.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 3,
+        "text": "He finds something wrong with the sentence.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 4,
+        "text": "He wants to point out the mistake, but he is not sure.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 5,
+        "text": "Is it polite to do that in the first lesson?",
+        "voice": "male",
+        "filename_stem": "U-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 6,
+        "text": "Many questions jump into his mind.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 7,
+        "text": "He looks up at Ms Chen and feels nervous.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 8,
+        "text": "Then Wang Han thinks about the meaning of the sentence.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 9,
+        "text": "At last, he puts up his hand and says, “Ms Chen, there’s a mistake. That sentence is from Confucius, not from Mencius.”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 10,
+        "text": "Ms Chen smiles and says, “Well done, Wang Han.”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 11,
+        "text": "She says, “In fact, this is my first lesson for all of you.”",
+        "voice": "male",
+        "filename_stem": "U-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 12,
+        "text": "In junior high school, learning will be more difficult.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 13,
+        "text": "Students need to think more in their learning.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 1,
+        "sentence_number": 14,
+        "text": "For Wang Han and his classmates, it is really an important lesson.",
+        "voice": "male",
+        "filename_stem": "U-语篇1-14"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 1,
+        "text": "Welcome to Students’ Union Radio!",
+        "voice": "female",
+        "filename_stem": "U-语篇2-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 2,
+        "text": "The new school year is beginning.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 3,
+        "text": "What are the new student’s problems?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 4,
+        "text": "Let’s take a look.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 5,
+        "text": "For many years, the biggest problems is: They have more subjects and more homework.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 6,
+        "text": "They also have many activities.",
+        "voice": "female",
+        "filename_stem": "U-语篇2-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Understanding Idea",
+        "discourse_number": 2,
+        "sentence_number": 7,
+        "text": "So how can they make good use for their time?",
+        "voice": "female",
+        "filename_stem": "U-语篇2-7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 1,
+        "text": "Mia, how do you feel about your first day in junior high tomorrow?",
+        "voice": "male",
+        "filename_stem": "R-句子1"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 2,
+        "text": "Well, I’m a little nervous.",
+        "voice": "male",
+        "filename_stem": "R-句子2"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 3,
+        "text": "Don’t worry.",
+        "voice": "male",
+        "filename_stem": "R-句子3"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 4,
+        "text": "We’ve got something for you!",
+        "voice": "male",
+        "filename_stem": "R-句子4"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 5,
+        "text": "We want to share some thoughts with you.",
+        "voice": "male",
+        "filename_stem": "R-句子5"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 6,
+        "text": "Time flies!",
+        "voice": "male",
+        "filename_stem": "R-句子6"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 7,
+        "text": "Are you ready for your new life?",
+        "voice": "male",
+        "filename_stem": "R-句子7"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 8,
+        "text": "Primary school is like a small pool.",
+        "voice": "male",
+        "filename_stem": "R-句子8"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 9,
+        "text": "Dad and Mum can protect your boat from winds.",
+        "voice": "male",
+        "filename_stem": "R-句子9"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 10,
+        "text": "But junior high is like a river.",
+        "voice": "male",
+        "filename_stem": "R-句子10"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 11,
+        "text": "You will face new problems.",
+        "voice": "male",
+        "filename_stem": "R-句子11"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 12,
+        "text": "But sometimes you have to sail your boat by yourself.",
+        "voice": "male",
+        "filename_stem": "R-句子12"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 13,
+        "text": "Just try your best and work hard.",
+        "voice": "male",
+        "filename_stem": "R-句子13"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 14,
+        "text": "You will go through storms towards the sea.",
+        "voice": "male",
+        "filename_stem": "R-句子14"
+      },
+      {
+        "category": "句子跟读",
+        "section": "Reading for writing",
+        "number": 15,
+        "text": "One way is to face problems bravely.",
+        "voice": "male",
+        "filename_stem": "R-句子15"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 1,
+        "text": "Before junior high starts, Mia got a letter from Dad and Mum.",
+        "voice": "male",
+        "filename_stem": "R-段落1"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 2,
+        "text": "Primary school is like a small pool.",
+        "voice": "male",
+        "filename_stem": "R-段落2"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 3,
+        "text": "Mia’s boat is safe there, and her parents can protect her boat from winds.",
+        "voice": "male",
+        "filename_stem": "R-段落3"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 4,
+        "text": "But junior high is like a river.",
+        "voice": "male",
+        "filename_stem": "R-段落4"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 5,
+        "text": "It is wide and the water moves fast.",
+        "voice": "male",
+        "filename_stem": "R-段落5"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 6,
+        "text": "Mia will face new problems.",
+        "voice": "male",
+        "filename_stem": "R-段落6"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 7,
+        "text": "Her parents are still there to help, but sometimes she has to sail her boat by herself.",
+        "voice": "male",
+        "filename_stem": "R-段落7"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 8,
+        "text": "She should try her best and work hard.",
+        "voice": "male",
+        "filename_stem": "R-段落8"
+      },
+      {
+        "category": "段落跟读",
+        "section": "Reading for writing",
+        "sentence_number": 9,
+        "text": "Then she can go through storms towards the sea.",
+        "voice": "male",
+        "filename_stem": "R-段落9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 1,
+        "text": "Before Mia’s first day in junior high, Dad asks her how she feels about her new life.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-1"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 2,
+        "text": "Mia says she is a little nervous.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-2"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 3,
+        "text": "Mum tells her, “Don’t worry.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-3"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 4,
+        "text": "Then Dad and Mum give her a paper boat latter.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-4"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 5,
+        "text": "They want to share some thoughts with her.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-5"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 6,
+        "text": "In the letter, they say, “Time flies! You are now in junior high. Are you ready for your new life?”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-6"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 7,
+        "text": "They tell Mia that primary school is like a small pool.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-7"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 8,
+        "text": "Her boat is safe there, and Dad and Mum can protect it from winds.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-8"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 9,
+        "text": "But junior high is like a river.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-9"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 10,
+        "text": "It is wide, and the water moves fast.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-10"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 11,
+        "text": "Mia will face new problems.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-11"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 12,
+        "text": "Her parents are still there to help, but sometimes she has to sail her boat by herself.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-12"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 13,
+        "text": "At the end of the letter, they say, “Just try your best and work hard. You will go through storms towards the sea.”",
+        "voice": "female",
+        "filename_stem": "R-语篇1-13"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 14,
+        "text": "Mia reads the letter and feels loved.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-14"
+      },
+      {
+        "category": "语篇跟读",
+        "section": "Reading for writing",
+        "discourse_number": 0,
+        "sentence_number": 15,
+        "text": "She is ready for her new journey.",
+        "voice": "female",
+        "filename_stem": "R-语篇1-15"
+      }
+    ]
+  },
+  "cli_error": null,
+  "progress_items": [
+    {
+      "id": "句子跟读_U-句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "U-句子1.mp3",
+      "voice_override": "male",
+      "text_preview": "Learning without thinking is of no use.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "U-句子2.mp3",
+      "voice_override": "male",
+      "text_preview": "Ms Chen writes the sentence on the blackboard and says, “Please write this down.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "U-句子3.mp3",
+      "voice_override": "male",
+      "text_preview": "I write down the first word and stop.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "U-句子4.mp3",
+      "voice_override": "male",
+      "text_preview": "But is it OK to point out the mistake?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "U-句子5.mp3",
+      "voice_override": "male",
+      "text_preview": "Is that polite, in the first lesson?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "U-句子6.mp3",
+      "voice_override": "male",
+      "text_preview": "Questions jump into my mind.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "U-句子7.mp3",
+      "voice_override": "male",
+      "text_preview": "I look up at Ms Chen.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "U-句子8.mp3",
+      "voice_override": "male",
+      "text_preview": "My eyes meet hers.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "U-句子9.mp3",
+      "voice_override": "male",
+      "text_preview": "But then I think about the meaning of the sentence.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子10",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 10,
+      "filename": "U-句子10.mp3",
+      "voice_override": "male",
+      "text_preview": "I put up my hand.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子11",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 11,
+      "filename": "U-句子11.mp3",
+      "voice_override": "male",
+      "text_preview": "“Ms Chen, there’s a mistake,” I say.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子12",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 12,
+      "filename": "U-句子12.mp3",
+      "voice_override": "male",
+      "text_preview": "That sentence is from Confucius, not from Mencius.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子13",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 13,
+      "filename": "U-句子13.mp3",
+      "voice_override": "male",
+      "text_preview": "You need to think more in your learning.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_U-句子14",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 14,
+      "filename": "U-句子14.mp3",
+      "voice_override": "male",
+      "text_preview": "Speaking up in the first lesson is a problem for Wang Han.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 1,
+      "filename": "U-段落1.mp3",
+      "voice_override": "male",
+      "text_preview": "In the first English lesson, Ms Chen writes a sentence on the blackboard and ask",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 2,
+      "filename": "U-段落2.mp3",
+      "voice_override": "male",
+      "text_preview": "I begin to write, but I stop after the first word.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 3,
+      "filename": "U-段落3.mp3",
+      "voice_override": "male",
+      "text_preview": "Questions jump into my mind.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 4,
+      "filename": "U-段落4.mp3",
+      "voice_override": "male",
+      "text_preview": "But then I think about the meaning of the sentence.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 5,
+      "filename": "U-段落5.mp3",
+      "voice_override": "male",
+      "text_preview": "I put up my hand.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 6,
+      "filename": "U-段落6.mp3",
+      "voice_override": "male",
+      "text_preview": "“Ms Chen, there’s a mistake,” I say.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 7,
+      "filename": "U-段落7.mp3",
+      "voice_override": "male",
+      "text_preview": "Ms Chen says yes and that is the first lesson for everybody.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_U-段落8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 8,
+      "filename": "U-段落8.mp3",
+      "voice_override": "male",
+      "text_preview": "Learning will be more difficult, so we need to think more in our learning.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 1,
+      "filename": "U-语篇1-1.mp3",
+      "voice_override": "male",
+      "text_preview": "In the first English lesson, Ms Chen writes a sentence on the blackboard and ask",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 2,
+      "filename": "U-语篇1-2.mp3",
+      "voice_override": "male",
+      "text_preview": "Wang Han starts to write, but he soon stops.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 3,
+      "filename": "U-语篇1-3.mp3",
+      "voice_override": "male",
+      "text_preview": "He finds something wrong with the sentence.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 4,
+      "filename": "U-语篇1-4.mp3",
+      "voice_override": "male",
+      "text_preview": "He wants to point out the mistake, but he is not sure.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 5,
+      "filename": "U-语篇1-5.mp3",
+      "voice_override": "male",
+      "text_preview": "Is it polite to do that in the first lesson?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 6,
+      "filename": "U-语篇1-6.mp3",
+      "voice_override": "male",
+      "text_preview": "Many questions jump into his mind.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 7,
+      "filename": "U-语篇1-7.mp3",
+      "voice_override": "male",
+      "text_preview": "He looks up at Ms Chen and feels nervous.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 8,
+      "filename": "U-语篇1-8.mp3",
+      "voice_override": "male",
+      "text_preview": "Then Wang Han thinks about the meaning of the sentence.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 9,
+      "filename": "U-语篇1-9.mp3",
+      "voice_override": "male",
+      "text_preview": "At last, he puts up his hand and says, “Ms Chen, there’s a mistake. That sentenc",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 10,
+      "filename": "U-语篇1-10.mp3",
+      "voice_override": "male",
+      "text_preview": "Ms Chen smiles and says, “Well done, Wang Han.”",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 11,
+      "filename": "U-语篇1-11.mp3",
+      "voice_override": "male",
+      "text_preview": "She says, “In fact, this is my first lesson for all of you.”",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-12",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 12,
+      "filename": "U-语篇1-12.mp3",
+      "voice_override": "male",
+      "text_preview": "In junior high school, learning will be more difficult.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-13",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 13,
+      "filename": "U-语篇1-13.mp3",
+      "voice_override": "male",
+      "text_preview": "Students need to think more in their learning.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇1-14",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 14,
+      "filename": "U-语篇1-14.mp3",
+      "voice_override": "male",
+      "text_preview": "For Wang Han and his classmates, it is really an important lesson.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 15,
+      "filename": "U-语篇2-1.mp3",
+      "voice_override": "female",
+      "text_preview": "Welcome to Students’ Union Radio!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 16,
+      "filename": "U-语篇2-2.mp3",
+      "voice_override": "female",
+      "text_preview": "The new school year is beginning.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 17,
+      "filename": "U-语篇2-3.mp3",
+      "voice_override": "female",
+      "text_preview": "What are the new student’s problems?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 18,
+      "filename": "U-语篇2-4.mp3",
+      "voice_override": "female",
+      "text_preview": "Let’s take a look.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 19,
+      "filename": "U-语篇2-5.mp3",
+      "voice_override": "female",
+      "text_preview": "For many years, the biggest problems is: They have more subjects and more homewo",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 20,
+      "filename": "U-语篇2-6.mp3",
+      "voice_override": "female",
+      "text_preview": "They also have many activities.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_U-语篇2-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 21,
+      "filename": "U-语篇2-7.mp3",
+      "voice_override": "female",
+      "text_preview": "So how can they make good use for their time?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子1",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 1,
+      "filename": "R-句子1.mp3",
+      "voice_override": "male",
+      "text_preview": "Mia, how do you feel about your first day in junior high tomorrow?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子2",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 2,
+      "filename": "R-句子2.mp3",
+      "voice_override": "male",
+      "text_preview": "Well, I’m a little nervous.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子3",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 3,
+      "filename": "R-句子3.mp3",
+      "voice_override": "male",
+      "text_preview": "Don’t worry.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子4",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 4,
+      "filename": "R-句子4.mp3",
+      "voice_override": "male",
+      "text_preview": "We’ve got something for you!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子5",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 5,
+      "filename": "R-句子5.mp3",
+      "voice_override": "male",
+      "text_preview": "We want to share some thoughts with you.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子6",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 6,
+      "filename": "R-句子6.mp3",
+      "voice_override": "male",
+      "text_preview": "Time flies!",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子7",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 7,
+      "filename": "R-句子7.mp3",
+      "voice_override": "male",
+      "text_preview": "Are you ready for your new life?",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子8",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 8,
+      "filename": "R-句子8.mp3",
+      "voice_override": "male",
+      "text_preview": "Primary school is like a small pool.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子9",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 9,
+      "filename": "R-句子9.mp3",
+      "voice_override": "male",
+      "text_preview": "Dad and Mum can protect your boat from winds.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子10",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 10,
+      "filename": "R-句子10.mp3",
+      "voice_override": "male",
+      "text_preview": "But junior high is like a river.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子11",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 11,
+      "filename": "R-句子11.mp3",
+      "voice_override": "male",
+      "text_preview": "You will face new problems.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子12",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 12,
+      "filename": "R-句子12.mp3",
+      "voice_override": "male",
+      "text_preview": "But sometimes you have to sail your boat by yourself.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子13",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 13,
+      "filename": "R-句子13.mp3",
+      "voice_override": "male",
+      "text_preview": "Just try your best and work hard.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子14",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 14,
+      "filename": "R-句子14.mp3",
+      "voice_override": "male",
+      "text_preview": "You will go through storms towards the sea.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "句子跟读_R-句子15",
+      "doc_type": "课文跟读",
+      "category": "句子跟读",
+      "seq": 15,
+      "filename": "R-句子15.mp3",
+      "voice_override": "male",
+      "text_preview": "One way is to face problems bravely.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落1",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 9,
+      "filename": "R-段落1.mp3",
+      "voice_override": "male",
+      "text_preview": "Before junior high starts, Mia got a letter from Dad and Mum.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落2",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 10,
+      "filename": "R-段落2.mp3",
+      "voice_override": "male",
+      "text_preview": "Primary school is like a small pool.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落3",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 11,
+      "filename": "R-段落3.mp3",
+      "voice_override": "male",
+      "text_preview": "Mia’s boat is safe there, and her parents can protect her boat from winds.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落4",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 12,
+      "filename": "R-段落4.mp3",
+      "voice_override": "male",
+      "text_preview": "But junior high is like a river.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落5",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 13,
+      "filename": "R-段落5.mp3",
+      "voice_override": "male",
+      "text_preview": "It is wide and the water moves fast.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落6",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 14,
+      "filename": "R-段落6.mp3",
+      "voice_override": "male",
+      "text_preview": "Mia will face new problems.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落7",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 15,
+      "filename": "R-段落7.mp3",
+      "voice_override": "male",
+      "text_preview": "Her parents are still there to help, but sometimes she has to sail her boat by h",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落8",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 16,
+      "filename": "R-段落8.mp3",
+      "voice_override": "male",
+      "text_preview": "She should try her best and work hard.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "段落跟读_R-段落9",
+      "doc_type": "课文跟读",
+      "category": "段落跟读",
+      "seq": 17,
+      "filename": "R-段落9.mp3",
+      "voice_override": "male",
+      "text_preview": "Then she can go through storms towards the sea.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-1",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 22,
+      "filename": "R-语篇1-1.mp3",
+      "voice_override": "female",
+      "text_preview": "Before Mia’s first day in junior high, Dad asks her how she feels about her new ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-2",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 23,
+      "filename": "R-语篇1-2.mp3",
+      "voice_override": "female",
+      "text_preview": "Mia says she is a little nervous.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-3",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 24,
+      "filename": "R-语篇1-3.mp3",
+      "voice_override": "female",
+      "text_preview": "Mum tells her, “Don’t worry.”",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-4",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 25,
+      "filename": "R-语篇1-4.mp3",
+      "voice_override": "female",
+      "text_preview": "Then Dad and Mum give her a paper boat latter.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-5",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 26,
+      "filename": "R-语篇1-5.mp3",
+      "voice_override": "female",
+      "text_preview": "They want to share some thoughts with her.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-6",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 27,
+      "filename": "R-语篇1-6.mp3",
+      "voice_override": "female",
+      "text_preview": "In the letter, they say, “Time flies! You are now in junior high. Are you ready ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-7",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 28,
+      "filename": "R-语篇1-7.mp3",
+      "voice_override": "female",
+      "text_preview": "They tell Mia that primary school is like a small pool.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-8",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 29,
+      "filename": "R-语篇1-8.mp3",
+      "voice_override": "female",
+      "text_preview": "Her boat is safe there, and Dad and Mum can protect it from winds.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-9",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 30,
+      "filename": "R-语篇1-9.mp3",
+      "voice_override": "female",
+      "text_preview": "But junior high is like a river.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-10",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 31,
+      "filename": "R-语篇1-10.mp3",
+      "voice_override": "female",
+      "text_preview": "It is wide, and the water moves fast.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-11",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 32,
+      "filename": "R-语篇1-11.mp3",
+      "voice_override": "female",
+      "text_preview": "Mia will face new problems.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-12",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 33,
+      "filename": "R-语篇1-12.mp3",
+      "voice_override": "female",
+      "text_preview": "Her parents are still there to help, but sometimes she has to sail her boat by h",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-13",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 34,
+      "filename": "R-语篇1-13.mp3",
+      "voice_override": "female",
+      "text_preview": "At the end of the letter, they say, “Just try your best and work hard. You will ",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-14",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 35,
+      "filename": "R-语篇1-14.mp3",
+      "voice_override": "female",
+      "text_preview": "Mia reads the letter and feels loved.",
+      "merged": false,
+      "merged_count": 1
+    },
+    {
+      "id": "语篇跟读_R-语篇1-15",
+      "doc_type": "课文跟读",
+      "category": "语篇跟读",
+      "seq": 36,
+      "filename": "R-语篇1-15.mp3",
+      "voice_override": "female",
+      "text_preview": "She is ready for her new journey.",
+      "merged": false,
+      "merged_count": 1
+    }
+  ],
+  "fingerprints": {
+    "parse_results": "22a05163d65c1adb9d3901d6c3e7c464170c6536662639d97290f782356b31d1",
+    "cli_result": "cb144f65ddd0814ddf4bed165798ce9bd8051970a6a9630cc4138226601e4391",
+    "progress_items": "7b4b0c16d86ee34100ca605a1984ef5c0c65bd56959f775836a89754d1080e99"
+  }
+}
