@@ -13,13 +13,20 @@ const tempPath = path.join(
     os.tmpdir(),
     `wordtts-openapi-${process.pid}-${Date.now()}.ts`,
 );
-const executable = process.platform === 'win32'
-    ? path.join(electronDir, 'node_modules', '.bin', 'openapi-typescript.cmd')
-    : path.join(electronDir, 'node_modules', '.bin', 'openapi-typescript');
+// Invoke the CLI through the current Node executable instead of the npm-generated
+// .cmd shim. The shim is not a native executable and spawnSync rejects it with
+// EINVAL on the Windows runner.
+const executable = process.execPath;
+const executableArgs = [
+    path.join(electronDir, 'node_modules', 'openapi-typescript', 'bin', 'cli.js'),
+    schemaPath,
+    '-o',
+    tempPath,
+];
 
 let exitCode = 0;
 try {
-    const result = spawnSync(executable, [schemaPath, '-o', tempPath], {
+    const result = spawnSync(executable, executableArgs, {
         cwd: electronDir,
         encoding: 'utf8',
         stdio: 'inherit',
