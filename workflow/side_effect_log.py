@@ -26,6 +26,19 @@ class SideEffectIntentLog:
     """An fsync'd JSONL journal with process and thread safe appends."""
 
     VERSION = 1
+    # Windows does not expose a portable directory-fsync operation.  On
+    # Windows runners, opening or flushing a directory handle commonly
+    # returns ACCESS_DENIED even though the journal file itself was flushed
+    # successfully.  Treat those documented unsupported-handle outcomes as
+    # the expected fallback; unexpected errors must still fail closed.
+    _UNSUPPORTED_WINDOWS_DIRECTORY_FLUSH_ERRORS = frozenset({
+        1,    # ERROR_INVALID_FUNCTION
+        5,    # ERROR_ACCESS_DENIED
+        6,    # ERROR_INVALID_HANDLE
+        50,   # ERROR_NOT_SUPPORTED
+        87,   # ERROR_INVALID_PARAMETER
+        120,  # ERROR_CALL_NOT_IMPLEMENTED
+    })
     _SAFE_STATES = {
         "RECORDED", "COMMITTED", "IN_FLIGHT", "SUBMITTED", "CONFIRMED",
         "ARCHIVED", "NEEDS_RECONCILE", "REJECTED", "AMBIGUOUS", "ABORTED",
@@ -415,7 +428,6 @@ class SideEffectIntentLog:
         import ctypes
         from ctypes import wintypes
 
-        unsupported_errors = {1, 6, 50, 87}  # INVALID_FUNCTION, INVALID_HANDLE, NOT_SUPPORTED, INVALID_PARAMETER
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         create_file = kernel32.CreateFileW
         create_file.argtypes = [
@@ -447,13 +459,13 @@ class SideEffectIntentLog:
         invalid_handle = ctypes.c_void_p(-1).value
         if handle == invalid_handle:
             error = ctypes.get_last_error()
-            if error in unsupported_errors:
+            if error in SideEffectIntentLog._UNSUPPORTED_WINDOWS_DIRECTORY_FLUSH_ERRORS:
                 return
             raise OSError(error, f"cannot open side-effect journal directory: {path}")
         try:
             if not flush_file_buffers(handle):
                 error = ctypes.get_last_error()
-                if error in unsupported_errors:
+                if error in SideEffectIntentLog._UNSUPPORTED_WINDOWS_DIRECTORY_FLUSH_ERRORS:
                     return
                 raise OSError(error, f"cannot flush side-effect journal directory: {path}")
         finally:
