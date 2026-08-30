@@ -160,15 +160,3 @@ class ListeningResponseParser(BaseParser):
 
         flush()
         return self._result(items)
-
-
-QUESTION_TYPE = QuestionType(
-    key="听后应答",
-    parser=ListeningResponseParser,
-    color="#7c3aed",
-    filename_keywords=("听后应答",),
-    content_markers=(
-        ListeningResponseParser.RE_SECTION_START,
-        ListeningResponseParser.RE_PROMPT,
-    ),
-)

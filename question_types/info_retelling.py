@@ -147,15 +147,3 @@ class InfoRetellingParser(BaseParser):
         result = self._result(items)
         result["tasks"] = tasks
         return result
-
-
-QUESTION_TYPE = QuestionType(
-    key="信息转述及询问",
-    parser=InfoRetellingParser,
-    color="#b45309",
-    filename_keywords=("信息转述",),
-    content_markers=(
-        re.compile(r'第一节\s*信息转述'),
-        re.compile(r'信息转述'),
-    ),
-)

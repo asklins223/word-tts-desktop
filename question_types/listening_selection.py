@@ -159,12 +159,3 @@ class ListeningSelectionParser(BaseParser):
         result = self._result(items)
         result["questions"] = questions
         return result
-
-
-QUESTION_TYPE = QuestionType(
-    key="听后选择",
-    parser=ListeningSelectionParser,
-    color="#2563eb",
-    filename_keywords=("听后选择",),
-    content_markers=(ListeningSelectionParser.RE_SECTION_START,),
-)

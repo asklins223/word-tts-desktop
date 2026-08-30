@@ -88,16 +88,3 @@ class ImitationReadingParser(BaseParser):
 
         flush()
         return self._result(items)
-
-
-QUESTION_TYPE = QuestionType(
-    key="模仿朗读",
-    parser=ImitationReadingParser,
-    color="#9f1239",
-    filename_keywords=("模仿朗读",),
-    content_markers=(
-        re.compile(r'模仿朗读'),
-        re.compile(r'外网\s*[：:]'),
-        re.compile(r'教材\s*[：:]'),
-    ),
-)

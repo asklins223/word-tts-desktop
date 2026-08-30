@@ -1,11 +1,24 @@
-"""题型注册表：按题型竖切组织的解析器与元数据。
+"""题型注册表：解析器绑定与派生视图。
 
-每个题型一个切片模块（解析器 + QUESTION_TYPE 元数据）。新增题型：
-新建切片模块，在下方导入并把 QUESTION_TYPE 加入 QUESTION_TYPES；
-解析映射、内容识别标记、展示颜色、文件名识别全部自动派生。
+题型元数据的**唯一权威**在 ``question_model.model`` 的
+``FAMILY_REGISTRY``（大题型展示/检测/兼容视图）与 ``SUB_TYPE_REGISTRY``
+（小题型能力/音色/命名/状态）。本模块只做一件事：把解析器类绑定到
+family code，其余（QuestionType、颜色表、内容标记、文件名/内容检测、
+旧链路女声兼容）全部派生——不存在需要多处同步、漏改即报错的
+第二份注册表（方案 2A category 解耦；方案目标 5：新增题型只改一处）。
+
+新增大题型的完整步骤：
+1. ``question_model/model.py`` 注册 ``QuestionFamily`` + 小题型
+   ``QuestionSubType``（能力/音色/命名）；
+2. 新建解析器切片（``BaseParser`` 子类）；
+3. 在下方 ``PARSERS_BY_FAMILY`` 加一行绑定。
+检测、颜色、旧链路音色、原子模型候选抽取（补 EXTRACTORS 一行或
+享受温和降级）全部自动生效，无需改动任何下游代码。
 """
 
 import os
+
+from question_model.model import FAMILY_REGISTRY  # 唯一权威注册表
 
 from .base import BaseParser, QuestionType  # noqa: F401
 from .text_utils import (  # noqa: F401
@@ -35,15 +48,32 @@ from .listening_selection import ListeningSelectionParser  # noqa: F401
 from .text_reading import TextReadingParser  # noqa: F401
 from .vocabulary import ExcelVocabularyParser  # noqa: F401
 
-# 注册顺序即解析与文件名识别的固定优先级。
-QUESTION_TYPES = (
-    info_acquisition.QUESTION_TYPE,
-    listening_selection.QUESTION_TYPE,
-    listening_response.QUESTION_TYPE,
-    text_reading.QUESTION_TYPE,
-    info_retelling.QUESTION_TYPE,
-    imitation_reading.QUESTION_TYPE,
-    vocabulary.QUESTION_TYPE,
+# 解析器绑定：family code → 解析器类（唯一的手写 join 点）
+PARSERS_BY_FAMILY = {
+    "info_acquisition": InfoAcquisitionParser,
+    "listening_choice": ListeningSelectionParser,
+    "listening_response": ListeningResponseParser,
+    "text_reading": TextReadingParser,
+    "info_retelling": InfoRetellingParser,
+    "imitation_reading": ImitationReadingParser,
+    "vocabulary": ExcelVocabularyParser,
+}
+
+# ---- 以下全部由 FAMILY_REGISTRY 派生；注册顺序即检测优先级 ----
+
+QUESTION_TYPES = tuple(
+    QuestionType(
+        key=family.display_name,
+        parser=PARSERS_BY_FAMILY[code],
+        color=family.color,
+        filename_keywords=family.filename_keywords,
+        filename_extensions=family.filename_extensions,
+        content_markers=family.content_markers,
+        # 旧链路 force_female 兼容视图（新代码用 SUB_TYPE_REGISTRY.voice_policy）
+        force_female_categories=family.female_categories,
+    )
+    for code, family in FAMILY_REGISTRY.items()
+    if code in PARSERS_BY_FAMILY
 )
 
 QUESTION_TYPE_MAP = {qt.key: qt for qt in QUESTION_TYPES}
@@ -55,15 +85,15 @@ CONTENT_MARKERS = {qt.key: tuple(qt.content_markers) for qt in QUESTION_TYPES}
 def detect_doc_type(filename):
     """根据文件名自动识别文档类型，返回类型名或 None。
 
-    Excel 文件统一归为词汇类型；其余按切片声明的关键词匹配。
+    Excel 文件统一归为词汇类型；其余按 family 注册表的扩展名/关键词匹配。
     """
     lower = filename.lower()
-    for question_type in QUESTION_TYPES:
-        if any(lower.endswith(ext) for ext in question_type.filename_extensions):
-            return question_type.key
-    for question_type in QUESTION_TYPES:
-        if any(keyword in filename for keyword in question_type.filename_keywords):
-            return question_type.key
+    for family in FAMILY_REGISTRY.values():
+        if any(lower.endswith(ext) for ext in family.filename_extensions):
+            return family.display_name
+    for family in FAMILY_REGISTRY.values():
+        if any(keyword in filename for keyword in family.filename_keywords):
+            return family.display_name
     return None
 
 
@@ -74,11 +104,10 @@ def detect_types_in_content(paras):
     """
     full_text = '\n'.join(text for _, text, _ in paras)
     detected = []
-    for doc_type in PARSER_MAP:  # 按 PARSER_MAP 的固定顺序
-        markers = CONTENT_MARKERS.get(doc_type, [])
-        for marker in markers:
+    for family in FAMILY_REGISTRY.values():  # 注册顺序即固定优先级
+        for marker in family.content_markers:
             if marker.search(full_text):
-                detected.append(doc_type)
+                detected.append(family.display_name)
                 break
     return detected
 

@@ -215,15 +215,3 @@ class InfoAcquisitionParser(BaseParser):
         flush()
 
         return self._result(items)
-
-
-QUESTION_TYPE = QuestionType(
-    key="信息获取",
-    parser=InfoAcquisitionParser,
-    color="#0e7490",
-    filename_keywords=("信息获取",),
-    content_markers=(
-        re.compile(r'第一节\s*听选信息'),
-        re.compile(r'听选信息'),
-    ),
-)

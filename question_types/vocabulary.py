@@ -46,93 +46,105 @@ class ExcelVocabularyParser(BaseParser):
     WORD_HEADER_KEYWORDS = ("单词名称", "单词")
     SENTENCE_HEADER_KEYWORDS = ("例句",)
 
+    @staticmethod
+    def _find_header_column(headers, keywords):
+        """Prefer an exact template header before falling back to aliases."""
+
+        normalized = {
+            index: str(value).strip()
+            for index, value in enumerate(headers, start=1)
+            if value is not None and str(value).strip()
+        }
+        for keyword in keywords:
+            for index, header in normalized.items():
+                if header == keyword:
+                    return index
+        for keyword in keywords:
+            for index, header in normalized.items():
+                if keyword in header:
+                    return index
+        return None
+
     def parse(self):
         if not _OPENPYXL_AVAILABLE:
             raise RuntimeError(
                 "解析 Excel 文件需要 openpyxl 库，请运行: pip install openpyxl"
             )
 
-        wb = openpyxl.load_workbook(self.filepath, read_only=True, data_only=True)
-        ws = wb.active
+        wb = None
+        try:
+            wb = openpyxl.load_workbook(self.filepath, read_only=True, data_only=True)
+            worksheets = []
+            saw_word_header = False
+            saw_sentence_header = False
+            for ws in wb.worksheets:
+                header_values = []
+                for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+                    header_values = list(row)
+                    break
+                word_col = self._find_header_column(header_values, self.WORD_HEADER_KEYWORDS)
+                sentence_col = self._find_header_column(header_values, self.SENTENCE_HEADER_KEYWORDS)
+                saw_word_header = saw_word_header or word_col is not None
+                saw_sentence_header = saw_sentence_header or sentence_col is not None
+                # Excel templates often contain empty/instruction sheets.  Only
+                # sheets with both required columns contribute vocabulary items.
+                if word_col is not None and sentence_col is not None:
+                    worksheets.append((ws, word_col, sentence_col))
 
-        # ---- 识别表头列号 ----
-        word_col = None
-        sentence_col = None
-        headers = {}
-        for row in ws.iter_rows(min_row=1, max_row=1, values_only=False):
-            for cell in row:
-                if cell.value is None:
-                    continue
-                header = str(cell.value).strip()
-                col_idx = cell.column
-                headers[col_idx] = header
-                if word_col is None:
-                    for kw in self.WORD_HEADER_KEYWORDS:
-                        if kw in header:
-                            word_col = col_idx
-                            break
-                if sentence_col is None:
-                    for kw in self.SENTENCE_HEADER_KEYWORDS:
-                        if kw in header:
-                            sentence_col = col_idx
-                            break
+            if not worksheets:
+                if not saw_word_header:
+                    raise ValueError(
+                        "未找到「单词名称」列，请确认 Excel 表头包含「单词名称」或「单词」"
+                    )
+                if not saw_sentence_header:
+                    raise ValueError(
+                        "未找到「例句」列，请确认 Excel 表头包含「例句」"
+                    )
+                raise ValueError("未找到同时包含「单词名称」和「例句」列的工作表")
 
-        if word_col is None:
-            raise ValueError(
-                "未找到「单词名称」列，请确认 Excel 表头包含「单词名称」或「单词」"
-            )
-        if sentence_col is None:
-            raise ValueError(
-                "未找到「例句」列，请确认 Excel 表头包含「例句」"
-            )
+            # ---- 提取所有符合模板的工作表数据 ----
+            items = []
+            word_seq = 0       # 单词序号（跨工作表连续）
+            sentence_seq = 0   # 例句序号（跨工作表连续）
 
-        # ---- 提取数据行 ----
-        items = []
-        word_seq = 0    # 单词序号
-        sentence_seq = 0  # 例句序号
+            for ws, word_col, sentence_col in worksheets:
+                for excel_row, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                    # openpyxl read_only 模式返回的行可能短于总列数
+                    word_val = row[word_col - 1] if len(row) >= word_col else None
+                    sentence_val = row[sentence_col - 1] if len(row) >= sentence_col else None
 
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            # openpyxl read_only 模式返回的行可能短于总列数
-            word_val = row[word_col - 1] if len(row) >= word_col else None
-            sentence_val = row[sentence_col - 1] if len(row) >= sentence_col else None
+                    word_text = sanitize(str(word_val).strip()) if word_val else ""
+                    sentence_text = sanitize(str(sentence_val).strip()) if sentence_val else ""
 
-            word_text = sanitize(str(word_val).strip()) if word_val else ""
-            sentence_text = sanitize(str(sentence_val).strip()) if sentence_val else ""
+                    # 跳过空行
+                    if not word_text and not sentence_text:
+                        continue
 
-            # 跳过空行
-            if not word_text and not sentence_text:
-                continue
+                    # 单词条目：使用统一默认女声 Amanda，不设置单词专用音色。
+                    if word_text:
+                        word_seq += 1
+                        items.append({
+                            "category": "单词",
+                            "number": word_seq,
+                            "filename_stem": f"单词{word_seq}",
+                            "voice": "female",
+                            "text": word_text,
+                            "source_locator": f"工作表/{ws.title}/行/{excel_row}/单词",
+                        })
 
-            # 单词条目：使用统一默认女声 Amanda，不设置单词专用音色。
-            if word_text:
-                word_seq += 1
-                items.append({
-                    "category": "单词",
-                    "number": word_seq,
-                    "filename_stem": f"单词{word_seq}",
-                    "voice": "female",
-                    "text": word_text,
-                })
+                    # 例句条目：同样使用统一默认女声 Amanda。
+                    if sentence_text:
+                        sentence_seq += 1
+                        items.append({
+                            "category": "例句",
+                            "number": sentence_seq,
+                            "filename_stem": f"句子{sentence_seq}",
+                            "voice": "female",
+                            "text": sentence_text,
+                            "source_locator": f"工作表/{ws.title}/行/{excel_row}/例句",
+                        })
 
-            # 例句条目：同样使用统一默认女声 Amanda。
-            if sentence_text:
-                sentence_seq += 1
-                items.append({
-                    "category": "例句",
-                    "number": sentence_seq,
-                    "filename_stem": f"句子{sentence_seq}",
-                    "voice": "female",
-                    "text": sentence_text,
-                })
-
-        wb.close()
-        return self._result(items)
-
-
-QUESTION_TYPE = QuestionType(
-    key="词汇",
-    parser=ExcelVocabularyParser,
-    color="#1e40af",
-    filename_extensions=(".xlsx",),
-    force_female_categories=("单词", "例句"),
-)
+            return self._result(items)
+        finally:
+            if wb is not None:
+                wb.close()

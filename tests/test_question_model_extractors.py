@@ -12,6 +12,7 @@ import pytest
 
 from question_model import (
     EXTRACTORS,
+    FAMILY_REGISTRY,
     FAMILY_SUB_TYPES,
     QUESTION_TYPE_CODES,
     SUB_TYPE_REGISTRY,
@@ -264,12 +265,35 @@ class TestVocabulary:
 
 
 class TestRegistryAlignment:
-    def test_extractors_cover_all_registered_types(self):
-        """全部注册大题型必须接入原子小题抽取。"""
-        from question_types import QUESTION_TYPES
-        registered = {qt.key for qt in QUESTION_TYPES}
-        assert registered == set(QUESTION_TYPE_CODES)
-        assert registered == set(EXTRACTORS.keys())
+    """单一权威注册表：question_types 视图由 FAMILY_REGISTRY 派生，
+    对齐由构造保证（不存在需要断言的第二份注册表）。"""
+
+    def test_question_types_derived_from_family_registry(self):
+        """question_types 视图 = FAMILY_REGISTRY + 解析器绑定的纯派生。"""
+        from question_types import PARSERS_BY_FAMILY, QUESTION_TYPES
+        assert [qt.key for qt in QUESTION_TYPES] == [
+            FAMILY_REGISTRY[code].display_name for code in PARSERS_BY_FAMILY]
+        for qt in QUESTION_TYPES:
+            family = FAMILY_REGISTRY[QUESTION_TYPE_CODES[qt.key]]
+            assert qt.color == family.color
+            assert qt.filename_keywords == family.filename_keywords
+            assert qt.force_female_categories == family.female_categories
+
+    def test_new_family_without_extractor_degrades_gracefully(self):
+        """注册新 family 但未写抽取器：温和降级（诊断占位），不报错。"""
+        from question_model.model import QuestionFamily
+        from question_model import FAMILY_REGISTRY
+        test_family = QuestionFamily(
+            code="demo_new_family", display_name="演示新题型",
+            color="#000000")
+        FAMILY_REGISTRY[test_family.code] = test_family
+        try:
+            candidate = extract_candidate("演示新题型", {"items": []}, "doc")
+            assert candidate.type_code == "demo_new_family"
+            assert candidate.entities == ()
+            assert "family_extractor_not_registered" in candidate.diagnostics
+        finally:
+            FAMILY_REGISTRY.pop(test_family.code, None)
 
     def test_family_sub_types_cover_all_families(self):
         """每个大题型至少有一个小题型；family 代码必须有效。"""

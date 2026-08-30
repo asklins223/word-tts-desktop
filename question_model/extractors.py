@@ -460,26 +460,46 @@ def _extract_vocabulary(result: dict, source_key: str) -> ParseCandidate:
     )
 
 
-# key 与 question_types 注册表的题型名（doc_type）一致；
-# 全部注册题型必须接入，保证 EXTRACTORS 与 QUESTION_TYPE_CODES 对齐。
+# key = 大题型 family code（QUESTION_TYPE_CODES 的值，唯一标识）。
+# 注册了 family 但未写抽取器时 extract_candidate 温和降级（诊断占位），
+# 不抛错——新增小题型/大题型逐步接入不阻塞录入（方案目标 5）。
 EXTRACTORS = {
-    "信息获取": _extract_info_acquisition,
-    "听后选择": _extract_listening_selection,
-    "听后应答": _extract_listening_response,
-    "信息转述及询问": _extract_info_retelling,
-    "模仿朗读": _extract_imitation_reading,
-    "课文跟读": _extract_text_reading,
-    "词汇": _extract_vocabulary,
+    "info_acquisition": _extract_info_acquisition,
+    "listening_choice": _extract_listening_selection,
+    "listening_response": _extract_listening_response,
+    "info_retelling": _extract_info_retelling,
+    "imitation_reading": _extract_imitation_reading,
+    "text_reading": _extract_text_reading,
+    "vocabulary": _extract_vocabulary,
 }
 
 
 def extract_candidate(doc_type: str, result: dict, source_key: str) -> ParseCandidate:
     """把单个题型解析结果映射为原子小题候选。
 
-    ``source_key`` 是文档的稳定业务键；阶段 1 暂用文件名，
-    ``source_documents`` 表（v0006）落地后由文档身份提供。
+    ``doc_type`` 接受中文题型名或 family code（经注册表归一）；
+    ``source_key`` 是文档的稳定业务键（阶段 1 暂用文件名）。
+
+    注册了 family 但尚未实现抽取器：返回带诊断的空候选（不抛错）；
+    完全未注册的题型：抛 KeyError（识别失败应显式暴露）。
     """
-    extractor = EXTRACTORS.get(doc_type)
+    from .model import FAMILY_REGISTRY
+
+    family_code = doc_type
+    if family_code not in FAMILY_REGISTRY:
+        family_code = next(
+            (code for code, family in FAMILY_REGISTRY.items()
+             if family.display_name == doc_type),
+            doc_type,
+        )
+    if family_code not in FAMILY_REGISTRY:
+        raise KeyError(f"未注册的大题型: {doc_type}")
+    extractor = EXTRACTORS.get(family_code)
     if extractor is None:
-        raise KeyError(f"题型 {doc_type} 尚未接入原子小题抽取")
+        return ParseCandidate(
+            candidate_id=f"candidate:{family_code}:{source_key}",
+            type_code=family_code,
+            diagnostics=("family_extractor_not_registered",),
+            capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+        )
     return extractor(result, source_key)

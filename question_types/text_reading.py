@@ -1140,16 +1140,3 @@ class TextReadingParser(BaseParser):
                 if 0 not in buf:
                     buf[0] = []
                 buf[0].append(text)
-
-
-QUESTION_TYPE = QuestionType(
-    key="课文跟读",
-    parser=TextReadingParser,
-    color="#15803d",
-    filename_keywords=("课文跟读",),
-    content_markers=(
-        re.compile(r'句子跟读'),
-        re.compile(r'段落跟读'),
-        re.compile(r'语篇跟读'),
-    ),
-)
