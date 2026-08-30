@@ -23,6 +23,9 @@ const executableArgs = [
     '-o',
     tempPath,
 ];
+const readTextWithNormalizedLineEndings = (filePath) => (
+    fs.readFileSync(filePath, 'utf8').replace(/\r\n?/g, '\n')
+);
 
 let exitCode = 0;
 try {
@@ -37,7 +40,10 @@ try {
     } else if (!fs.existsSync(generatedPath)) {
         console.error(`generated contract is missing: ${generatedPath}`);
         exitCode = 1;
-    } else if (fs.readFileSync(tempPath, 'utf8') !== fs.readFileSync(generatedPath, 'utf8')) {
+    } else if (
+        readTextWithNormalizedLineEndings(tempPath)
+        !== readTextWithNormalizedLineEndings(generatedPath)
+    ) {
         console.error(
             'contracts/generated.ts is out of date; run `npm run generate:contracts` from electron',
         );
