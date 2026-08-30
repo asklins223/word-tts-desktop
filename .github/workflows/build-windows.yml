@@ -217,6 +217,10 @@ jobs:
 
       - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
+        env:
+          # Keep the Electron smoke log in the uploadable runner temp folder.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           # 这里只验证打包文件存在；不启动页面，不登录讯飞，
           # 不访问第三方页面，不执行真实 Provider smoke。
@@ -242,6 +246,15 @@ jobs:
             exit 1
           }
           Write-Host "Electron 桌面端到端冒烟测试通过"
+
+      - name: Upload Windows smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 小猪wordTTS-Windows-smoke
+          path: ${{ runner.temp }}/wordtts-electron-smoke.log
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Smoke test NSIS install, reinstall and uninstall
         shell: pwsh

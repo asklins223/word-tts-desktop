@@ -79,6 +79,10 @@ const RENDERER_ENTRY_URL = pathToFileURL(RENDERER_ENTRY_PATH).href;
 const SMOKE_LOG_PATH = isSmokeTest
     ? path.join(os.tmpdir(), 'wordtts-electron-smoke.log')
     : null;
+// Windows runners can spend several seconds creating the first Chromium
+// renderer under load.  Keep the smoke test bounded, but do not turn a slow
+// cold start into a false packaging failure.
+const SMOKE_RENDERER_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 15_000;
 let smokeWatchdog = null;
 let smokeExitRequested = false;
 
@@ -1703,7 +1707,7 @@ app.whenReady().then(async () => {
             smokeLog('backend ready; creating smoke window');
             const smokeWindow = createWindow();
             try {
-                await verifyRendererSmokeTest(smokeWindow);
+                await verifyRendererSmokeTest(smokeWindow, SMOKE_RENDERER_TIMEOUT_MS);
                 console.log('[main] 桌面界面端到端冒烟测试通过');
                 smokeLog('renderer smoke passed');
                 exitSmokeTest(0, smokeWindow);
