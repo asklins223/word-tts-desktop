@@ -315,8 +315,16 @@ jobs:
 
             Write-Host "执行静默卸载"
             Invoke-CheckedProcess -FilePath $uninstaller.FullName -Arguments @("/S")
+            # NSIS performs the final self-delete from a short-lived helper
+            # process after the uninstaller process returns.  Give that
+            # cleanup a bounded settling window before asserting the result;
+            # an immediate Test-Path check races the helper on Windows.
+            $uninstallDeadline = (Get-Date).AddSeconds(30)
+            while ((Test-Path -LiteralPath $appExe.FullName) -and (Get-Date) -lt $uninstallDeadline) {
+              Start-Sleep -Milliseconds 500
+            }
             if (Test-Path -LiteralPath $appExe.FullName) {
-              throw "卸载完成后应用文件仍存在"
+              throw "卸载完成后应用文件仍存在: $($appExe.FullName)"
             }
             Write-Host "NSIS 安装、重装、卸载生命周期测试通过"
           } finally {
