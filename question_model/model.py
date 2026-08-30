@@ -8,14 +8,16 @@
 - 身份采用 ``question:<source_key>:<locator>`` / ``stimulus:<source_key>:<locator>``；
   阶段 1 的 ``source_key`` 暂用文档名，``source_documents`` 表落地后切换为
   稳定业务键，届时 id 生成规则只改 ``build_identity`` 一处。
-- 阶段 1 的实体由旧 Parser 结果映射而来，题目只有题干、没有选项/答案，
-  因此一律 ``resolution_state=DRAFT`` 且 ``audio_only=True``，
-  不得伪装成可外部录入的完整小题。
+- 实体由抽取器从解析结果映射而来：字段不完整的题型保持
+  ``resolution_state=DRAFT`` 且 ``audio_only=True``，不得伪装成可
+  外部录入的完整小题；字段完整的小题（如询问信息）为 ``CANDIDATE``，
+  人工确认后才 ``CONFIRMED``。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -135,6 +137,8 @@ def register_family(family: QuestionFamily) -> None:
     QUESTION_TYPE_CODES[family.display_name] = family.code
     FAMILY_BY_NAME[family.display_name] = family.code
     FAMILY_DISPLAY_NAMES_BY_CODE[family.code] = family.display_name
+    # 小题型经 SUB_TYPE_REGISTRY 直接添加后需同步此索引
+    FAMILY_SUB_TYPES.setdefault(family.code, ())
 
 
 @dataclass(frozen=True)
@@ -143,7 +147,7 @@ class QuestionSubType:
 
     - ``family`` 是解析器粒度的大题型（QUESTION_TYPE_CODES 的 code）；
     - 模仿朗读、词汇等本身就是最小题型，家族下只有一个同名小题型；
-    - ``status='reserved'`` 表示已注册但解析器尚未接入（如询问信息）；
+    - ``status='reserved'`` 表示已注册但抽取器尚未接入（产出实体会报错）；
     - 展示名（display_name）只用于界面，不参与身份与业务键。
     """
 
@@ -175,7 +179,7 @@ SUB_TYPE_REGISTRY: dict[str, QuestionSubType] = {
         # 听后应答：叶子题型
         QuestionSubType("listening_response", "listening_response", "听后应答",
                         "question", answer_kind="spoken_response"),
-        # 信息转述及询问：询问信息已注册但解析器未接入
+        # 信息转述及询问：转述（材料级）与询问信息（完整小题）
         QuestionSubType("info_retelling", "info_retelling", "信息转述",
                         "stimulus", audio_granularity="script_whole"),
         QuestionSubType("asking_info", "info_retelling", "询问信息",
@@ -200,7 +204,9 @@ SUB_TYPE_REGISTRY: dict[str, QuestionSubType] = {
 # 大题型 → 小题型 codes；family 本身必须是 QUESTION_TYPE_CODES 的值。
 FAMILY_SUB_TYPES: dict[str, tuple[str, ...]] = {}
 for _st in SUB_TYPE_REGISTRY.values():
-    FAMILY_SUB_TYPES.setdefault(_st.family, []).append(_st.code)  # type: ignore[union-attr]
+    FAMILY_SUB_TYPES.setdefault(_st.family, []).append(_st.code)
+FAMILY_SUB_TYPES = {code: tuple(codes)
+                    for code, codes in FAMILY_SUB_TYPES.items()}
 
 
 def _validate_sub_type(code: str, *, allowed_roles: tuple[str, ...] | None = None) -> None:
@@ -220,8 +226,6 @@ IDENTITY_VERSION = "1"
 
 def canonical_payload(obj: Any) -> str:
     """键排序的紧凑 JSON，用于内容哈希，保证同内容同哈希。"""
-    import json
-
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -454,10 +458,8 @@ class ParseCandidate:
     capabilities: Mapping[str, bool] = field(default_factory=dict)
 
     def __post_init__(self):
-        # Read the live registry rather than the import-time compatibility
-        # mapping.  This keeps the registry the single source of truth for
-        # validation and lets integrations register a family before building
-        # an in-memory candidate.
+        # 直接查实时注册表（而非导入期兼容映射），保证运行时注册的
+        # family 也能构建候选，注册表始终是唯一事实源。
         if self.type_code not in FAMILY_REGISTRY:
             raise ValueError(f"未注册的大题型代码: {self.type_code}")
 

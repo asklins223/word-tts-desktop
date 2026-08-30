@@ -296,10 +296,11 @@ class TestRegistryAlignment:
             assert extract_candidate("demo_new_family", {"items": []}, "doc") \
                 .type_code == "demo_new_family"
         finally:
+            from question_model.model import FAMILY_BY_NAME, FAMILY_SUB_TYPES
             FAMILY_REGISTRY.pop(test_family.code, None)
             QUESTION_TYPE_CODES.pop("演示新题型", None)
-            from question_model.model import FAMILY_BY_NAME
             FAMILY_BY_NAME.pop("演示新题型", None)
+            FAMILY_SUB_TYPES.pop(test_family.code, None)
 
     def test_family_sub_types_cover_all_families(self):
         """每个大题型至少有一个小题型；family 代码必须有效。"""
