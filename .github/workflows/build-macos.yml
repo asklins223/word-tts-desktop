@@ -315,8 +315,20 @@ jobs:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}"
-          release_id="$(gh api "$endpoint" --jq '.id')"
+          releases_endpoint="repos/${GITHUB_REPOSITORY}/releases"
+          release_id=""
+          for lookup_attempt in $(seq 1 12); do
+            # Draft Releases are intentionally invisible to the tag lookup
+            # endpoint; list Releases and select the exact tag instead.
+            release_id="$(gh api "$releases_endpoint" --paginate --slurp | jq -r --arg tag "$GITHUB_REF_NAME" '[.[][] | select(.tag_name == $tag) | .id][0] // empty')"
+            if [ -n "$release_id" ] && [ "$release_id" != "null" ]; then break; fi
+            if [ "$lookup_attempt" -lt 12 ]; then sleep 5; fi
+          done
+          if [ -z "$release_id" ]; then
+            echo "未找到当前 tag 的 Draft Release: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          endpoint="repos/${GITHUB_REPOSITORY}/releases/${release_id}"
           for attempt in $(seq 1 12); do
             names="$(gh api "$endpoint" --jq '.assets[].name')"
             if grep -Fxq "latest.yml" <<<"$names" \

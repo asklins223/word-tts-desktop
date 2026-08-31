@@ -105,7 +105,8 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.match(windowsWorkflow, /draft: true/);
     assert.match(windowsWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_installer[\s\S]*wordTTS-Setup-/);
     assert.match(windowsWorkflow, /files:[\s\S]*electron\/release\/wordTTS-Setup-\$\{\{ steps\.version\.outputs\.version \}\}-x64\.exe/);
-    assert.match(windowsWorkflow, /Publish only after both platform assets are ready[\s\S]*latest-mac\.yml[\s\S]*draft=false/);
+    assert.match(windowsWorkflow, /Publish only after both platform assets are ready[\s\S]*releases_endpoint="repos\/\$\{GITHUB_REPOSITORY\}\/releases"[\s\S]*--paginate --slurp[\s\S]*draft=false/);
+    assert.doesNotMatch(windowsWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);
     const macWorkflow = fs.readFileSync(
         path.join(APP_DIR, '..', '.github', 'workflows', 'build-macos.yml'),
         'utf8',
@@ -131,7 +132,8 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.match(macWorkflow, /draft: true/);
     assert.match(macWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_zip[\s\S]*cp.*github_dmg/);
     assert.match(macWorkflow, /files:[\s\S]*electron\/release\/wordTTS-\$\{\{ needs\.build\.outputs\.version \}\}-\$\{\{ needs\.build\.outputs\.architecture \}\}\.dmg/);
-    assert.match(macWorkflow, /Publish only after both platform assets are ready[\s\S]*latest\.yml[\s\S]*draft=false/);
+    assert.match(macWorkflow, /Publish only after both platform assets are ready[\s\S]*releases_endpoint="repos\/\$\{GITHUB_REPOSITORY\}\/releases"[\s\S]*--paginate --slurp[\s\S]*draft=false/);
+    assert.doesNotMatch(macWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);
     assert.match(macWorkflow, /local_zip="electron\/release\/小猪wordTTS-/);
     assert.match(macWorkflow, /local_dmg="electron\/release\/小猪wordTTS-/);
     assert.match(macBuildScript, /builder_zip_path[\s\S]*rm -f \"\$builder_zip_path\"[\s\S]*latest-mac\.yml/);
