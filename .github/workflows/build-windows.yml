@@ -356,8 +356,10 @@ jobs:
             Write-Host "执行自绘卸载"
             Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir)
             # 卸载程序自身位于目标目录，Windows 需要等短生命周期清理进程
-            # 在 uninstaller 退出后完成最后一次删除。
-            $uninstallDeadline = (Get-Date).AddSeconds(30)
+            # 在 uninstaller 退出后完成最后一次删除。安装包包含 Python 和
+            # Chromium，清理大目录可能超过进程退出时间，但清理脚本会在
+            # 60 秒内持续重试，这里多留出一段 CI 文件系统缓冲时间。
+            $uninstallDeadline = (Get-Date).AddSeconds(90)
             while ((Test-Path -LiteralPath $installDir) -and (Get-Date) -lt $uninstallDeadline) {
               Start-Sleep -Milliseconds 500
             }
