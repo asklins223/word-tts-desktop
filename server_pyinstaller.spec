@@ -17,7 +17,16 @@ Electron 应用启动时 spawn 此可执行文件，无需用户安装 Python。
 import sys
 import os
 
-SPEC_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller executes the spec as a namespace rather than importing it as a
+# normal Python module. Recent versions do not guarantee ``__file__`` exists,
+# so use the directory supplied by PyInstaller and keep the normal-module path
+# for local tooling that does provide it.
+_SPEC_FILE = globals().get('__file__')
+SPEC_DIR = (
+    os.path.dirname(os.path.abspath(_SPEC_FILE))
+    if _SPEC_FILE
+    else os.path.abspath(globals().get('SPECPATH') or os.getcwd())
+)
 
 # GitHub 的 Windows runner 可能把 Python 控制台设为 cp1252。spec 中的中文
 # 诊断不应反过来令构建失败，因此在任何输出前固定为 UTF-8。

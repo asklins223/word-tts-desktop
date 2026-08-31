@@ -202,7 +202,14 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
 
     try {
         await fsp.mkdir(path.join(payload, 'resources'), { recursive: true });
-        await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v1');
+        // WScript.Shell validates shortcut targets on Windows. Use a real PE
+        // executable there; a text file merely renamed to .exe makes the
+        // integration test fail before the installer logic is exercised.
+        if (process.platform === 'win32') {
+            await fsp.copyFile(process.execPath, path.join(payload, '小猪wordTTS.exe'));
+        } else {
+            await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v1');
+        }
         await fsp.writeFile(path.join(payload, 'resources', 'runtime.txt'), 'runtime');
         await fsp.writeFile(setup, 'self-drawing setup');
 
