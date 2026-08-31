@@ -32,7 +32,7 @@ test('发布前更新策略校验会锁定构建版本与 tag', () => {
 });
 
 test('读取默认更新策略不依赖调用时的工作目录', () => {
-    assert.equal(readUpdatePolicy().version, '3.0.1');
+    assert.equal(readUpdatePolicy().version, '3.0.0');
 });
 
 test('GitHub Release 元数据使用规范化后的 ASCII 资产名', () => {

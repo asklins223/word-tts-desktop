@@ -136,6 +136,8 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.match(macWorkflow, /local_dmg="electron\/release\/小猪wordTTS-/);
     assert.match(macBuildScript, /builder_zip_path[\s\S]*rm -f \"\$builder_zip_path\"[\s\S]*latest-mac\.yml/);
     const nsisText = fs.readFileSync(nsisInclude, 'utf8');
+    assert.match(nsisText, /\$\{VERSION\}/, 'NSIS custom pages must use the electron-builder version macro');
+    assert.doesNotMatch(nsisText, /"3\.0\.[0-9]+"/, 'NSIS custom pages must not freeze a release version');
     assert.match(nsisText, /customWelcomePage/);
     assert.match(nsisText, /customFinishPage/);
     assert.match(nsisText, /Page custom InstallerWelcomeCreate InstallerWelcomeLeave/);
