@@ -119,4 +119,167 @@ function createWorkflowArtifactTransport(ipcRenderer) {
     };
 }
 
-module.exports = { createWorkflowArtifactTransport, asBytes };
+/**
+ * ContextBridge-safe Artifact transport.
+ *
+ * A native ReadableStream cannot be returned from a preload API and still be
+ * expected to retain its internal slots in the renderer. The event transport
+ * keeps the IPC stream in preload and exposes only plain data plus functions;
+ * the renderer rebuilds its own ReadableStream around these callbacks.
+ */
+function createWorkflowArtifactEventTransport(ipcRenderer) {
+    if (!ipcRenderer || typeof ipcRenderer.invoke !== 'function') {
+        throw new TypeError('ipcRenderer is required');
+    }
+
+    return async ({ artifactId }) => {
+        const requestId = randomUUID();
+        let streamId = null;
+        let closed = false;
+        let ended = false;
+        let metadataReceived = false;
+        let pendingEnd = false;
+        const metadata = {};
+        const pendingData = [];
+        const pendingMetadata = [];
+        const pendingErrors = [];
+        const dataListeners = new Set();
+        const metadataListeners = new Set();
+        const endListeners = new Set();
+        const errorListeners = new Set();
+
+        const matches = (message = {}) => (
+            message.requestId === requestId
+            || (streamId && message.streamId === streamId)
+        );
+        const cleanup = () => {
+            ipcRenderer.removeListener?.('workflow-artifact-data', onData);
+            ipcRenderer.removeListener?.('workflow-artifact-meta', onMetadata);
+            ipcRenderer.removeListener?.('workflow-artifact-end', onEnd);
+            ipcRenderer.removeListener?.('workflow-artifact-error', onError);
+        };
+        const dispatch = (listeners, pending, value) => {
+            if (listeners.size === 0) {
+                pending.push(value);
+                return;
+            }
+            listeners.forEach((listener) => {
+                try { listener(value); } catch (error) { finishError(error); }
+            });
+        };
+        const finishError = (error) => {
+            if (closed) return;
+            closed = true;
+            cleanup();
+            const normalized = {
+                code: error?.code || null,
+                status: error?.status || null,
+                message: error?.message || String(error || 'workflow artifact stream failed'),
+            };
+            if (streamId) {
+                void ipcRenderer.invoke('workflow-artifact-close', { streamId }).catch(() => {});
+            }
+            dispatch(errorListeners, pendingErrors, normalized);
+        };
+        const onData = (_event, message = {}) => {
+            if (!matches(message) || closed) return;
+            dispatch(dataListeners, pendingData, asBytes(message.data));
+        };
+        const onMetadata = (_event, message = {}) => {
+            if (!matches(message) || closed) return;
+            const value = message.metadata && typeof message.metadata === 'object'
+                ? message.metadata
+                : message;
+            ['content_type', 'content_length', 'sha256', 'filename'].forEach((field) => {
+                if (value[field] !== undefined && value[field] !== null) metadata[field] = value[field];
+            });
+            metadataReceived = true;
+            dispatch(metadataListeners, pendingMetadata, { ...metadata });
+        };
+        const onEnd = (_event, message = {}) => {
+            if (!matches(message) || closed) return;
+            ended = true;
+            closed = true;
+            cleanup();
+            if (endListeners.size === 0) pendingEnd = true;
+            else endListeners.forEach((listener) => {
+                try { listener(); } catch (_) { /* listener cleanup is best effort */ }
+            });
+        };
+        const onError = (_event, message = {}) => {
+            if (!matches(message) || closed) return;
+            const error = new Error(message.error?.message || 'workflow artifact stream failed');
+            error.code = message.error?.code || null;
+            error.status = message.error?.status || null;
+            finishError(error);
+        };
+
+        ipcRenderer.on?.('workflow-artifact-data', onData);
+        ipcRenderer.on?.('workflow-artifact-meta', onMetadata);
+        ipcRenderer.on?.('workflow-artifact-end', onEnd);
+        ipcRenderer.on?.('workflow-artifact-error', onError);
+        try {
+            streamId = await ipcRenderer.invoke('workflow-artifact-open', { artifactId, requestId });
+            if (!streamId) throw new Error('workflow artifact stream was not opened');
+        } catch (error) {
+            finishError(error);
+            throw error;
+        }
+
+        let transportClosed = false;
+        const close = async () => {
+            if (transportClosed) return;
+            transportClosed = true;
+            closed = true;
+            cleanup();
+            pendingData.length = 0;
+            pendingMetadata.length = 0;
+            pendingErrors.length = 0;
+            dataListeners.clear();
+            metadataListeners.clear();
+            endListeners.clear();
+            errorListeners.clear();
+            await ipcRenderer.invoke('workflow-artifact-close', { streamId });
+        };
+
+        return {
+            getMetadata() { return { ...metadata }; },
+            onData(listener) {
+                if (typeof listener !== 'function') return () => {};
+                dataListeners.add(listener);
+                pendingData.splice(0).forEach((value) => listener(value));
+                return () => dataListeners.delete(listener);
+            },
+            onMetadata(listener) {
+                if (typeof listener !== 'function') return () => {};
+                metadataListeners.add(listener);
+                const hadPendingMetadata = pendingMetadata.length > 0;
+                pendingMetadata.splice(0).forEach((value) => listener(value));
+                if (!hadPendingMetadata && metadataReceived) listener({ ...metadata });
+                return () => metadataListeners.delete(listener);
+            },
+            onEnd(listener) {
+                if (typeof listener !== 'function') return () => {};
+                endListeners.add(listener);
+                if (pendingEnd || ended) {
+                    pendingEnd = false;
+                    listener();
+                }
+                return () => endListeners.delete(listener);
+            },
+            onError(listener) {
+                if (typeof listener !== 'function') return () => {};
+                errorListeners.add(listener);
+                pendingErrors.splice(0).forEach((value) => listener(value));
+                return () => errorListeners.delete(listener);
+            },
+            ack() {
+                if (transportClosed || !streamId) return Promise.resolve(false);
+                return ipcRenderer.invoke('workflow-artifact-ack', { streamId });
+            },
+            close,
+        };
+    };
+}
+
+module.exports = { createWorkflowArtifactTransport, createWorkflowArtifactEventTransport, asBytes };

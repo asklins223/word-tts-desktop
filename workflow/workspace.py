@@ -439,9 +439,13 @@ def build_workflow_workspace(
             """SELECT wui.item_id, wui.work_unit_id, wui.result_status AS unit_item_status,
                       wui.state_version AS unit_item_state_version, wu.status AS unit_status,
                       wu.state_version AS unit_state_version, wu.side_effect_state,
-                      wu.step_id, wua.work_unit_attempt_id, wua.started_at AS attempt_started_at
+                      wu.step_id, wu.provider_submission_id,
+                      wu.created_at AS work_unit_created_at,
+                      p.ordered_plan_json,
+                      wua.work_unit_attempt_id, wua.started_at AS attempt_started_at
                FROM work_unit_items wui
                JOIN work_units wu ON wu.workflow_id=wui.workflow_id AND wu.work_unit_id=wui.work_unit_id
+               LEFT JOIN provider_submissions p ON p.provider_submission_id=wu.provider_submission_id
                LEFT JOIN work_unit_attempts wua
                  ON wua.workflow_id=wu.workflow_id AND wua.work_unit_id=wu.work_unit_id
                 AND wua.attempt_id=wu.created_by_attempt_id
@@ -452,6 +456,36 @@ def build_workflow_workspace(
         item_units: dict[str, dict[str, Any]] = {}
         for row in unit_rows:
             item_units.setdefault(str(row["item_id"]), dict(row))
+
+        # The parsed work item keeps only an explicit per-item override.  The
+        # accepted TTS plan is the durable source of truth for the effective
+        # voice actually sent to the provider (including role/default voice
+        # resolution). Project that value back onto the workspace so the
+        # delivery page does not show an empty or stale voice label for an
+        # otherwise valid audio artifact.
+        planned_voice_keys: dict[str, str] = {}
+        plan_sources = sorted(
+            item_units.values(),
+            key=lambda value: (
+                str(value.get("work_unit_created_at") or value.get("attempt_started_at") or ""),
+                str(value.get("work_unit_id") or ""),
+            ),
+            reverse=True,
+        )
+        for unit in plan_sources:
+            try:
+                ordered_plan = json.loads(str(unit.get("ordered_plan_json") or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                ordered_plan = []
+            if not isinstance(ordered_plan, list):
+                continue
+            for spec in ordered_plan:
+                if not isinstance(spec, Mapping):
+                    continue
+                item_id = str(spec.get("item_id") or "")
+                voice_key = str(spec.get("voice_key") or "").strip()
+                if item_id and voice_key and item_id not in planned_voice_keys:
+                    planned_voice_keys[item_id] = voice_key
 
         attempt_rows = con.execute(
             """SELECT wui.item_id, sa.attempt_id, sa.status, sa.error_code,
@@ -773,7 +807,10 @@ def build_workflow_workspace(
                 "content_hash": stored_content_hash,
                 "status": status,
                 "role": str(row["role"]) if row["role"] is not None else None,
-                "voice_key": str(row["voice_key"]) if row["voice_key"] is not None else None,
+                "voice_key": (
+                    planned_voice_keys.get(item_id)
+                    or (str(row["voice_key"]) if row["voice_key"] is not None else None)
+                ),
                 "attempt_count": len(item_attempts),
                 "error_code": error_code,
                 "user_message": error_message,

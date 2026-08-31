@@ -36,7 +36,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, updateStatusPresentation, formatUpdateBytes };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream };`, context);
     vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
     return { api: context.__rendererTests, storage, document, mediaState };
 }
@@ -685,6 +685,32 @@ test('试听媒体发生错误时会清理旧 Blob URL，后续点击可重新�
     assert.match(source, /audio\.addEventListener\('error', \(\) => \{\s*\/\/ A successful ticket read/s);
 });
 
+test('Renderer 会在 contextBridge-safe Artifact 事件桥上重建可消费的 ReadableStream', async () => {
+    const { api } = loadRendererConfigFunctions();
+    let dataListener;
+    let endListener;
+    let ackCount = 0;
+    let closeCount = 0;
+    const transport = {
+        onMetadata() { return () => {}; },
+        onData(listener) { dataListener = listener; return () => {}; },
+        onEnd(listener) { endListener = listener; return () => {}; },
+        onError() { return () => {}; },
+        ack() { ackCount += 1; return Promise.resolve(true); },
+        close() { closeCount += 1; return Promise.resolve(true); },
+    };
+
+    const stream = api.rendererReadableArtifactStream(transport);
+    const reader = stream.getReader();
+    dataListener(new Uint8Array([7, 8]));
+    assert.deepEqual(Array.from((await reader.read()).value), [7, 8]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(ackCount, 1);
+    endListener();
+    assert.equal((await reader.read()).done, true);
+    assert.equal(closeCount, 1);
+});
+
 test('当前配置写入 localStorage 前会清理旧角色数据', () => {
     const { api, storage } = loadRendererConfigFunctions();
     api.saveCurrentConfig({
@@ -718,6 +744,30 @@ test('进度计数始终按整数四舍五入并限制在总数内', () => {
     assert.equal(api.terminalProgressPercent(0, 37), 0);
     assert.equal(api.terminalProgressPercent(10, 37), 27);
     assert.equal(api.terminalProgressPercent(37, 37), 100);
+});
+
+test('活动任务进度条按已完成条目计算，不把失败映射成 99%', () => {
+    const { api } = loadRendererConfigFunctions();
+
+    assert.equal(api.generationProgressPercentForView(
+        { terminal: false, freezeProgress: false },
+        { completed: 0, failed: 1, percent: 99 },
+        1,
+    ), 0);
+    assert.equal(api.generationProgressPercentForView(
+        { terminal: false, freezeProgress: false },
+        { completed: 1, failed: 1, percent: 99 },
+        2,
+    ), 50);
+});
+
+test('交付文件名和 ZIP 建议名始终带服务端格式后缀', () => {
+    const { api } = loadRendererConfigFunctions();
+
+    assert.equal(api.filenameWithExtension('001', 'mp3'), '001.mp3');
+    assert.equal(api.filenameWithExtension('001.mp3', 'mp3'), '001.mp3');
+    assert.equal(api.deliveryZipFilename('七上 Starter.docx'), '七上 Starter_tts.zip');
+    assert.equal(api.deliveryZipFilename('无扩展名文档'), '无扩展名文档_tts.zip');
 });
 
 test('结果页按文件音色元数据去重，并兼容可精确匹配的旧 voice 字段', () => {
@@ -789,6 +839,106 @@ test('结果页只接受成功条目的 READY 已验证音频，并使用服务�
     assert.equal(files[0].filename, 'server-name.mp3');
     assert.equal(files[0].format, 'mp3');
     assert.equal(files[0].mime_type, 'audio/mpeg');
+});
+
+test('结果页使用条目 metadata 展示题型和分类，避免把 item_type 重复展示', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{
+        item_id: 'item-display',
+        item_type: 'question',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: '原文',
+    }];
+    const artifacts = [{
+        artifact_id: 'artifact-display',
+        item_id: 'item-display',
+        artifact_type: 'tts-segment',
+        lifecycle_state: 'READY',
+        verified: true,
+        created_at: '2026-01-01T00:00:00Z',
+    }];
+    const workspace = {
+        items: [{
+            ...items[0],
+            metadata: { doc_type: '模仿朗读', category: '框内英文' },
+            role: 'student',
+            voice_key: 'speaker:linda',
+        }],
+        artifacts: [{
+            ...artifacts[0],
+            filename: '001.mp3',
+            format: 'mp3',
+            mime_type: 'audio/mpeg',
+            size_bytes: 12,
+            sha256: 'a'.repeat(64),
+        }],
+    };
+
+    const [file] = api.resultFilesFromArtifacts(items, artifacts, workspace);
+    assert.equal(file.doc_type, '模仿朗读');
+    assert.equal(file.category, '框内英文');
+    assert.equal(file.role, 'student');
+    assert.equal(file.voice_key, 'speaker:linda');
+});
+
+test('结果页只有 item_type 时只展示一次条目类型', () => {
+    const { api } = loadRendererConfigFunctions();
+    const [file] = api.resultFilesFromArtifacts(
+        [{ item_id: 'item-legacy', item_type: '句子跟读', status: 'SUCCEEDED', sequence: 0 }],
+        [{
+            artifact_id: 'artifact-legacy',
+            item_id: 'item-legacy',
+            artifact_type: 'tts-segment',
+            lifecycle_state: 'READY',
+            verified: true,
+            filename: '001.mp3',
+            format: 'mp3',
+            mime_type: 'audio/mpeg',
+            size_bytes: 8,
+            sha256: 'b'.repeat(64),
+        }],
+    );
+    assert.equal(file.doc_type, '句子跟读');
+    assert.equal(file.category, '');
+});
+
+test('结果页从已接受工作区配置补齐实际使用的默认音色', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{
+        item_id: 'item-voice-fallback',
+        item_type: '句子',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'hello',
+        role: null,
+        voice_key: null,
+    }];
+    const workspace = {
+        items,
+        configuration: {
+            effective: {
+                default_female_voice: 'speaker:linda',
+                default_male_voice: 'speaker:steve',
+                role_voices: {},
+            },
+        },
+        artifacts: [{
+            artifact_id: 'artifact-voice-fallback',
+            item_id: 'item-voice-fallback',
+            artifact_type: 'tts-segment',
+            lifecycle_state: 'READY',
+            verified: true,
+            filename: '001.mp3',
+            format: 'mp3',
+            mime_type: 'audio/mpeg',
+            size_bytes: 8,
+            sha256: 'c'.repeat(64),
+        }],
+    };
+
+    const [file] = api.resultFilesFromArtifacts(items, [], workspace);
+    assert.equal(file.voice_key, 'speaker:linda');
 });
 
 test('结果页不会把最新 WAV 产物回退为旧 MP3 交付', () => {
@@ -910,7 +1060,8 @@ test('新完成任务在 ZIP 尚未创建时仍保留整理入口', () => {
 test('ZIP 下载不从普通 Artifact 列表猜测旧导出', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
     assert.doesNotMatch(source, /artifacts\.find\(artifact => \(\s*artifact\.lifecycle_state === 'READY'[\s\S]*artifact\.artifact_type === 'export-zip'/);
-    assert.match(source, /target\.mode === 'history' && !projectedWorkspace/);
+    assert.match(source, /async function hydrateDownloadContext\(target, workflowId\)/);
+    assert.match(source, /projectedWorkspace = await hydrateDownloadContext\(target, workflowId\)/);
     assert.match(source, /projectedDelivery\.zip_available === true/);
     assert.match(source, /hasAuthoritativeDelivery/);
 });

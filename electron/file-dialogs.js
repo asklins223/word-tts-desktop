@@ -107,6 +107,18 @@ function createNativeFileDialogs({
         throw lastError || new Error('could not allocate a temporary stream');
     }
 
+    async function syncWritableFile(filePath) {
+        // Windows can reject fsync on a read-only descriptor with EPERM.  The
+        // temporary file is ours, so reopen it read/write for the durability
+        // barrier before replacing the user-selected destination.
+        const handle = await fs.promises.open(filePath, 'r+');
+        try {
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
+    }
+
     async function assertNotSymlink(filePath) {
         if (typeof fs.promises?.lstat !== 'function') return;
         const stat = await fs.promises.lstat(filePath);
@@ -395,12 +407,7 @@ function createNativeFileDialogs({
         let temporaryFile = null;
         try {
             temporaryFile = await writeExclusiveTemporaryFile(result.filePath, bytes);
-            const handle = await fs.promises.open(temporaryFile, 'r');
-            try {
-                await handle.sync();
-            } finally {
-                await handle.close();
-            }
+            await syncWritableFile(temporaryFile);
             await fs.promises.rename(temporaryFile, result.filePath);
             temporaryFile = null;
             return { success: true };
@@ -511,12 +518,7 @@ function createNativeFileDialogs({
             });
             if (signal) await pipeline(response, bounded, target, { signal });
             else await pipeline(response, bounded, target);
-            const handle = await fs.promises.open(temporaryPath, 'r');
-            try {
-                await handle.sync();
-            } finally {
-                await handle.close();
-            }
+            await syncWritableFile(temporaryPath);
             await fs.promises.rename(temporaryPath, result.filePath);
             temporaryPath = null;
             logger.log('[main] 流式文件保存成功:', result.filePath, `(${received} bytes)`);

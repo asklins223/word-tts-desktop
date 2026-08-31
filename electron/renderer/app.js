@@ -4168,9 +4168,17 @@ function syncGenerationRecoveryState(workspace = currentWorkspace, state = null,
         hideGenerationRecovery();
         return null;
     }
+    // An accepted RECOVERING/RUNNING task is already owned by the background
+    // worker.  The recovery card may still be useful as an explanation of the
+    // previous failure, but its retry button would be a no-op while the live
+    // task is being adopted.  Only expose the action once the server has
+    // settled into a retryable state and the renderer is idle.
+    const retryVisible = presentation.retryVisible
+        && !isGenerating
+        && !generationStartInFlight;
     showGenerationRecovery(presentation.message, {
         title: presentation.title,
-        retryVisible: presentation.retryVisible,
+        retryVisible,
         retryLabel: presentation.retryLabel,
         returnVisible: presentation.returnVisible,
     });
@@ -4428,15 +4436,14 @@ function generationProgressPercentForView(presentation, progress, total) {
     if (presentation.terminal) {
         return terminalProgressPercent(progress?.deliverable, total);
     }
-    if (presentation.freezeProgress) {
-        // A frozen state is an authoritative checkpoint. Runtime stats can
-        // arrive late after pause/stop (or belong to a previous generation),
-        // so never let them turn a task with 0 completed items into a nearly
-        // full progress bar. Keep this readout aligned with the completed
-        // count shown below it; terminal states use deliverable progress.
+    // The server's aggregate percent counts failures/cancellations as
+    // processed work. That is useful for throughput, but it is misleading as
+    // the generation progress bar: a failed 1/1 run must not look 99% done.
+    // During an active/recovering run, keep the bar aligned with the completed
+    // count shown below it. Terminal states use verified deliverables above.
+    if (total > 0) {
         const completed = Math.max(0, Math.round(Number(progress?.completed) || 0));
-        if (total > 0) return Math.min(99, Math.round((Math.min(completed, total) / total) * 100));
-        return 0;
+        return Math.min(99, Math.round((Math.min(completed, total) / total) * 100));
     }
     return Math.min(99, Math.max(0, Math.round(Number(progress?.percent) || 0)));
 }
@@ -6496,6 +6503,57 @@ function historyRecordTimestamp(record) {
     return Number.isFinite(value) ? value : 0;
 }
 
+function itemDisplayFacts(item) {
+    const metadata = item?.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+        ? item.metadata
+        : {};
+    const docType = String(
+        metadata.doc_type
+        || item?.doc_type
+        || item?.item_type
+        || '',
+    ).trim();
+    let category = String(metadata.category || item?.category || '').trim();
+    // Older rows only have item_type. Use it as the document label once, not
+    // as both “document type” and “category”, which produced duplicate labels
+    // such as “模仿朗读-框内英文 · 模仿朗读-框内英文”.
+    if (!docType && item?.item_type) category = String(item.item_type).trim();
+    if (category === docType) category = '';
+    return {
+        docType: docType || '音频',
+        category,
+    };
+}
+
+function resultVoiceKeyFromAcceptedConfiguration(item, workspace = null) {
+    const configuration = workspace?.configuration?.effective;
+    if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) return '';
+    const explicit = String(item?.voice_key || '').trim();
+    if (explicit) return explicit;
+
+    const role = normalizeRoleKeyClient(item?.role);
+    const roleVoices = configuration.role_voices && typeof configuration.role_voices === 'object'
+        && !Array.isArray(configuration.role_voices)
+        ? configuration.role_voices
+        : {};
+    const roleVoice = role && (
+        roleVoices[role]
+        || roleVoices[`role:${role}`]
+    );
+    if (roleVoice) return String(roleVoice).trim();
+
+    // Keep this fallback aligned with WorkflowEngine._effective_plan_item for
+    // older workspaces whose durable provider plan predates the voice
+    // projection. It is only enabled when the accepted workspace contains its
+    // own frozen configuration, never from the renderer's current settings.
+    const roleText = String(item?.role || '').trim();
+    const maleRole = /^(mr|mr\.|sir|男|先生)\b/i.test(roleText);
+    return String(
+        (maleRole ? configuration.default_male_voice : configuration.default_female_voice)
+        || (maleRole ? 'george' : 'amanda'),
+    ).trim();
+}
+
 function resultFilesFromArtifacts(items, artifacts, workspace = null) {
     const hasAuthoritativeWorkspaceArtifacts = Boolean(workspace && Array.isArray(workspace.artifacts));
     // A workspace response is the complete, server-owned projection.  Prefer
@@ -6538,8 +6596,13 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
             // not deliverable, do not fall back to an older attempt's audio.
             seenItemIds.add(itemId);
 
-            const item = itemById.get(itemId) || {};
             const workspaceItem = workspaceItems.get(itemId);
+            // Workspace fields win, while sparse legacy test/compatibility
+            // rows may still fill fields that the old endpoint did not send.
+            // Explicit nulls from the workspace remain authoritative.
+            const item = workspaceItem
+                ? { ...(itemById.get(itemId) || {}), ...workspaceItem }
+                : (itemById.get(itemId) || {});
             const hasWorkspaceMetadata = hasAuthoritativeWorkspaceArtifacts
                 || workspaceArtifacts.has(String(artifact.artifact_id));
             const metadata = hasWorkspaceMetadata
@@ -6577,17 +6640,21 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
                 || !/^[0-9a-f]{64}$/.test(sha256)
             ) return;
 
+            const displayFacts = itemDisplayFacts(item);
+            const text = String(item.normalized_content ?? '');
             latestByItem.set(itemId, {
                 filename,
                 artifact_id: String(artifact.artifact_id),
                 available: true,
-                doc_type: item.item_type || '音频',
-                category: item.item_type || '',
+                doc_type: displayFacts.docType,
+                category: displayFacts.category,
                 item_id: itemId,
-                text: workspaceItem?.normalized_content || item.normalized_content || '',
-                text_preview: String(workspaceItem?.normalized_content || item.normalized_content || '').slice(0, 160),
-                role: item.role || null,
-                voice_key: item.voice_key || null,
+                text,
+                text_preview: text.slice(0, 160),
+                role: item.role ?? null,
+                voice_key: String(item.voice_key || '').trim()
+                    || resultVoiceKeyFromAcceptedConfiguration(item, workspace)
+                    || null,
                 size_bytes: sizeBytes,
                 format,
                 mime_type: mimeType,
@@ -6597,8 +6664,10 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
         });
 
     return [...latestByItem.values()].sort((left, right) => {
-        const leftSequence = Number(itemById.get(left.item_id)?.sequence ?? Number.MAX_SAFE_INTEGER);
-        const rightSequence = Number(itemById.get(right.item_id)?.sequence ?? Number.MAX_SAFE_INTEGER);
+        const leftItem = workspaceItems.get(left.item_id) || itemById.get(left.item_id) || {};
+        const rightItem = workspaceItems.get(right.item_id) || itemById.get(right.item_id) || {};
+        const leftSequence = Number(leftItem.sequence ?? Number.MAX_SAFE_INTEGER);
+        const rightSequence = Number(rightItem.sequence ?? Number.MAX_SAFE_INTEGER);
         return leftSequence - rightSequence || left.filename.localeCompare(right.filename);
     });
 }
@@ -7106,7 +7175,10 @@ async function viewHistoryRecord(historyId) {
             failed,
             cancelled,
             total: total || nonNegativeCount(authoritativeSnapshot.item_count, files.length),
-            format: files[0]?.format || record.format || null,
+            format: files[0]?.format
+                || workspace?.configuration?.effective?.format
+                || record.format
+                || null,
             generationMode: record.generation_mode || GENERATION_MODE_SINGLE,
             preview: Boolean(record.preview),
             zipAvailable: Boolean(delivery.zip_available),
@@ -8037,11 +8109,27 @@ function handleWorkflowEvent(event, sessionId) {
 
 async function refreshGeneratedArtifacts(sessionId) {
     if (!workflowApi) return [];
-    const [items, artifacts, workspace] = await Promise.all([
-        workflowApi.listItems(sessionId),
-        workflowApi.listArtifacts(sessionId),
-        workflowApi.getWorkspace(sessionId),
-    ]);
+    let workspace = null;
+    let items;
+    let artifacts;
+    // The workspace endpoint is the only response that carries item state,
+    // verified Artifact facts, and delivery scope from one server snapshot.
+    // Reading three endpoints in parallel can combine different revisions and
+    // briefly render an item with another attempt's filename or status.
+    if (typeof workflowApi.getWorkspace === 'function') {
+        workspace = await workflowApi.getWorkspace(sessionId);
+    }
+    if (workspace && Array.isArray(workspace.items) && Array.isArray(workspace.artifacts)) {
+        items = workspace.items;
+        artifacts = workspace.artifacts;
+    } else {
+        // Keep older renderer/API combinations usable, but never prefer this
+        // split projection when the authoritative workspace is available.
+        [items, artifacts] = await Promise.all([
+            workflowApi.listItems(sessionId),
+            workflowApi.listArtifacts(sessionId),
+        ]);
+    }
     // The request can outlive a restart/new task.  Never let a late response
     // from the old workflow overwrite the result list of the current task.
     if (currentSession?.session_id !== sessionId) return [];
@@ -8053,6 +8141,9 @@ async function refreshGeneratedArtifacts(sessionId) {
             zip_available: Boolean(workspace.delivery.zip_available),
             zip_artifact_id: workspace.delivery.zip_artifact_id || null,
         } : null;
+        if (Array.isArray(workspace.items)) {
+            currentSession.parse_results = workspaceItemsToParseResults(workspace);
+        }
         currentSession.progress = workspace.progress ? {
             total: nonNegativeCount(workspace.progress.total),
             completed: nonNegativeCount(workspace.progress.completed),
@@ -9315,12 +9406,108 @@ async function refreshResultVoiceAssets(files) {
     });
 }
 
+function rendererReadableArtifactStream(transport) {
+    if (transport && typeof transport.getReader === 'function') return transport;
+    if (!transport || typeof transport.onData !== 'function') {
+        throw new Error('Artifact 流式读取通道不可用');
+    }
+
+    let stream = null;
+    let closed = false;
+    let pendingAck = false;
+    let ackInFlight = false;
+    let ackQueued = false;
+    const metadata = {};
+    let removeData = () => {};
+    let removeMetadata = () => {};
+    let removeEnd = () => {};
+    let removeError = () => {};
+
+    const closeTransport = () => {
+        removeData();
+        removeMetadata();
+        removeEnd();
+        removeError();
+        removeData = removeMetadata = removeEnd = removeError = () => {};
+        return Promise.resolve(transport.close?.()).catch(() => {});
+    };
+    const fail = (controller, error) => {
+        if (closed) return;
+        closed = true;
+        void closeTransport();
+        controller.error(error instanceof Error ? error : new Error(String(error || 'workflow artifact stream failed')));
+    };
+    const requestAck = (controller) => {
+        if (closed || !pendingAck || typeof transport.ack !== 'function') return;
+        if (ackInFlight) {
+            ackQueued = true;
+            return;
+        }
+        pendingAck = false;
+        ackInFlight = true;
+        Promise.resolve(transport.ack()).catch((error) => fail(controller, error)).finally(() => {
+            ackInFlight = false;
+            if (ackQueued) {
+                ackQueued = false;
+                requestAck(controller);
+            }
+        });
+    };
+
+    stream = new ReadableStream({
+        start(controller) {
+            removeMetadata = transport.onMetadata?.((value) => {
+                Object.assign(metadata, value || {});
+                if (stream) stream.metadata = metadata;
+            }) || (() => {});
+            removeData = transport.onData((value) => {
+                if (closed) return;
+                try {
+                    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value || []);
+                    pendingAck = true;
+                    controller.enqueue(bytes);
+                } catch (error) {
+                    fail(controller, error);
+                }
+            }) || (() => {});
+            removeEnd = transport.onEnd?.(() => {
+                if (closed) return;
+                closed = true;
+                void closeTransport();
+                controller.close();
+            }) || (() => {});
+            removeError = transport.onError?.((value) => {
+                const error = value instanceof Error
+                    ? value
+                    : Object.assign(new Error(value?.message || 'workflow artifact stream failed'), value || {});
+                fail(controller, error);
+            }) || (() => {});
+        },
+        pull(controller) {
+            requestAck(controller);
+        },
+        cancel() {
+            if (closed) return;
+            closed = true;
+            void closeTransport();
+        },
+    });
+    stream.metadata = metadata;
+    return stream;
+}
+
+async function openRendererArtifactStream(artifactId) {
+    if (!workflowApi || !artifactId) throw new Error('Artifact 标识缺失');
+    const transport = await workflowApi.openArtifact(artifactId);
+    return rendererReadableArtifactStream(transport);
+}
+
 async function readArtifactBytes(artifactId, maxBytes = MAX_BUFFERED_ARTIFACT_BYTES) {
     if (!workflowApi || !artifactId) throw new Error('Artifact 标识缺失');
     const byteLimit = Number.isSafeInteger(maxBytes) && maxBytes > 0
         ? maxBytes
         : MAX_BUFFERED_ARTIFACT_BYTES;
-    const stream = await workflowApi.openArtifact(artifactId);
+    const stream = await openRendererArtifactStream(artifactId);
     const reader = stream.getReader();
     const chunks = [];
     let total = 0;
@@ -9359,6 +9546,19 @@ function artifactMime(format) {
     }[String(format || '').toLowerCase()] || 'application/octet-stream';
 }
 
+function filenameWithExtension(filename, format, fallback = '下载文件') {
+    const raw = String(filename || '').trim().split(/[\\/]/).pop() || fallback;
+    const extension = String(format || '').trim().toLowerCase().replace(/^\./, '');
+    if (!extension || raw.toLowerCase().endsWith(`.${extension}`)) return raw;
+    return `${raw}.${extension}`;
+}
+
+function deliveryZipFilename(sourceFilename = '') {
+    const source = String(sourceFilename || PRODUCT_NAME).trim().split(/[\\/]/).pop() || PRODUCT_NAME;
+    const stem = source.replace(/\.(docx|xlsx)$/i, '') || PRODUCT_NAME;
+    return filenameWithExtension(`${stem}_tts`, 'zip', `${PRODUCT_NAME}_tts`);
+}
+
 function createAbortError(message = '音频播放源已取消') {
     const error = new Error(message);
     error.name = 'AbortError';
@@ -9372,6 +9572,51 @@ function supportsMediaSourceMime(mimeType) {
     } catch (_) {
         return false;
     }
+}
+
+function waitForNativeAudioReady(audio, timeoutMs = 15000) {
+    if (!audio) return Promise.reject(new Error('音频播放器不可用'));
+    if (audio.readyState >= 2) return Promise.resolve(audio);
+    if (audio.error) {
+        const error = new Error('音频资源无法解码');
+        error.code = 'MEDIA_DECODE_ERROR';
+        return Promise.reject(error);
+    }
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const timeout = Math.max(1000, Number(timeoutMs) || 15000);
+        let timer = null;
+        const cleanup = () => {
+            audio.removeEventListener('loadeddata', onReady);
+            audio.removeEventListener('canplay', onReady);
+            audio.removeEventListener('error', onError);
+            audio.removeEventListener('abort', onAbort);
+            if (timer) clearTimeout(timer);
+        };
+        const finish = (handler, value) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            handler(value);
+        };
+        const onReady = () => finish(resolve, audio);
+        const onError = () => {
+            const error = new Error('音频资源无法解码');
+            error.code = 'MEDIA_DECODE_ERROR';
+            finish(reject, error);
+        };
+        const onAbort = () => finish(reject, createAbortError('音频加载已取消'));
+        audio.addEventListener('loadeddata', onReady, { once: true });
+        audio.addEventListener('canplay', onReady, { once: true });
+        audio.addEventListener('error', onError, { once: true });
+        audio.addEventListener('abort', onAbort, { once: true });
+        timer = setTimeout(() => {
+            const error = new Error('音频加载超时');
+            error.code = 'MEDIA_LOAD_TIMEOUT';
+            finish(reject, error);
+        }, timeout);
+        if (audio.readyState >= 2) finish(resolve, audio);
+    });
 }
 
 function waitForMediaSourceOpen(mediaSource, isCurrent) {
@@ -9508,12 +9753,17 @@ function buildResultPage(event, suppliedContext = null) {
     if (warningActions) warningActions.hidden = isHistory;
     if (resultWarning) resultWarning.hidden = unresolved === 0;
     if (resultWarningText && unresolved > 0) {
+        const availabilityNote = success > 0
+            ? '其余已验证音频仍可试听和下载。'
+            : '当前没有可试听或下载的音频文件。';
+        const historyIssueSummary = [
+            failed > 0 ? `${failed} 条未完成或音频缺失` : '',
+            cancelled > 0 ? `${cancelled} 条已取消` : '',
+        ].filter(Boolean).join('、');
         resultWarningText.textContent = isHistory
             ? (hasDeliveryIssue
-                ? `这条历史记录有 ${deliveryIssueCount} 条音频产物尚未通过交付核验；${failed > 0 || cancelled > 0 ? `另有 ${failed} 条未完成、${cancelled} 条已取消。` : ''}其余文件仍可试听和下载。`
-                : (missingFiles > 0 || cancelled > 0
-                    ? `这条历史记录有 ${failed} 条未完成、${cancelled} 条已取消或音频缺失，其余文件仍可试听和下载。`
-                    : `这条历史记录有 ${failed} 条内容未能生成，已完成的音频仍可正常使用。`))
+                ? `这条历史记录有 ${deliveryIssueCount} 条音频产物尚未通过交付核验${historyIssueSummary ? `；另有 ${historyIssueSummary}` : ''}。${availabilityNote}`
+                : `这条历史记录有 ${historyIssueSummary || '部分内容未能生成'}。${availabilityNote}`)
             : (success > 0
                 ? `${hasDeliveryIssue ? `有 ${deliveryIssueCount} 条音频产物待交付核验；` : ''}${failed} 条失败、${cancelled} 条已取消。沿用当前设置只重试安全失败项；修改参数后会重新生成全部内容。`
                 : (hasDeliveryIssue
@@ -9581,12 +9831,32 @@ function buildResultPage(event, suppliedContext = null) {
     $('result-secondary-label').textContent = isPreviewResult && !isHistory ? '文档总量' : '未完成';
     $('result-failed-count').textContent = String(isPreviewResult && !isHistory ? sourceTotal : unresolved);
     if ($('result-cancelled-count')) $('result-cancelled-count').textContent = String(cancelled);
-    $('result-secondary-caption').textContent = isPreviewResult && !isHistory ? '完整文档内容' : '待处理内容';
-    $('result-format-value').textContent = String(resultFiles[0]?.format || (success > 0 ? context.format : '待同步')).toUpperCase();
+    const unfinishedCaption = [
+        failed > 0 ? (missingFiles > 0 ? '失败或缺失' : '失败') : '',
+        cancelled > 0 ? '已取消' : '',
+        hasDeliveryIssue ? '待核验' : '',
+    ].filter(Boolean).join(' / ') || '待处理内容';
+    $('result-secondary-caption').textContent = isPreviewResult && !isHistory
+        ? '完整文档内容'
+        : unfinishedCaption;
+    const resultFormat = resultFiles[0]?.format
+        || context.format
+        || workspace?.configuration?.effective?.format
+        || '';
+    $('result-format-value').textContent = String(resultFormat || '待同步').toUpperCase();
 
     // ZIP 卡片
     const zipCard = $('zip-card');
     const resultHero = $('result-hero');
+    const zipFilename = deliveryZipFilename(context.sourceFilename);
+    const zipName = zipCard?.querySelector('.zip-name');
+    if (zipName) {
+        // Show the exact suggested package name in the delivery card. The
+        // button used to say only “准备交付包”, which hid a missing/incorrect
+        // extension until after the native save dialog opened.
+        zipName.textContent = zipFilename;
+        zipName.title = zipFilename;
+    }
     // The delivery projection is authoritative for an already-created ZIP.
     // A terminal result with verified audio still exposes the on-demand
     // action; the server creates and verifies the ZIP when it is clicked.
@@ -9671,7 +9941,7 @@ function buildResultPage(event, suppliedContext = null) {
         const zipButton = $('download-zip-btn');
         if (zipButton) {
             zipButton.disabled = !hasScope || includedCount === 0;
-            zipButton.title = zipButton.disabled ? '等待交付范围核验' : '';
+            zipButton.title = zipButton.disabled ? '等待交付范围核验' : `下载 ${zipFilename}`;
         }
     } else {
         zipCard.style.display = 'none';
@@ -9751,7 +10021,7 @@ function buildResultPage(event, suppliedContext = null) {
             dlBtn.disabled = true;
             dlBtn.classList.add('is-busy');
             try {
-                await downloadFile(f.filename, context);
+                await downloadFile(f, context);
             } finally {
                 dlBtn.disabled = false;
                 dlBtn.classList.remove('is-busy');
@@ -9773,7 +10043,10 @@ function buildResultPage(event, suppliedContext = null) {
         // 不支持该 MIME 的浏览器才退回到有界 Blob。WaveSurfer 只负责绘制
         // 波形与定位，不再拥有另一份音频数据。
         const audio = new Audio();
-        audio.preload = index < 2 ? 'auto' : 'none';
+        // Do not start multiple Artifact reads while the result list is being
+        // painted. Playback and waveform loading request bytes on demand;
+        // this keeps the renderer's one-shot ticket streams deterministic.
+        audio.preload = 'none';
         item._audioElement = audio;
         item._artifactId = f.artifact_id || null;
         let audioReadyPromise = null;
@@ -9818,6 +10091,7 @@ function buildResultPage(event, suppliedContext = null) {
             audioMediaSource = mediaSource;
             audioObjectUrl = url;
             artifactObjectUrls.add(url);
+            audio.preload = 'auto';
             audio.src = url;
             audio.load();
 
@@ -9834,7 +10108,7 @@ function buildResultPage(event, suppliedContext = null) {
                     await waitForMediaSourceOpen(mediaSource, isCurrent);
                     if (!isCurrent()) throw createAbortError();
                     const sourceBuffer = mediaSource.addSourceBuffer(f.mime_type);
-                    const stream = await workflowApi.openArtifact(item._artifactId);
+                    const stream = await openRendererArtifactStream(item._artifactId);
                     reader = stream.getReader();
                     audioStreamReader = reader;
                     let receivedChunk = false;
@@ -9877,18 +10151,28 @@ function buildResultPage(event, suppliedContext = null) {
             if (!audioReadyPromise) {
                 const pending = (async () => {
                     const mimeType = f.mime_type || artifactMime(f.format);
-                    if (supportsMediaSourceMime(mimeType)) {
+                    const declaredSize = Number(f.size_bytes);
+                    // Short MP3 segments are more reliable as one verified
+                    // Blob: MediaSource can report a started stream before
+                    // Chromium has enough frames to decode/play it, while a
+                    // Blob gives Audio and WaveSurfer one stable resource.
+                    // Retain MSE only for artifacts too large for the bounded
+                    // renderer buffer.
+                    const useMediaSource = Number.isSafeInteger(declaredSize)
+                        && declaredSize > MAX_BUFFERED_ARTIFACT_BYTES
+                        && supportsMediaSourceMime(mimeType);
+                    if (useMediaSource) {
                         try {
                             return await streamAudioWithMediaSource();
                         } catch (error) {
                             resetAudioSource();
-                            if (Number(f.size_bytes) > MAX_BUFFERED_ARTIFACT_BYTES) {
+                            if (declaredSize > MAX_BUFFERED_ARTIFACT_BYTES) {
                                 error.code = error.code || 'ARTIFACT_STREAM_UNSUPPORTED';
                                 throw error;
                             }
                         }
                     }
-                    if (Number(f.size_bytes) > MAX_BUFFERED_ARTIFACT_BYTES) {
+                    if (declaredSize > MAX_BUFFERED_ARTIFACT_BYTES) {
                         const error = new Error('当前环境不支持该音频格式的流式播放，且文件超过浏览器有界读取上限');
                         error.code = 'ARTIFACT_STREAM_UNSUPPORTED';
                         throw error;
@@ -9898,6 +10182,7 @@ function buildResultPage(event, suppliedContext = null) {
                     const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
                     audioObjectUrl = url;
                     artifactObjectUrls.add(url);
+                    audio.preload = 'auto';
                     audio.src = url;
                     audio.load();
                     return audio;
@@ -10164,6 +10449,8 @@ function buildResultPage(event, suppliedContext = null) {
             try {
                 await item.ensureAudioReady();
                 if (requestId !== audioPlayRequestToken || renderToken !== waveformRenderToken) return;
+                await waitForNativeAudioReady(audio);
+                if (requestId !== audioPlayRequestToken || renderToken !== waveformRenderToken) return;
                 await audio.play();
             } catch (error) {
                 if (requestId !== audioPlayRequestToken) return;
@@ -10203,9 +10490,6 @@ function buildResultPage(event, suppliedContext = null) {
         waveformItems.push(item);
     });
     audioList.appendChild(itemFragment);
-    waveformItems.slice(0, 2).forEach(item => {
-        void item.ensureAudioReady?.().catch(error => console.warn('预加载 Artifact 失败:', error));
-    });
     void refreshResultVoiceAssets(resultFiles);
 }
 
@@ -10572,6 +10856,45 @@ async function saveArtifactBytes(bytes, suggestedName, format = '') {
     }
 }
 
+async function hydrateDownloadContext(target, workflowId) {
+    if (typeof workflowApi?.getWorkspace !== 'function') {
+        return target?.workspace || currentWorkspace || null;
+    }
+    const workspace = await workflowApi.getWorkspace(workflowId);
+    if (target?.mode === 'current'
+        && currentSession?.session_id
+        && String(currentSession.session_id) !== String(workflowId)) {
+        const error = new Error('当前任务已切换');
+        error.name = 'AbortError';
+        throw error;
+    }
+    if (!workspace || !Array.isArray(workspace.items) || !Array.isArray(workspace.artifacts)) {
+        const error = new Error('任务工作区暂时无法读取');
+        error.code = 'WORKSPACE_UNAVAILABLE';
+        throw error;
+    }
+
+    const files = resultFilesFromArtifacts(workspace.items, workspace.artifacts, workspace);
+    target.workspace = workspace;
+    target.files = files;
+    target.delivery = workspace.delivery || null;
+    target.zipAvailable = workspace.delivery?.zip_available === true;
+    target.zipArtifactId = workspace.delivery?.zip_artifact_id || null;
+    target.stateVersion = Number(workspace.snapshot?.state_version ?? target.stateVersion ?? 0);
+
+    if (target.mode === 'current' && currentSession?.session_id === workflowId) {
+        currentWorkspace = workspace;
+        workflowStore?.hydrate?.(workspace, { snapshot: workspace.snapshot });
+        mergeWorkflowSnapshotIntoSession(workspace.snapshot, currentSession);
+        currentSession.delivery = workspace.delivery ? {
+            zip_available: workspace.delivery.zip_available === true,
+            zip_artifact_id: workspace.delivery.zip_artifact_id || null,
+        } : null;
+        renderWorkspaceShell(currentWorkspace, currentSession);
+    }
+    return workspace;
+}
+
 async function downloadZip(context = activeResultContext) {
     const target = context || (currentSession ? {
         mode: 'current',
@@ -10590,9 +10913,11 @@ async function downloadZip(context = activeResultContext) {
         let projectedWorkspace = target.mode === 'current'
             ? (currentWorkspace || target.workspace || null)
             : (target.workspace || null);
-        if (target.mode === 'history' && !projectedWorkspace && typeof workflowApi.getWorkspace === 'function') {
-            projectedWorkspace = await workflowApi.getWorkspace(workflowId);
-            target.workspace = projectedWorkspace;
+        if (typeof workflowApi.getWorkspace === 'function') {
+            // Refresh all item, Artifact, and delivery facts together immediately
+            // before choosing the bytes. A stale ZIP id or stale filename must
+            // never be used just because the result page was left open.
+            projectedWorkspace = await hydrateDownloadContext(target, workflowId);
         }
         const projectedDelivery = projectedWorkspace?.delivery
             || (!projectedWorkspace ? target.delivery : null)
@@ -10652,12 +10977,12 @@ async function downloadZip(context = activeResultContext) {
             showToast('当前工作流没有可下载的 ZIP Artifact');
             return false;
         }
-        const sourceName = String(target.sourceFilename || PRODUCT_NAME).replace(/\.(docx|xlsx)$/i, '');
+        const downloadName = deliveryZipFilename(target.sourceFilename);
         if (isElectron && typeof window.electronAPI?.saveArtifactStream === 'function') {
-            return saveNativeArtifactStream(artifactId, `${sourceName}_tts.zip`);
+            return saveNativeArtifactStream(artifactId, downloadName);
         }
         const bytes = await readArtifactBytes(artifactId);
-        return saveArtifactBytes(bytes, `${sourceName}_tts.zip`, 'zip');
+        return saveArtifactBytes(bytes, downloadName, 'zip');
     } catch (err) {
         console.error('下载 ZIP 异常:', err);
         showToast('下载失败：Artifact 暂时不可用');
@@ -10665,21 +10990,41 @@ async function downloadZip(context = activeResultContext) {
     }
 }
 
-async function downloadFile(filename, context = activeResultContext) {
+async function downloadFile(fileOrFilename, context = activeResultContext) {
     const target = context || (currentSession ? {
         mode: 'current',
         sessionId: currentSession.session_id,
         workflowId: currentSession.session_id,
         files: generatedFiles,
     } : null);
-    if (!target || !filename) return;
+    const requestedFile = fileOrFilename && typeof fileOrFilename === 'object'
+        ? fileOrFilename
+        : null;
+    const requestedArtifactId = String(requestedFile?.artifact_id || '').trim();
+    const requestedFilename = String(
+        requestedFile?.filename || fileOrFilename || '',
+    ).trim();
+    if (!target || (!requestedArtifactId && !requestedFilename)) return;
     try {
         if (!workflowApi) throw new Error('工作流服务未初始化');
-        const file = (Array.isArray(target.files) ? target.files : []).find(item => item.filename === filename);
+        const workflowId = target.workflowId || target.sessionId || target.recordId;
+        if (workflowId && typeof workflowApi.getWorkspace === 'function') {
+            await hydrateDownloadContext(target, workflowId);
+        }
+        const file = (Array.isArray(target.files) ? target.files : []).find(item => (
+            requestedArtifactId
+                ? String(item?.artifact_id || '') === requestedArtifactId
+                : item?.filename === requestedFilename
+        ));
         if (!file?.artifact_id) {
-            showToast('音频 Artifact 不存在');
+            showToast('这条音频已被更新或暂未通过核验，请刷新任务后重试', 'warning');
             return false;
         }
+        const filename = filenameWithExtension(
+            file.filename || requestedFilename,
+            file.format || 'mp3',
+            '音频文件',
+        );
         if (isElectron && typeof window.electronAPI?.saveArtifactStream === 'function') {
             return saveNativeArtifactStream(file.artifact_id, filename);
         }
@@ -10988,13 +11333,24 @@ function renderWorkflowWorkspace(storeState) {
     const phase = String(workspace.phase || '');
     const message = String(workspace.runtime?.message || '');
     const segments = workspace.segments || {};
+    const itemProgress = workspaceProgress(authoritativeShellWorkspace);
+    const itemTotal = generationProgressTotal(itemProgress, authoritativeShellWorkspace);
+    const itemCompleted = Math.max(0, Math.min(
+        itemTotal || Number.MAX_SAFE_INTEGER,
+        Math.round(Number(itemProgress?.completed) || 0),
+    ));
+    const itemPercent = itemTotal > 0
+        ? Math.min(99, Math.round((itemCompleted / itemTotal) * 100))
+        : 0;
+    const itemIssues = generationProgressIssueSummary(itemProgress);
     const hasSegments = Number(segments.total) > 0;
     const completed = hasSegments ? Math.min(Math.max(0, Number(segments.completed) || 0), Number(segments.total)) : 0;
     const renderKey = [
         phase,
         message,
         hasSegments ? `${completed}/${segments.total}` : 'none',
-        String(workspace.items.total ?? ''),
+        `${itemCompleted}/${itemTotal}`,
+        itemIssues,
         String(workspace.executionState ?? ''),
         controlState,
         String(workspace.resultStatus ?? ''),
@@ -11006,14 +11362,22 @@ function renderWorkflowWorkspace(storeState) {
         const percent = Math.min(100, Math.round((completed / Number(segments.total)) * 100));
         setProgressBarPercent(percent);
         $('progress-bar').parentElement?.setAttribute('aria-valuenow', String(percent));
+        $('progress-bar').parentElement?.setAttribute('aria-valuetext', `${percent}% 处理中`);
         $('progress-percent').textContent = String(percent);
         setProgressIndeterminate(false);
         $('progress-stats').textContent = `${message || '讯飞浏览器处理中'} · ${completed} / ${segments.total}`;
     } else if (phase && phase !== 'attention') {
         // 分段计数还没产生（浏览器启动/准备阶段）：保持不确定进度，只
-        // 同步阶段文案。
+        // 同步阶段文案。这里必须同时重置百分比；否则一次失败后恢复
+        // 时会把旧快照的 99% 留在进度条上，造成“脚本已运行但界面不动”
+        // 的假象。
+        setProgressBarPercent(itemPercent);
+        $('progress-bar').parentElement?.setAttribute('aria-valuenow', String(itemPercent));
+        $('progress-bar').parentElement?.setAttribute('aria-valuetext', `${itemPercent}% 处理中`);
+        $('progress-percent').textContent = String(itemPercent);
         setProgressIndeterminate(true);
-        if (message) $('progress-stats').textContent = `${message} · 0 / ${summarizeParseResults(currentSession?.parse_results).total || '—'}`;
+        const count = `${itemCompleted} / ${itemTotal || '—'}`;
+        $('progress-stats').textContent = `${message || '正在准备生成任务'} · ${count}${itemIssues ? ` · ${itemIssues}` : ''}`;
     }
     if (message && $('generation-live-status')?.textContent !== message) {
         $('generation-live-status').textContent = message;

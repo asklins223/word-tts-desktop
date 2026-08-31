@@ -211,7 +211,7 @@ test('保存文件弹出系统保存框并复制到用户选择的位置', async
     assert.deepEqual(calls.copy, [['/safe/lesson.mp3', '/chosen/lesson.mp3']]);
 });
 
-test('保存内存字节先 fsync 临时文件再原子替换目标文件', async () => {
+test('保存内存字节在 Windows 上使用可写句柄 fsync 再原子替换目标文件', async () => {
     const writes = [];
     const opens = [];
     const renames = [];
@@ -222,6 +222,11 @@ test('保存内存字节先 fsync 临时文件再原子替换目标文件', asyn
                 writeFile: async (...args) => { writes.push(args); },
                 open: async (...args) => {
                     opens.push(args);
+                    if (args[1] === 'r') {
+                        const error = new Error('fsync requires a writable descriptor');
+                        error.code = 'EPERM';
+                        throw error;
+                    }
                     return {
                         sync: async () => {},
                         close: async () => {},
@@ -241,6 +246,7 @@ test('保存内存字节先 fsync 临时文件再原子替换目标文件', asyn
     assert.deepEqual(writes[0][2], { flag: 'wx' });
     assert.equal(opens.length, 1);
     assert.equal(opens[0][0], writes[0][0]);
+    assert.equal(opens[0][1], 'r+');
     assert.deepEqual(renames, [[writes[0][0], '/chosen/lesson.mp3']]);
     assert.deepEqual(unlinks, []);
 });
@@ -280,6 +286,46 @@ test('保存内存字节超过上限时不会弹出保存框', async () => {
 
     assert.deepEqual(result, { success: false, reason: 'file-too-large' });
     assert.equal(calls.save.length, 0);
+});
+
+test('流式保存在 Windows 上使用可写句柄 fsync 再替换目标文件', async () => {
+    const directory = fsNative.mkdtempSync(path.join(os.tmpdir(), 'wordtts-stream-success-'));
+    const targetPath = path.join(directory, 'lesson.mp3');
+    const openCalls = [];
+    const originalOpen = fsNative.promises.open.bind(fsNative.promises);
+    const fs = {
+        ...fsNative,
+        promises: {
+            ...fsNative.promises,
+            open: async (...args) => {
+                openCalls.push(args);
+                if (args[1] === 'r') {
+                    const error = new Error('fsync requires a writable descriptor');
+                    error.code = 'EPERM';
+                    throw error;
+                }
+                return originalOpen(...args);
+            },
+        },
+    };
+    try {
+        const { service, event } = createHarness({
+            fs,
+            dialog: { showSaveDialog: async () => ({ canceled: false, filePath: targetPath }) },
+            maxStreamBytes: 16 * 1024,
+        });
+        const source = Readable.from([Buffer.from('verified mp3 bytes')]);
+        source.statusCode = 200;
+        source.headers = { 'content-length': '18' };
+        const result = await service.saveFileStream(event, async () => source, 'lesson.mp3');
+
+        assert.deepEqual(result, { success: true });
+        assert.equal(fsNative.readFileSync(targetPath, 'utf8'), 'verified mp3 bytes');
+        assert.equal(openCalls.length, 1);
+        assert.equal(openCalls[0][1], 'r+');
+    } finally {
+        fsNative.rmSync(directory, { recursive: true, force: true });
+    }
 });
 
 test('流式保存按块报告进度，并在取消时清理临时文件且不替换目标', async () => {

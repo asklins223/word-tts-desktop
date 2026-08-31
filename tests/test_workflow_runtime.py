@@ -537,6 +537,13 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 ("speaker:teacher", 71, 44, 58),
             ],
         )
+        # Delivery/recovery workspaces must expose the effective voice from
+        # the accepted provider plan, not only the optional work-item override.
+        workspace = self.repository.get_workspace(snapshot.workflow_id)
+        self.assertEqual(
+            [item["voice_key"] for item in workspace["items"]],
+            ["speaker:linda", "speaker:steve", "speaker:teacher"],
+        )
 
     def test_preview_plan_is_bounded_and_terminalizes_as_partial_success(self) -> None:
         snapshot = self.repository.create_workflow(

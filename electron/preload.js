@@ -8,7 +8,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const { createWorkflowApi } = require('./workflow-api');
 const { createWorkflowEventTransport } = require('./workflow-event-transport');
-const { createWorkflowArtifactTransport } = require('./workflow-artifact-transport');
+const { createWorkflowArtifactEventTransport } = require('./workflow-artifact-transport');
 
 const workflow = createWorkflowApi({
     request: (input) => ipcRenderer.invoke('workflow-request', input),
@@ -18,7 +18,9 @@ const workflow = createWorkflowApi({
     uploadSourceFile: ({ onProgress: _onProgress, ...input }) => ipcRenderer.invoke('workflow-source-upload', input),
     cancelSourceUpload: (input) => ipcRenderer.invoke('workflow-source-upload-cancel', input),
     openEvents: createWorkflowEventTransport(ipcRenderer),
-    openArtifactStream: createWorkflowArtifactTransport(ipcRenderer),
+    // Keep the native stream behind the bridge. Renderer-side code rebuilds a
+    // ReadableStream from this contextBridge-safe event transport.
+    openArtifactStream: createWorkflowArtifactEventTransport(ipcRenderer),
 });
 
 contextBridge.exposeInMainWorld('electronAPI', {

@@ -62,12 +62,12 @@ test('build.files 引用的关键文件都真实存在', () => {
 
 test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     const nsisInclude = path.join(APP_DIR, 'build', 'installer.nsh');
-    const nsisSidebar = path.join(APP_DIR, 'build', 'installerSidebar.bmp');
 
     assert.ok(fs.existsSync(nsisInclude), `installer asset must exist: ${nsisInclude}`);
-    assert.ok(fs.existsSync(nsisSidebar), `installer sidebar must exist: ${nsisSidebar}`);
     assert.equal(packageJson.build?.nsis?.include, 'build/installer.nsh');
-    assert.equal(packageJson.build?.nsis?.installerSidebar, 'build/installerSidebar.bmp');
+    assert.equal(packageJson.build?.nsis?.installerHeader, null);
+    assert.equal(packageJson.build?.nsis?.installerSidebar, null);
+    assert.equal(packageJson.build?.nsis?.allowToChangeInstallationDirectory, undefined);
     const windowsWorkflow = fs.readFileSync(
         path.join(APP_DIR, '..', '.github', 'workflows', 'build-windows.yml'),
         'utf8',
@@ -131,15 +131,28 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     const nsisText = fs.readFileSync(nsisInclude, 'utf8');
     assert.match(nsisText, /customWelcomePage/);
     assert.match(nsisText, /customFinishPage/);
-    assert.match(nsisText, /!insertmacro MUI_PAGE_WELCOME/);
-    assert.match(nsisText, /!insertmacro MUI_PAGE_FINISH/);
+    assert.match(nsisText, /Page custom InstallerWelcomeCreate InstallerWelcomeLeave/);
+    assert.match(nsisText, /Page custom InstallerFinishCreate InstallerFinishLeave/);
+    assert.doesNotMatch(nsisText, /!insertmacro MUI_PAGE_WELCOME/);
+    assert.doesNotMatch(nsisText, /!insertmacro MUI_PAGE_FINISH/);
     assert.match(nsisText, /MUI_PAGE_CUSTOMFUNCTION_SHOW/);
-    assert.match(nsisText, /MUI_PAGE_CUSTOMFUNCTION_DESTROYED/);
-    assert.match(nsisText, /MUI_PAGE_CUSTOMFUNCTION_LEAVE/);
-    assert.doesNotMatch(nsisText, /nsDialogs::Create 1018/);
+    assert.match(nsisText, /customPageAfterChangeDir/);
+    assert.match(nsisText, /InstallerHideStockChrome/);
+    assert.match(nsisText, /InstallerBuildFrame/);
+    assert.match(nsisText, /InstallerBuildCompactFrame/);
+    assert.match(nsisText, /Function InstallerDirectoryCreate/);
+    assert.match(nsisText, /Function InstallerInstallFilesCreate/);
+    assert.match(nsisText, /INSTALLER_PROGRESS_BASE_WIDTH 416/);
+    assert.match(nsisText, /INSTALLER_PROGRESS_BASE_HEIGHT 242/);
+    assert.match(nsisText, /InstallerCreateProgressLabel/);
+    assert.match(nsisText, /InstallerCreateProgressMarker/);
+    assert.match(nsisText, /nsDialogs::Create 1044/);
+    assert.match(nsisText, /CreateWindowEx/);
+    assert.match(nsisText, /InstallerInstallModeToggle/);
+    assert.match(nsisText, /DwmSetWindowAttribute/);
+    assert.match(nsisText, /MUI_INSTFILESPAGE_COLORS/);
     assert.doesNotMatch(nsisText, /PageEx custom/);
-    assert.doesNotMatch(nsisText, /NSD_FreeImage\s+\$Installer(?:Welcome|Finish)/);
-    assert.match(nsisText, /GDI32::DeleteObject\(p \$Installer(?:Welcome|Finish)/);
+    assert.match(nsisText, /WS_CAPTION/);
     assert.match(nsisText, /StdUtils\.ExecShellAsUser/);
     assert.match(nsisText, /\$launchLink/);
     assert.doesNotMatch(nsisText, /ExecShell\s+"open"/);
@@ -148,7 +161,7 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.match(nsisText, /HIDE_RUN_AFTER_FINISH/);
 
     const dialogControls = [...nsisText.matchAll(
-        /\$\{NSD_Create(?:Label|GroupBox|CheckBox)\}\s+(\d+)u\s+(\d+)u\s+(\d+)u\s+(\d+)u/g,
+        /\$\{NSD_Create(?:Label|GroupBox|CheckBox|DirRequest|BrowseButton)\}\s+(\d+)u\s+(\d+)u\s+(\d+)u\s+(\d+)u/g,
     )].map((match) => ({
         x: Number(match[1]),
         y: Number(match[2]),
@@ -158,8 +171,8 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.ok(dialogControls.length > 0, 'expected custom NSIS dialog controls');
     for (const control of dialogControls) {
         assert.ok(
-            control.x >= 120 && control.x + control.width <= 315,
-            `custom control must stay inside the 120u..315u right pane: ${JSON.stringify(control)}`,
+            control.x >= 0 && control.x + control.width <= 315,
+            `custom control must stay inside the NSIS content width: ${JSON.stringify(control)}`,
         );
         assert.ok(
             control.y >= 0 && control.y + control.height <= 193,
@@ -167,8 +180,4 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
         );
     }
 
-    const sidebar = fs.readFileSync(nsisSidebar);
-    assert.equal(sidebar.toString('ascii', 0, 2), 'BM');
-    assert.equal(sidebar.readInt32LE(18), 164);
-    assert.equal(Math.abs(sidebar.readInt32LE(22)), 314);
 });

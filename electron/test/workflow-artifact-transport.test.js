@@ -3,7 +3,10 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
-const { createWorkflowArtifactTransport } = require('../workflow-artifact-transport');
+const {
+    createWorkflowArtifactTransport,
+    createWorkflowArtifactEventTransport,
+} = require('../workflow-artifact-transport');
 
 test('Artifact transport 不丢失 IPC 握手期间到达的首个数据块', async () => {
     const ipc = new EventEmitter();
@@ -112,4 +115,48 @@ test('Artifact transport 只在 renderer 消费后确认下一块，避免 IPC �
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(ackCount, 2);
     assert.equal((await reader.read()).done, true);
+});
+
+test('ContextBridge-safe Artifact transport 会缓冲握手期间的事件并保留元数据', async () => {
+    const ipc = new EventEmitter();
+    let acked = 0;
+    ipc.invoke = async (channel, input = {}) => {
+        if (channel === 'workflow-artifact-open') {
+            ipc.emit('workflow-artifact-meta', {}, {
+                requestId: input.requestId,
+                streamId: 'stream-safe',
+                metadata: { content_type: 'audio/mpeg', content_length: 2 },
+            });
+            ipc.emit('workflow-artifact-data', {}, {
+                requestId: input.requestId,
+                streamId: 'stream-safe',
+                data: new Uint8Array([7, 8]),
+            });
+            ipc.emit('workflow-artifact-end', {}, {
+                requestId: input.requestId,
+                streamId: 'stream-safe',
+            });
+            return 'stream-safe';
+        }
+        if (channel === 'workflow-artifact-ack') {
+            acked += 1;
+            return true;
+        }
+        if (channel === 'workflow-artifact-close') return true;
+        throw new Error(`unexpected IPC channel: ${channel}`);
+    };
+
+    const transport = await createWorkflowArtifactEventTransport(ipc)({ artifactId: 'artifact-safe' });
+    const metadata = [];
+    const chunks = [];
+    let ended = 0;
+    transport.onMetadata((value) => metadata.push(value));
+    transport.onData((value) => chunks.push(Array.from(value)));
+    transport.onEnd(() => { ended += 1; });
+
+    assert.deepEqual(chunks, [[7, 8]]);
+    assert.deepEqual(metadata.at(-1), { content_type: 'audio/mpeg', content_length: 2 });
+    assert.equal(ended, 1);
+    await transport.ack();
+    assert.equal(acked, 1);
 });
