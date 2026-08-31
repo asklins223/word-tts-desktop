@@ -11,18 +11,14 @@ on:
     tags:
       - 'v*'
 
-# Windows and macOS are separate workflows but both upsert the same GitHub
-# Release for a tag. Serialize them so the two release writers cannot race
-# while creating the release or uploading its metadata.
-concurrency:
-  group: wordtts-release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: macos-14
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      architecture: ${{ steps.mac-artifacts.outputs.arch }}
 
     steps:
       - name: Checkout
@@ -127,6 +123,7 @@ jobs:
           dmg_path="electron/release/小猪wordTTS-${RELEASE_VERSION}-${arch}.dmg"
           test -s "$zip_path"
           test -s "$dmg_path"
+          echo "arch=$arch" >> "$GITHUB_OUTPUT"
           echo "zip=$zip_path" >> "$GITHUB_OUTPUT"
           echo "dmg=$dmg_path" >> "$GITHUB_OUTPUT"
           echo "最终 macOS 自动更新 ZIP: $zip_path"
@@ -218,31 +215,78 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  # Keep only the short Release critical section serialized with Windows;
+  # macOS compilation and packaging itself remains parallel with Windows.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: wordtts-release-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install release script dependencies
+        working-directory: electron
+        run: npm ci --ignore-scripts
+
+      - name: Download macOS build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 小猪wordTTS-macOS
+          path: electron/release
+
+      - name: Validate update policy
+        env:
+          UPDATE_VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/validate_update_policy.js
+
       - name: Prepare release notes
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/extract_release_notes.js
 
       - name: Prepare auto-update metadata
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+          UPDATE_VERSION: ${{ needs.build.outputs.version }}
+          UPDATE_MAC_ARCH: ${{ needs.build.outputs.architecture }}
         run: node scripts/prepare_update_metadata.js --platform darwin
 
+      - name: Verify release files
+        run: |
+          set -euo pipefail
+          mac_zip="$(find electron/release -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          mac_dmg="$(find electron/release -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$mac_zip" && test -s "$mac_zip"
+          test -n "$mac_dmg" && test -s "$mac_dmg"
+          test -s electron/release/latest-mac.yml
+          echo "macOS Release 文件校验通过: $mac_zip / $mac_dmg"
+
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             electron/release/latest-mac.yml
-            ${{ steps.mac-artifacts.outputs.dmg }}
-            ${{ steps.mac-artifacts.outputs.zip }}
+            electron/release/*.dmg
+            electron/release/*.zip
           name: 小猪wordTTS ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           body_path: release-notes.md
           draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          prerelease: ${{ contains(needs.build.outputs.version, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

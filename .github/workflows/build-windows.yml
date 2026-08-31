@@ -27,13 +27,6 @@ on:
     tags:
       - 'v*'
 
-# Windows and macOS are separate workflows but both upsert the same GitHub
-# Release for a tag. Serialize them so the two release writers cannot race
-# while creating the release or uploading its metadata.
-concurrency:
-  group: wordtts-release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: windows-latest
@@ -377,28 +370,80 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  # Only the Release writer is serialized.  The expensive Windows build above
+  # is free to run in parallel with the macOS build; this job waits for its
+  # build artifact and then shares the short Release critical section.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: wordtts-release-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install release script dependencies
+        working-directory: electron
+        run: npm ci --ignore-scripts
+
+      - name: Download Windows build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 小猪wordTTS-Windows
+          path: electron/release
+
+      - name: Resolve package version
+        id: version
+        working-directory: electron
+        run: |
+          resolved="$(node -p "require('./package.json').version")"
+          echo "version=$resolved" >> "$GITHUB_OUTPUT"
+          echo "本次发布版本: $resolved"
+
+      - name: Validate update policy
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/validate_update_policy.js
+
       - name: Prepare release notes
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/extract_release_notes.js
 
       - name: Prepare auto-update metadata
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           UPDATE_VERSION: ${{ steps.version.outputs.version }}
         run: node scripts/prepare_update_metadata.js --platform win32
 
-      # ======================================================================
-      # 9. （tag 触发）发布 GitHub Release
-      # ======================================================================
+      - name: Verify release files
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          test -s "$installer"
+          test -s electron/release/latest.yml
+          echo "Windows Release 文件校验通过: $installer"
+
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ steps.find-installer.outputs.installer_path }}
+            electron/release/小猪wordTTS-Setup-${{ steps.version.outputs.version }}-x64.exe
             electron/release/latest.yml
             electron/release/*.blockmap
           name: 小猪wordTTS ${{ github.ref_name }}
