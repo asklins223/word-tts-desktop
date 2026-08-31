@@ -192,7 +192,10 @@ test('openStagedHandle 抛错时也会关闭句柄并清理暂存文件', async 
 });
 
 test('abort 与 TTL 过期都会删除暂存文件', async () => {
-    const { staging, stagingDir } = await makeStaging({ chunkSize: 4, ttlMs: 30 });
+    // Windows CI can spend tens of milliseconds opening the second exclusive
+    // handle. Keep the TTL short enough to test expiry without allowing the
+    // first session to expire before the test reaches its explicit abort.
+    const { staging, stagingDir } = await makeStaging({ chunkSize: 4, ttlMs: 250 });
     const aborted = await beginDocx(staging, 4);
     const expired = await beginDocx(staging, 4);
     await staging.write({ uploadId: aborted.uploadId, offset: 0, bytes: new Uint8Array([1, 2, 3, 4]) }, SENDER);
@@ -200,7 +203,7 @@ test('abort 与 TTL 过期都会删除暂存文件', async () => {
     await staging.abort({ uploadId: aborted.uploadId });
     assert.equal(fs.existsSync(path.join(stagingDir, `${aborted.uploadId}.docx`)), false);
 
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(fs.existsSync(path.join(stagingDir, `${expired.uploadId}.docx`)), false);
     await assert.rejects(
         () => staging.write({ uploadId: expired.uploadId, offset: 0, bytes: new Uint8Array([1]) }, SENDER),
