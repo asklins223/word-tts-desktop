@@ -337,9 +337,21 @@ jobs:
             Invoke-CheckedProcess -FilePath $appExe -Arguments @("--smoke-test")
             Write-Host "已安装应用启动冒烟测试通过"
 
+            # The installer intentionally rejects same-version updates. Mark
+            # this disposable smoke-test installation as an older release so
+            # the next invocation exercises the real upgrade path instead of
+            # testing an invalid downgrade/same-version request.
+            $statePath = Join-Path $installDir "install-state.json"
+            $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+            $state.version = "0.0.0"
+            $state | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statePath -Encoding utf8
+            Write-Host "已将冒烟安装状态标记为旧版本 0.0.0，开始验证升级替换路径"
+
             Write-Host "执行自绘更新，验证覆盖替换路径"
             Invoke-CheckedProcess -FilePath $installer.FullName -Arguments @("--headless", "--mode=update", "--target", $installDir)
             if (-not (Test-Path -LiteralPath $appExe)) { throw "更新完成后应用文件丢失" }
+            $updatedState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+            if ($updatedState.version -ne $env:UPDATE_VERSION) { throw "更新完成后安装状态版本错误: $($updatedState.version)" }
 
             Write-Host "执行自绘卸载"
             Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir)
