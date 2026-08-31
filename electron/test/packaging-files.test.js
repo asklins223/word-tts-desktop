@@ -151,6 +151,11 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.match(nsisText, /InstallerInstallModeToggle/);
     assert.match(nsisText, /DwmSetWindowAttribute/);
     assert.match(nsisText, /MUI_INSTFILESPAGE_COLORS/);
+    assert.match(nsisText, /MUI_INSTFILESPAGE_COLORS "23201D F6F1E8"/);
+    assert.match(nsisText, /INSTALLER_ACCENT "F06445"/);
+    assert.match(nsisText, /INSTALLER_SIGNAL "FFC857"/);
+    assert.doesNotMatch(nsisText, /9BBC0F|8BAC0F|306230|0F380F|315CFF|6C5CE7|F06A4F/);
+    assert.doesNotMatch(nsisText, /Consolas|installer_frame_step|installer_compact_active/);
     assert.doesNotMatch(nsisText, /PageEx custom/);
     assert.match(nsisText, /WS_CAPTION/);
     assert.match(nsisText, /StdUtils\.ExecShellAsUser/);

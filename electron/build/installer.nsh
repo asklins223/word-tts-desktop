@@ -3,23 +3,23 @@
 !include "LogicLib.nsh"
 
 ; INSTALLER DESIGN CONTRACT
-; THESIS: this is a five-step installation console, not a themed Windows wizard.
-; OWN-WORLD: a four-tone pixel field, hard grid, inverted active state, and no stock page chrome.
-; STORY: choose scope, choose a folder, watch the files land, then launch the desktop workbench.
-; FIRST VIEWPORT: an ink-green left rail anchors a full-width work surface with one clear action row.
-; FORM: the assigned Game Boy four-shade field translated into a practical desktop installer; seed aa0de03f.
+; THESIS: this is a small product launch card, not a themed Windows wizard.
+; OWN-WORLD: warm paper, deep ink, burnt orange, and a quiet amber signal; no purple, no stock chrome, no decorative dashboard rail.
+; STORY: see what is being installed, make one choice at a time, then open the document-to-voice workbench.
+; FIRST VIEWPORT: an editorial masthead, one oversized document-to-voice mark, and one clear action share the same calm surface.
+; FORM: a typography-led document-to-voice direction edited into an asymmetric launch card; seed 05c65526.
 ; FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.
 
 ; MUI still supplies the reliable installation engine and the real file progress bar.
 ; Its page chrome is hidden and replaced by the shell below.
 !ifndef MUI_BGCOLOR
-  !define MUI_BGCOLOR "9BBC0F"
+  !define MUI_BGCOLOR "F6F1E8"
 !endif
 !ifndef MUI_TEXTCOLOR
-  !define MUI_TEXTCOLOR "0F380F"
+  !define MUI_TEXTCOLOR "23201D"
 !endif
 !ifndef MUI_INSTFILESPAGE_COLORS
-  !define MUI_INSTFILESPAGE_COLORS "0F380F 9BBC0F"
+  !define MUI_INSTFILESPAGE_COLORS "23201D F6F1E8"
 !endif
 !ifndef MUI_INSTFILESPAGE_PROGRESSBAR
   !define MUI_INSTFILESPAGE_PROGRESSBAR "colored"
@@ -37,11 +37,13 @@
   !define MUI_INSTFILESPAGE_ABORTHEADER_SUBTEXT ""
 !endif
 
-; The four colors are the whole visual language. Active controls invert them.
-!define INSTALLER_LIGHT "9BBC0F"
-!define INSTALLER_MID "8BAC0F"
-!define INSTALLER_SHADE "306230"
-!define INSTALLER_INK "0F380F"
+; The visual language is paper, ink, burnt orange, and a small amber signal.
+!define INSTALLER_LIGHT "F6F1E8"
+!define INSTALLER_MID "E8E0D5"
+!define INSTALLER_SHADE "746D63"
+!define INSTALLER_INK "23201D"
+!define INSTALLER_ACCENT "F06445"
+!define INSTALLER_SIGNAL "FFC857"
 !define INSTALLER_PROGRESS_BASE_WIDTH 416
 !define INSTALLER_PROGRESS_BASE_HEIGHT 242
 
@@ -62,6 +64,9 @@
 !endif
 !ifndef SWP_NOZORDER
   !define SWP_NOZORDER 0x0004
+!endif
+!ifndef BS_FLAT
+  !define BS_FLAT 0x8000
 !endif
 
 !ifndef BUILD_UNINSTALLER
@@ -105,13 +110,13 @@ Var InstallerFinishCancel
 
 Function InstallerEnsureFonts
   ${If} $InstallerBrandFont == 0
-    CreateFont $InstallerBrandFont "Consolas" 10 700
-    CreateFont $InstallerTitleFont "Microsoft YaHei UI" 15 700
+    CreateFont $InstallerBrandFont "Microsoft YaHei UI" 11 700
+    CreateFont $InstallerTitleFont "Microsoft YaHei UI" 18 700
     CreateFont $InstallerBodyFont "Microsoft YaHei UI" 9 400
     CreateFont $InstallerSmallFont "Microsoft YaHei UI" 8 400
-    CreateFont $InstallerPixelFont "Consolas" 8 700
+    CreateFont $InstallerPixelFont "Microsoft YaHei UI" 7 700
     CreateFont $InstallerButtonFont "Microsoft YaHei UI" 9 700
-    CreateFont $InstallerProgressFont "Consolas" 9 700
+    CreateFont $InstallerProgressFont "Microsoft YaHei UI" 9 700
   ${EndIf}
 FunctionEnd
 
@@ -126,7 +131,7 @@ Function InstallerSetWindowChrome
 
   IfFileExists "$SYSDIR\dwmapi.dll" 0 installer_chrome_done
   ; Keep a clean ink border and rounded outer shadow where DWM supports it.
-  System::Call "*(i 0x000F380F) p.s"
+  System::Call "*(i 0x0023201D) p.s"
   Pop $0
   System::Call 'dwmapi::DwmSetWindowAttribute(p $HWNDPARENT, i 34, p $0, i 4) i.r1'
   System::Free $0
@@ -173,7 +178,7 @@ FunctionEnd
 !macroend
 
 !macro InstallerCreateButton HANDLE X Y WIDTH HEIGHT TEXT FUNCTION BACKGROUND COLOR
-  ${NSD_CreateButton} ${X} ${Y} ${WIDTH} ${HEIGHT} "${TEXT}"
+  nsDialogs::CreateControl BUTTON ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}|${BS_FLAT} 0 ${X} ${Y} ${WIDTH} ${HEIGHT} "${TEXT}"
   Pop ${HANDLE}
   SendMessage ${HANDLE} ${WM_SETFONT} $InstallerButtonFont 0
   SetCtlColors ${HANDLE} "${COLOR}" "${BACKGROUND}"
@@ -200,7 +205,20 @@ FunctionEnd
   IntOp $R5 $4 * 3
   IntOp $R5 $R5 / ${INSTALLER_PROGRESS_BASE_WIDTH}
   System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "", i ${WS_CHILD}|${WS_VISIBLE}|${SS_WHITERECT}, i 0, i $R3, i $R5, i $R4, p $0, i 0, p 0, p 0) p.r9'
-  SetCtlColors $9 "" "${INSTALLER_LIGHT}"
+  SetCtlColors $9 "" "${INSTALLER_SIGNAL}"
+!macroend
+
+!macro InstallerCreateProgressPanel X Y WIDTH HEIGHT BACKGROUND
+  IntOp $R6 $4 * ${X}
+  IntOp $R6 $R6 / ${INSTALLER_PROGRESS_BASE_WIDTH}
+  IntOp $R7 $5 * ${Y}
+  IntOp $R7 $R7 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
+  IntOp $R8 $4 * ${WIDTH}
+  IntOp $R8 $R8 / ${INSTALLER_PROGRESS_BASE_WIDTH}
+  IntOp $R9 $5 * ${HEIGHT}
+  IntOp $R9 $R9 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
+  System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "", i ${WS_CHILD}|${WS_VISIBLE}|${SS_WHITERECT}, i $R6, i $R7, i $R8, i $R9, p $0, i 0, p 0, p 0) p.r7'
+  SetCtlColors $7 "" "${BACKGROUND}"
 !macroend
 
 !macro customInstallMode
@@ -244,99 +262,41 @@ FunctionEnd
   Function InstallerBuildFrame
     Call InstallerEnsureFonts
     SetCtlColors $InstallerFrame "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
-    ; Dark rail and a one-unit grid seam replace the stock sidebar image.
-    !insertmacro InstallerCreatePanel 0u 0u 88u 193u ${INSTALLER_INK}
-    !insertmacro InstallerCreatePanel 88u 0u 1u 193u ${INSTALLER_SHADE}
+    ; One paper surface, one editorial rule, and one document-to-voice mark.
+    ; The shell intentionally has no vertical step rail or faux dashboard.
+    !insertmacro InstallerCreatePanel 0u 0u 315u 193u ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 10u 120u 14u "小猪wordTTS" $InstallerBrandFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 24u 150u 9u "文档配音工作台" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 244u 10u 40u 11u "3.0.0" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateRule $0 16u 31u 283u ${INSTALLER_MID}
+    !insertmacro InstallerCreatePanel 16u 30u 58u 3u ${INSTALLER_ACCENT}
+    !insertmacro InstallerCreateLabel $0 224u 23u 72u 9u "DOCUMENT / VOICE" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 228u 50u 25u 30u "文" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreatePanel 258u 66u 16u 3u ${INSTALLER_ACCENT}
+    !insertmacro InstallerCreateLabel $0 278u 50u 25u 30u "声" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 224u 87u 79u 9u "TEXT IN / AUDIO OUT" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateRule $0 224u 104u 79u ${INSTALLER_MID}
 
-    ; Brand lockup in the rail.
-    !insertmacro InstallerCreateLabel $0 11u 12u 66u 14u "WORDTTS" $InstallerBrandFont ${INSTALLER_LIGHT} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 11u 28u 66u 12u "安装控制台" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-
-    ; Five concrete stages. The active stage is a reversed tile, not a dot.
-    !insertmacro InstallerCreatePanel 0u 49u 3u 18u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreatePanel 0u 75u 3u 18u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreatePanel 0u 101u 3u 18u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreatePanel 0u 127u 3u 18u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreatePanel 0u 153u 3u 18u ${INSTALLER_SHADE}
-
-    !insertmacro InstallerCreateLabel $0 11u 51u 20u 12u "01" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 35u 51u 47u 12u "开始" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 11u 77u 20u 12u "02" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 35u 77u 47u 12u "安装范围" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 11u 103u 20u 12u "03" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 35u 103u 47u 12u "安装位置" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 11u 129u 20u 12u "04" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 35u 129u 47u 12u "写入文件" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 11u 155u 20u 12u "05" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 35u 155u 47u 12u "完成" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-
-    ; Invert only the active tile and rail marker.
-    StrCmp $InstallerActiveStep "1" installer_frame_step_1 0
-    StrCmp $InstallerActiveStep "2" installer_frame_step_2 0
-    StrCmp $InstallerActiveStep "3" installer_frame_step_3 0
-    StrCmp $InstallerActiveStep "4" installer_frame_step_4 0
-    Goto installer_frame_step_5
-installer_frame_step_1:
-    !insertmacro InstallerCreatePanel 0u 49u 3u 18u ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 11u 51u 20u 12u "01" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 35u 51u 47u 12u "开始" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    Goto installer_frame_step_done
-installer_frame_step_2:
-    !insertmacro InstallerCreatePanel 0u 75u 3u 18u ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 11u 77u 20u 12u "02" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 35u 77u 47u 12u "安装范围" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    Goto installer_frame_step_done
-installer_frame_step_3:
-    !insertmacro InstallerCreatePanel 0u 101u 3u 18u ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 11u 103u 20u 12u "03" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 35u 103u 47u 12u "安装位置" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    Goto installer_frame_step_done
-installer_frame_step_4:
-    !insertmacro InstallerCreatePanel 0u 127u 3u 18u ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 11u 129u 20u 12u "04" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 35u 129u 47u 12u "写入文件" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    Goto installer_frame_step_done
-installer_frame_step_5:
-    !insertmacro InstallerCreatePanel 0u 153u 3u 18u ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 11u 155u 20u 12u "05" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 35u 155u 47u 12u "完成" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-installer_frame_step_done:
-
-    ; A real, labeled title strip replaces the native caption bar.
-    !insertmacro InstallerCreateLabel $0 89u 0u 226u 16u "小猪wordTTS / 安装程序" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    ; A minimal custom caption replaces the native Windows title bar.
+    !insertmacro InstallerCreateButton $1 264u 6u 18u 16u "—" InstallerMinimize ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $1 288u 6u 18u 16u "×" InstallerClose ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateLabel $0 148u 10u 88u 11u "DESKTOP INSTALLER" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
     ${NSD_OnClick} $0 InstallerCaptionDrag
-    !insertmacro InstallerCreateButton $1 246u 2u 32u 12u "最小化" InstallerMinimize ${INSTALLER_LIGHT} ${INSTALLER_SHADE}
-    !insertmacro InstallerCreateButton $1 280u 2u 31u 12u "关闭" InstallerClose ${INSTALLER_LIGHT} ${INSTALLER_SHADE}
   FunctionEnd
 
   Function InstallerBuildCompactFrame
     Call InstallerEnsureFonts
     SetCtlColors $InstallerFrame "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
-    !insertmacro InstallerCreatePanel 0u 0u 84u 140u ${INSTALLER_INK}
-    !insertmacro InstallerCreatePanel 84u 0u 1u 140u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreateLabel $0 10u 8u 64u 13u "WORDTTS" $InstallerBrandFont ${INSTALLER_LIGHT} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 10u 23u 64u 11u "安装控制台" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 10u 37u 18u 11u "01" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 33u 37u 45u 11u "开始" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 10u 56u 18u 11u "02" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 33u 56u 45u 11u "安装范围" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 10u 75u 18u 11u "03" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 33u 75u 45u 11u "安装位置" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 10u 94u 18u 11u "04" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 33u 94u 45u 11u "写入文件" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 10u 113u 18u 11u "05" $InstallerPixelFont ${INSTALLER_MID} ${INSTALLER_INK}
-    !insertmacro InstallerCreateLabel $0 33u 113u 45u 11u "完成" $InstallerSmallFont ${INSTALLER_MID} ${INSTALLER_INK}
-    StrCmp $InstallerActiveStep "2" installer_compact_active 0
-    Goto installer_compact_active_done
-installer_compact_active:
-    !insertmacro InstallerCreatePanel 0u 56u 3u 14u ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 10u 56u 18u 11u "02" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 33u 56u 45u 11u "安装范围" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-installer_compact_active_done:
-    !insertmacro InstallerCreateLabel $0 86u 0u 214u 14u "小猪wordTTS / 安装程序" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreatePanel 0u 0u 300u 140u ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 9u 120u 14u "小猪wordTTS" $InstallerBrandFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 23u 150u 9u "安装程序 · 3.0.0" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateRule $0 16u 31u 268u ${INSTALLER_MID}
+    !insertmacro InstallerCreatePanel 16u 30u 52u 3u ${INSTALLER_ACCENT}
+    !insertmacro InstallerCreateLabel $0 219u 23u 74u 9u "DOCUMENT / VOICE" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateButton $1 252u 6u 18u 16u "—" InstallerMinimize ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $1 276u 6u 18u 16u "×" InstallerClose ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateLabel $0 148u 9u 68u 11u "SETUP" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
     ${NSD_OnClick} $0 InstallerCaptionDrag
-    !insertmacro InstallerCreateButton $1 230u 1u 32u 11u "最小化" InstallerMinimize ${INSTALLER_LIGHT} ${INSTALLER_SHADE}
-    !insertmacro InstallerCreateButton $1 266u 1u 30u 11u "关闭" InstallerClose ${INSTALLER_LIGHT} ${INSTALLER_SHADE}
   FunctionEnd
 
   Function InstallerWelcomeCreate
@@ -350,23 +310,15 @@ installer_compact_active_done:
     StrCpy $InstallerFrameCompact "0"
     Call InstallerBuildFrame
 
-    !insertmacro InstallerCreateLabel $0 104u 25u 202u 26u "安装小猪wordTTS" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 104u 55u 202u 28u "把文档配音工作台安装到这台 Windows 电脑。" $InstallerBodyFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateRule $0 104u 87u 202u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreateLabel $0 104u 92u 202u 12u "安装流程" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 50u 204u 28u "文档，马上开口说话" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 83u 204u 24u "安装小猪wordTTS，把文字转换成配音文件。" $InstallerBodyFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateRule $0 16u 119u 287u ${INSTALLER_MID}
+    !insertmacro InstallerCreateLabel $0 16u 130u 136u 11u "准备安装" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 145u 176u 12u "文档配音工作台 / 文档 + 配音" $InstallerBrandFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 247u 130u 48u 11u "01 / 04" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
 
-    !insertmacro InstallerCreatePanel 104u 108u 202u 16u ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 112u 110u 22u 11u "01" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 138u 110u 162u 11u "确认安装范围" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_MID}
-    !insertmacro InstallerCreatePanel 104u 126u 202u 16u ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 112u 128u 22u 11u "02" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 138u 128u 162u 11u "选择应用文件夹" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_MID}
-    !insertmacro InstallerCreatePanel 104u 144u 202u 16u ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 112u 146u 22u 11u "03" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 138u 146u 162u 11u "写入文件并创建快捷方式" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_MID}
-
-    !insertmacro InstallerCreateButton $InstallerWelcomeAction 235u 171u 69u 16u "开始安装" InstallerWelcomeNext ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateButton $InstallerWelcomeCancel 164u 171u 65u 16u "取消" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $InstallerWelcomeAction 230u 165u 66u 18u "开始安装" InstallerWelcomeNext ${INSTALLER_ACCENT} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateButton $InstallerWelcomeCancel 174u 165u 48u 18u "取消" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
     ${NSD_SetFocus} $InstallerWelcomeAction
     nsDialogs::Show
   FunctionEnd
@@ -392,14 +344,14 @@ installer_compact_active_done:
     StrCpy $InstallerFrameCompact "1"
     Call InstallerBuildCompactFrame
 
-    !insertmacro InstallerCreateLabel $0 96u 18u 194u 20u "选择安装范围" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 96u 40u 194u 15u "决定哪些 Windows 账户可以使用它。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
-    ${NSD_CreateRadioButton} 104u 59u 186u 14u "为这台电脑上的所有用户安装"
+    !insertmacro InstallerCreateLabel $0 16u 43u 190u 20u "安装给谁？" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 65u 270u 13u "选择可以启动小猪wordTTS 的 Windows 账户。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    ${NSD_CreateRadioButton} 16u 80u 96u 14u "所有用户"
     Pop $InstallerModeAllUsersControl
     SetCtlColors $InstallerModeAllUsersControl "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
     SendMessage $InstallerModeAllUsersControl ${WM_SETFONT} $InstallerBodyFont 0
     ${NSD_OnClick} $InstallerModeAllUsersControl InstallerInstallModeToggle
-    ${NSD_CreateRadioButton} 104u 86u 186u 14u "仅为当前用户安装"
+    ${NSD_CreateRadioButton} 16u 102u 96u 14u "仅当前用户"
     Pop $InstallerModeCurrentUserControl
     SetCtlColors $InstallerModeCurrentUserControl "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
     SendMessage $InstallerModeCurrentUserControl ${WM_SETFONT} $InstallerBodyFont 0
@@ -410,12 +362,12 @@ installer_compact_active_done:
     ${Else}
       ${NSD_Check} $InstallerModeCurrentUserControl
     ${EndIf}
-    !insertmacro InstallerCreateLabel $0 124u 61u 162u 14u "所有本机账户都可启动此工作台。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 124u 88u 162u 14u "设置只保留在当前账户中。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 118u 81u 162u 11u "这台电脑上的每个账户都能启动。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 118u 103u 162u 11u "设置只保留在当前账户中。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
 
-    !insertmacro InstallerCreateButton $InstallerModeAction 227u 117u 68u 16u "继续" InstallerWelcomeNext ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateButton $InstallerModeBack 158u 117u 63u 16u "上一步" InstallerGoBack ${INSTALLER_LIGHT} ${INSTALLER_INK}
-    !insertmacro InstallerCreateButton $InstallerModeCancel 96u 117u 56u 16u "取消" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $InstallerModeAction 230u 119u 56u 16u "继续" InstallerWelcomeNext ${INSTALLER_ACCENT} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateButton $InstallerModeBack 77u 119u 54u 16u "上一步" InstallerGoBack ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $InstallerModeCancel 16u 119u 48u 16u "取消" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
     ${NSD_SetFocus} $InstallerModeAction
   FunctionEnd
 
@@ -446,29 +398,27 @@ installer_compact_active_done:
     StrCpy $InstallerFrameCompact "0"
     Call InstallerBuildFrame
 
-    !insertmacro InstallerCreateLabel $0 104u 25u 202u 26u "选择安装位置" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 104u 55u 202u 24u "安装器会把程序文件放到所选文件夹。" $InstallerBodyFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateRule $0 104u 84u 202u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreateLabel $0 104u 91u 202u 12u "应用文件夹" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 50u 204u 25u "选择安装位置" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 81u 204u 21u "程序文件会放到你选择的文件夹。" $InstallerBodyFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateRule $0 16u 109u 287u ${INSTALLER_MID}
+    !insertmacro InstallerCreateLabel $0 16u 116u 204u 11u "应用文件夹" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
 
-    ${NSD_CreateDirRequest} 104u 106u 163u 17u "$INSTDIR"
+    ${NSD_CreateDirRequest} 16u 129u 208u 18u "$INSTDIR"
     Pop $InstallerDirectoryInput
     SetCtlColors $InstallerDirectoryInput "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
     SendMessage $InstallerDirectoryInput ${WM_SETFONT} $InstallerBodyFont 0
     ${NSD_OnChange} $InstallerDirectoryInput InstallerDirectoryChanged
-    ${NSD_CreateBrowseButton} 270u 106u 35u 17u "选择"
+    ${NSD_CreateBrowseButton} 232u 129u 64u 18u "选择文件夹"
     Pop $InstallerDirectoryBrowse
     SetCtlColors $InstallerDirectoryBrowse "${INSTALLER_INK}" "${INSTALLER_MID}"
     SendMessage $InstallerDirectoryBrowse ${WM_SETFONT} $InstallerSmallFont 0
     ${NSD_OnClick} $InstallerDirectoryBrowse InstallerDirectoryBrowse
 
-    !insertmacro InstallerCreatePanel 104u 130u 202u 27u ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 112u 133u 22u 11u "PATH" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 146u 133u 154u 20u "将在此文件夹下创建小猪wordTTS。" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_MID}
+    !insertmacro InstallerCreateLabel $0 16u 151u 260u 11u "将在此文件夹下创建小猪wordTTS。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
 
-    !insertmacro InstallerCreateButton $InstallerDirectoryAction 235u 171u 69u 16u "开始写入" InstallerWelcomeNext ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateButton $InstallerDirectoryBack 164u 171u 65u 16u "上一步" InstallerGoBack ${INSTALLER_LIGHT} ${INSTALLER_INK}
-    !insertmacro InstallerCreateButton $InstallerDirectoryCancel 104u 171u 54u 16u "取消" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $InstallerDirectoryAction 230u 165u 66u 18u "开始写入" InstallerWelcomeNext ${INSTALLER_ACCENT} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateButton $InstallerDirectoryBack 174u 165u 48u 18u "上一步" InstallerGoBack ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $InstallerDirectoryCancel 118u 165u 48u 18u "取消" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
     ${NSD_SetFocus} $InstallerDirectoryInput
     nsDialogs::Show
   FunctionEnd
@@ -509,113 +459,73 @@ installer_compact_active_done:
     StrCpy $InstallerProgressRoot $0
     SetCtlColors $0 "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
 
-    ; Discover the actual client rectangle so the progress shell follows DPI.
+    ; Discover the actual client rectangle so the editorial shell follows DPI.
     System::Call "*(i, i, i, i) p.s"
     Pop $1
     System::Call 'user32::GetClientRect(p $0, p $1)'
     System::Call '*$1(i.r2, i.r3, i.r4, i.r5)'
     System::Free $1
-    IntOp $6 $4 * 24
-    IntOp $6 $6 / 100
-    IntOp $7 $4 - $6
-    IntOp $7 $7 - 1
-    IntOp $R0 $4 * 46
-    IntOp $R0 $R0 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $8 $7 - $R0
-
-    ; The progress page is not an nsDialogs page, so draw its title strip
-    ; directly as Win32 children too. Every dimension is derived from the
-    ; authored baseline so the frameless window remains usable at high DPI.
-    IntOp $R0 $4 - $6
-    IntOp $R9 $5 * 30
-    IntOp $R9 $R9 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "", i ${WS_CHILD}|${WS_VISIBLE}|${SS_WHITERECT}, i $6, i 0, i $R0, i $R9, p $0, i 0, p 0, p 0) p.r1'
-    SetCtlColors $1 "" "${INSTALLER_LIGHT}"
-    IntOp $R1 $4 * 28
+    ; The progress page is the same paper surface as the setup pages. The
+    ; actual NSIS status and progress controls remain the source of truth.
+    IntOp $R1 $4 * 24
     IntOp $R1 $R1 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R2 $4 * 78
-    IntOp $R2 $R2 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R3 $4 - $R1
-    IntOp $R3 $R3 - $R2
-    IntOp $R4 $5 * 6
-    IntOp $R4 $R4 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R5 $5 * 18
-    IntOp $R5 $R5 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "小猪wordTTS / 安装程序", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}|${SS_NOTIFY}, i $R1, i $R4, i $R3, i $R5, p $0, i 0, p 0, p 0) p.r2'
-    SetCtlColors $2 "${INSTALLER_SHADE}" "${INSTALLER_LIGHT}"
-    SendMessage $2 ${WM_SETFONT} $InstallerSmallFont 0
-    nsDialogs::OnClick $2 InstallerCaptionDrag
-    IntOp $R6 $4 * 30
+    IntOp $8 $4 * 368
+    IntOp $8 $8 / ${INSTALLER_PROGRESS_BASE_WIDTH}
+    StrCpy $R2 $8
+    !insertmacro InstallerCreateProgressLabel "小猪wordTTS" 10 ${INSTALLER_INK} ${INSTALLER_LIGHT} $InstallerBrandFont
+    !insertmacro InstallerCreateProgressLabel "安装程序 · 3.0.0" 25 ${INSTALLER_SHADE} ${INSTALLER_LIGHT} $InstallerSmallFont
+    !insertmacro InstallerCreateProgressPanel 24 44 84 3 ${INSTALLER_ACCENT}
+
+    ; A single strong mark carries the voice idea without rebuilding a fake
+    ; waveform out of a row of colored bars.
+    !insertmacro InstallerCreateProgressPanel 370 54 18 58 ${INSTALLER_ACCENT}
+    !insertmacro InstallerCreateProgressPanel 394 76 8 36 ${INSTALLER_SIGNAL}
+
+    ; Caption controls use glyphs, not a second stock-looking title bar.
+    IntOp $R6 $4 * 22
     IntOp $R6 $R6 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R7 $4 * 6
-    IntOp $R7 $R7 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R8 $5 * 4
-    IntOp $R8 $R8 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R9 $5 * 22
+    IntOp $R7 $5 * 18
+    IntOp $R7 $R7 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
+    IntOp $R8 $4 * 354
+    IntOp $R8 $R8 / ${INSTALLER_PROGRESS_BASE_WIDTH}
+    IntOp $R9 $5 * 6
     IntOp $R9 $R9 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R0 $4 - $R6
-    IntOp $R0 $R0 - $R7
-    IntOp $R1 $R0 - $R6
-    IntOp $R1 $R1 - $R7
-    System::Call 'user32::CreateWindowEx(i 0, t "BUTTON", t "最小化", i ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}, i $R1, i $R8, i $R6, i $R9, p $0, i 0, p 0, p 0) p.r3'
-    SetCtlColors $3 "${INSTALLER_SHADE}" "${INSTALLER_LIGHT}"
+    System::Call 'user32::CreateWindowEx(i 0, t "BUTTON", t "—", i ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}|${BS_FLAT}, i $R8, i $R9, i $R6, i $R7, p $0, i 0, p 0, p 0) p.r3'
+    SetCtlColors $3 "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
     SendMessage $3 ${WM_SETFONT} $InstallerSmallFont 0
     nsDialogs::OnClick $3 InstallerMinimize
-    System::Call 'user32::CreateWindowEx(i 0, t "BUTTON", t "关闭", i ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}, i $R0, i $R8, i $R6, i $R9, p $0, i 0, p 0, p 0) p.r3'
-    SetCtlColors $3 "${INSTALLER_SHADE}" "${INSTALLER_LIGHT}"
+    IntOp $R8 $4 * 382
+    IntOp $R8 $R8 / ${INSTALLER_PROGRESS_BASE_WIDTH}
+    System::Call 'user32::CreateWindowEx(i 0, t "BUTTON", t "×", i ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}|${BS_FLAT}, i $R8, i $R9, i $R6, i $R7, p $0, i 0, p 0, p 0) p.r3'
+    SetCtlColors $3 "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
     SendMessage $3 ${WM_SETFONT} $InstallerSmallFont 0
     nsDialogs::OnClick $3 InstallerClose
 
-    ; Dark rail.
-    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "", i ${WS_CHILD}|${WS_VISIBLE}|${SS_WHITERECT}, i 0, i 0, i $6, i $5, p $0, i 0, p 0, p 0) p.r1'
-    SetCtlColors $1 "" "${INSTALLER_INK}"
-    ; Rail label / stage numbers.
-    IntOp $R1 $4 * 14
-    IntOp $R1 $R1 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R2 $6 - $R1
-    IntOp $R2 $R2 - $R1
-    IntOp $R3 $5 * 16
+    ; Work surface: one title, one sentence, then one live progress signal.
+    IntOp $R3 $5 * 54
+    IntOp $R3 $R3 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
+    IntOp $R4 $5 * 28
+    IntOp $R4 $R4 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
+    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "正在准备工作台", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}, i $R1, i $R3, i $R2, i $R4, p $0, i 0, p 0, p 0) p.r2'
+    SetCtlColors $2 "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
+    SendMessage $2 ${WM_SETFONT} $InstallerTitleFont 0
+    IntOp $R3 $5 * 88
     IntOp $R3 $R3 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
     IntOp $R4 $5 * 22
     IntOp $R4 $R4 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "WORDTTS", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}, i $R1, i $R3, i $R2, i $R4, p $0, i 0, p 0, p 0) p.r2'
-    SetCtlColors $2 "${INSTALLER_LIGHT}" "${INSTALLER_INK}"
-    SendMessage $2 ${WM_SETFONT} $InstallerBrandFont 0
-    IntOp $R3 $5 * 42
+    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "正在把小猪wordTTS 放进电脑，请保持窗口打开。", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}, i $R1, i $R3, i $R2, i $R4, p $0, i 0, p 0, p 0) p.r2'
+    SetCtlColors $2 "${INSTALLER_SHADE}" "${INSTALLER_LIGHT}"
+    SendMessage $2 ${WM_SETFONT} $InstallerBodyFont 0
+    IntOp $R3 $5 * 126
     IntOp $R3 $R3 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
     IntOp $R4 $5 * 18
     IntOp $R4 $R4 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "安装控制台", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}, i $R1, i $R3, i $R2, i $R4, p $0, i 0, p 0, p 0) p.r3'
-    SetCtlColors $3 "${INSTALLER_MID}" "${INSTALLER_INK}"
-    SendMessage $3 ${WM_SETFONT} $InstallerSmallFont 0
-    !insertmacro InstallerCreateProgressLabel "01  开始" 78 ${INSTALLER_MID} ${INSTALLER_INK} $InstallerPixelFont
-    !insertmacro InstallerCreateProgressLabel "02  范围" 105 ${INSTALLER_MID} ${INSTALLER_INK} $InstallerPixelFont
-    !insertmacro InstallerCreateProgressLabel "03  位置" 132 ${INSTALLER_MID} ${INSTALLER_INK} $InstallerPixelFont
-    !insertmacro InstallerCreateProgressLabel "04  写入" 159 ${INSTALLER_INK} ${INSTALLER_LIGHT} $InstallerPixelFont
-    !insertmacro InstallerCreateProgressLabel "05  完成" 186 ${INSTALLER_MID} ${INSTALLER_INK} $InstallerPixelFont
-    !insertmacro InstallerCreateProgressMarker 159
-
-    ; Work surface labels.
-    IntOp $R0 $4 * 28
-    IntOp $R0 $R0 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R1 $6 + $R0
-    IntOp $R3 $5 * 28
-    IntOp $R3 $R3 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R4 $5 * 30
-    IntOp $R4 $R4 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "写入安装文件", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}, i $R1, i $R3, i $8, i $R4, p $0, i 0, p 0, p 0) p.r2'
+    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "安装进度", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}, i $R1, i $R3, i $R2, i $R4, p $0, i 0, p 0, p 0) p.r2'
     SetCtlColors $2 "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
-    SendMessage $2 ${WM_SETFONT} $InstallerTitleFont 0
-    IntOp $R3 $5 * 68
-    IntOp $R3 $R3 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R4 $5 * 22
-    IntOp $R4 $R4 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::CreateWindowEx(i 0, t "STATIC", t "正在把工作台放进电脑，请保持窗口打开。", i ${WS_CHILD}|${WS_VISIBLE}|${SS_LEFT}, i $R1, i $R3, i $8, i $R4, p $0, i 0, p 0, p 0) p.r2'
-    SetCtlColors $2 "${INSTALLER_SHADE}" "${INSTALLER_LIGHT}"
-    SendMessage $2 ${WM_SETFONT} $InstallerBodyFont 0
+    SendMessage $2 ${WM_SETFONT} $InstallerSmallFont 0
 
     ; Keep the actual NSIS status and progress controls, but move them into
-    ; the same work surface and hide the log/show-log affordance.
+    ; the authored work surface and hide the log/show-log affordance.
     GetDlgItem $R2 $0 1006
     GetDlgItem $R3 $0 1004
     GetDlgItem $R4 $0 1027
@@ -624,34 +534,28 @@ installer_compact_active_done:
     ShowWindow $R5 ${SW_HIDE}
     SetCtlColors $R2 "${INSTALLER_SHADE}" "${INSTALLER_LIGHT}"
     SendMessage $R2 ${WM_SETFONT} $InstallerSmallFont 0
-    IntOp $R6 $5 * 92
+    IntOp $R6 $5 * 150
     IntOp $R6 $R6 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R6 $5 - $R6
     IntOp $R7 $5 * 20
     IntOp $R7 $R7 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
     System::Call 'user32::SetWindowPos(p $R2, p 0, i $R1, i $R6, i $8, i $R7, i ${SWP_NOZORDER}|${SWP_NOACTIVATE})'
-    IntOp $R6 $5 * 55
+    IntOp $R6 $5 * 176
     IntOp $R6 $R6 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R6 $5 - $R6
-    IntOp $R7 $4 * 2
-    IntOp $R7 $R7 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R8 $8 - $R7
+    StrCpy $R8 $8
     IntOp $R9 $5 * 18
     IntOp $R9 $R9 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::SetWindowPos(p $R3, p 0, i $R1, i $R6, i $R8, i $R9, i ${SWP_NOZORDER}|${SWP_NOACTIVATE})'
+    System::Call 'user32::SetWindowPos(p $R3, p 0, i $R1, i $R6, i $8, i $R9, i ${SWP_NOZORDER}|${SWP_NOACTIVATE})'
 
     ; Explicit cancel action inside the redesigned surface.
-    IntOp $R6 $5 * 30
+    IntOp $R6 $5 * 205
     IntOp $R6 $R6 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    IntOp $R6 $5 - $R6
-    IntOp $R7 $4 * 102
+    IntOp $R7 $4 * 316
     IntOp $R7 $R7 / ${INSTALLER_PROGRESS_BASE_WIDTH}
-    IntOp $R7 $4 - $R7
-    IntOp $R8 $4 * 90
+    IntOp $R8 $4 * 76
     IntOp $R8 $R8 / ${INSTALLER_PROGRESS_BASE_WIDTH}
     IntOp $R9 $5 * 22
     IntOp $R9 $R9 / ${INSTALLER_PROGRESS_BASE_HEIGHT}
-    System::Call 'user32::CreateWindowEx(i 0, t "BUTTON", t "取消安装", i ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}, i $R7, i $R6, i $R8, i $R9, p $0, i 0, p 0, p 0) p.r8'
+    System::Call 'user32::CreateWindowEx(i 0, t "BUTTON", t "取消安装", i ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}|${BS_FLAT}, i $R7, i $R6, i $R8, i $R9, p $0, i 0, p 0, p 0) p.r8'
     SetCtlColors $8 "${INSTALLER_INK}" "${INSTALLER_MID}"
     SendMessage $8 ${WM_SETFONT} $InstallerButtonFont 0
     StrCpy $InstallerProgressCancel $8
@@ -694,36 +598,37 @@ installer_compact_active_done:
       Abort
     ${EndIf}
     Call InstallerHideStockChrome
-    StrCpy $InstallerActiveStep "5"
+    StrCpy $InstallerActiveStep "4"
     StrCpy $InstallerFrameCompact "0"
     Call InstallerBuildFrame
 
-    !insertmacro InstallerCreateLabel $0 104u 25u 202u 26u "安装完成" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 104u 55u 202u 26u "小猪wordTTS 已经写入电脑。" $InstallerBodyFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateRule $0 104u 87u 202u ${INSTALLER_SHADE}
-    !insertmacro InstallerCreateLabel $0 104u 94u 202u 12u "结果" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreatePanel 104u 110u 202u 20u ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 112u 114u 22u 11u "OK" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_MID}
-    !insertmacro InstallerCreateLabel $0 144u 114u 156u 11u "程序文件与快捷方式已准备好" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_MID}
+    !insertmacro InstallerCreateLabel $0 16u 50u 204u 25u "安装完成" $InstallerTitleFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 82u 204u 20u "小猪wordTTS 已经准备就绪。" $InstallerBodyFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateRule $0 16u 111u 287u ${INSTALLER_MID}
+    !insertmacro InstallerCreateLabel $0 16u 119u 120u 11u "安装结果" $InstallerPixelFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreatePanel 16u 132u 287u 24u ${INSTALLER_MID}
+    !insertmacro InstallerCreatePanel 26u 141u 5u 5u ${INSTALLER_SIGNAL}
+    !insertmacro InstallerCreateLabel $0 40u 138u 38u 12u "完成" $InstallerPixelFont ${INSTALLER_ACCENT} ${INSTALLER_MID}
+    !insertmacro InstallerCreateLabel $0 91u 138u 192u 12u "程序文件与快捷方式已准备好" $InstallerSmallFont ${INSTALLER_INK} ${INSTALLER_MID}
 
     !ifdef HIDE_RUN_AFTER_FINISH
-      !insertmacro InstallerCreateLabel $0 104u 139u 202u 20u "现在可以从桌面或开始菜单启动。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
-      !insertmacro InstallerCreateButton $InstallerFinishAction 235u 171u 69u 16u "完成" InstallerFinishDone ${INSTALLER_INK} ${INSTALLER_LIGHT}
+      !insertmacro InstallerCreateLabel $0 16u 159u 196u 12u "现在可以从桌面或开始菜单启动。" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+      !insertmacro InstallerCreateButton $InstallerFinishAction 230u 165u 66u 18u "完成" InstallerFinishDone ${INSTALLER_ACCENT} ${INSTALLER_LIGHT}
     !else
-      ${NSD_CreateCheckBox} 104u 139u 202u 15u "完成后打开小猪wordTTS"
+      ${NSD_CreateCheckBox} 16u 159u 196u 13u "完成后打开小猪wordTTS"
       Pop $InstallerFinishCheckbox
       ${NSD_Check} $InstallerFinishCheckbox
       SetCtlColors $InstallerFinishCheckbox "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
       SendMessage $InstallerFinishCheckbox ${WM_SETFONT} $InstallerBodyFont 0
       ${NSD_OnClick} $InstallerFinishCheckbox InstallerFinishToggleOpen
-      ${NSD_CreateButton} 235u 171u 69u 16u "完成并打开"
+      nsDialogs::CreateControl BUTTON ${WS_CHILD}|${WS_VISIBLE}|${WS_TABSTOP}|${BS_PUSHBUTTON}|${BS_FLAT} 0 230u 165u 66u 18u "完成并打开"
       Pop $InstallerFinishAction
       SendMessage $InstallerFinishAction ${WM_SETFONT} $InstallerButtonFont 0
-      SetCtlColors $InstallerFinishAction "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
+      SetCtlColors $InstallerFinishAction "${INSTALLER_LIGHT}" "${INSTALLER_ACCENT}"
       ${NSD_OnClick} $InstallerFinishAction InstallerFinishDone
       ${NSD_SetFocus} $InstallerFinishAction
     !endif
-    !insertmacro InstallerCreateButton $InstallerFinishCancel 164u 171u 65u 16u "关闭" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
+    !insertmacro InstallerCreateButton $InstallerFinishCancel 174u 165u 48u 18u "关闭" InstallerCancel ${INSTALLER_LIGHT} ${INSTALLER_INK}
     nsDialogs::Show
   FunctionEnd
 
