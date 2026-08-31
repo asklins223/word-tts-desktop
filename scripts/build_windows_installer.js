@@ -132,7 +132,15 @@ function runBuilder(projectDir, electronDir, env = process.env) {
     const result = spawnSync(
         executable,
         ['electron-builder', '--projectDir', projectDir, '--win', 'portable', '--publish', 'never'],
-        { cwd: electronDir, env, stdio: 'inherit' },
+        {
+            cwd: electronDir,
+            env,
+            stdio: 'inherit',
+            // .cmd shims are not directly executable by Node on every
+            // supported Windows runtime. Let cmd.exe dispatch npx.cmd while
+            // keeping the POSIX path free of an unnecessary shell.
+            shell: process.platform === 'win32',
+        },
     );
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`自绘 Windows 安装程序构建失败，退出码: ${result.status}`);
