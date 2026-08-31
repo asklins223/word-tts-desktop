@@ -36,7 +36,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, hasInstallableUpdate, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream };`, context);
     vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
     return { api: context.__rendererTests, storage, document, mediaState };
 }
@@ -184,6 +184,27 @@ test('首次主题默认跟随系统，只有用户选择才持久化', () => {
 
     api.setWorkspaceTheme('light');
     assert.equal(storage.get('wordtts_theme_preference'), 'light');
+});
+
+test('版本中心只有在主进程确认当前平台安装包可下载时才显示更新', () => {
+    const { api } = loadRendererConfigFunctions();
+    assert.equal(api.hasInstallableUpdate({ status: 'available', version: '3.0.1', canDownload: false }), false);
+    assert.equal(api.hasInstallableUpdate({ status: 'available', version: '3.0.1', canDownload: true }), true);
+    assert.equal(api.hasInstallableUpdate({ status: 'downloading', version: '3.0.1', canDownload: false }), true);
+    assert.equal(api.hasInstallableUpdate({ status: 'downloaded', version: '3.0.1', canInstall: true }), true);
+    assert.equal(api.hasInstallableUpdate({ status: 'downloaded', version: '3.0.1', canInstall: false }), false);
+    assert.equal(api.hasInstallableUpdate({ status: 'up-to-date', version: '3.0.1', canDownload: true }), false);
+    assert.equal(api.hasInstallableUpdate({ status: 'available', version: null, canDownload: true }), false);
+    assert.equal(api.updateStatusPresentation({ status: 'available', version: '3.0.1' }).code, 'VERIFYING ASSET');
+});
+
+test('版本中心有可用更新时使用独立的高对比度强调色', () => {
+    const styles = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+    assert.match(styles, /--release-accent:\s*#b74725/);
+    assert.match(styles, /--release-accent-strong:\s*#a63f20/);
+    assert.match(styles, /\.version-nav-btn\.has-update/);
+    assert.match(styles, /\.version-status-card\.is-info\.has-update/);
+    assert.match(styles, /\.version-nav-btn\.has-update \.version-nav-badge[^}]*box-shadow/);
 });
 
 test('工作流快照同步只推进状态版本，不会被旧 SSE 快照回退', () => {

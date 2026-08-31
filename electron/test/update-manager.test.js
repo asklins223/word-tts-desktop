@@ -4,10 +4,13 @@ const assert = require('node:assert/strict');
 const EventEmitter = require('node:events');
 const test = require('node:test');
 const {
+    buildUpdateArtifactUrl,
     compareVersions,
     createUpdateManager,
     deriveUpdatePolicy,
     parseVersion,
+    probeUpdateArtifact,
+    updateArtifactForPlatform,
 } = require('../update-manager');
 
 class FakeUpdater extends EventEmitter {
@@ -20,6 +23,23 @@ class FakeUpdater extends EventEmitter {
         return Promise.resolve([]);
     }
     quitAndInstall() {}
+}
+
+function createTestManager(options = {}) {
+    return createUpdateManager({
+        // Unit tests use synthetic update metadata; keep them deterministic
+        // while production uses the built-in remote asset probe.
+        verifyArtifact: async () => true,
+        ...options,
+    });
+}
+
+function windowsArtifact(version) {
+    return {
+        url: `wordTTS-Setup-${version}-x64.exe`,
+        sha512: 'synthetic-sha512',
+        size: 123,
+    };
 }
 
 test('更新版本比较遵循 SemVer 的预发布优先级', () => {
@@ -49,11 +69,52 @@ test('更新策略能同时识别显式强更和最低支持版本', () => {
     );
 });
 
+test('更新资产只选择当前平台且与版本匹配的文件', () => {
+    const info = {
+        version: '2.0.0',
+        files: [
+            { url: 'wordTTS-1.9.9-arm64.zip', sha512: 'old', size: 10 },
+            { url: 'wordTTS-2.0.0-arm64.zip', sha512: 'mac', size: 20 },
+            { url: 'wordTTS-Setup-2.0.0-x64.exe', sha512: 'win', size: 30 },
+        ],
+    };
+    assert.equal(updateArtifactForPlatform(info, 'win32').name, 'wordTTS-Setup-2.0.0-x64.exe');
+    assert.equal(updateArtifactForPlatform(info, 'darwin').name, 'wordTTS-2.0.0-arm64.zip');
+    assert.equal(updateArtifactForPlatform({ version: '2.0.0', files: [windowsArtifact('1.9.9')] }, 'win32'), null);
+});
+
+test('更新资产 URL 会固定到 Release 下载路径，并支持中文名编码', () => {
+    assert.equal(
+        buildUpdateArtifactUrl(
+            'https://github.com/asklins223/word-tts-desktop/releases',
+            'v2.0.0',
+            '小猪wordTTS-Setup-2.0.0-x64.exe',
+        ),
+        'https://github.com/asklins223/word-tts-desktop/releases/download/v2.0.0/%E5%B0%8F%E7%8C%AAwordTTS-Setup-2.0.0-x64.exe',
+    );
+});
+
+test('更新资产探测在 HEAD 不可用时使用单字节范围请求', async () => {
+    const requests = [];
+    const result = await probeUpdateArtifact('https://example.test/release.exe', {
+        timeoutMs: 1000,
+        fetchImpl: async (_url, request) => {
+            requests.push(request);
+            if (request.method === 'HEAD') return { status: 405, body: null };
+            return { status: 206, body: null };
+        },
+    });
+    assert.equal(result.available, true);
+    assert.deepEqual(requests.map(request => request.method), ['HEAD', 'GET']);
+    assert.equal(requests[1].headers.Range, 'bytes=0-0');
+});
+
 test('更新管理器按检查、下载、安装阶段发布可序列化状态', async () => {
     const updater = new FakeUpdater();
     const states = [];
     const info = {
         version: '2.0.0',
+        files: [windowsArtifact('2.0.0')],
         updateMode: 'force',
         minimumSupportedVersion: '1.5.0',
         updateMessage: '必须先更新',
@@ -73,7 +134,7 @@ test('更新管理器按检查、下载、安装阶段发布可序列化状态',
         updater.emit('update-downloaded');
         return Promise.resolve(['/tmp/update.exe']);
     };
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: true,
         isSmokeTest: false,
         appVersion: '1.0.0',
@@ -103,15 +164,91 @@ test('更新管理器按检查、下载、安装阶段发布可序列化状态',
     manager.dispose();
 });
 
+test('只有高版本 tag 或错误平台元数据时不会展示可用更新', async () => {
+    const updater = new FakeUpdater();
+    updater.checkForUpdates = () => Promise.resolve({
+        isUpdateAvailable: true,
+        updateInfo: {
+            version: '2.0.0',
+            // A macOS-only Release must not be offered to Windows.
+            files: [{ url: 'wordTTS-2.0.0-arm64.zip', sha512: 'sha', size: 123 }],
+        },
+    });
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        autoUpdater: updater,
+    });
+
+    const status = await manager.check();
+    assert.equal(status.status, 'up-to-date');
+    assert.equal(status.version, null);
+    assert.equal(status.canDownload, false);
+    manager.dispose();
+});
+
+test('更新元数据存在但具体安装包不可访问时不会展示新版本', async () => {
+    const updater = new FakeUpdater();
+    let probedUrl = '';
+    const info = {
+        version: '2.0.0',
+        tag: 'v2.0.0',
+        files: [windowsArtifact('2.0.0')],
+    };
+    updater.checkForUpdates = () => Promise.resolve({ isUpdateAvailable: true, updateInfo: info });
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        autoUpdater: updater,
+        verifyArtifact: async ({ url }) => {
+            probedUrl = url;
+            return { available: false, status: 404 };
+        },
+    });
+
+    const status = await manager.check();
+    assert.equal(probedUrl, 'https://github.com/asklins223/word-tts-desktop/releases/download/v2.0.0/wordTTS-Setup-2.0.0-x64.exe');
+    assert.equal(status.status, 'up-to-date');
+    assert.equal(status.version, null);
+    assert.equal(status.latestVersion, '1.0.0');
+    assert.equal(status.canDownload, false);
+    manager.dispose();
+});
+
+test('客户端只接受带校验值和正大小的当前平台安装包元数据', async () => {
+    const updater = new FakeUpdater();
+    updater.checkForUpdates = () => Promise.resolve({
+        isUpdateAvailable: true,
+        updateInfo: {
+            version: '2.0.0',
+            files: [{ url: 'wordTTS-Setup-2.0.0-x64.exe', sha512: '', size: 0 }],
+        },
+    });
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        autoUpdater: updater,
+    });
+
+    const status = await manager.check();
+    assert.equal(status.status, 'up-to-date');
+    assert.equal(status.version, null);
+    assert.equal(status.canDownload, false);
+    manager.dispose();
+});
+
 test('没有更新事件时也会清除上一版残留信息，并保留当前最新版本', async () => {
     const updater = new FakeUpdater();
     let shouldReportUpdate = true;
-    const updateInfo = { version: '2.0.0', releaseNotes: '上一版说明' };
+    const updateInfo = { version: '2.0.0', files: [windowsArtifact('2.0.0')], releaseNotes: '上一版说明' };
     updater.checkForUpdates = () => {
         if (shouldReportUpdate) return Promise.resolve({ updateInfo });
         return Promise.resolve(null);
     };
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: true,
         appVersion: '1.0.0',
         platform: 'win32',
@@ -135,7 +272,7 @@ test('服务端返回低于当前版本时不会把旧版本展示成最新版�
     updater.checkForUpdates = () => Promise.resolve({
         updateInfo: { version: '0.9.0' },
     });
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: true,
         appVersion: '1.0.0',
         platform: 'win32',
@@ -157,7 +294,7 @@ test('延迟到达的旧版本或无效更新事件不会污染强更状态', as
             updateInfo: { version: 'not-a-version', updateMode: 'force' },
         });
     };
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: true,
         appVersion: '1.0.0',
         platform: 'win32',
@@ -178,7 +315,7 @@ test('更新器明确返回无更新时不会采纳其中携带的旧元数据',
         isUpdateAvailable: false,
         updateInfo: { version: '2.0.0', updateMode: 'force' },
     });
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: true,
         appVersion: '1.0.0',
         platform: 'win32',
@@ -195,7 +332,7 @@ test('更新器明确返回无更新时不会采纳其中携带的旧元数据',
 test('已下载更新不会被后续检查降级或清空', async () => {
     const updater = new FakeUpdater();
     let checks = 0;
-    const updateInfo = { version: '2.0.0', releaseNotes: '可安装版本' };
+    const updateInfo = { version: '2.0.0', files: [windowsArtifact('2.0.0')], releaseNotes: '可安装版本' };
     updater.checkForUpdates = () => {
         checks += 1;
         updater.emit('update-available', updateInfo);
@@ -205,7 +342,7 @@ test('已下载更新不会被后续检查降级或清空', async () => {
         updater.emit('update-downloaded');
         return Promise.resolve(['/tmp/update.exe']);
     };
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: true,
         appVersion: '1.0.0',
         platform: 'win32',
@@ -233,7 +370,7 @@ test('已下载更新不会被后续检查降级或清空', async () => {
 });
 
 test('开发或 smoke 模式不会加载或触发原生更新器', async () => {
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: false,
         isSmokeTest: false,
         appVersion: '2.0.0',
@@ -245,7 +382,7 @@ test('开发或 smoke 模式不会加载或触发原生更新器', async () => {
 
 test('不支持自动更新的平台保持禁用', async () => {
     const updater = new FakeUpdater();
-    const manager = createUpdateManager({
+    const manager = createTestManager({
         isPackaged: true,
         appVersion: '2.0.0',
         platform: 'linux',

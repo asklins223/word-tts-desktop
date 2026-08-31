@@ -39,6 +39,11 @@
     --danger-soft: #fff0f2;
     --danger-action: #9b4050;
     --danger-action-hover: #813542;
+    --release-accent: #b74725;
+    --release-accent-strong: #a63f20;
+    --release-accent-soft: #fff0e9;
+    --release-accent-rgb: 183, 71, 37;
+    --release-on-accent: #ffffff;
     --button-on-primary: #ffffff;
     --button-on-danger: #ffffff;
     --screen: #0d2a4d;
@@ -91,6 +96,11 @@ html[data-theme="dark"] {
     --danger-soft: #43232f;
     --danger-action: #8b394b;
     --danger-action-hover: #a84b60;
+    --release-accent: #ff9e7a;
+    --release-accent-strong: #ffb49a;
+    --release-accent-soft: #4a2b24;
+    --release-accent-rgb: 255, 158, 122;
+    --release-on-accent: #2a1711;
     --button-on-primary: #162027;
     --button-on-danger: #ffffff;
     --screen: #143141;
@@ -314,6 +324,10 @@ body.platform-darwin #sidebar { padding-top: 28px; }
 .history-nav-copy strong { color: var(--ink-strong); font-size: 12px; font-weight: 760; }
 .history-nav-copy small { overflow: hidden; color: var(--ink-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .history-nav-count { display: inline-flex; align-items: center; justify-content: center; min-width: 23px; height: 23px; margin-left: auto; padding: 0 6px; color: var(--primary-hover); background: var(--primary-soft); border-radius: 999px; font-family: var(--font-mono); font-size: 11px; font-weight: 760; }
+.version-nav-btn.has-update { color: var(--release-accent-strong); background: var(--release-accent-soft); border-color: rgba(var(--release-accent-rgb), .46); }
+.version-nav-btn.has-update .history-nav-icon-version { color: var(--release-accent-strong); background: var(--surface); }
+.version-nav-btn.has-update .history-nav-copy strong { color: var(--release-accent-strong); }
+.version-nav-btn.has-update .version-nav-badge { color: var(--release-on-accent); background: var(--release-accent); box-shadow: 0 4px 12px rgba(var(--release-accent-rgb), .25); }
 .active-task-hint { display: flex; align-items: flex-start; gap: 7px; margin: 0 6px; color: var(--attention-strong); font-size: 11px; line-height: 1.35; }
 .active-task-hint-dot { width: 6px; height: 6px; flex: 0 0 auto; margin-top: 5px; background: var(--attention); border-radius: 50%; }
 .sidebar-footnote { gap: 8px; min-width: 0; padding: 4px 6px 0; color: var(--ink-muted); }
@@ -1117,6 +1131,7 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 .version-notes-panel { min-width: 0; padding: 20px; }
 .version-status-card { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 13px; align-items: start; margin-top: 17px; padding: 16px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 12px; }
 .version-status-card.is-info { color: var(--primary-hover); background: var(--primary-soft); border-color: rgba(var(--primary-rgb), .25); }
+.version-status-card.is-info.has-update { color: var(--release-accent-strong); background: var(--release-accent-soft); border-color: rgba(var(--release-accent-rgb), .48); box-shadow: 0 8px 22px rgba(var(--release-accent-rgb), .12); }
 .version-status-card.is-success { color: var(--success); background: var(--success-soft); border-color: rgba(47, 106, 89, .25); }
 .version-status-card.is-danger { color: var(--danger-strong); background: var(--danger-soft); border-color: rgba(152, 68, 90, .28); }
 .version-status-card.is-neutral { color: var(--ink-muted); }

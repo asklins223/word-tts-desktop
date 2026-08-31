@@ -10,7 +10,11 @@ const {
     readUpdatePolicy,
     validateUpdatePolicy,
 } = require('../../scripts/update_policy');
-const { chooseArtifact, prepareMetadata } = require('../../scripts/prepare_update_metadata');
+const {
+    chooseArtifact,
+    githubAssetName,
+    prepareMetadata,
+} = require('../../scripts/prepare_update_metadata');
 
 test('发布前更新策略校验会锁定构建版本与 tag', () => {
     const policy = validateUpdatePolicy({
@@ -29,6 +33,18 @@ test('发布前更新策略校验会锁定构建版本与 tag', () => {
 
 test('读取默认更新策略不依赖调用时的工作目录', () => {
     assert.equal(readUpdatePolicy().version, '3.0.1');
+});
+
+test('GitHub Release 元数据使用规范化后的 ASCII 资产名', () => {
+    assert.equal(
+        githubAssetName('小猪wordTTS-3.0.1-arm64.zip'),
+        'wordTTS-3.0.1-arm64.zip',
+    );
+    assert.equal(
+        githubAssetName('小猪wordTTS-Setup-3.0.1-x64.exe'),
+        'wordTTS-Setup-3.0.1-x64.exe',
+    );
+    assert.equal(githubAssetName('wordTTS-3.0.1-arm64.zip'), 'wordTTS-3.0.1-arm64.zip');
 });
 
 test('发布前更新策略校验拒绝版本错配和无效规则', () => {
@@ -100,7 +116,8 @@ test('发布元数据从实际 Windows 安装包计算大小和 SHA-512', () => 
 
         assert.equal(result.filename, 'latest.yml');
         assert.equal(yaml.version, '2.7.45');
-        assert.equal(yaml.files[0].url, artifactName);
+        assert.equal(yaml.files[0].url, 'wordTTS-Setup-2.7.45-x64.exe');
+        assert.equal(yaml.path, 'wordTTS-Setup-2.7.45-x64.exe');
         assert.equal(yaml.files[0].size, artifactBytes.length);
         assert.equal(yaml.files[0].sha512, result.checksum);
         assert.equal(yaml.updateMode, 'optional');
@@ -141,7 +158,8 @@ test('发布元数据为 macOS 自动更新选择架构 ZIP', () => {
         const yaml = require('js-yaml').load(fs.readFileSync(path.join(releaseDir, result.filename), 'utf8'));
 
         assert.equal(result.filename, 'latest-mac.yml');
-        assert.equal(yaml.files[0].url, artifactName);
+        assert.equal(yaml.files[0].url, 'wordTTS-2.7.45-arm64.zip');
+        assert.equal(yaml.path, 'wordTTS-2.7.45-arm64.zip');
         assert.equal(yaml.updateMode, 'force');
         assert.equal(yaml.minimumSupportedVersion, '2.7.40');
     } finally {

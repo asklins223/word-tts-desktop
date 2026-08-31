@@ -397,6 +397,19 @@ function normalizeUpdateState(rawState = {}) {
     };
 }
 
+function hasInstallableUpdate(state = {}) {
+    const lifecycleStatus = ['available', 'downloading', 'downloaded', 'installing', 'error'].includes(state.status);
+    const acceptedLifecycle = state.canDownload
+        || state.status === 'downloading'
+        || (state.status === 'downloaded' && state.canInstall)
+        || state.status === 'installing';
+    return Boolean(
+        state.version
+        && lifecycleStatus
+        && acceptedLifecycle,
+    );
+}
+
 function versionDisplay(value, fallback = '—') {
     const text = String(value || '').trim();
     return text ? `v${text.replace(/^v/, '')}` : fallback;
@@ -414,6 +427,9 @@ function updateStatusPresentation(state = {}) {
         return { code: 'UP TO DATE', title: '已是最新版本', message: '当前安装版本已经是可用的最新版本。', tone: 'success' };
     }
     if (state.status === 'available') {
+        if (!hasInstallableUpdate(state)) {
+            return { code: 'VERIFYING ASSET', title: '正在确认更新包', message: '已收到版本信息，正在确认当前平台的安装包是否可用。', tone: 'info' };
+        }
         return state.isForced
             ? { code: 'REQUIRED', title: `需要更新到 ${version}`, message: state.updateMessage || '当前版本已停止支持，请先完成更新。', tone: 'danger' }
             : { code: 'NEW RELEASE', title: `发现 ${version}`, message: state.updateMessage || '有新的桌面版本可用，你可以在方便时下载并安装。', tone: 'info' };
@@ -437,7 +453,7 @@ function isForcedUpdateBlocking() {
     return Boolean(
         updateState.isForced
         && updateState.version
-        && !['disabled', 'idle', 'up-to-date'].includes(updateState.status),
+        && (hasInstallableUpdate(updateState) || updateState.status === 'installing')
     );
 }
 
@@ -492,12 +508,19 @@ function renderVersionCenter() {
     const presentation = updateStatusPresentation(state);
     const current = versionDisplay(state.currentVersion);
     const latest = versionDisplay(state.version || state.latestVersion, '暂无');
-    const hasUpdate = Boolean(state.version);
-    const updateCanDownload = Boolean(state.canDownload || (hasUpdate && ['available', 'error'].includes(state.status)));
+    // A version string alone is not proof that this platform can install it.
+    // The main process only sets canDownload after platform metadata and the
+    // concrete release asset have both been verified.
+    const hasUpdate = hasInstallableUpdate(state);
+    const updateCanDownload = Boolean(
+        hasUpdate
+        && ['available', 'error'].includes(state.status),
+    );
     const card = $('version-status-card');
     if (card) {
         card.dataset.updateStatus = state.status;
         card.classList.toggle('is-forced', Boolean(state.isForced));
+        card.classList.toggle('has-update', hasUpdate);
         card.classList.remove('is-neutral', 'is-info', 'is-success', 'is-danger');
         card.classList.add(`is-${presentation.tone}`);
     }
@@ -571,13 +594,19 @@ function renderVersionCenter() {
     renderVersionReleaseNotes(hasUpdate ? state.releaseNotes : '');
 
     const badge = $('version-nav-badge');
+    const versionNav = $('version-nav-btn');
+    const badgeVisible = hasUpdate && !['up-to-date', 'disabled', 'installing'].includes(state.status);
     if (badge) {
-        const badgeVisible = hasUpdate && !['up-to-date', 'disabled', 'installing'].includes(state.status);
         badge.hidden = !badgeVisible;
         badge.textContent = state.isForced ? '必更' : '新';
     }
+    versionNav?.classList.toggle('has-update', badgeVisible);
     const overlay = $('update-required-overlay');
-    const forcedVisible = Boolean(state.isForced && hasUpdate && !['disabled', 'idle', 'up-to-date'].includes(state.status));
+    const forcedVisible = Boolean(
+        state.isForced
+        && (hasUpdate || (state.version && state.status === 'installing'))
+        && !['disabled', 'idle', 'up-to-date'].includes(state.status),
+    );
     const appRoot = $('app');
     appRoot?.toggleAttribute?.('inert', forcedVisible);
     if (overlay) {
@@ -626,7 +655,7 @@ function renderVersionCenter() {
 function applyUpdateState(rawState) {
     updateState = normalizeUpdateState(rawState);
     renderVersionCenter();
-    if (updateState.isForced && updateState.version && ['available', 'downloaded'].includes(updateState.status) && currentView !== 'version') {
+    if (updateState.isForced && hasInstallableUpdate(updateState) && ['available', 'downloaded'].includes(updateState.status) && currentView !== 'version') {
         showVersionPage({ fromUpdate: true });
     }
 }

@@ -6,12 +6,12 @@
 
 当前支持范围：
 
-- Windows：NSIS 安装包 `小猪wordTTS-Setup-<version>-x64.exe`，元数据为 `latest.yml`。
-- macOS：DMG 负责首次安装，ZIP 负责自动更新，元数据为 `latest-mac.yml`。
+- Windows：NSIS 安装包本地构建名为 `小猪wordTTS-Setup-<version>-x64.exe`，GitHub 下载资产名为 `wordTTS-Setup-<version>-x64.exe`，元数据为 `latest.yml`。
+- macOS：DMG 负责首次安装，ZIP 负责自动更新；本地构建名为 `小猪wordTTS-<version>-<arch>.zip`，GitHub 下载资产名为 `wordTTS-<version>-<arch>.zip`，元数据为 `latest-mac.yml`。
 - 开发模式和 `--smoke-test` 不会访问更新服务。
 - 当前 macOS Actions 按 runner 架构构建一个包；如果要同时覆盖 Intel 与 Apple Silicon，应增加对应架构构建并把两个 ZIP 一起放进同一个 `latest-mac.yml`。
 
-GitHub Release 必须是已发布的非 Draft Release。客户端不把 GitHub Token 写入安装包；因此当前方案按公开仓库/公开 Release 设计。私有仓库需要另行设计鉴权，不能直接把 Token 放进 renderer 或安装包。
+GitHub Release 对客户端必须是已发布的非 Draft Release。两个平台的构建会先把资产上传到 Draft Release，只有 Windows 安装包、macOS ZIP/DMG 和两份 `latest*.yml` 都齐全后才发布；客户端还会探测当前平台的具体安装包，避免只看到 tag、半成品 Release 或上传中的元数据就显示更新。客户端不把 GitHub Token 写入安装包；因此当前方案按公开仓库/公开 Release 设计。私有仓库需要另行设计鉴权，不能直接把 Token 放进 renderer 或安装包。
 
 ## 代码与产物职责
 
@@ -90,11 +90,11 @@ release/update-policy.json + CHANGELOG.md + electron/package.json
    git push origin main --follow-tags
    ```
 
-7. 等待 `Build Windows` 和 `Build macOS` 均成功。两个 workflow 会更新同名 GitHub Release，各自上传平台元数据和安装包。
+7. 等待 `Build Windows` 和 `Build macOS` 均成功。两个 workflow 会更新同名 Draft Release，各自上传平台元数据和安装包；资产齐全后由最后完成的平台将 Release 发布。
 8. 在 GitHub Release 页面确认至少存在：
 
-   - Windows：`latest.yml`、`小猪wordTTS-Setup-2.7.46-x64.exe`。
-   - macOS：`latest-mac.yml`、`小猪wordTTS-2.7.46-<arch>.zip`，以及用于首次安装的 `.dmg`。
+   - Windows：`latest.yml`、`wordTTS-Setup-2.7.46-x64.exe`。
+   - macOS：`latest-mac.yml`、`wordTTS-2.7.46-<arch>.zip`，以及用于首次安装的 `.dmg`。
 
 不要先推 tag、再补策略文件。CI 会在构建早期因为版本不一致失败；这是有意设计的发布门。
 
@@ -103,7 +103,7 @@ release/update-policy.json + CHANGELOG.md + electron/package.json
 - 启动约 6 秒后自动检查，之后默认每 6 小时检查一次；版本中心也可以手动检查。
 - 非强更只显示版本中心的“新”角标和可选下载按钮，不强迫用户中断生成任务。
 - 下载过程中显示百分比、已传输大小和速度；下载完成后显示“重启并安装”。关闭应用不会绕过这个按钮自动安装，用户可以稍后再处理。
-- 强更只在客户端收到有效的新版本元数据后生效。单纯网络失败不会锁死应用，用户可以重试或打开 Release 页面手动处理。
+- 强更只在客户端收到有效的新版本元数据且当前平台安装包可下载后生效。单纯 tag、Draft Release、缺少当前平台安装包或上传中的资产都不会显示“新”角标，也不会锁死应用；网络失败时用户可以重试或打开 Release 页面手动处理。
 - 安装由 `electron-updater` 调用平台安装器完成；应用数据目录仍是原来的 `WordTTS`，更新不会删除文档、任务记录或偏好设置。
 
 ## 签名与首次安装
@@ -121,7 +121,9 @@ release/update-policy.json + CHANGELOG.md + electron/package.json
 - renderer 不能传入任意下载 URL；外部页面只能打开固定的 GitHub Releases 地址。
 - `latest*.yml` 的 `files.url`、`sha512`、`size` 与本次实际产物一致。
 - Windows 发布的是 NSIS 安装包，不是 `win-unpacked` 内的可执行文件；macOS 元数据引用 ZIP，不引用 DMG。
+- 发布 Release 前必须同时存在两端安装包与 `latest*.yml`；客户端只接受当前平台扩展名、校验字段齐全且远端可访问的资产。
 - Release 不是 Draft，tag、package version、policy version 三者一致。
+- `latest*.yml` 的 `files.url` 与 `path` 必须使用 GitHub Release 实际下载资产名；发布脚本会把本地中文构建名转换为 GitHub 的 ASCII 规范名。
 - `optional` 与 `force` 的判断有对应 CHANGELOG 和产品审批记录。
 - Release 之间不复用旧版本号。若包有问题，应发布更高版本修复，而不是替换同版本资产后期待客户端稳定恢复。
 

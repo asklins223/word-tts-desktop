@@ -31,6 +31,7 @@ const VERSION_PATTERN = new RegExp(
 );
 const RELEASE_NOTES_LIMIT = 200_000;
 const DEFAULT_RELEASE_URL = 'https://github.com/asklins223/word-tts-desktop/releases';
+const UPDATE_ARTIFACT_PROBE_TIMEOUT_MS = 8_000;
 
 function parseVersion(value) {
     const match = String(value || '').trim().match(VERSION_PATTERN);
@@ -117,6 +118,133 @@ function normalizeError(error) {
     };
 }
 
+function updateArtifactFileName(value) {
+    const raw = String(value || '').trim().split(/[?#]/, 1)[0];
+    if (!raw) return '';
+    const encodedName = raw.split('/').filter(Boolean).pop() || raw;
+    try {
+        return decodeURIComponent(encodedName);
+    } catch (_) {
+        return encodedName;
+    }
+}
+
+function updateArtifactForPlatform(updateInfo, platform) {
+    const info = updateInfo && typeof updateInfo === 'object' ? updateInfo : {};
+    if (!['win32', 'darwin'].includes(platform)) return null;
+    const expectedExtension = platform === 'win32' ? '.exe' : '.zip';
+    const parsedVersion = parseVersion(info.version);
+    const expectedVersionToken = parsedVersion
+        ? `-${String(info.version).trim().replace(/^v/, '')}`
+        : null;
+    const files = Array.isArray(info.files) ? info.files : [];
+    const candidates = files
+        .filter(file => file && typeof file === 'object')
+        .map(file => ({
+            url: String(file.url || '').trim(),
+            sha512: String(file.sha512 || '').trim(),
+            size: Number(file.size),
+            name: updateArtifactFileName(file.url),
+        }))
+        .filter(file => file.url
+            && file.name
+            && expectedVersionToken
+            && file.name.includes(expectedVersionToken)
+            && file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(expectedExtension));
+
+    // Older electron-updater metadata can use the legacy top-level path. It
+    // is still accepted only when it has the same concrete platform suffix,
+    // checksum, and positive size as a real generated artifact.
+    if (candidates.length === 0 && info.path) {
+        candidates.push({
+            url: String(info.path).trim(),
+            sha512: String(info.sha512 || '').trim(),
+            size: Number(info.size),
+            name: updateArtifactFileName(info.path),
+        });
+    }
+    const artifact = candidates.find(file => (
+        file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(expectedExtension)
+        && file.name
+        && expectedVersionToken
+        && file.name.includes(expectedVersionToken)
+        && file.sha512
+        && Number.isFinite(file.size)
+        && file.size > 0
+    ));
+    if (!artifact) return null;
+    return {
+        ...artifact,
+    };
+}
+
+function buildUpdateArtifactUrl(releaseUrl, tag, artifactName) {
+    const rawName = String(artifactName || '').trim();
+    if (!rawName) return null;
+    if (/^https?:\/\//i.test(rawName)) return rawName;
+    try {
+        const releasesUrl = new URL(String(releaseUrl || DEFAULT_RELEASE_URL));
+        const releaseIndex = releasesUrl.pathname.indexOf('/releases');
+        if (releaseIndex < 0) return null;
+        const repositoryPath = releasesUrl.pathname.slice(0, releaseIndex);
+        const filePath = rawName
+            .split(/[?#]/, 1)[0]
+            .split('/')
+            .filter(Boolean)
+            .map(segment => encodeURIComponent(decodeURIComponent(segment)))
+            .join('/');
+        const releaseTag = encodeURIComponent(String(tag || '').trim());
+        if (!repositoryPath || !releaseTag || !filePath) return null;
+        return `${releasesUrl.origin}${repositoryPath}/releases/download/${releaseTag}/${filePath}`;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function probeUpdateArtifact(url, {
+    fetchImpl = globalThis.fetch,
+    timeoutMs = UPDATE_ARTIFACT_PROBE_TIMEOUT_MS,
+} = {}) {
+    if (!url || typeof fetchImpl !== 'function') {
+        return { available: false, reason: 'artifact-probe-unavailable' };
+    }
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeout = setTimeout(() => controller?.abort(), Math.max(500, Number(timeoutMs) || UPDATE_ARTIFACT_PROBE_TIMEOUT_MS));
+    const request = {
+        method: 'HEAD',
+        redirect: 'follow',
+        ...(controller ? { signal: controller.signal } : {}),
+    };
+    try {
+        let response = await fetchImpl(url, request);
+        // A few release mirrors do not implement HEAD. A one-byte ranged GET
+        // still proves the asset exists without downloading the installer.
+        if (response?.status === 405 || response?.status === 403) {
+            response = await fetchImpl(url, {
+                ...request,
+                method: 'GET',
+                headers: { Range: 'bytes=0-0' },
+            });
+        }
+        const status = Number(response?.status) || 0;
+        try {
+            await response?.body?.cancel?.();
+        } catch (_) {
+            // The probe result is already known; a body cleanup failure is not
+            // a reason to turn a valid release into an update error.
+        }
+        return { available: status >= 200 && status < 300, status };
+    } catch (error) {
+        return {
+            available: false,
+            reason: 'artifact-probe-failed',
+            error: normalizeError(error),
+        };
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 function deriveUpdatePolicy(updateInfo, currentVersion) {
     const info = updateInfo && typeof updateInfo === 'object' ? updateInfo : {};
     const updateMode = info.updateMode === 'force' || info.mode === 'force' ? 'force' : 'optional';
@@ -171,6 +299,7 @@ function createInitialState({ currentVersion, platform, enabled, releaseUrl }) {
 function createUpdateManager(options = {}) {
     const env = options.env || process.env;
     const app = options.app || null;
+    const platform = options.platform || process.platform;
     const currentVersion = String(
         options.appVersion
         || app?.getVersion?.()
@@ -181,7 +310,7 @@ function createUpdateManager(options = {}) {
     const isSmokeTest = Boolean(options.isSmokeTest);
     const enabled = Boolean(
         isPackaged
-        && ['win32', 'darwin'].includes(options.platform || process.platform)
+        && ['win32', 'darwin'].includes(platform)
         && !isSmokeTest
         && env.WORDTTS_DISABLE_AUTO_UPDATE !== '1'
         && options.disabled !== true,
@@ -192,7 +321,7 @@ function createUpdateManager(options = {}) {
     let updater = options.autoUpdater || null;
     let state = createInitialState({
         currentVersion,
-        platform: options.platform || process.platform,
+        platform,
         enabled,
         releaseUrl,
     });
@@ -202,6 +331,7 @@ function createUpdateManager(options = {}) {
     let intervalTimer = null;
     let checkPromise = null;
     let updateInfo = null;
+    const pendingArtifactChecks = new Map();
     const listeners = [];
 
     const publish = (patch) => {
@@ -221,6 +351,9 @@ function createUpdateManager(options = {}) {
         // malformed provider response, or a delayed event must never turn an
         // older package into an installable update in the UI.
         if (!policy.version || compareVersions(policy.version, currentVersion) <= 0) return false;
+        // A delayed provider event must not roll a newer accepted update back
+        // to an older one while an overlapping check is still settling.
+        if (state.version && compareVersions(policy.version, state.version) < 0) return false;
         const sameUpdate = Boolean(
             state.version
             && policy.version
@@ -241,6 +374,66 @@ function createUpdateManager(options = {}) {
             error: null,
             checkedAt: now(),
         });
+    };
+
+    const updateInfoKey = (info) => {
+        const policy = deriveUpdatePolicy(info, currentVersion);
+        const artifact = updateArtifactForPlatform(info, platform);
+        if (!policy.version || !artifact) return null;
+        return `${platform}:${policy.version}:${artifact.url}`;
+    };
+
+    const verifyUpdateArtifact = (info) => {
+        const artifact = updateArtifactForPlatform(info, platform);
+        const policy = deriveUpdatePolicy(info, currentVersion);
+        if (!artifact || !policy.version) {
+            return Promise.resolve({ available: false, reason: 'missing-platform-artifact' });
+        }
+        const key = updateInfoKey(info);
+        if (key && pendingArtifactChecks.has(key)) return pendingArtifactChecks.get(key);
+
+        const tag = String(info?.tag || `v${policy.version}`).trim();
+        const url = buildUpdateArtifactUrl(releaseUrl, tag, artifact.url);
+        const promise = Promise.resolve()
+            .then(() => {
+                if (typeof options.verifyArtifact === 'function') {
+                    return options.verifyArtifact({
+                        artifact,
+                        info,
+                        platform,
+                        releaseUrl,
+                        tag,
+                        url,
+                    });
+                }
+                return probeUpdateArtifact(url, {
+                    fetchImpl: options.fetchImpl || globalThis.fetch,
+                    timeoutMs: options.artifactProbeTimeoutMs,
+                });
+            })
+            .then(result => {
+                if (result && typeof result === 'object') return result;
+                return { available: result !== false };
+            })
+            .catch(error => ({
+                available: false,
+                reason: 'artifact-probe-failed',
+                error: normalizeError(error),
+            }))
+            .finally(() => {
+                if (key) pendingArtifactChecks.delete(key);
+            });
+        if (key) pendingArtifactChecks.set(key, promise);
+        return promise;
+    };
+
+    const acceptUpdateInfo = async (info) => {
+        const policy = deriveUpdatePolicy(info, currentVersion);
+        if (!policy.version || compareVersions(policy.version, currentVersion) <= 0) return false;
+        if (state.version && compareVersions(policy.version, state.version) < 0) return false;
+        const artifactResult = await verifyUpdateArtifact(info);
+        if (disposed || artifactResult?.available !== true) return false;
+        return publishInfo(info);
     };
 
     const normalizeLatestVersion = (candidate) => {
@@ -325,9 +518,9 @@ function createUpdateManager(options = {}) {
             });
         });
         attach('update-available', (info) => {
-            if (!publishInfo(info)) {
-                if (state.status === 'checking') clearUpdateInfo(info?.version);
-            }
+            void acceptUpdateInfo(info).then(accepted => {
+                if (!accepted && state.status === 'checking') clearUpdateInfo();
+            });
         });
         attach('update-not-available', (info) => {
             // Keep the server response available for diagnostics without
@@ -354,14 +547,16 @@ function createUpdateManager(options = {}) {
         publish({ status: 'checking', error: null, progress: null });
         checkPromise = Promise.resolve()
             .then(() => updater.checkForUpdates())
-            .then((result) => {
+            .then(async (result) => {
                 const resultInfo = result?.updateInfo || result?.versionInfo;
-                if (resultInfo && state.status === 'checking') {
+                if (resultInfo) {
                     if (result?.isUpdateAvailable !== false
                         && compareVersions(resultInfo.version, currentVersion) > 0) {
-                        publishInfo(resultInfo);
+                        const accepted = await acceptUpdateInfo(resultInfo);
+                        if (!accepted && state.status === 'checking') clearUpdateInfo();
+                    } else if (state.status === 'checking') {
+                        clearUpdateInfo(resultInfo.version);
                     }
-                    else clearUpdateInfo(resultInfo.version);
                 } else if (state.status === 'checking') {
                     clearUpdateInfo();
                 }
@@ -450,9 +645,12 @@ function createUpdateManager(options = {}) {
 }
 
 module.exports = {
+    buildUpdateArtifactUrl,
     compareVersions,
     createUpdateManager,
     deriveUpdatePolicy,
     normalizeNotes,
     parseVersion,
+    probeUpdateArtifact,
+    updateArtifactForPlatform,
 };

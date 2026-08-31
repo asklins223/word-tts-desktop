@@ -10,6 +10,19 @@ const {
 
 const rootDir = path.resolve(__dirname, '..');
 const productName = '小猪wordTTS';
+const githubAssetPrefix = 'wordTTS';
+
+// The release workflow uploads a canonical ASCII asset name even though the
+// local builder keeps the Chinese product name. The updater follows the URL
+// from latest*.yml, so metadata must use that release asset name rather than
+// the local build filename.
+function githubAssetName(name) {
+    const localName = String(name);
+    const productPrefix = `${productName}-`;
+    return localName.startsWith(productPrefix)
+        ? `${githubAssetPrefix}-${localName.slice(productPrefix.length)}`
+        : localName;
+}
 
 function loadYaml() {
     try {
@@ -74,16 +87,17 @@ function checksum(filePath) {
 function metadataForArtifact({ version, tag, policy, notes, artifact, releaseDir, releaseDate }) {
     const artifactPath = path.join(releaseDir || path.join(rootDir, 'electron', 'release'), artifact.name);
     const digest = checksum(artifactPath);
+    const assetName = githubAssetName(artifact.name);
     return {
         version,
         files: [{
-            url: artifact.name,
+            url: assetName,
             sha512: digest.sha512,
             size: digest.size,
         }],
         // Keep these fields for older electron-updater clients. New clients
         // use `files`, while both formats point to the same checksum.
-        path: artifact.name,
+        path: assetName,
         sha512: digest.sha512,
         releaseDate,
         releaseName: `${productName} ${tag || `v${version}`}`,
@@ -140,6 +154,7 @@ function prepareMetadata({
     return {
         filename,
         artifact: artifact.name,
+        asset: githubAssetName(artifact.name),
         checksum: digest.sha512,
         size: digest.size,
         policy,
@@ -166,7 +181,7 @@ function main() {
         notesPath: argumentValue(argv, '--notes') || path.join(rootDir, 'release-notes.md'),
         policyPath: argumentValue(argv, '--policy') || path.join(rootDir, 'release/update-policy.json'),
     });
-    console.log(`已生成 ${result.filename}: ${result.artifact} · ${result.size} bytes`);
+    console.log(`已生成 ${result.filename}: ${result.artifact} -> ${result.asset} · ${result.size} bytes`);
 }
 
 if (require.main === module) {
@@ -181,6 +196,7 @@ if (require.main === module) {
 module.exports = {
     chooseArtifact,
     checksum,
+    githubAssetName,
     metadataForArtifact,
     prepareMetadata,
 };

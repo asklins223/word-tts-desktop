@@ -439,17 +439,57 @@ jobs:
           test -s electron/release/latest.yml
           echo "Windows Release 文件校验通过: $installer"
 
+      - name: Prepare canonical GitHub asset names
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          local_installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          github_installer="electron/release/wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          cp "$local_installer" "$github_installer"
+          local_blockmap="${local_installer}.blockmap"
+          if [ -s "$local_blockmap" ]; then
+            cp "$local_blockmap" "${github_installer}.blockmap"
+          fi
+          test -s "$github_installer"
+          echo "GitHub Windows 资产名: $(basename "$github_installer")"
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            electron/release/小猪wordTTS-Setup-${{ steps.version.outputs.version }}-x64.exe
+            electron/release/wordTTS-Setup-${{ steps.version.outputs.version }}-x64.exe
             electron/release/latest.yml
-            electron/release/*.blockmap
+            electron/release/wordTTS-Setup-${{ steps.version.outputs.version }}-x64.exe.blockmap
           name: 小猪wordTTS ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           body_path: release-notes.md
-          draft: false
+          # Keep the Release invisible to electron-updater while the other
+          # platform is still building or while assets are uploading.
+          draft: true
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish only after both platform assets are ready
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}"
+          release_id="$(gh api "$endpoint" --jq '.id')"
+          for attempt in $(seq 1 12); do
+            names="$(gh api "$endpoint" --jq '.assets[].name')"
+            if grep -Fxq "latest.yml" <<<"$names" \
+              && grep -Fxq "wordTTS-Setup-${RELEASE_VERSION}-x64.exe" <<<"$names" \
+              && grep -Fxq "latest-mac.yml" <<<"$names" \
+              && grep -Eq "^wordTTS-${RELEASE_VERSION}-(arm64|x64|universal)\\.zip$" <<<"$names" \
+              && grep -Eq "^wordTTS-${RELEASE_VERSION}-(arm64|x64|universal)\\.dmg$" <<<"$names"; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -F draft=false >/dev/null
+              echo "两端安装包和更新元数据已齐全，Release 已发布"
+              exit 0
+            fi
+            if [ "$attempt" -lt 12 ]; then sleep 5; fi
+          done
+          echo "另一平台仍在构建，Release 保持 Draft；该平台完成后会再次发布。"
