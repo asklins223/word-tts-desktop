@@ -538,7 +538,7 @@ function createShortcutScript(shortcutPath, executablePath, workingDirectory) {
         `$targetPath = ${powershellLiteral(executablePath)}`,
         `$workingDirectory = ${powershellLiteral(workingDirectory)}`,
         'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $shortcutPath) | Out-Null',
-        "Add-Type -TypeDefinition @'\n${WINDOWS_SHORTCUT_CSHARP}\n'@",
+        `Add-Type -TypeDefinition @'\n${WINDOWS_SHORTCUT_CSHARP}\n'@`,
         '[WordTtsInstaller.ShortcutWriter]::Create($shortcutPath, $targetPath, $workingDirectory, $targetPath)',
     ].join('\n');
 }
