@@ -242,7 +242,17 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
         });
 
         assert.equal(install.success, true);
-        assert.equal(fs.readFileSync(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v1');
+        if (process.platform === 'win32') {
+            // Windows shortcut creation requires a valid PE target.  The
+            // fixture therefore copies Node's executable instead of a text
+            // file renamed to .exe; only verify the PE signature here.
+            assert.equal(
+                fs.readFileSync(path.join(target, '小猪wordTTS.exe')).subarray(0, 2).toString('ascii'),
+                'MZ',
+            );
+        } else {
+            assert.equal(fs.readFileSync(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v1');
+        }
         assert.equal(fs.readFileSync(path.join(target, '小猪wordTTS-uninstaller.exe'), 'utf8'), 'self-drawing setup');
         assert.equal(service.readState(target).version, '3.0.1');
         assert.equal(progress.at(-1).percent, 100);

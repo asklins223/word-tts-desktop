@@ -189,6 +189,13 @@ def _schedule_voice_catalog_refresh() -> None:
             _voice_catalog_refresh_in_progress = False
 
 
+def _voice_catalog_refresh_enabled() -> bool:
+    """判断当前进程是否允许首屏触发联网音色目录刷新。"""
+    # Electron 的打包冒烟测试显式关闭真实 Provider；它必须完全离线，
+    # 否则 /api/v1/config 会在联网刷新期间阻塞渲染器就绪探测。
+    return os.environ.get("WORDTTS_ENABLE_REAL_PROVIDER", "1") != "0"
+
+
 def _atomic_write_json(path: str, data) -> None:
     tmp_path = f"{path}.tmp"
     try:
@@ -535,7 +542,10 @@ async def get_config():
     # 后台刷新：首屏一旦展示了“欣畅-Pro+”，用户选择后多人配音面板只能
     # 搜索“欣畅”，这正是旧实现的错配。common/list 是公开分页接口，首屏
     # 等待一次有界刷新；失败时函数内部仍会立即回退到本地 common 缓存。
-    catalog = await asyncio.to_thread(_load_voice_catalog_sync, True)
+    catalog = await asyncio.to_thread(
+        _load_voice_catalog_sync,
+        _voice_catalog_refresh_enabled(),
+    )
     default_female = core.FEMALE_VOICE
     default_male = core.MALE_VOICE
     return {

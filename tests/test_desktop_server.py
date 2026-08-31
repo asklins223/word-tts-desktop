@@ -148,6 +148,25 @@ class DesktopServerSecurityTests(unittest.TestCase):
         self.assertEqual(calls, [True])
         self.assertEqual(result["voice_catalog_meta"]["catalog_source"], "live")
 
+    def test_offline_desktop_start_uses_cached_catalog_without_network_refresh(self):
+        calls = []
+        local_catalog = {
+            "_meta": {"catalog_source": "cache"},
+            "voices": [],
+            "filters": [],
+        }
+
+        def load_catalog(force_refresh):
+            calls.append(force_refresh)
+            return local_catalog
+
+        with mock.patch.dict(os.environ, {"WORDTTS_ENABLE_REAL_PROVIDER": "0"}, clear=False), \
+                mock.patch.object(server, "_load_voice_catalog_sync", side_effect=load_catalog):
+            result = asyncio.run(server.get_config())
+
+        self.assertEqual(calls, [False])
+        self.assertEqual(result["voice_catalog_meta"]["catalog_source"], "cache")
+
 
 class DesktopVoiceAssetCacheTests(unittest.TestCase):
     def test_voice_asset_cache_deduplicates_same_voice_key(self):
