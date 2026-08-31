@@ -34,22 +34,37 @@ class BaseParser:
     DOC_TYPE = "未知"
     # 子类可设为 True 以跳过 load_paragraphs（如 Excel 解析器）
     _SKIP_LOAD_PARAGRAPHS = False
+    # 只有需要读取表格/文本框的解析器才在独立构造时建立结构块；
+    # 统一分段器会把结构块注入所有解析器，避免普通专项解析重复扫描。
+    _REQUIRES_DOCUMENT_BLOCKS = False
 
     def __init__(self, filepath, *, preloaded_paras=None):
         # 阶段3 统一分段器：可注入已加载的段落（文档只读一次），
-        # 缺省行为不变（自行加载）。格式: (段落列表, 元数据列表)
+        # 缺省行为不变（自行加载）。格式兼容
+        # (段落列表, 元数据列表) 与
+        # (段落列表, 元数据列表, DocumentBlock 列表)。
         self.filepath = filepath
         self.filename = os.path.basename(filepath)
         if preloaded_paras is not None:
-            self.paras, self.paragraph_metadata = preloaded_paras
+            self.paras = preloaded_paras[0]
+            self.paragraph_metadata = preloaded_paras[1]
+            self.document_blocks = (
+                preloaded_paras[2]
+                if len(preloaded_paras) > 2
+                else ()
+            )
         elif self._SKIP_LOAD_PARAGRAPHS:
             self.paras = []
             self.paragraph_metadata = []
+            self.document_blocks = ()
         else:
-            self.paras, self.paragraph_metadata = load_paragraphs(
+            loaded = load_paragraphs(
                 filepath,
                 include_metadata=True,
+                include_blocks=self._REQUIRES_DOCUMENT_BLOCKS,
             )
+            self.paras, self.paragraph_metadata = loaded[:2]
+            self.document_blocks = loaded[2] if len(loaded) > 2 else ()
 
     def parse(self):
         """子类实现：返回解析结果字典"""

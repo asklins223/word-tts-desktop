@@ -195,7 +195,7 @@ class LegacyWordParser(ParserPort):
         self,
         *,
         parse_callable: Callable[[str], tuple[list[Mapping[str, Any]], str]] | None = None,
-        parser_version: str = "16",
+        parser_version: str = "17",
     ) -> None:
         self.parse_callable = parse_callable
         self.parser_version = str(parser_version)

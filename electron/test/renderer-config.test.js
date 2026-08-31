@@ -36,7 +36,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, hasInstallableUpdate, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationRecoveryIsSuppressed, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultVoiceKeysForItem, resultVoiceKeysFromAcceptedContent, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, hasInstallableUpdate, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream };`, context);
     vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
     return { api: context.__rendererTests, storage, document, mediaState };
 }
@@ -350,6 +350,14 @@ test('恢复异常工作流时生成页给出持久化错误和安全重试入�
     assert.equal(presentation.title, '任务已中断，可重试');
     assert.equal(presentation.retryVisible, true);
     assert.match(presentation.message, /讯飞页面已关闭/);
+});
+
+test('生成重试请求开始后隐藏旧异常卡片，只有重试失败才恢复', () => {
+    const { api } = loadRendererConfigFunctions();
+
+    assert.equal(api.generationRecoveryIsSuppressed({ generationActive: false, retryInFlight: true }), true);
+    assert.equal(api.generationRecoveryIsSuppressed({ generationActive: true, retryInFlight: false }), true);
+    assert.equal(api.generationRecoveryIsSuppressed({ generationActive: false, retryInFlight: false }), false);
 });
 
 test('服务端未授权重试时，恢复异常页不会显示空操作按钮', () => {
@@ -960,6 +968,48 @@ test('结果页从已接受工作区配置补齐实际使用的默认音色', ()
 
     const [file] = api.resultFilesFromArtifacts(items, [], workspace);
     assert.equal(file.voice_key, 'speaker:linda');
+});
+
+test('交付页从录音稿汇总一段音频实际使用的多个音色', () => {
+    const { api } = loadRendererConfigFunctions();
+    api.setVoiceCatalog([
+        { key: 'speaker:linda', name: '英语-Linda' },
+        { key: 'speaker:steve', name: '英语-Steve' },
+    ]);
+    const items = [{
+        item_id: 'item-dialogue',
+        item_type: '听后选择',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'W: Are you Tom Black?\nM: No, I\'m Jack Green.',
+        voice_key: 'speaker:linda',
+    }];
+    const workspace = {
+        items,
+        configuration: {
+            effective: {
+                default_female_voice: 'speaker:linda',
+                default_male_voice: 'speaker:steve',
+                role_voices: {},
+            },
+        },
+        artifacts: [{
+            artifact_id: 'artifact-dialogue',
+            item_id: 'item-dialogue',
+            artifact_type: 'tts-segment',
+            lifecycle_state: 'READY',
+            verified: true,
+            filename: '001.mp3',
+            format: 'mp3',
+            mime_type: 'audio/mpeg',
+            size_bytes: 8,
+            sha256: 'd'.repeat(64),
+        }],
+    };
+
+    const [file] = api.resultFilesFromArtifacts(items, [], workspace);
+    assert.deepEqual(JSON.parse(JSON.stringify(file.voice_keys)), ['speaker:linda', 'speaker:steve']);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysForFile(file))), ['speaker:linda', 'speaker:steve']);
 });
 
 test('结果页不会把最新 WAV 产物回退为旧 MP3 交付', () => {

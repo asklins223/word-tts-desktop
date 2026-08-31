@@ -10,7 +10,14 @@ import re
 
 from audio_naming import audio_filename_stem, is_exam_paper_bundle
 from question_types.base import BaseParser
-from question_types.text_utils import is_chinese, sanitize
+from question_types.text_utils import (
+    MAJOR_TYPE_HEADING_RE,
+    SCRIPT_MARKER_RE,
+    is_chinese,
+    is_major_section_heading,
+    match_script_marker,
+    sanitize,
+)
 
 
 class ListeningRecordRetellingParser(BaseParser):
@@ -21,7 +28,8 @@ class ListeningRecordRetellingParser(BaseParser):
     # 标题可能带有“（共...）”等说明，但“第一节 听后记录”是稳定边界。
     RE_SECTION_START = re.compile(
         r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
-        r"第一节\s*[：:]?\s*听后记录(?:\s|[：:（(【]|$)"
+        r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*"
+        r"听后记录(?:\s|[：:（(【]|$)"
     )
     # 第二节的标题和“参考答案/答题区域”都表示听力正文已经结束。
     RE_SECTION_END = re.compile(
@@ -31,9 +39,10 @@ class ListeningRecordRetellingParser(BaseParser):
     )
     RE_ANY_SECTION = re.compile(
         r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
-        r"第[一二三四五六七八九十]+节"
+        r"第[一二三四五六七八九十百\d０-９]+节"
     )
-    RE_SCRIPT_PREFIX = re.compile(r"^\s*录音稿\s*[：:]\s*(.*)$")
+    RE_SCRIPT_PREFIX = SCRIPT_MARKER_RE
+    RE_MAJOR_SECTION = MAJOR_TYPE_HEADING_RE
     RE_SPEAKER = re.compile(r"^\s*(?:[WwMm]\s*[:：]|\([WwMm]\))")
     RE_PLAIN_SCRIPT_TRIGGER = re.compile(
         r"(?:听短文|短文听)(?:一|两|三|四|五|\d+)?遍"
@@ -117,6 +126,13 @@ class ListeningRecordRetellingParser(BaseParser):
                     in_section = True
                 continue
 
+            # 有些套卷不写“第二节/第三节”，而是直接切换到下一大题名；
+            # 这种标题必须先结束本题型的正文扫描。
+            if in_section and is_major_section_heading(value):
+                flush()
+                in_section = False
+                continue
+
             if in_section and self.RE_ANY_SECTION.search(value):
                 flush()
                 in_section = False
@@ -125,12 +141,12 @@ class ListeningRecordRetellingParser(BaseParser):
             if not in_section:
                 continue
 
-            script_prefix = self.RE_SCRIPT_PREFIX.match(value)
+            script_prefix = match_script_marker(value)
             if script_prefix:
                 flush()
                 collecting = True
                 plain_script_pending = False
-                remainder = script_prefix.group(1).strip()
+                remainder = (script_prefix.group(1) or '').strip()
                 if remainder:
                     current_lines.append(remainder)
                 continue

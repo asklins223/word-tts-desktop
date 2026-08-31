@@ -5,7 +5,7 @@
 #
 # 触发方式:
 #   1. 手动触发 (Actions → Build Windows → Run workflow)
-#   2. 推送 tag v* 时自动触发
+#   2. 由统一的 Build and Release workflow 调用进行 tag 构建
 #
 # 产物:
 #   小猪wordTTS-Setup-<version>-x64.exe (NSIS 安装包)
@@ -21,17 +21,25 @@ on:
         description: '版本号（留空则从 package.json 读取）'
         required: false
         default: ''
-
-  # 推送 tag 时自动触发
-  push:
-    tags:
-      - 'v*'
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: '版本号（留空则从 package.json 读取或使用 tag 版本）'
+        required: false
+        type: string
+    outputs:
+      version:
+        description: '实际构建版本'
+        value: ${{ jobs.build.outputs.version }}
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       # ======================================================================
@@ -50,6 +58,14 @@ jobs:
           cache: 'pip'
           cache-dependency-path: requirements_electron.txt
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: '~\AppData\Local\ms-playwright'
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ hashFiles('requirements_electron.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-playwright-
+
       # ======================================================================
       # 3. 安装 Node.js
       # ======================================================================
@@ -66,7 +82,7 @@ jobs:
         shell: pwsh
         working-directory: electron
         env:
-          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+          REQUESTED_VERSION: ${{ inputs.version || github.event.inputs.version || '' }}
         run: |
           $requested = $env:REQUESTED_VERSION
           if ([string]::IsNullOrWhiteSpace($requested) -and $env:GITHUB_REF_TYPE -eq "tag") {
@@ -353,8 +369,15 @@ jobs:
           if ($installer) {
             Write-Host "找到安装包: $($installer.FullName)"
             Write-Host "大小: $([math]::Round($installer.Length / 1MB, 2)) MB"
+            $blockmapPath = "$($installer.FullName).blockmap"
+            $blockmap = Get-Item -LiteralPath $blockmapPath -ErrorAction SilentlyContinue
+            if (-not $blockmap -or $blockmap.Length -le 0) {
+              Write-Error "未找到当前版本 blockmap: $blockmapPath"
+              exit 1
+            }
             echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
             echo "installer_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+            echo "blockmap_path=$($blockmap.FullName)" >> $env:GITHUB_OUTPUT
           } else {
             Write-Error "未找到本次版本 NSIS 安装包 $installerName；拒绝发布脱离 resources 目录后无法独立运行的 unpacked 可执行文件"
             exit 1
@@ -366,142 +389,6 @@ jobs:
           name: 小猪wordTTS-Windows
           path: |
             ${{ steps.find-installer.outputs.installer_path }}
-            electron/release/*.blockmap
+            ${{ steps.find-installer.outputs.blockmap_path }}
           retention-days: 30
           if-no-files-found: error
-
-  # Only the Release writer is serialized.  The expensive Windows build above
-  # is free to run in parallel with the macOS build; this job waits for its
-  # build artifact and then shares the short Release critical section.
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: wordtts-release-${{ github.ref }}
-      cancel-in-progress: false
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: electron/package-lock.json
-
-      - name: Install release script dependencies
-        working-directory: electron
-        run: npm ci --ignore-scripts
-
-      - name: Download Windows build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: 小猪wordTTS-Windows
-          path: electron/release
-
-      - name: Resolve package version
-        id: version
-        working-directory: electron
-        run: |
-          resolved="$(node -p "require('./package.json').version")"
-          echo "version=$resolved" >> "$GITHUB_OUTPUT"
-          echo "本次发布版本: $resolved"
-
-      - name: Validate update policy
-        env:
-          UPDATE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: node scripts/validate_update_policy.js
-
-      - name: Prepare release notes
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: node scripts/extract_release_notes.js
-
-      - name: Prepare auto-update metadata
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          UPDATE_VERSION: ${{ steps.version.outputs.version }}
-        run: node scripts/prepare_update_metadata.js --platform win32
-
-      - name: Verify release files
-        env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
-          test -s "$installer"
-          test -s electron/release/latest.yml
-          echo "Windows Release 文件校验通过: $installer"
-
-      - name: Prepare canonical GitHub asset names
-        env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          local_installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
-          github_installer="electron/release/wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
-          cp "$local_installer" "$github_installer"
-          local_blockmap="${local_installer}.blockmap"
-          if [ -s "$local_blockmap" ]; then
-            cp "$local_blockmap" "${github_installer}.blockmap"
-          fi
-          test -s "$github_installer"
-          echo "GitHub Windows 资产名: $(basename "$github_installer")"
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            electron/release/wordTTS-Setup-${{ steps.version.outputs.version }}-x64.exe
-            electron/release/latest.yml
-            electron/release/wordTTS-Setup-${{ steps.version.outputs.version }}-x64.exe.blockmap
-          name: 小猪wordTTS ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          body_path: release-notes.md
-          # Keep the Release invisible to electron-updater while the other
-          # platform is still building or while assets are uploading.
-          draft: true
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish only after both platform assets are ready
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          releases_endpoint="repos/${GITHUB_REPOSITORY}/releases"
-          release_id=""
-          for lookup_attempt in $(seq 1 12); do
-            # Draft Releases are intentionally invisible to the tag lookup
-            # endpoint; list Releases and select the exact tag instead.
-            release_id="$(gh api "$releases_endpoint" --paginate --slurp | jq -r --arg tag "$GITHUB_REF_NAME" '[.[][] | select(.tag_name == $tag) | .id][0] // empty')"
-            if [ -n "$release_id" ] && [ "$release_id" != "null" ]; then break; fi
-            if [ "$lookup_attempt" -lt 12 ]; then sleep 5; fi
-          done
-          if [ -z "$release_id" ]; then
-            echo "未找到当前 tag 的 Draft Release: ${GITHUB_REF_NAME}" >&2
-            exit 1
-          fi
-          endpoint="repos/${GITHUB_REPOSITORY}/releases/${release_id}"
-          for attempt in $(seq 1 12); do
-            names="$(gh api "$endpoint" --jq '.assets[].name')"
-            if grep -Fxq "latest.yml" <<<"$names" \
-              && grep -Fxq "wordTTS-Setup-${RELEASE_VERSION}-x64.exe" <<<"$names" \
-              && grep -Fxq "latest-mac.yml" <<<"$names" \
-              && grep -Eq "^wordTTS-${RELEASE_VERSION}-(arm64|x64|universal)\\.zip$" <<<"$names" \
-              && grep -Eq "^wordTTS-${RELEASE_VERSION}-(arm64|x64|universal)\\.dmg$" <<<"$names"; then
-              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -F draft=false >/dev/null
-              echo "两端安装包和更新元数据已齐全，Release 已发布"
-              exit 0
-            fi
-            if [ "$attempt" -lt 12 ]; then sleep 5; fi
-          done
-          echo "另一平台仍在构建，Release 保持 Draft；该平台完成后会再次发布。"

@@ -14,6 +14,19 @@ EXAM_PAPER_MARKERS = (
     "模仿朗读",
 )
 
+# 另一类套卷沿用旧题型名称，但仍然把多道大题放在同一份文档中。
+# 这些标记只用于“套卷命名/投影”判断，不参与具体题型检测；题型检测
+# 仍由 question_model 的唯一注册表负责。
+EXAM_PAPER_LEGACY_MARKERS = (
+    "信息获取",
+    "信息转述及询问",
+)
+EXAM_PAPER_SCORE_MARKER = re.compile(
+    r"(?:共\s*[：:]?\s*[0-9０-９零〇一二两三四五六七八九十百]+\s*"
+    r"(?:小\s*题|道\s*题|题)|"
+    r"满分\s*[：:]?\s*[0-9０-９零〇一二两三四五六七八九十百]+\s*分)"
+)
+
 # Keep every ZIP entry below one predictable directory.  The layout version
 # participates in the deterministic export id so a historical flat ZIP is
 # never mistaken for the new folder-wrapped layout.
@@ -22,7 +35,13 @@ ARCHIVE_LAYOUT_VERSION = "folder-v1"
 
 
 def is_exam_paper_bundle(paragraphs: Iterable[Any]) -> bool:
-    """Return whether paragraphs look like the complete exam-paper format."""
+    """Return whether paragraphs look like a complete exam-paper bundle.
+
+    套卷没有单一固定标题：新题型使用“听后选择/听后应答”等名称，旧题型
+    套卷则常见“信息获取/信息转述及询问/模仿朗读”的组合。这里使用“多
+    个已知大题标记 + 至少两个题量/分值信号”的保守判定，避免专项资料
+    只因文件名或一个标题就切换整卷命名规则。
+    """
 
     texts = []
     for paragraph in paragraphs:
@@ -31,7 +50,16 @@ def is_exam_paper_bundle(paragraphs: Iterable[Any]) -> bool:
         else:
             texts.append(str(paragraph or ""))
     full_text = "\n".join(texts)
-    return all(marker in full_text for marker in EXAM_PAPER_MARKERS)
+    modern_hits = sum(marker in full_text for marker in EXAM_PAPER_MARKERS)
+    legacy_hits = sum(marker in full_text for marker in EXAM_PAPER_LEGACY_MARKERS)
+    score_signals = len(EXAM_PAPER_SCORE_MARKER.findall(full_text))
+    return (
+        all(marker in full_text for marker in EXAM_PAPER_MARKERS)
+        or (
+            modern_hits + legacy_hits >= 3
+            and score_signals >= 2
+        )
+    )
 
 
 def normalize_question_numbers(value: Any) -> list[int]:
@@ -102,6 +130,7 @@ __all__ = [
     "ARCHIVE_LAYOUT_VERSION",
     "ARCHIVE_ROOT_FOLDER",
     "EXAM_PAPER_MARKERS",
+    "EXAM_PAPER_LEGACY_MARKERS",
     "audio_filename_stem",
     "audio_filename_from_stem",
     "format_question_numbers",

@@ -121,8 +121,14 @@ check_environment() {
         err "缺少依赖清单: $REQUIREMENTS_FILE"
         exit 1
     fi
-    log "同步 Electron Python 构建依赖..."
-    "$BUILD_PYTHON_CMD" -m pip install --disable-pip-version-check -r "$REQUIREMENTS_FILE"
+    # macOS CI 的前置校验步骤已经在同一个 venv 中完成安装；显式复用时
+    # 跳过第二次 pip 解析/安装，但仍保留后面的完整性和版本校验。
+    if [ "${WORDTTS_SKIP_PYTHON_DEPENDENCY_INSTALL:-0}" = "1" ]; then
+        log "复用当前 Python 环境中已安装的 Electron 构建依赖..."
+    else
+        log "同步 Electron Python 构建依赖..."
+        "$BUILD_PYTHON_CMD" -m pip install --disable-pip-version-check -r "$REQUIREMENTS_FILE"
+    fi
     "$BUILD_PYTHON_CMD" -m pip check
     "$BUILD_PYTHON_CMD" -c "from importlib.metadata import version; raise SystemExit(0 if version('playwright') == '1.56.0' else 1)" || {
         err "Playwright 版本必须为 1.56.0"

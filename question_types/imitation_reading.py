@@ -3,13 +3,15 @@
 import re
 
 from audio_naming import audio_filename_stem, is_exam_paper_bundle
-from docx import Document
-from docx.table import Table
-from docx.text.paragraph import Paragraph
-from docx.oxml.ns import qn
 
 from question_types.base import BaseParser
-from question_types.text_utils import is_chinese, sanitize
+from question_types.text_utils import (
+    MAJOR_SECTION_RE,
+    is_chinese,
+    is_major_section_heading,
+    load_paragraphs,
+    sanitize,
+)
 
 
 # ============================================================================
@@ -44,6 +46,7 @@ class ImitationReadingParser(BaseParser):
     """
 
     DOC_TYPE = "模仿朗读"
+    _REQUIRES_DOCUMENT_BLOCKS = True
 
     # 单元标记：U5 / U5： / u5 / U 5
     RE_UNIT = re.compile(r'^[Uu]\s*(\d+)\s*[：:]?\s*$')
@@ -56,6 +59,25 @@ class ImitationReadingParser(BaseParser):
     # 或旧版“外网/教材”文档被误切换到新规则。
     RE_BOXED_QUESTION = re.compile(
         r'^\s*(?P<number>\d+)\s*[.．、）)]\s*.*?模仿朗读',
+        re.IGNORECASE,
+    )
+    # 套卷旧题型通常只有“模仿朗读”大题标题，正文直接跟在操作提示后，
+    # 不再使用“外网/教材”标签或表格。标题/边界规则保持题型无关的形态，
+    # 具体正文仍由英文载荷判断，避免把中文操作提示做成音频。
+    RE_EXAM_SECTION = re.compile(
+        r'^\s*(?:(?:\d+|[一二三四五六七八九十百]+)\s*[、.．)]\s*)?'
+        r'模仿朗读(?:题型?|试题)?(?:\s*[（(：:]|\s*$)',
+        re.IGNORECASE,
+    )
+    RE_MAJOR_SECTION = MAJOR_SECTION_RE
+    RE_EXAM_ANSWER = re.compile(
+        r'^\s*[【\[（(]?\s*(?:参考答案|答案|解析)\s*'
+        r'(?=\s|[：:【\[（(】\]）)]|$)'
+        r'[】\]）)]?\s*[：:]?'
+    )
+    RE_EXAM_CONTROL = re.compile(
+        r'听以下|听下面|准备|开始录音|停止录音|录音播放|'
+        r'计算机|信号|时间|模仿朗读',
         re.IGNORECASE,
     )
     RE_CJK = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff]+')
@@ -74,7 +96,10 @@ class ImitationReadingParser(BaseParser):
             if legacy_result["items"]:
                 return self._result(legacy_result["items"] + boxed_result["items"])
             return boxed_result
-        return self._parse_legacy_format()
+        legacy_result = self._parse_legacy_format()
+        if legacy_result["items"]:
+            return legacy_result
+        return self._parse_exam_paragraph_format()
 
     def _boxed_question_numbers(self):
         numbers = []
@@ -93,51 +118,43 @@ class ImitationReadingParser(BaseParser):
         value = sanitize(cls.RE_CJK.sub(' ', value)).strip(' ：:')
         return value if re.search(r'[A-Za-z]', value) else ''
 
-    @classmethod
-    def _table_text(cls, table):
-        """按表格阅读顺序合并一个框，避免一个朗读框被拆成多个条目。"""
-        cell_texts = []
-        seen_cells = set()
-        for row in table.rows:
-            for cell in row.cells:
-                # 合并单元格会在 python-docx 中多次映射到同一个 XML 节点。
-                # 去重后才能保证一篇文章只产生一个音频条目。
-                cell_key = cell._tc.getroottree().getpath(cell._tc)
-                if cell_key in seen_cells:
-                    continue
-                seen_cells.add(cell_key)
-                if cell.text and cell.text.strip():
-                    cell_texts.append(cell.text)
-        return cls._english_only('\n'.join(cell_texts))
-
     def _boxed_table_texts(self):
         if self._boxed_table_texts_cache is not None:
             return self._boxed_table_texts_cache
 
         texts = []
-        try:
-            document = Document(self.filepath)
-            # 表格本身没有“属于哪道题”的字段。按正文顺序绑定：只有紧跟在
-            # “模仿朗读”题目提示之后的第一个英文表格才属于该题，后面的
-            # 听后记录表、答题表不能再被误识别成朗读稿。
-            waiting_for_table = False
-            for child in document.element.body.iterchildren():
-                if child.tag == qn("w:p"):
-                    paragraph = Paragraph(child, document)
-                    if self.RE_BOXED_QUESTION.match(paragraph.text.strip()):
-                        waiting_for_table = True
-                    continue
-                if child.tag != qn("w:tbl") or not waiting_for_table:
-                    continue
-                table = Table(child, document)
-                text = self._table_text(table)
-                if text:
-                    texts.append(text)
-                    waiting_for_table = False
-        except Exception:
-            # 普通旧格式不依赖表格；新格式识别失败时回退旧规则，
-            # 不因为可选的表格读取影响已有文档解析。
-            texts = []
+        # 表格本身没有“属于哪道题”的字段。按正文顺序绑定：只有紧跟在
+        # “模仿朗读”题目提示之后的第一个英文表格才属于该题，后面的
+        # 听后记录表、答题表不能再被误识别成朗读稿。结构块已由基类在
+        # 同一次 Document 加载中生成，避免这里重复打开文件。
+        blocks = self.document_blocks
+        # 兼容旧调用方传入的二元 preloaded_paras。统一分段器会注入
+        # blocks；只有旧接口缺少结构块且确实存在框题提示时才惰性补读，
+        # 不让专项旧格式平白多打开一次文档。
+        if not blocks and self._boxed_question_numbers():
+            try:
+                loaded = load_paragraphs(
+                    self.filepath,
+                    include_metadata=True,
+                    include_blocks=True,
+                )
+                blocks = loaded[2]
+                self.document_blocks = blocks
+            except Exception:
+                blocks = ()
+
+        waiting_for_table = False
+        for block in blocks:
+            if block.kind == 'paragraph':
+                if self.RE_BOXED_QUESTION.match(block.text.strip()):
+                    waiting_for_table = True
+                continue
+            if block.kind != 'table' or not waiting_for_table:
+                continue
+            text = self._english_only(block.text)
+            if text:
+                texts.append(text)
+                waiting_for_table = False
         self._boxed_table_texts_cache = texts
         return texts
 
@@ -214,6 +231,71 @@ class ImitationReadingParser(BaseParser):
                 # 跳过纯中文说明文字
                 if not is_chinese(text):
                     current_lines.append(text)
+
+        flush()
+        return self._result(items)
+
+    def _parse_exam_paragraph_format(self):
+        """解析套卷中直接排版的单篇模仿朗读正文。"""
+
+        items = []
+        in_section = False
+        answer_block = False
+        current_lines = []
+        use_exam_naming = is_exam_paper_bundle(self.paras)
+
+        def flush():
+            if not current_lines:
+                return
+            item = {
+                'category': '模仿朗读-试卷正文',
+                'number': len(items) + 1,
+                'source': '试卷正文',
+                'voice': 'female',
+                'text': sanitize('\n'.join(current_lines)),
+            }
+            if use_exam_naming:
+                filename_stem = audio_filename_stem(
+                    ['模仿朗读'], len(items) + 1
+                )
+                item.update({
+                    'question_numbers': [item['number']],
+                    'type_path': ['模仿朗读'],
+                    'filename_stem': filename_stem,
+                    'audio_filename_stem': filename_stem,
+                })
+            items.append(item)
+            current_lines.clear()
+
+        for _, text, _ in self.paras:
+            value = str(text or '').strip()
+            if not value:
+                continue
+            if self.RE_EXAM_SECTION.match(value):
+                flush()
+                in_section = True
+                answer_block = False
+                continue
+            if in_section and is_major_section_heading(value):
+                flush()
+                in_section = False
+                answer_block = False
+                continue
+            if not in_section:
+                continue
+            if self.RE_EXAM_ANSWER.match(value):
+                flush()
+                answer_block = True
+                continue
+            if answer_block:
+                continue
+            # 直接排版的试卷正文只保留纯英文段落；混合中文说明和
+            # 英文开头提示（如“你可以这样开始：Let me ...”）也不能
+            # 被误当成朗读稿。
+            if self.RE_EXAM_CONTROL.search(value) or self.RE_CJK.search(value):
+                continue
+            if re.search(r'[A-Za-z]', value):
+                current_lines.append(value)
 
         flush()
         return self._result(items)

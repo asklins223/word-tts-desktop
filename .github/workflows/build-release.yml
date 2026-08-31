@@ -1,0 +1,195 @@
+# ============================================================================
+# 小猪wordTTS — 跨平台构建与发布
+# ============================================================================
+# macOS 与 Windows 构建并行；只有两个构建都完成后才创建并发布一次 Release。
+# 这样可以避免两个独立 workflow 各自 checkout、npm ci、上传 Release，
+# 也不再需要通过 GitHub API 轮询另一平台的资产。
+# ============================================================================
+
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空则从 package.json 读取或使用 tag 版本）'
+        required: false
+        default: ''
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Build macOS
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      version: ${{ github.event.inputs.version || '' }}
+    secrets: inherit
+
+  windows:
+    name: Build Windows
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ github.event.inputs.version || '' }}
+    secrets: inherit
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: wordtts-release-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install release script dependencies
+        working-directory: electron
+        run: npm ci --ignore-scripts
+
+      - name: Download macOS build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 小猪wordTTS-macOS
+          path: electron/release
+
+      - name: Download Windows build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 小猪wordTTS-Windows
+          path: electron/release
+
+      - name: Verify platform versions
+        env:
+          MAC_VERSION: ${{ needs.macos.outputs.version }}
+          WINDOWS_VERSION: ${{ needs.windows.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$MAC_VERSION" && test -n "$WINDOWS_VERSION"
+          if [ "$MAC_VERSION" != "$WINDOWS_VERSION" ]; then
+            echo "平台构建版本不一致: macOS=$MAC_VERSION Windows=$WINDOWS_VERSION" >&2
+            exit 1
+          fi
+          expected_tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$MAC_VERSION" != "$expected_tag_version" ]; then
+            echo "构建版本 $MAC_VERSION 与 tag 版本 $expected_tag_version 不一致" >&2
+            exit 1
+          fi
+          echo "两端构建版本一致: $MAC_VERSION"
+
+      - name: Validate update policy
+        env:
+          UPDATE_VERSION: ${{ needs.macos.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/validate_update_policy.js
+
+      - name: Prepare release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/extract_release_notes.js
+
+      - name: Prepare Windows auto-update metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          UPDATE_VERSION: ${{ needs.windows.outputs.version }}
+        run: node scripts/prepare_update_metadata.js --platform win32
+
+      - name: Prepare macOS auto-update metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          UPDATE_VERSION: ${{ needs.macos.outputs.version }}
+          UPDATE_MAC_ARCH: ${{ needs.macos.outputs.architecture }}
+        run: node scripts/prepare_update_metadata.js --platform darwin
+
+      - name: Verify release files
+        env:
+          RELEASE_VERSION: ${{ needs.macos.outputs.version }}
+          MAC_ARCH: ${{ needs.macos.outputs.architecture }}
+        run: |
+          set -euo pipefail
+          installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          mac_zip="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
+          mac_dmg="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
+          blockmap="${installer}.blockmap"
+          test -s "$installer"
+          test -s "$blockmap"
+          test -s "$mac_zip"
+          test -s "$mac_dmg"
+          test -s electron/release/latest.yml
+          test -s electron/release/latest-mac.yml
+          echo "Release 文件校验通过: $installer / $mac_zip / $mac_dmg"
+
+      - name: Prepare canonical GitHub asset names
+        env:
+          RELEASE_VERSION: ${{ needs.macos.outputs.version }}
+          MAC_ARCH: ${{ needs.macos.outputs.architecture }}
+        run: |
+          set -euo pipefail
+          local_installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          github_installer="electron/release/wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          local_blockmap="${local_installer}.blockmap"
+          local_zip="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
+          local_dmg="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
+          github_zip="electron/release/wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
+          github_dmg="electron/release/wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
+
+          cp "$local_installer" "$github_installer"
+          cp "$local_blockmap" "${github_installer}.blockmap"
+          cp "$local_zip" "$github_zip"
+          cp "$local_dmg" "$github_dmg"
+
+          test -s "$github_installer"
+          test -s "${github_installer}.blockmap"
+          test -s "$github_zip"
+          test -s "$github_dmg"
+          echo "GitHub 资产名已准备: $(basename "$github_installer") / $(basename "$github_zip") / $(basename "$github_dmg")"
+
+      - name: Upload all release assets
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            electron/release/latest.yml
+            electron/release/latest-mac.yml
+            electron/release/wordTTS-Setup-${{ needs.windows.outputs.version }}-x64.exe
+            electron/release/wordTTS-Setup-${{ needs.windows.outputs.version }}-x64.exe.blockmap
+            electron/release/wordTTS-${{ needs.macos.outputs.version }}-${{ needs.macos.outputs.architecture }}.dmg
+            electron/release/wordTTS-${{ needs.macos.outputs.version }}-${{ needs.macos.outputs.architecture }}.zip
+          name: 小猪wordTTS ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          # 资产全部上传完成后再公开，避免更新器读到半成品 Release。
+          draft: true
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(needs.macos.outputs.version, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish release after all assets upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "Release action 未返回 Release ID: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false >/dev/null
+          echo "两端安装包和更新元数据已齐全，Release 已发布"

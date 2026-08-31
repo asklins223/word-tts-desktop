@@ -126,6 +126,7 @@ let generateAbortController = null; // 当前生成启动请求
 let generationAttemptId = 0;        // 使旧生成任务回调失效
 let generationStartInFlight = false; // 防止启动握手尚未结束时重复提交
 let generationStartAttemptId = 0;
+let generationRecoveryRetryInFlight = false; // 重试请求尚未进入新一轮生成时，隐藏旧异常卡片
 let cancelWorkflowPromise = null;    // 同一任务只允许一个取消请求链
 let generationCancelRequested = false;
 let hardStopNavigationRequested = false;
@@ -2446,13 +2447,13 @@ async function startProcessing(useDefaults, presetConfig, itemIds = null) {
             title: '生成任务未能启动',
             detail: failureMessage,
         });
+        resetGenerateState();
         syncGenerationRecoveryState(
             currentWorkspace,
             workspaceUserState(currentWorkspace, currentSession),
         );
         syncTransientGenerationErrorShell(failureMessage);
         showToast(failureMessage, 'error');
-        resetGenerateState();
     } finally {
         if (generationStartAttemptId === attemptId) {
             generationStartInFlight = false;
@@ -4188,7 +4189,21 @@ function generationRecoveryPresentation(
     };
 }
 
+function generationRecoveryIsSuppressed({
+    generationActive = isGenerating,
+    retryInFlight = generationRecoveryRetryInFlight,
+} = {}) {
+    return Boolean(generationActive || retryInFlight);
+}
+
 function syncGenerationRecoveryState(workspace = currentWorkspace, state = null, progress = null) {
+    // A recovery card describes an idle, actionable failure. Once a retry has
+    // started, an old persisted error must not remain above the new progress
+    // view while the retry handshake is still settling.
+    if (generationRecoveryIsSuppressed()) {
+        hideGenerationRecovery();
+        return null;
+    }
     const presentation = generationRecoveryPresentation(workspace, state, {
         generationResultState: generationResult,
         transientMessage: transientGenerationErrorMessage,
@@ -5505,6 +5520,8 @@ async function retryGenerationFromRecovery() {
         recoveryButton.disabled = true;
         recoveryButton.setAttribute('aria-busy', 'true');
     }
+    generationRecoveryRetryInFlight = true;
+    hideGenerationRecovery();
     const workspace = authoritativeWorkspace() || currentWorkspace;
     const state = workspaceUserState(workspace, workspace?.snapshot || currentSession);
     const retryAction = workspaceAction('RETRY', workspace);
@@ -5535,10 +5552,21 @@ async function retryGenerationFromRecovery() {
 
         showToast('当前任务暂时没有可安全重试的内容，请查看任务记录或返回声音配置。', 'warning');
     } finally {
+        generationRecoveryRetryInFlight = false;
         if (recoveryButton) {
             recoveryButton.dataset.busy = 'false';
             recoveryButton.removeAttribute('aria-busy');
             recoveryButton.disabled = Boolean(isGenerating || generationStartInFlight);
+        }
+        // retryFailedItems catches its own API errors. If it never reached a
+        // new generation, restore the actionable recovery state after the
+        // immediate hide instead of leaving the user without a next step.
+        if (!isGenerating && !generationStartInFlight
+            && currentView === 'workflow' && activeWorkspace === 'generation') {
+            syncGenerationRecoveryState(
+                currentWorkspace,
+                workspaceUserState(currentWorkspace, currentSession),
+            );
         }
     }
 }
@@ -6583,6 +6611,117 @@ function resultVoiceKeyFromAcceptedConfiguration(item, workspace = null) {
     ).trim();
 }
 
+function resultVoiceKeysFromAcceptedContent(item, workspace = null) {
+    const text = String(item?.normalized_content ?? item?.text ?? item?.content ?? '').trim();
+    if (!text) return [];
+
+    const configuration = workspace?.configuration?.effective
+        && typeof workspace.configuration.effective === 'object'
+        && !Array.isArray(workspace.configuration.effective)
+        ? workspace.configuration.effective
+        : {};
+    const configuredItemVoice = String(item?.voice_key || '').trim()
+        || resultVoiceKeyFromAcceptedConfiguration(item, workspace)
+        || String(configuration.default_female_voice || '').trim();
+    const femaleVoice = String(configuration.default_female_voice || configuredItemVoice || 'amanda').trim();
+    const maleVoice = String(configuration.default_male_voice || 'george').trim();
+    const defaultVoice = configuredItemVoice || femaleVoice;
+    const roleVoices = configuration.role_voices
+        && typeof configuration.role_voices === 'object'
+        && !Array.isArray(configuration.role_voices)
+        ? configuration.role_voices
+        : {};
+    const roleVoiceMapForResult = {};
+    Object.entries(roleVoices).slice(0, 256).forEach(([role, voice]) => {
+        const value = String(voice || '').trim();
+        if (!value) return;
+        const roleKey = normalizeRoleKeyClient(role);
+        if (roleKey) roleVoiceMapForResult[roleKey] = value;
+        if (roleKey.startsWith('role:')) {
+            const bareRoleKey = normalizeRoleKeyClient(roleKey.slice(5));
+            if (bareRoleKey) roleVoiceMapForResult[bareRoleKey] = value;
+        }
+    });
+    const roleVoiceFor = role => {
+        const roleKey = normalizeRoleKeyClient(role);
+        return roleVoiceMapForResult[roleKey]
+            || roleVoiceMapForResult[`role:${roleKey}`]
+            || '';
+    };
+    const inferRoleVoiceForResult = role => /^(mr|mr\.|sir|男|先生)\b/i.test(String(role || '').trim())
+        ? maleVoice
+        : femaleVoice;
+    const values = [];
+    const append = value => {
+        const key = String(value || '').trim();
+        if (key && !values.includes(key)) values.push(key);
+    };
+    const lines = text.split(/\r?\n/);
+    const candidateRoleKeys = new Set();
+    lines.forEach(line => {
+        const value = line.trim();
+        if (!value || /^[WwMm]\s*[:：]/.test(value) || /^\([WwMm]\)/.test(value)) return;
+        const match = /^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$/.exec(value);
+        if (match && roleLooksLikeLabel(match[1])) {
+            candidateRoleKeys.add(normalizeRoleKeyClient(match[1]));
+        }
+    });
+    const allowInferredRoles = candidateRoleKeys.size >= 2;
+    let activeVoice = defaultVoice || femaleVoice;
+    lines.forEach(line => {
+        const value = line.trim();
+        if (!value) return;
+
+        const speakerMatch = /^([WwMm])\s*[:：]\s*(.*)$/.exec(value)
+            || /^\(([WwMm])\)\s*(.*)$/.exec(value);
+        if (speakerMatch) {
+            activeVoice = speakerMatch[1].toUpperCase() === 'W' ? femaleVoice : maleVoice;
+            if (String(speakerMatch[2] || '').trim()) append(activeVoice);
+            return;
+        }
+
+        const roleMatch = /^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$/.exec(value);
+        if (roleMatch && roleLooksLikeLabel(roleMatch[1])) {
+            const mappedVoice = roleVoiceFor(roleMatch[1]);
+            if (mappedVoice || allowInferredRoles) {
+                activeVoice = mappedVoice || inferRoleVoiceForResult(roleMatch[1]);
+                if (String(roleMatch[2] || '').trim()) append(activeVoice);
+                return;
+            }
+        }
+        append(activeVoice);
+    });
+    return values;
+}
+
+function resultVoiceKeysForItem(item, workspace = null) {
+    const values = [];
+    const append = value => {
+        if (Array.isArray(value)) {
+            value.forEach(append);
+            return;
+        }
+        const key = String(value ?? '').trim();
+        if (key && !values.includes(key)) values.push(key);
+    };
+    append(item?.voice_keys);
+    append(item?.metadata?.voice_keys);
+    if (Array.isArray(item?.segments)) {
+        item.segments.forEach(segment => {
+            append(segment?.voice_keys);
+            append(segment?.voice_key);
+        });
+    }
+    // A composite result may have one WorkItem voice_key even though its
+    // recording script switches speakers. Union the accepted text mapping
+    // with any explicit metadata so the delivery page reflects the whole
+    // audio rather than only its first/default voice.
+    append(resultVoiceKeysFromAcceptedContent(item, workspace));
+    append(item?.voice_key);
+    if (!values.length) append(resultVoiceKeyFromAcceptedConfiguration(item, workspace));
+    return values;
+}
+
 function resultFilesFromArtifacts(items, artifacts, workspace = null) {
     const hasAuthoritativeWorkspaceArtifacts = Boolean(workspace && Array.isArray(workspace.artifacts));
     // A workspace response is the complete, server-owned projection.  Prefer
@@ -6671,6 +6810,13 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
 
             const displayFacts = itemDisplayFacts(item);
             const text = String(item.normalized_content ?? '');
+            const artifactVoiceKeys = Array.isArray(artifact?.voice_keys)
+                ? artifact.voice_keys
+                : (artifact?.voice_keys ? [artifact.voice_keys] : []);
+            const voiceKeys = [...new Set([
+                ...artifactVoiceKeys,
+                ...resultVoiceKeysForItem(item, workspace),
+            ].map(value => String(value || '').trim()).filter(Boolean))];
             latestByItem.set(itemId, {
                 filename,
                 artifact_id: String(artifact.artifact_id),
@@ -6681,6 +6827,7 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
                 text,
                 text_preview: text.slice(0, 160),
                 role: item.role ?? null,
+                voice_keys: voiceKeys,
                 voice_key: String(item.voice_key || '').trim()
                     || resultVoiceKeyFromAcceptedConfiguration(item, workspace)
                     || null,
@@ -9329,6 +9476,9 @@ function resultVoiceKeysForFile(file) {
     const values = (Array.isArray(file?.voice_keys)
         ? [...file.voice_keys]
         : (file?.voice_keys ? [file.voice_keys] : []))
+        .concat(Array.isArray(file?.metadata?.voice_keys)
+            ? file.metadata.voice_keys
+            : (file?.metadata?.voice_keys ? [file.metadata.voice_keys] : []))
         .concat(file?.voice_key || [])
         .filter(value => String(value ?? '').trim());
 
@@ -9369,6 +9519,8 @@ function createResultVoiceStrip(file) {
     strip.appendChild(label);
 
     const voiceKeys = resultVoiceKeysForFile(file);
+    label.textContent = voiceKeys.length > 1 ? `音色 · ${voiceKeys.length} 种` : '音色';
+    label.title = voiceKeys.length > 1 ? `本段音频使用 ${voiceKeys.length} 种音色` : '本段音频使用的音色';
     if (!voiceKeys.length) {
         const empty = document.createElement('span');
         empty.className = 'audio-voice-empty';

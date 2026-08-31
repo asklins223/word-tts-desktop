@@ -164,6 +164,92 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         for script in scripts:
             self.assertNotIn("参考答案", script["text"])
 
+    def test_recording_prompt_and_script_marker_split_adjacent_groups(self):
+        """没有答案行时，下一组录音提示也必须切断上一段录音。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "信息获取.docx")
+            document = Document()
+            for text in [
+                "第一节 听选信息",
+                "听下面一段录音，回答第1个问题。",
+                "1. What is first?",
+                "听力原文：",
+                "W: First script.",
+                "听下面一段录音，回答第2个问题。",
+                "2. What is second?",
+                "听力原文：",
+                "M: Second script.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = InfoAcquisitionParser(path).parse()
+
+        scripts = [
+            item for item in result["items"]
+            if item["category"].endswith("录音稿")
+        ]
+        self.assertEqual(
+            [item["text"] for item in scripts],
+            ["W: First script.", "M: Second script."],
+        )
+
+    def test_script_marker_can_resume_after_standalone_answer_block(self):
+        """答案区后紧跟「听力原文」时，不应静默丢掉后续录音。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "信息获取.docx")
+            document = Document()
+            for text in [
+                "第一节 听选信息",
+                "1. What is it?",
+                "参考答案：",
+                "1. It is a book.",
+                "听力原文：",
+                "W: It is a book.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = InfoAcquisitionParser(path).parse()
+
+        scripts = [
+            item for item in result["items"]
+            if item["category"].endswith("录音稿")
+        ]
+        self.assertEqual([item["text"] for item in scripts], ["W: It is a book."])
+
+    def test_inline_answer_after_script_does_not_start_a_fake_question(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "信息获取.docx")
+            document = Document()
+            for text in [
+                "第一节 听选信息",
+                "1. What is it?",
+                "录音稿：",
+                "W: It is a book.",
+                "参考答案：It is a book.",
+                "1. It is a book.",
+                "听下面一段录音，回答第2个问题。",
+                "2. What is next?",
+                "录音稿：",
+                "M: The next answer.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = InfoAcquisitionParser(path).parse()
+
+        questions = [
+            item for item in result["items"]
+            if item["category"].endswith("题目")
+        ]
+        scripts = [
+            item for item in result["items"]
+            if item["category"].endswith("录音稿")
+        ]
+        self.assertEqual([item["number"] for item in questions], [1, 2])
+        self.assertEqual(
+            [item["text"] for item in scripts],
+            ["W: It is a book.", "M: The next answer."],
+        )
+
     def test_question_audio_files_use_question_numbers(self):
         parse_results = [{
             "doc_type": "信息获取",

@@ -18,9 +18,19 @@ import inspect
 from .text_utils import load_paragraphs
 
 
-def load_document_once(filepath):
-    """一次读取文档段落与元数据。"""
-    return load_paragraphs(filepath, include_metadata=True)
+def load_document_once(filepath, *, include_structure=False):
+    """一次读取文档段落、元数据，以及可选的结构块流。
+
+    默认返回值仍是 ``(paragraphs, metadata)``，兼容现有调用方；解析主
+    链路请求 ``include_structure=True`` 时额外返回第三项 ``DocumentBlock``
+    序列，供文本框/表格题型复用同一次 Word 加载。
+    """
+
+    return load_paragraphs(
+        filepath,
+        include_metadata=True,
+        include_blocks=include_structure,
+    )
 
 
 def _build_parser(parser_cls, filepath, preloaded):
@@ -28,13 +38,39 @@ def _build_parser(parser_cls, filepath, preloaded):
     if preloaded is not None:
         try:
             params = inspect.signature(parser_cls.__init__).parameters
-            if "preloaded_paras" in params or any(
-                star.kind is inspect.Parameter.VAR_KEYWORD
-                for star in params.values()
-            ):
-                return parser_cls(filepath, preloaded_paras=preloaded)
         except (TypeError, ValueError):
-            pass
+            # 某些扩展解析器（例如 C 扩展包装类）没有可反射的签名；
+            # 此时沿用旧的直接构造路径。构造器本身抛出的异常不能在这里
+            # 吞掉，否则真实 bug 会被伪装成一次兼容性回退并重复加载文件。
+            return parser_cls(filepath)
+
+        preloaded_param = params.get("preloaded_paras")
+        accepts_kwargs = any(
+            star.kind is inspect.Parameter.VAR_KEYWORD
+            for star in params.values()
+        )
+        if preloaded_param is None and not accepts_kwargs:
+            return parser_cls(filepath)
+
+        # 三元组是结构块的扩展协议。未声明需要结构块的旧解析器
+        # 继续收到原来的二元组，避免自定义解析器用二元解包时被
+        # 新字段破坏；需要表格/文本框的解析器显式开启该能力。
+        parser_preloaded = preloaded
+        if (
+            len(preloaded) > 2
+            and not getattr(parser_cls, "_REQUIRES_DOCUMENT_BLOCKS", False)
+        ):
+            parser_preloaded = preloaded[:2]
+
+        if (
+            preloaded_param is not None
+            and preloaded_param.kind is inspect.Parameter.POSITIONAL_ONLY
+        ):
+            return parser_cls(filepath, parser_preloaded)
+        return parser_cls(
+            filepath,
+            preloaded_paras=parser_preloaded,
+        )
     return parser_cls(filepath)
 
 
@@ -64,7 +100,9 @@ def parse_document_once(filepath):
         return [result], f"检测到 1 种题型，成功提取 {result['item_count']} 条内容"
 
     try:
-        paras, metadata = load_document_once(filepath)
+        loaded = load_document_once(filepath, include_structure=True)
+        paras, metadata = loaded[:2]
+        blocks = loaded[2] if len(loaded) > 2 else ()
     except Exception as exc:
         return [], f"文档加载失败: {exc}"
     if not paras:
@@ -75,7 +113,7 @@ def parse_document_once(filepath):
         return [], "未识别到任何题型内容"
     results = []
     errors = []
-    preloaded = (paras, metadata)
+    preloaded = (paras, metadata, blocks)
     for doc_type in detected_types:
         parser_cls = PARSER_MAP.get(doc_type)
         if parser_cls is None:

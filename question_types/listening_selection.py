@@ -4,7 +4,13 @@ import re
 
 from audio_naming import audio_filename_stem, is_exam_paper_bundle
 from question_types.base import BaseParser
-from question_types.text_utils import sanitize
+from question_types.text_utils import (
+    MAJOR_SECTION_RE,
+    SCRIPT_MARKER_RE,
+    is_major_section_heading,
+    match_script_marker,
+    sanitize,
+)
 
 
 # ============================================================================
@@ -31,16 +37,9 @@ class ListeningSelectionParser(BaseParser):
     )
     # 混合试卷中下一大节出现时，结束当前「听后选择」范围；同时兼容
     # 旧题型的「第X节」和新版 Section 标题。
-    RE_MAJOR_SECTION = re.compile(
-        r'^(?:[一二三四五六七八九十百]+\s*[、.．)]|'
-        r'第[一二三四五六七八九十百]+节|'
-        r'Section\s+[A-Z](?:\s*[：:]|$))',
-        re.I,
-    )
+    RE_MAJOR_SECTION = MAJOR_SECTION_RE
     # 支持【录音原文】、[录音原文]、（录音原文）以及普通冒号写法。
-    RE_SCRIPT = re.compile(
-        r'^[【\[（(]?\s*录音原文\s*[】\]）)]?\s*[：:]?\s*(.*)$'
-    )
+    RE_SCRIPT = SCRIPT_MARKER_RE
     RE_PROMPT = re.compile(
         r'计算机语音提示|语音提示|录音播放|现在，你有|听下面|请听录音|开始录音|停止录音'
     )
@@ -133,18 +132,18 @@ class ListeningSelectionParser(BaseParser):
                 continue
 
             # 下一大节属于其他题型时，停止采集，避免把后续录音原文混入。
-            if self.RE_MAJOR_SECTION.match(value):
+            if is_major_section_heading(value):
                 flush()
                 flush_questions(None)
                 in_section = False
                 continue
 
-            script_match = self.RE_SCRIPT.match(value)
+            script_match = match_script_marker(value)
             if script_match:
                 flush()
                 flush_questions(script_index + 1)
                 collecting = True
-                remainder = script_match.group(1).strip()
+                remainder = (script_match.group(1) or '').strip()
                 if remainder:
                     current_lines.append(remainder)
                 continue

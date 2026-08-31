@@ -11,7 +11,7 @@
 - 开发模式和 `--smoke-test` 不会访问更新服务。
 - 当前 macOS Actions 按 runner 架构构建一个包；如果要同时覆盖 Intel 与 Apple Silicon，应增加对应架构构建并把两个 ZIP 一起放进同一个 `latest-mac.yml`。
 
-GitHub Release 对客户端必须是已发布的非 Draft Release。两个平台的构建会先把资产上传到 Draft Release，只有 Windows 安装包、macOS ZIP/DMG 和两份 `latest*.yml` 都齐全后才发布；客户端还会探测当前平台的具体安装包，避免只看到 tag、半成品 Release 或上传中的元数据就显示更新。客户端不把 GitHub Token 写入安装包；因此当前方案按公开仓库/公开 Release 设计。私有仓库需要另行设计鉴权，不能直接把 Token 放进 renderer 或安装包。
+GitHub Release 对客户端必须是已发布的非 Draft Release。两个平台的构建会先把安装包上传为 Actions Artifact，只有两端构建都成功后，统一发布 job 才会汇总 Artifact、生成两份 `latest*.yml` 并创建 Draft Release；所有安装包和元数据上传完成后才公开 Release。客户端还会探测当前平台的具体安装包，避免只看到 tag、半成品 Release 或上传中的元数据就显示更新。客户端不把 GitHub Token 写入安装包；因此当前方案按公开仓库/公开 Release 设计。私有仓库需要另行设计鉴权，不能直接把 Token 放进 renderer 或安装包。
 
 ## 代码与产物职责
 
@@ -24,7 +24,8 @@ GitHub Release 对客户端必须是已发布的非 Draft Release。两个平台
 | `release/update-policy.json` | 每个版本发布前必须填写的强更/非强更策略。 |
 | `scripts/validate_update_policy.js` | 发布前检查版本号、tag 和策略字段是否一致。 |
 | `scripts/prepare_update_metadata.js` | 根据实际安装包计算 SHA-512、大小，并生成 `latest.yml` 或 `latest-mac.yml`。 |
-| `.github/workflows/build-*.yml` | tag 构建、校验、生成 Release 元数据并上传安装包。 |
+| `.github/workflows/build-macos.yml` / `build-windows.yml` | 可复用的平台构建、校验和构建 Artifact；两个平台在统一发布流程中并行执行。 |
+| `.github/workflows/build-release.yml` | 监听 `v*` tag，调用两个平台构建，汇总 Artifact，生成两端 Release 元数据并一次性发布 GitHub Release。 |
 
 安装包、校验值和策略的关系是：
 
@@ -90,7 +91,7 @@ release/update-policy.json + CHANGELOG.md + electron/package.json
    git push origin main --follow-tags
    ```
 
-7. 等待 `Build Windows` 和 `Build macOS` 均成功。两个 workflow 会更新同名 Draft Release，各自上传平台元数据和安装包；资产齐全后由最后完成的平台将 Release 发布。
+7. 等待 `Build and Release` 完成。它会并行执行 macOS 和 Windows 构建，两个构建成功后由同一个 Release job 汇总 Artifact、生成两端元数据，并一次性发布 GitHub Release；单独运行 `Build macOS` 或 `Build Windows` 只生成对应构建 Artifact，不发布 Release。
 8. 在 GitHub Release 页面确认至少存在：
 
    - Windows：`latest.yml`、`wordTTS-Setup-2.7.46-x64.exe`。

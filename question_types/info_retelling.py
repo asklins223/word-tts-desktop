@@ -3,7 +3,14 @@
 import re
 
 from question_types.base import BaseParser
-from question_types.text_utils import sanitize
+from question_types.text_utils import (
+    MAJOR_TYPE_HEADING_RE,
+    SCRIPT_MARKER_RE,
+    is_major_section_heading,
+    match_answer_marker,
+    match_script_marker,
+    sanitize,
+)
 
 
 # ============================================================================
@@ -27,13 +34,18 @@ class InfoRetellingParser(BaseParser):
 
     DOC_TYPE = "信息转述及询问"
 
-    RE_SECTION_START = re.compile(r'第一节\s*信息转述')
+    RE_SECTION_START = re.compile(
+        r'第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*信息转述'
+    )
     RE_SECTION_END = re.compile(r'第二节|参考答案')
+    RE_MAJOR_SECTION = MAJOR_TYPE_HEADING_RE
     # 任何「第X节」标记（用于检测其他题型的章节边界）
-    RE_ANY_SECTION = re.compile(r'第[一二三四五六七八九十]+节')
-    RE_SCRIPT = re.compile(r'录音稿\s*[：:]\s*(.*)')
+    RE_ANY_SECTION = re.compile(r'第[一二三四五六七八九十百\d０-９]+节')
+    RE_SCRIPT = SCRIPT_MARKER_RE
     # 业务字段（阶段3⑤c）：子节标题 / 参考答案 / 询问问题题干
-    RE_SUB_SECTION = re.compile(r'第([一二])节\s*(信息转述|询问信息)')
+    RE_SUB_SECTION = re.compile(
+        r'第([一二12１２])节\s*[：:]?\s*(信息转述|询问信息)'
+    )
     RE_ANSWER_LINE = re.compile(r'^参考答案\s*[：:]\s*(.*)$')
     RE_TASK_STEM = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)$')
 
@@ -62,6 +74,7 @@ class InfoRetellingParser(BaseParser):
 
         for _, text, _ in self.paras:
             value = str(text or '').strip()
+            answer_marker = match_answer_marker(value)
             # ---- 子节标题（信息转述 / 询问信息） ----
             sub = self.RE_SUB_SECTION.match(value)
             if sub:
@@ -72,10 +85,19 @@ class InfoRetellingParser(BaseParser):
                 in_section = current_section == 'retelling'
                 continue
 
+            # 旧题型资料常省略“第X节”，直接以另一大题名称衔接；不在
+            # 这里结束会把后续题型的“录音稿”错误收进本题型。
+            if is_major_section_heading(value):
+                if not self.RE_SECTION_START.search(value):
+                    flush()
+                    current_section = None
+                    answers_region = False
+                    in_section = False
+                    continue
+
             # ---- 询问信息节：中文提示问句 + 英文参考问句 ----
             if current_section == 'asking':
-                answer_mark = self.RE_ANSWER_LINE.match(value)
-                if answer_mark:
+                if answer_marker:
                     answers_region = True
                     continue
                 task = self.RE_TASK_STEM.match(value)
@@ -99,14 +121,21 @@ class InfoRetellingParser(BaseParser):
 
             # ---- 信息转述节：转述参考答案（评分参考） ----
             if in_section and current_section == 'retelling':
-                answer_line = self.RE_ANSWER_LINE.match(value)
-                if answer_line and answer_line.group(1).strip():
-                    tasks.append({
-                        "task_kind": "retelling",
-                        "reference_answer": sanitize(answer_line.group(1)),
-                    })
-                    # 参考答案同时是既有规则的节终标记，落入下方原逻辑
-
+                answer_text = (
+                    (answer_marker.group(1) or '').strip()
+                    if answer_marker else ''
+                )
+                if answer_marker:
+                    if answer_text:
+                        tasks.append({
+                            "task_kind": "retelling",
+                            "reference_answer": sanitize(answer_text),
+                        })
+                    flush()
+                    current_section = None
+                    in_section = False
+                    answers_region = False
+                    continue
             # ---- 章节开始 ----
             if self.RE_SECTION_START.search(text):
                 flush()
@@ -130,11 +159,11 @@ class InfoRetellingParser(BaseParser):
                 continue
 
             # ---- 录音稿标记 ----
-            m = self.RE_SCRIPT.match(text)
+            m = match_script_marker(text)
             if m:
                 flush()
                 collecting = True
-                remainder = m.group(1).strip()
+                remainder = (m.group(1) or '').strip()
                 if remainder:
                     current_lines.append(remainder)
                 continue

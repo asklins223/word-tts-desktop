@@ -16,15 +16,21 @@ family code，其余（QuestionType、颜色表、内容标记、文件名/内�
 享受温和降级）全部自动生效，无需改动任何下游代码。
 """
 
-import os
-
 from question_model.model import FAMILY_REGISTRY  # 唯一权威注册表
 
 from .base import BaseParser, QuestionType  # noqa: F401
 from .text_utils import (  # noqa: F401
+    DocumentBlock,
+    ANSWER_MARKER_RE,
+    MAJOR_SECTION_RE,
+    MAJOR_TYPE_HEADING_RE,
+    SCRIPT_MARKER_RE,
     clean_whitespace,
     is_chinese,
+    is_major_section_heading,
     load_paragraphs,
+    match_answer_marker,
+    match_script_marker,
     remove_zero_width,
     sanitize,
     split_sentences,
@@ -116,67 +122,13 @@ def detect_types_in_content(paras):
 
 
 def parse_document_auto(filepath):
+    """自动检测并解析文档的兼容入口。
+
+    ``parse_document_once`` 现在是唯一的 Word 结构读取与题型路由实现；
+    保留本函数名，确保旧调用方和工作流 API 不需要迁移，也避免自动入口
+    与一次加载入口在套卷、文本框等新格式上产生分叉。
     """
-    自动检测文档类型并解析，支持包含多个题型的文档。
 
-    对上传的文档运行所有匹配的解析器，收集非空结果。
-    返回 (results_list, summary_str)。
+    from .segmenter import parse_document_once
 
-    对于 .xlsx 文件，直接使用 ExcelVocabularyParser 解析。
-    """
-    filename = os.path.basename(filepath)
-
-    # ---- Excel 文件直接走词汇解析器 ----
-    if filename.lower().endswith('.xlsx'):
-        doc_type = detect_doc_type(filename)
-        if doc_type is None:
-            return [], "未识别到任何题型内容"
-        parser_cls = PARSER_MAP.get(doc_type)
-        if parser_cls is None:
-            return [], f"未找到题型 {doc_type} 的解析器"
-        try:
-            parser = parser_cls(filepath)
-            result = parser.parse()
-        except Exception as e:
-            return [], f"解析失败: {e}"
-        if result["item_count"] == 0:
-            return [], "未提取到任何内容"
-        return [result], f"检测到 1 种题型，成功提取 {result['item_count']} 条内容"
-
-    # ---- Word 文档走原有逻辑 ----
-    try:
-        paras = load_paragraphs(filepath)
-    except Exception as e:
-        return [], f"文档加载失败: {e}"
-
-    if not paras:
-        return [], "文档内容为空"
-
-    detected_types = detect_types_in_content(paras)
-
-    if not detected_types:
-        return [], "未识别到任何题型内容"
-
-    results = []
-    errors = []
-    for doc_type in detected_types:
-        parser_cls = PARSER_MAP.get(doc_type)
-        if parser_cls is None:
-            continue
-        try:
-            parser = parser_cls(filepath)
-            result = parser.parse()
-            if result["item_count"] > 0:
-                results.append(result)
-        except Exception as e:
-            errors.append(f"{doc_type}: {e}")
-
-    total = sum(r["item_count"] for r in results)
-    parts = [f"检测到 {len(detected_types)} 种题型"]
-    if results:
-        parts.append(f"成功提取 {total} 条内容")
-    if errors:
-        parts.append(f"{len(errors)} 种解析出错")
-    summary = "，".join(parts)
-
-    return results, summary
+    return parse_document_once(filepath)

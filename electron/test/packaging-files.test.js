@@ -77,17 +77,21 @@ test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', (
         path.join(APP_DIR, '..', '.github', 'workflows', 'build-windows.yml'),
         'utf8',
     );
+    const releaseWorkflow = fs.readFileSync(
+        path.join(APP_DIR, '..', '.github', 'workflows', 'build-release.yml'),
+        'utf8',
+    );
     const windowsBuildScript = fs.readFileSync(
         path.join(APP_DIR, '..', 'build_electron_windows.bat'),
         'utf8',
     );
     assert.ok(
         (windowsWorkflow.match(/\$installerName = "小猪wordTTS-Setup-\$env:UPDATE_VERSION-x64\.exe"/g) || []).length >= 2,
-        'installer smoke and release steps must bind to the current x64 setup executable',
+        'installer smoke and artifact validation steps must bind to the current x64 setup executable',
     );
     assert.ok(
         (windowsWorkflow.match(/Get-Item -LiteralPath \(Join-Path "electron\/release" \$installerName\)/g) || []).length >= 2,
-        'installer smoke and release steps must resolve the exact setup executable path',
+        'installer smoke and artifact validation steps must resolve the exact setup executable path',
     );
     assert.doesNotMatch(windowsWorkflow, /-Filter "\*-Setup-\*\.exe"/);
     assert.doesNotMatch(windowsWorkflow, /Get-ChildItem -Path "electron\/release" -Filter "\*\.exe"/);
@@ -104,14 +108,31 @@ test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', (
     );
     assert.match(
         windowsWorkflow,
-        /Download Windows build artifact[\s\S]*Verify release files[\s\S]*installer="electron\/release\/小猪wordTTS-Setup-\$\{RELEASE_VERSION\}-x64\.exe/,
-        'Windows release job must download and verify the exact installer before publishing',
+        /\$blockmapPath = "\$\(\$installer\.FullName\)\.blockmap"[\s\S]*blockmap_path=\$\(\$blockmap\.FullName\)[\s\S]*steps\.find-installer\.outputs\.blockmap_path/,
+        'Windows build artifact upload must use the exact current-version blockmap',
     );
-    assert.match(windowsWorkflow, /draft: true/);
-    assert.match(windowsWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_installer[\s\S]*wordTTS-Setup-/);
-    assert.match(windowsWorkflow, /files:[\s\S]*electron\/release\/wordTTS-Setup-\$\{\{ steps\.version\.outputs\.version \}\}-x64\.exe/);
-    assert.match(windowsWorkflow, /Publish only after both platform assets are ready[\s\S]*releases_endpoint="repos\/\$\{GITHUB_REPOSITORY\}\/releases"[\s\S]*--paginate --slurp[\s\S]*draft=false/);
-    assert.doesNotMatch(windowsWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);
+    assert.doesNotMatch(windowsWorkflow, /electron\/release\/\*\.blockmap/);
+    assert.match(
+        releaseWorkflow,
+        /Download Windows build artifact[\s\S]*Verify release files[\s\S]*installer="electron\/release\/小猪wordTTS-Setup-\$\{RELEASE_VERSION\}-x64\.exe/,
+        'Unified release job must download and verify the exact Windows installer before publishing',
+    );
+    assert.match(releaseWorkflow, /needs: \[macos, windows\]/);
+    assert.equal(
+        (releaseWorkflow.match(/version: \$\{\{ github\.event\.inputs\.version \|\| '' \}\}/g) || []).length,
+        2,
+        'reusable workflow inputs must use the caller-supported github context',
+    );
+    assert.doesNotMatch(releaseWorkflow, /version: \$\{\{ inputs\.version/);
+    assert.match(releaseWorkflow, /draft: true/);
+    assert.match(releaseWorkflow, /id: release[\s\S]*uses: softprops\/action-gh-release@v2/);
+    assert.match(releaseWorkflow, /fail_on_unmatched_files: true/);
+    assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_installer[\s\S]*wordTTS-Setup-/);
+    assert.match(releaseWorkflow, /test -s "\$blockmap"[\s\S]*cp "\$local_blockmap" "\$\{github_installer\}\.blockmap"/);
+    assert.match(releaseWorkflow, /files:[\s\S]*electron\/release\/wordTTS-Setup-\$\{\{ needs\.windows\.outputs\.version \}\}-x64\.exe/);
+    assert.match(releaseWorkflow, /Publish release after all assets upload[\s\S]*RELEASE_ID: \$\{\{ steps\.release\.outputs\.id \}\}[\s\S]*releases\/\$\{RELEASE_ID\}[\s\S]*draft=false/);
+    assert.doesNotMatch(releaseWorkflow, /--paginate --slurp|sleep [0-9]/);
+    assert.doesNotMatch(releaseWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);
     const macWorkflow = fs.readFileSync(
         path.join(APP_DIR, '..', '.github', 'workflows', 'build-macos.yml'),
         'utf8',
@@ -119,6 +140,16 @@ test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', (
     const macBuildScript = fs.readFileSync(
         path.join(APP_DIR, '..', 'build_electron.sh'),
         'utf8',
+    );
+    assert.match(
+        macWorkflow,
+        /WORDTTS_SKIP_PYTHON_DEPENDENCY_INSTALL: '1'/,
+        'macOS build must tell the packaging script to reuse the already-installed Python environment',
+    );
+    assert.match(
+        macBuildScript,
+        /WORDTTS_SKIP_PYTHON_DEPENDENCY_INSTALL:-0.*pip install/s,
+        'macOS packaging script must support skipping a duplicate Python dependency install',
     );
     assert.match(
         macWorkflow,
@@ -130,16 +161,16 @@ test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', (
         'macOS build artifact upload must use the validated exact paths',
     );
     assert.match(
-        macWorkflow,
+        releaseWorkflow,
         /Download macOS build artifact[\s\S]*Verify release files[\s\S]*test -s electron\/release\/latest-mac\.yml/,
-        'macOS release job must download and verify the packaged artifacts before publishing',
+        'Unified release job must download and verify the packaged macOS artifacts before publishing',
     );
-    assert.match(macWorkflow, /draft: true/);
-    assert.match(macWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_zip[\s\S]*cp.*github_dmg/);
-    assert.match(macWorkflow, /files:[\s\S]*electron\/release\/wordTTS-\$\{\{ needs\.build\.outputs\.version \}\}-\$\{\{ needs\.build\.outputs\.architecture \}\}\.dmg/);
-    assert.match(macWorkflow, /Publish only after both platform assets are ready[\s\S]*releases_endpoint="repos\/\$\{GITHUB_REPOSITORY\}\/releases"[\s\S]*--paginate --slurp[\s\S]*draft=false/);
-    assert.doesNotMatch(macWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);
-    assert.match(macWorkflow, /local_zip="electron\/release\/小猪wordTTS-/);
-    assert.match(macWorkflow, /local_dmg="electron\/release\/小猪wordTTS-/);
+    assert.match(releaseWorkflow, /draft: true/);
+    assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_zip[\s\S]*cp.*github_dmg/);
+    assert.match(releaseWorkflow, /files:[\s\S]*electron\/release\/wordTTS-\$\{\{ needs\.macos\.outputs\.version \}\}-\$\{\{ needs\.macos\.outputs\.architecture \}\}\.dmg/);
+    assert.match(releaseWorkflow, /Publish release after all assets upload[\s\S]*RELEASE_ID: \$\{\{ steps\.release\.outputs\.id \}\}[\s\S]*releases\/\$\{RELEASE_ID\}[\s\S]*draft=false/);
+    assert.doesNotMatch(releaseWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);
+    assert.match(releaseWorkflow, /local_zip="electron\/release\/小猪wordTTS-/);
+    assert.match(releaseWorkflow, /local_dmg="electron\/release\/小猪wordTTS-/);
     assert.match(macBuildScript, /builder_zip_path[\s\S]*rm -f \"\$builder_zip_path\"[\s\S]*latest-mac\.yml/);
 });
