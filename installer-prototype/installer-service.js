@@ -566,6 +566,10 @@ function registryScript(scope, state) {
 function removeRegistryScript(scope) {
     return LEGACY_REGISTRY_SUBKEYS
         .map(suffix => `$key = ${powershellLiteral(registryPowerShellPath(scope, suffix))}; Remove-Item -LiteralPath $key -Recurse -Force -ErrorAction SilentlyContinue`)
+        // PowerShell can preserve a non-zero native exit code after a
+        // SilentlyContinue registry miss. Missing legacy entries are already
+        // the desired end state, so make that outcome explicit to callers.
+        .concat('exit 0')
         .join('\n');
 }
 
