@@ -159,7 +159,33 @@ function randomSuffix() {
 }
 
 function existsSyncSafe(filePath) {
-    try { return fs.existsSync(filePath); } catch (_) { return false; }
+    try {
+        return withNativeFileSystemSync(() => fs.existsSync(filePath));
+    } catch (_) {
+        return false;
+    }
+}
+
+function withNativeFileSystemSync(operation) {
+    const previousNoAsar = process.noAsar;
+    process.noAsar = true;
+    try {
+        return operation();
+    } finally {
+        if (previousNoAsar === undefined) delete process.noAsar;
+        else process.noAsar = previousNoAsar;
+    }
+}
+
+async function withNativeFileSystem(operation) {
+    const previousNoAsar = process.noAsar;
+    process.noAsar = true;
+    try {
+        return await operation();
+    } finally {
+        if (previousNoAsar === undefined) delete process.noAsar;
+        else process.noAsar = previousNoAsar;
+    }
 }
 
 function pathEquals(left, right, platform) {
@@ -225,7 +251,7 @@ function isPathInside(candidate, parent, platform = process.platform) {
 
 function parseJsonFile(filePath) {
     try {
-        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return withNativeFileSystemSync(() => JSON.parse(fs.readFileSync(filePath, 'utf8')));
     } catch (_) {
         return null;
     }
@@ -314,7 +340,7 @@ function formatProgress(onProgress, payload) {
 
 async function pathExists(filePath) {
     try {
-        await fsp.access(filePath);
+        await withNativeFileSystem(() => fsp.access(filePath));
         return true;
     } catch (error) {
         // ENOENT/ENOTDIR are the only states that mean the path is absent.
@@ -328,7 +354,7 @@ async function pathExists(filePath) {
 
 async function directoryHasEntries(directoryPath) {
     try {
-        return (await fsp.readdir(directoryPath)).length > 0;
+        return (await withNativeFileSystem(() => fsp.readdir(directoryPath))).length > 0;
     } catch (error) {
         if (error.code === 'ENOENT') return false;
         throw new InstallerError('TARGET_UNAVAILABLE', '无法检查安装位置，请检查文件夹权限。', error);
@@ -337,26 +363,28 @@ async function directoryHasEntries(directoryPath) {
 
 async function removePath(filePath) {
     if (!filePath || !(await pathExists(filePath))) return;
-    await fsp.rm(filePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 120 });
+    await withNativeFileSystem(() => fsp.rm(filePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 120 }));
 }
 
 async function listFiles(root) {
-    const files = [];
-    const directories = [];
-    async function visit(current) {
-        const entries = await fsp.readdir(current, { withFileTypes: true });
-        for (const entry of entries) {
-            const absolute = path.join(current, entry.name);
-            if (entry.isDirectory()) {
-                directories.push(absolute);
-                await visit(absolute);
-            } else {
-                files.push({ absolute, relative: path.relative(root, absolute), symbolicLink: entry.isSymbolicLink() });
+    return withNativeFileSystem(async () => {
+        const files = [];
+        const directories = [];
+        async function visit(current) {
+            const entries = await fsp.readdir(current, { withFileTypes: true });
+            for (const entry of entries) {
+                const absolute = path.join(current, entry.name);
+                if (entry.isDirectory()) {
+                    directories.push(absolute);
+                    await visit(absolute);
+                } else {
+                    files.push({ absolute, relative: path.relative(root, absolute), symbolicLink: entry.isSymbolicLink() });
+                }
             }
         }
-    }
-    await visit(root);
-    return { files, directories };
+        await visit(root);
+        return { files, directories };
+    });
 }
 
 async function copyTree(source, destination, onProgress, isCancelled) {
@@ -379,7 +407,10 @@ async function copyTree(source, destination, onProgress, isCancelled) {
             const link = await fsp.readlink(file.absolute);
             await fsp.symlink(link, destinationFile);
         } else {
-            await fsp.copyFile(file.absolute, destinationFile);
+            // Electron treats a path ending in app.asar as an archive unless
+            // ASAR routing is disabled. The payload intentionally contains a
+            // real app.asar file, so copy it through the native filesystem.
+            await withNativeFileSystem(() => fsp.copyFile(file.absolute, destinationFile));
         }
         copied += 1;
         const percent = 12 + Math.round((copied / total) * 58);
