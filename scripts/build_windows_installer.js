@@ -149,8 +149,16 @@ function runBuilder(projectDir, electronDir, env = process.env) {
 function main() {
     const args = parseArguments();
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-build-'));
+    // electron-builder cleans its output directory before packaging. Keep
+    // the setup build away from electron/release so it cannot remove the
+    // application's win-unpacked directory that the next smoke step checks.
+    const builderOutputDir = path.join(workDir, 'release');
     try {
-        const { resolvedVersion } = createBuildProject({ ...args, workDir });
+        const { resolvedVersion } = createBuildProject({
+            ...args,
+            outputDir: builderOutputDir,
+            workDir,
+        });
         const outputName = `小猪wordTTS-Setup-${resolvedVersion}-x64.exe`;
         const outputPath = path.join(args.outputDir, outputName);
         console.log(`自绘 Windows 安装程序配置已生成: ${outputPath}`);
@@ -160,8 +168,14 @@ function main() {
         fs.rmSync(outputPath, { force: true });
         try {
             runBuilder(workDir, electronDir, process.env);
+            const builtPath = path.join(builderOutputDir, outputName);
+            if (!fs.existsSync(builtPath) || fs.statSync(builtPath).size <= 0) {
+                throw new Error(`electron-builder 未生成有效的自绘安装程序: ${builtPath}`);
+            }
+            fs.mkdirSync(args.outputDir, { recursive: true });
+            fs.copyFileSync(builtPath, outputPath);
             if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size <= 0) {
-                throw new Error(`electron-builder 未生成有效的自绘安装程序: ${outputPath}`);
+                throw new Error(`无法复制有效的自绘安装程序到输出目录: ${outputPath}`);
             }
         } catch (error) {
             // A failed builder may leave a partial file behind. Remove it too,
