@@ -962,7 +962,18 @@ function createInstallerService(options = {}) {
                 platform === 'win32'
                     ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]
                     : ['-e', ''],
-                { detached: true, stdio: 'ignore', windowsHide: true },
+                {
+                    detached: true,
+                    stdio: 'ignore',
+                    windowsHide: true,
+                    // The uninstaller is launched with its install directory
+                    // as the working directory. Letting the detached cleanup
+                    // process inherit that directory keeps a Windows handle
+                    // open on the directory we are trying to remove, so the
+                    // final rmdir can never succeed. Run from the temp folder
+                    // that contains the cleanup script instead.
+                    cwd: tempDirectory,
+                },
             );
             if (!child || typeof child !== 'object') {
                 throw new Error('卸载清理进程没有成功创建。');
