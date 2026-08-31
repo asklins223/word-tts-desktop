@@ -285,20 +285,26 @@ jobs:
             $logBase = Join-Path $env:RUNNER_TEMP ("wordtts-installer-" + [guid]::NewGuid().ToString("N"))
             $stdoutPath = "$logBase.stdout.log"
             $stderrPath = "$logBase.stderr.log"
-            $process = Start-Process `
-              -FilePath $FilePath `
-              -ArgumentList $Arguments `
-              -WorkingDirectory (Split-Path -Parent $FilePath) `
-              -RedirectStandardOutput $stdoutPath `
-              -RedirectStandardError $stderrPath `
-              -WindowStyle Hidden `
-              -PassThru
+            $diagnosticPath = "$logBase.log"
+            $previousDiagnosticPath = $env:WORDTTS_INSTALLER_LOG
+            $env:WORDTTS_INSTALLER_LOG = $diagnosticPath
+            $process = $null
             try {
+              $process = Start-Process `
+                -FilePath $FilePath `
+                -ArgumentList $Arguments `
+                -WorkingDirectory (Split-Path -Parent $FilePath) `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath `
+                -WindowStyle Hidden `
+                -PassThru
               if (-not $process.WaitForExit($TimeoutMs)) {
                 & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
                 throw "进程超时: $FilePath"
               }
               if ($process.ExitCode -ne 0) {
+                Write-Host "安装器诊断: $diagnosticPath"
+                if (Test-Path -LiteralPath $diagnosticPath) { Get-Content -LiteralPath $diagnosticPath -Raw -ErrorAction SilentlyContinue }
                 Write-Host "进程 stdout: $stdoutPath"
                 if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue }
                 Write-Host "进程 stderr: $stderrPath"
@@ -306,8 +312,13 @@ jobs:
                 throw "进程失败，代码 $($process.ExitCode): $FilePath"
               }
             } finally {
-              if (-not $process.HasExited) {
+              if ($process -and -not $process.HasExited) {
                 & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+              }
+              if ($null -eq $previousDiagnosticPath) {
+                Remove-Item Env:WORDTTS_INSTALLER_LOG -ErrorAction SilentlyContinue
+              } else {
+                $env:WORDTTS_INSTALLER_LOG = $previousDiagnosticPath
               }
             }
           }

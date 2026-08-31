@@ -36,6 +36,21 @@ let operationPlan = null;
 
 let parsedArguments = null;
 let argumentError = null;
+const headlessDiagnosticPath = String(process.env.WORDTTS_INSTALLER_LOG || '').trim();
+
+function writeHeadlessDiagnostic(message) {
+    if (!headlessDiagnosticPath) return;
+    try {
+        fs.appendFileSync(
+            headlessDiagnosticPath,
+            `${new Date().toISOString()} ${String(message || '')}\n`,
+            'utf8',
+        );
+    } catch (_) {
+        // Diagnostics must never change the installer result.
+    }
+}
+
 try {
     parsedArguments = parseInstallerArguments(process.argv.slice(1));
 } catch (error) {
@@ -353,6 +368,7 @@ function registerIpc() {
 
 async function bootstrap() {
     if (argumentError) throw argumentError;
+    writeHeadlessDiagnostic(`[bootstrap] argv=${JSON.stringify(process.argv.slice(1))}`);
     if (process.platform !== 'win32' && !isSmokeTest) {
         // The source preview remains usable in a browser. The packaged custom
         // setup is intentionally Windows-only until a platform-specific file
@@ -373,15 +389,29 @@ async function bootstrap() {
         arguments: parsedArguments,
         operationPlan,
     });
+    writeHeadlessDiagnostic(`[config] ${JSON.stringify({
+        mode: installerConfig.mode,
+        targetPath: installerConfig.targetPath,
+        scope: installerConfig.scope,
+        version: installerConfig.version,
+        payloadPath: installerConfig.payloadPath,
+        setupExecutable: installerConfig.setupExecutable,
+    })}`);
     if (parsedArguments.headless) {
         const plan = normalizedPlan({
             mode: parsedArguments.mode || installerConfig.mode,
             targetPath: parsedArguments.targetPath || installerConfig.targetPath,
             scope: installerConfig.scope,
         });
+        writeHeadlessDiagnostic(`[plan] ${JSON.stringify(plan)}`);
         await installerService.run(plan, {
-            onProgress: progress => console.log(`[installer] ${progress.percent}% ${progress.stage}`),
+            onProgress: progress => {
+                const line = `[installer] ${progress.percent}% ${progress.stage}`;
+                console.log(line);
+                writeHeadlessDiagnostic(line);
+            },
         });
+        writeHeadlessDiagnostic('[complete] installer operation succeeded');
         app.exit(0);
         return;
     }
@@ -391,6 +421,7 @@ async function bootstrap() {
 
 app.whenReady().then(bootstrap).catch(error => {
     console.error(`[installer] 启动失败: ${error.stack || error}`);
+    writeHeadlessDiagnostic(`[error] ${error.stack || error}`);
     if (!parsedArguments?.headless) {
         dialog.showErrorBox(`${PRODUCT_NAME} 安装程序`, error.message || String(error));
     }
