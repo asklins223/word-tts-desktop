@@ -357,9 +357,9 @@ jobs:
             Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir)
             # 卸载程序自身位于目标目录，Windows 需要等短生命周期清理进程
             # 在 uninstaller 退出后完成最后一次删除。安装包包含 Python 和
-            # Chromium，清理大目录可能超过进程退出时间，但清理脚本会在
-            # 60 秒内持续重试，这里多留出一段 CI 文件系统缓冲时间。
-            $uninstallDeadline = (Get-Date).AddSeconds(90)
+            # Chromium，清理大目录可能超过进程退出时间。清理脚本会在
+            # 120 秒内持续终止残留子进程并重试，这里多留出文件系统缓冲时间。
+            $uninstallDeadline = (Get-Date).AddSeconds(150)
             while ((Test-Path -LiteralPath $installDir) -and (Get-Date) -lt $uninstallDeadline) {
               Start-Sleep -Milliseconds 500
             }
@@ -376,7 +376,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: 小猪wordTTS-Windows-installer-smoke
-          path: ${{ runner.temp }}/wordtts-installer-*.log
+          path: |
+            ${{ runner.temp }}/wordtts-installer-*.log
+            ${{ runner.temp }}/wordtts-uninstall-*.log
           retention-days: 7
           if-no-files-found: warn
 
