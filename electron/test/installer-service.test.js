@@ -199,6 +199,15 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
     const dataPath = path.join(root, 'user-data');
     const setup = path.join(root, '小猪wordTTS-Setup.exe');
     const progress = [];
+    const shellEnvironment = process.platform === 'win32'
+        ? {
+            USERPROFILE: path.join(root, 'user-profile'),
+            APPDATA: path.join(root, 'app-data'),
+            PUBLIC: path.join(root, 'public'),
+            ProgramData: path.join(root, 'program-data'),
+            ProgramFiles: path.join(root, 'program-files'),
+        }
+        : undefined;
 
     try {
         await fsp.mkdir(path.join(payload, 'resources'), { recursive: true });
@@ -219,6 +228,7 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
             setupExecutable: setup,
             tempDirectory: path.join(root, 'temp'),
             dataPath,
+            environment: shellEnvironment,
         });
         const install = await service.run({
             mode: 'install',
@@ -236,6 +246,16 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
         assert.equal(fs.readFileSync(path.join(target, '小猪wordTTS-uninstaller.exe'), 'utf8'), 'self-drawing setup');
         assert.equal(service.readState(target).version, '3.0.1');
         assert.equal(progress.at(-1).percent, 100);
+        if (process.platform === 'win32') {
+            assert.equal(
+                fs.existsSync(path.win32.join(shellEnvironment.USERPROFILE, 'Desktop', '小猪wordTTS.lnk')),
+                true,
+            );
+            assert.equal(
+                fs.existsSync(path.win32.join(shellEnvironment.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', '小猪wordTTS.lnk')),
+                true,
+            );
+        }
 
         await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v2');
         const update = await service.run({
