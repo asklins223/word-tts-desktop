@@ -2,7 +2,11 @@
 
 import re
 
+from audio_naming import audio_filename_stem, is_exam_paper_bundle
 from docx import Document
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+from docx.oxml.ns import qn
 
 from question_types.base import BaseParser
 from question_types.text_utils import is_chinese, sanitize
@@ -98,7 +102,7 @@ class ImitationReadingParser(BaseParser):
             for cell in row.cells:
                 # 合并单元格会在 python-docx 中多次映射到同一个 XML 节点。
                 # 去重后才能保证一篇文章只产生一个音频条目。
-                cell_key = id(cell._tc)
+                cell_key = cell._tc.getroottree().getpath(cell._tc)
                 if cell_key in seen_cells:
                     continue
                 seen_cells.add(cell_key)
@@ -113,10 +117,23 @@ class ImitationReadingParser(BaseParser):
         texts = []
         try:
             document = Document(self.filepath)
-            for table in document.tables:
+            # 表格本身没有“属于哪道题”的字段。按正文顺序绑定：只有紧跟在
+            # “模仿朗读”题目提示之后的第一个英文表格才属于该题，后面的
+            # 听后记录表、答题表不能再被误识别成朗读稿。
+            waiting_for_table = False
+            for child in document.element.body.iterchildren():
+                if child.tag == qn("w:p"):
+                    paragraph = Paragraph(child, document)
+                    if self.RE_BOXED_QUESTION.match(paragraph.text.strip()):
+                        waiting_for_table = True
+                    continue
+                if child.tag != qn("w:tbl") or not waiting_for_table:
+                    continue
+                table = Table(child, document)
                 text = self._table_text(table)
                 if text:
                     texts.append(text)
+                    waiting_for_table = False
         except Exception:
             # 普通旧格式不依赖表格；新格式识别失败时回退旧规则，
             # 不因为可选的表格读取影响已有文档解析。
@@ -132,15 +149,25 @@ class ImitationReadingParser(BaseParser):
         question_numbers = self._boxed_question_numbers()
         texts = self._boxed_table_texts()
         items = []
+        use_exam_naming = is_exam_paper_bundle(self.paras)
         for index, text in enumerate(texts):
             number = question_numbers[index] if index < len(question_numbers) else index + 1
-            items.append({
+            item = {
                 "category": "模仿朗读-框内英文",
                 "number": number,
                 "source": "框内英文",
                 "voice": "female",
                 "text": text,
-            })
+            }
+            if use_exam_naming:
+                filename_stem = audio_filename_stem(["模仿朗读"], index + 1)
+                item.update({
+                    "question_numbers": [number],
+                    "type_path": ["模仿朗读"],
+                    "filename_stem": filename_stem,
+                    "audio_filename_stem": filename_stem,
+                })
+            items.append(item)
         return self._result(items)
 
     def _parse_legacy_format(self):

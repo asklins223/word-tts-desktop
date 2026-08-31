@@ -17,6 +17,11 @@ import zipfile
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
 
+from audio_naming import (
+    ARCHIVE_LAYOUT_VERSION,
+    ARCHIVE_ROOT_FOLDER,
+    audio_filename_from_stem,
+)
 from workflow.artifact_store import ArtifactStore, ArtifactStoreError
 from workflow.domain import DomainError, canonical_json, content_hash
 from workflow.engine import TTSRunResult, WorkflowEngine
@@ -479,6 +484,7 @@ class WorkflowApplicationService:
             "workflow_id": workflow_id,
             "segments": export_basis,
             "requested_item_ids": sorted(requested_ids) if requested_ids is not None else None,
+            "archive_layout": ARCHIVE_LAYOUT_VERSION,
         })
         artifact_id = f"artifact-export-{export_hash[:32]}"
         # Keep enough scope information on the immutable export Artifact for
@@ -487,9 +493,9 @@ class WorkflowApplicationService:
         # The latter must not become the apparent current ZIP after a retry
         # publishes a newer segment.
         export_producer_version = (
-            "2:full"
+            "3:full"
             if requested_ids is None
-            else ("2:subset-ready" if requested_set == included_set else "2:subset-partial")
+            else ("3:subset-ready" if requested_set == included_set else "3:subset-partial")
         )
         existing = next(
             (
@@ -563,9 +569,28 @@ class WorkflowApplicationService:
                 compresslevel=6,
                 allowZip64=True,
             ) as archive:
+                directory = zipfile.ZipInfo(
+                    f"{ARCHIVE_ROOT_FOLDER}/",
+                    date_time=(1980, 1, 1, 0, 0, 0),
+                )
+                directory.external_attr = (0o755 << 16) | 0x10
+                archive.writestr(directory, b"")
                 for segment in segments:
                     fmt = str(segment.get("format") or "mp3").lower().lstrip(".") or "bin"
-                    entry_name = f"{int(segment['sequence']) + 1:0{width}d}.{fmt}"
+                    item = item_by_id.get(str(segment["item_id"]), {})
+                    try:
+                        item_metadata = json.loads(str(item.get("metadata_json") or "{}"))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        item_metadata = {}
+                    custom_name = (
+                        audio_filename_from_stem(
+                            item_metadata.get("audio_filename_stem"), fmt
+                        )
+                        if isinstance(item_metadata, Mapping)
+                        else None
+                    )
+                    filename = custom_name or f"{int(segment['sequence']) + 1:0{width}d}.{fmt}"
+                    entry_name = f"{ARCHIVE_ROOT_FOLDER}/{filename}"
                     info = zipfile.ZipInfo(entry_name, date_time=(1980, 1, 1, 0, 0, 0))
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.external_attr = (0o644 & 0xFFFF) << 16

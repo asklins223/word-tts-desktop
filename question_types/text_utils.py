@@ -1,8 +1,11 @@
 """文档解析共享工具：段落加载、文本清理与英文句子切分。"""
 
 import re
+from zipfile import ZipFile
+from xml.etree import ElementTree
 
 from docx import Document
+from docx.oxml.ns import qn
 
 
 # ============================================================================
@@ -36,6 +39,132 @@ def _paragraph_heading_hint(paragraph):
     return False
 
 
+def _build_numbering_model(document, filepath=None):
+    """读取 Word 有序列表的起始值和编号格式。
+
+    ``python-docx`` 的 ``Paragraph.text`` 不包含 Word 自动生成的列表编号。
+    试卷模板有时把题号交给 ``w:numPr``，所以这里从 ``numbering.xml`` 建立
+    一个尽量小的读取模型，供段落元数据记录实际显示的十进制题号。
+    """
+    try:
+        numbering = document.part.numbering_part.element
+    except (AttributeError, KeyError, NotImplementedError, ValueError):
+        # 部分 Word 导出的文件虽然包含 ``word/numbering.xml``，却没有在
+        # document.xml.rels 中建立 numbering relationship。python-docx 会在
+        # 这种情况下尝试创建新 NumberingPart 并抛出 NotImplementedError，
+        # 因此回退到 docx 包的原始 XML 读取。
+        if filepath is None:
+            return {}, {}, {}
+        try:
+            with ZipFile(filepath) as archive:
+                numbering = ElementTree.fromstring(
+                    archive.read("word/numbering.xml")
+                )
+        except (KeyError, OSError, ElementTree.ParseError):
+            return {}, {}, {}
+
+    starts = {}
+    formats = {}
+    for abstract in numbering.findall(qn("w:abstractNum")):
+        abstract_id = abstract.get(qn("w:abstractNumId"))
+        if abstract_id is None:
+            continue
+        for level in abstract.findall(qn("w:lvl")):
+            level_id = level.get(qn("w:ilvl"), "0")
+            start_element = level.find(qn("w:start"))
+            format_element = level.find(qn("w:numFmt"))
+            try:
+                start = int(
+                    start_element.get(qn("w:val"))
+                    if start_element is not None
+                    else 1
+                )
+            except (AttributeError, TypeError, ValueError):
+                start = 1
+            starts[(abstract_id, level_id)] = start
+            formats[(abstract_id, level_id)] = (
+                format_element.get(qn("w:val"))
+                if format_element is not None
+                else "decimal"
+            )
+
+    definitions = {}
+    for num in numbering.findall(qn("w:num")):
+        num_id = num.get(qn("w:numId"))
+        abstract_element = num.find(qn("w:abstractNumId"))
+        abstract_id = (
+            abstract_element.get(qn("w:val"))
+            if abstract_element is not None
+            else None
+        )
+        if num_id is None or abstract_id is None:
+            continue
+
+        overrides = {}
+        for override in num.findall(qn("w:lvlOverride")):
+            level_id = override.get(qn("w:ilvl"), "0")
+            start_element = override.find(qn("w:startOverride"))
+            if start_element is None:
+                level = override.find(qn("w:lvl"))
+                if level is not None:
+                    start_element = level.find(qn("w:start"))
+            if start_element is not None:
+                try:
+                    overrides[level_id] = int(start_element.get(qn("w:val")))
+                except (AttributeError, TypeError, ValueError):
+                    pass
+        definitions[num_id] = (abstract_id, overrides)
+
+    return starts, formats, definitions
+
+
+def _paragraph_numbering_number(paragraph, numbering_model, counters):
+    """返回段落的自动十进制编号；手工题号或项目符号返回 ``None``。"""
+    paragraph_properties = paragraph._p.pPr
+    num_properties = (
+        paragraph_properties.numPr if paragraph_properties is not None else None
+    )
+    if num_properties is None:
+        return None
+
+    num_id_element = num_properties.find(qn("w:numId"))
+    if num_id_element is None:
+        return None
+    num_id = num_id_element.get(qn("w:val"))
+    # numId=0 表示没有可用的编号定义；新版试卷的其他提示段落也会带上它。
+    if not num_id or num_id == "0":
+        return None
+
+    level_element = num_properties.find(qn("w:ilvl"))
+    level_id = (
+        level_element.get(qn("w:val"))
+        if level_element is not None
+        else "0"
+    )
+    starts, formats, definitions = numbering_model
+    definition = definitions.get(num_id)
+    if definition is None:
+        return None
+    abstract_id, overrides = definition
+    number_format = formats.get((abstract_id, level_id), "decimal")
+    if number_format not in {"decimal", "decimalZero"}:
+        return None
+
+    start = overrides.get(
+        level_id,
+        starts.get((abstract_id, level_id), 1),
+    )
+    counter_key = (num_id, level_id)
+    number = counters.get(counter_key, start - 1) + 1
+    counters[counter_key] = number
+
+    # 进入更高层级后，较低层级通常会重新从起点计数。
+    for key in tuple(counters):
+        if key[0] == num_id and key[1] > level_id:
+            del counters[key]
+    return number
+
+
 def load_paragraphs(filepath, *, include_metadata=False):
     """
     加载 Word 文档，返回非空段落列表。
@@ -43,14 +172,29 @@ def load_paragraphs(filepath, *, include_metadata=False):
     ``include_metadata=True`` 时额外返回与段落一一对应的格式提示列表。
     """
     doc = Document(filepath)
+    numbering_model = _build_numbering_model(doc, filepath)
+    numbering_counters = {}
     result = []
     metadata = []
     for i, para in enumerate(doc.paragraphs):
         text = para.text.strip()
-        if text:
-            style = para.style.name if para.style else ""
-            result.append((i, text, style))
-            metadata.append({"heading_hint": _paragraph_heading_hint(para)})
+        if not text:
+            # 空的 Word 列表占位段没有可展示题号，不能推进自动编号计数；
+            # 否则后面的第一道题会被错误地记录成 2 号题。
+            continue
+        numbering_number = _paragraph_numbering_number(
+            para,
+            numbering_model,
+            numbering_counters,
+        )
+        style = para.style.name if para.style else ""
+        result.append((i, text, style))
+        paragraph_metadata = {
+            "heading_hint": _paragraph_heading_hint(para),
+        }
+        if numbering_number is not None:
+            paragraph_metadata["numbering_number"] = numbering_number
+        metadata.append(paragraph_metadata)
     if include_metadata:
         return result, metadata
     return result

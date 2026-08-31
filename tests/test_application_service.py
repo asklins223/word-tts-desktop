@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -192,6 +193,71 @@ class ApplicationServiceTests(unittest.TestCase):
             workspace = repository.get_workspace(draft.workflow_id)
             self.assertEqual(workspace["delivery"]["zip_artifact_id"], full_export["artifact_id"])
             self.assertEqual(workspace["delivery"]["included_item_ids"], item_ids)
+            storage = repository.get_artifact_storage(
+                full_export["artifact_id"], workflow_id=draft.workflow_id
+            )
+            with artifacts.read(storage["storage_key"]) as handle:
+                with zipfile.ZipFile(io.BytesIO(handle.read())) as archive:
+                    self.assertEqual(
+                        archive.namelist(),
+                        ["audio/", "audio/001.mp3", "audio/002.mp3"],
+                    )
+            database.close()
+
+    def test_export_zip_uses_exam_audio_filename_metadata(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-exam-export-test-") as tmp:
+            root = Path(tmp)
+            database = WorkflowDatabase(root / "workflow.db")
+            database.initialize()
+            artifacts = ArtifactStore(root / "artifacts")
+            repository = WorkflowRepository(database)
+            imports = SourceImportService(database, artifacts)
+            registry = ProviderRegistry()
+            registry.register(FakeProvider(output_format="mp3"))
+            service = WorkflowApplicationService(
+                repository,
+                imports,
+                artifacts,
+                engine=WorkflowEngine(repository, artifacts),
+                providers=registry,
+            )
+            draft = service.create_draft("tts", {"generation_mode": "single_segment"})
+            item_id = repository.create_item(
+                draft.workflow_id,
+                item_type="听后选择录音稿",
+                sequence=0,
+                normalized_content="W: hello",
+                item_identity_key="exam:selection:1",
+                metadata={
+                    "audio_filename_stem": "听后选择-1",
+                    "type_path": ["听后选择"],
+                    "question_numbers": [1],
+                },
+            )
+
+            _accepted, result = service.start_generation(
+                draft.workflow_id,
+                expected_state_version=draft.state_version,
+                provider="fake",
+                account_scope="fake-account",
+            )
+            self.assertEqual(result.status, "SUCCEEDED")
+            export = service.create_export_zip(draft.workflow_id)
+            storage = repository.get_artifact_storage(
+                export["artifact_id"], workflow_id=draft.workflow_id
+            )
+            with artifacts.read(storage["storage_key"]) as handle:
+                with zipfile.ZipFile(io.BytesIO(handle.read())) as archive:
+                    self.assertEqual(
+                        archive.namelist(),
+                        ["audio/", "audio/听后选择-1.mp3"],
+                    )
+            segment = next(
+                artifact for artifact in repository.get_workspace(draft.workflow_id)["artifacts"]
+                if artifact["artifact_type"] == "tts-segment"
+                and artifact["item_id"] == item_id
+            )
+            self.assertEqual(segment["filename"], "听后选择-1.mp3")
             database.close()
 
     def test_export_zip_does_not_reuse_corrupt_historical_zip(self) -> None:

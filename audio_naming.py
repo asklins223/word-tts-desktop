@@ -1,0 +1,111 @@
+"""Exam-paper audio naming shared by legacy and workflow projections."""
+
+from __future__ import annotations
+
+import re
+from pathlib import PurePath
+from typing import Any, Iterable
+
+
+EXAM_PAPER_MARKERS = (
+    "听后选择",
+    "听后应答",
+    "听后记录并转述信息",
+    "模仿朗读",
+)
+
+# Keep every ZIP entry below one predictable directory.  The layout version
+# participates in the deterministic export id so a historical flat ZIP is
+# never mistaken for the new folder-wrapped layout.
+ARCHIVE_ROOT_FOLDER = "audio"
+ARCHIVE_LAYOUT_VERSION = "folder-v1"
+
+
+def is_exam_paper_bundle(paragraphs: Iterable[Any]) -> bool:
+    """Return whether paragraphs look like the complete exam-paper format."""
+
+    texts = []
+    for paragraph in paragraphs:
+        if isinstance(paragraph, (tuple, list)) and len(paragraph) >= 2:
+            texts.append(str(paragraph[1] or ""))
+        else:
+            texts.append(str(paragraph or ""))
+    full_text = "\n".join(texts)
+    return all(marker in full_text for marker in EXAM_PAPER_MARKERS)
+
+
+def normalize_question_numbers(value: Any) -> list[int]:
+    """Normalize parser-provided question numbers without inventing numbers."""
+
+    values: list[int] = []
+    candidates = value if isinstance(value, (list, tuple, set)) else [value]
+    for candidate in candidates:
+        if isinstance(candidate, bool):
+            continue
+        if isinstance(candidate, int):
+            parsed = [candidate]
+        else:
+            parsed = [int(match) for match in re.findall(r"\d+", str(candidate or ""))]
+        for number in parsed:
+            if number > 0 and number not in values:
+                values.append(number)
+    return values
+
+
+def format_question_numbers(value: Any) -> str:
+    """Format one question or a contiguous question range for a filename."""
+
+    numbers = normalize_question_numbers(value)
+    if not numbers:
+        return ""
+    if len(numbers) == 1:
+        return str(numbers[0])
+    if numbers == list(range(numbers[0], numbers[-1] + 1)):
+        return f"{numbers[0]}-{numbers[-1]}"
+    return "-".join(str(number) for number in numbers)
+
+
+def audio_filename_stem(type_path: Iterable[Any], ordinal: Any) -> str:
+    """Build ``大题型-小题型-序号`` without an extension."""
+
+    path = []
+    for value in type_path:
+        text = str(value or "").strip().strip("-")
+        if text:
+            path.append(text)
+    ordinal_values = normalize_question_numbers(ordinal)
+    if not path or len(ordinal_values) != 1:
+        return ""
+    return f"{'-'.join(path)}-{ordinal_values[0]}"
+
+
+def safe_audio_filename_stem(value: Any, *, limit: int = 240) -> str:
+    """Keep a parser-provided stem as one safe basename."""
+
+    raw = str(value or "").replace("\\", "/")
+    stem = PurePath(raw).name
+    stem = re.sub(r"[\x00-\x1f\x7f]", "", stem).strip(" .")
+    return stem[:limit]
+
+
+def audio_filename_from_stem(stem: Any, fmt: Any) -> str | None:
+    """Append a validated artifact format to a safe parser-provided stem."""
+
+    safe_stem = safe_audio_filename_stem(stem)
+    extension = re.sub(r"[^a-z0-9]+", "", str(fmt or "").lower().lstrip("."))
+    if not safe_stem or not extension:
+        return None
+    return f"{safe_stem}.{extension}"
+
+
+__all__ = [
+    "ARCHIVE_LAYOUT_VERSION",
+    "ARCHIVE_ROOT_FOLDER",
+    "EXAM_PAPER_MARKERS",
+    "audio_filename_stem",
+    "audio_filename_from_stem",
+    "format_question_numbers",
+    "is_exam_paper_bundle",
+    "normalize_question_numbers",
+    "safe_audio_filename_stem",
+]

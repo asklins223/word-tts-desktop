@@ -11,6 +11,7 @@ from pathlib import PurePath
 from collections.abc import Callable
 from typing import Any, Mapping
 
+from audio_naming import ARCHIVE_LAYOUT_VERSION
 from .database import WorkflowDatabase
 from .data_safety import DataSafetyError, redact_public_json, validate_public_object
 from .domain import CommandTarget, WorkflowSnapshot, canonical_json, content_hash, new_id, utc_now
@@ -3383,6 +3384,7 @@ class WorkflowRepository:
                             "workflow_id": workflow_id,
                             "segments": export_basis,
                             "requested_item_ids": None,
+                            "archive_layout": ARCHIVE_LAYOUT_VERSION,
                         })
                         expected_full_zip_id = f"artifact-export-{export_hash[:32]}"
                 zip_row = None

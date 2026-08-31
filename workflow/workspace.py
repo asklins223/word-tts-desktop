@@ -16,6 +16,7 @@ from collections import defaultdict
 from pathlib import PurePath
 from typing import Any, Mapping
 
+from audio_naming import ARCHIVE_LAYOUT_VERSION, audio_filename_from_stem
 from .domain import content_hash
 from .repositories import NotFoundError, _snapshot_from_connection
 
@@ -39,7 +40,7 @@ _ITEM_METADATA_ALLOWLIST = {
     "column", "entry_number", "sentence_number", "number", "tags",
     "operation_id", "scope_row_id", "projection", "parser_version",
     "normalization_version", "voice", "voice_gender", "type_path",
-    "type_hierarchy",
+    "type_hierarchy", "audio_filename_stem", "question_numbers",
     "_workflow_skip_reason",
 }
 
@@ -522,6 +523,12 @@ def build_workflow_workspace(
         ready_item_artifacts: dict[str, list[str]] = defaultdict(list)
         deliverable_item_artifacts: dict[str, list[str]] = defaultdict(list)
         item_by_id = {str(row["item_id"]): row for row in item_rows}
+        item_audio_filename_stems = {}
+        for item_id, item_row in item_by_id.items():
+            item_metadata = _json_object(item_row["metadata_json"])
+            stem = str(item_metadata.get("audio_filename_stem") or "").strip()
+            if stem:
+                item_audio_filename_stems[item_id] = stem
         workspace_artifacts: list[dict[str, Any]] = []
         ready_artifact_ids: set[str] = set()
         artifact_facts: dict[str, dict[str, Any]] = {}
@@ -574,7 +581,9 @@ def build_workflow_workspace(
                 ready_artifact_ids.add(artifact_id)
             item_row = item_by_id.get(item_id or "")
             if artifact_type == "tts-segment" and item_row is not None and fmt:
-                filename = f"{int(item_row['sequence']) + 1:03d}.{fmt}"
+                filename = audio_filename_from_stem(
+                    item_audio_filename_stems.get(item_id or ""), fmt
+                ) or f"{int(item_row['sequence']) + 1:03d}.{fmt}"
             elif artifact_type == "tts-segment":
                 filename = None
             elif artifact_type == "export-zip":
@@ -923,12 +932,13 @@ def build_workflow_workspace(
                 "workflow_id": workflow_id,
                 "segments": export_basis,
                 "requested_item_ids": None,
+                "archive_layout": ARCHIVE_LAYOUT_VERSION,
             })
             expected_full_zip_id = f"artifact-export-{export_hash[:32]}"
 
         # An export is immutable, so its creation time alone cannot prove that
         # it contains the current TTS artifacts.  Prefer the content-addressed
-        # full export ID used by create_export_zip.  A v2 explicitly-selected
+        # full export ID used by create_export_zip.  A v3 explicitly-selected
         # subset may remain available while newer items are added, but a full
         # export created during an earlier partial run must not be exposed as
         # the current ZIP after a retry publishes a newer segment.
@@ -975,9 +985,9 @@ def build_workflow_workspace(
                 selected_parent_item_ids = parent_item_ids
                 break
             producer_version = str(candidate.get("producer_version") or "")
-            is_explicit_ready_subset = producer_version == "2:subset-ready"
+            is_explicit_ready_subset = producer_version == "3:subset-ready"
             is_current_partial_subset = (
-                producer_version == "2:subset-partial"
+                producer_version == "3:subset-partial"
                 and parent_artifact_ids == current_delivery_artifact_ids
             )
             if selected_zip is None and (is_explicit_ready_subset or is_current_partial_subset):

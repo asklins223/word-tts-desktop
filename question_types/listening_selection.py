@@ -2,6 +2,7 @@
 
 import re
 
+from audio_naming import audio_filename_stem, is_exam_paper_bundle
 from question_types.base import BaseParser
 from question_types.text_utils import sanitize
 
@@ -55,6 +56,15 @@ class ListeningSelectionParser(BaseParser):
         # 全角Ａ-Ｃ 归一为 ASCII
         return chr(ord(raw) - 0xFEE0) if ord(raw) > 127 else raw
 
+    def _auto_numbered_stem(self, position, value):
+        """读取 Word 自动编号题干，避免把编号写回正文文本。"""
+        if not re.match(r'^[A-Za-z]', value) or self.RE_OPTION_FULL.match(value):
+            return None
+        if position >= len(self.paragraph_metadata):
+            return None
+        number = self.paragraph_metadata[position].get("numbering_number")
+        return int(number) if number is not None else None
+
     def parse(self):
         items = []
         questions = []           # 业务字段通道：题干+选项（不影响 items）
@@ -63,6 +73,8 @@ class ListeningSelectionParser(BaseParser):
         collecting = False
         current_lines = []
         script_index = 0
+        question_numbers_by_script = {}
+        use_exam_naming = is_exam_paper_bundle(self.paras)
 
         def flush_questions(ordinal=None):
             """收集到的题干组归属到指定录音稿序号。
@@ -75,6 +87,10 @@ class ListeningSelectionParser(BaseParser):
             for question in pending_questions:
                 question["script_ordinal"] = ordinal
                 questions.append(question)
+                if ordinal is not None:
+                    question_numbers_by_script.setdefault(ordinal, []).append(
+                        question["number"]
+                    )
             pending_questions = []
 
         def flush():
@@ -82,16 +98,28 @@ class ListeningSelectionParser(BaseParser):
             text = sanitize('\n'.join(current_lines))
             if collecting and text:
                 script_index += 1
-                items.append({
+                item = {
                     "category": "听后选择录音稿",
                     "index": script_index,
                     "question_index": script_index,
                     "text": text,
-                })
+                }
+                question_numbers = question_numbers_by_script.get(script_index, [])
+                if use_exam_naming:
+                    filename_stem = audio_filename_stem(
+                        ["听后选择"], script_index
+                    )
+                    item.update({
+                        "question_numbers": list(question_numbers),
+                        "type_path": ["听后选择"],
+                        "filename_stem": filename_stem,
+                        "audio_filename_stem": filename_stem,
+                    })
+                items.append(item)
             collecting = False
             current_lines = []
 
-        for _, text, _ in self.paras:
+        for position, (_, text, _) in enumerate(self.paras):
             value = str(text or '').strip()
 
             # 先处理题型标题，允许同一文档中出现多组听后选择。
@@ -128,6 +156,15 @@ class ListeningSelectionParser(BaseParser):
                     pending_questions.append({
                         "number": int(stem_match.group(1)),
                         "stem": sanitize(stem_match.group(2)),
+                        "options": [],
+                        "answer": None,
+                    })
+                    continue
+                auto_number = self._auto_numbered_stem(position, value)
+                if auto_number is not None:
+                    pending_questions.append({
+                        "number": auto_number,
+                        "stem": sanitize(value),
                         "options": [],
                         "answer": None,
                     })

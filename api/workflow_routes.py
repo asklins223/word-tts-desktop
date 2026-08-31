@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app_paths import ensure_data_dir
+from audio_naming import audio_filename_from_stem
 from application.workflow_service import WorkflowApplicationService
 from db.migration_runner import MigrationError
 from workflow.artifact_store import ArtifactStore, ArtifactStoreError, ArtifactTooLarge
@@ -1353,7 +1354,25 @@ def _artifact_content_metadata(runtime: WorkflowRuntime, row: Mapping[str, Any])
             pass
         stem = Path(source_name).stem or "wordtts"
         if artifact_type == "tts-segment" and row["item_sequence"] is not None:
-            filename = f"{int(row['item_sequence']) + 1:03d}.{fmt}"
+            custom_filename = None
+            try:
+                item_id = row["item_id"]
+                if item_id:
+                    with runtime.database.read_transaction() as con:
+                        item_row = con.execute(
+                            """SELECT metadata_json FROM work_items
+                               WHERE workflow_id=? AND item_id=?""",
+                            (str(row["workflow_id"]), str(item_id)),
+                        ).fetchone()
+                    if item_row is not None:
+                        item_metadata = json.loads(str(item_row["metadata_json"] or "{}"))
+                        if isinstance(item_metadata, Mapping):
+                            custom_filename = audio_filename_from_stem(
+                                item_metadata.get("audio_filename_stem"), fmt
+                            )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                custom_filename = None
+            filename = custom_filename or f"{int(row['item_sequence']) + 1:03d}.{fmt}"
         elif artifact_type == "export-zip":
             filename = f"{_safe_content_filename(stem, 'wordtts')}_tts.zip"
         elif artifact_type == "parse-output":

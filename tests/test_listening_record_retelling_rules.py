@@ -154,3 +154,44 @@ def test_parser_accepts_multiple_gender_markers_and_stops_at_controls():
     result = parser.parse()
     assert result["item_count"] == 1
     assert result["items"][0]["text"] == "(W)Female line.\n(M)Male line."
+
+
+def test_parser_accepts_unmarked_script_and_keeps_inline_controls_out():
+    parser = ListeningRecordRetellingParser(
+        "synthetic.docx",
+        preloaded_paras=(
+            [
+                (0, "第一节 听后记录", "Normal"),
+                (1, "（计算机语音提示）现在，听短文两遍。", "Normal"),
+                (
+                    2,
+                    "Hello, everyone. This is a listening script."
+                    "（计算机语音提示）现在，请你在答题区域输入答案。",
+                    "Normal",
+                ),
+                (3, "答题区域", "Normal"),
+                (4, "【参考答案】 listening script", "Normal"),
+                (5, "第二节：信息转述", "Normal"),
+            ],
+            [
+                {"heading_hint": False},
+                {"heading_hint": False},
+                {"heading_hint": False},
+                {"heading_hint": False},
+                {"heading_hint": False},
+                {"heading_hint": False},
+            ],
+        ),
+    )
+
+    result = parser.parse()
+    assert result["item_count"] == 1
+    assert result["items"][0]["text"] == (
+        "Hello, everyone. This is a listening script."
+    )
+    segments = build_synthesis_segments(
+        result["items"][0]["text"], 50, 50, 50
+    )
+    assert [(segment["voice_key"], segment["text"]) for segment in segments] == [
+        ("amanda", "Hello, everyone. This is a listening script."),
+    ]

@@ -7,6 +7,7 @@ import re
 import zipfile
 from datetime import datetime
 
+from audio_naming import ARCHIVE_ROOT_FOLDER
 from wordtts.audio_io import sanitize_dirname
 from wordtts.config import (
     AUDIO_ALGORITHM_VERSION,
@@ -99,6 +100,7 @@ def build_progress(source_filename, source_path, parse_results, config):
 
     文件命名规则：
       - 信息获取题目（听选信息题目/回答问题题目）：问题x.mp3（x 为题号）
+      - 完整试卷题型提供 audio_filename_stem 时，使用其完整题型路径和局部序号
       - 其他题型：题型-录音稿x.mp3（x 为同题型内的顺序号）
     """
     config = {
@@ -121,7 +123,9 @@ def build_progress(source_filename, source_path, parse_results, config):
             prefix = _category_to_prefix(cat)
             seq_by_cat[prefix] = seq_by_cat.get(prefix, 0) + 1
             default_seq = seq_by_cat[prefix]
-            requested_stem = _sanitize_filename_stem(raw_item.get("filename_stem"))
+            requested_stem = _sanitize_filename_stem(
+                raw_item.get("audio_filename_stem") or raw_item.get("filename_stem")
+            )
             if requested_stem:
                 filename_stem = _unique_filename_stem(requested_stem, used_filename_stems)
                 try:
@@ -210,18 +214,22 @@ def get_completed_file_list(progress):
 def create_zip(session_dir, progress):
     """创建包含所有音频和 JSON 的 ZIP 包。"""
     zip_path = os.path.join(session_dir, "output.zip")
+    archive_root = f"{ARCHIVE_ROOT_FOLDER}/"
 
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        directory = zipfile.ZipInfo(archive_root, date_time=(1980, 1, 1, 0, 0, 0))
+        directory.external_attr = (0o755 << 16) | 0x10
+        zf.writestr(directory, b"")
         # 添加所有已完成的音频文件
         for item in progress["items"]:
             if item["status"] == "done" and item["output_path"] and os.path.exists(item["output_path"]):
-                arcname = "audio/" + item["filename"]
+                arcname = archive_root + item["filename"]
                 zf.write(item["output_path"], arcname)
 
         # 添加解析结果 JSON
         parsed_path = os.path.join(session_dir, "parsed.json")
         if os.path.exists(parsed_path):
-            zf.write(parsed_path, "parsed.json")
+            zf.write(parsed_path, archive_root + "parsed.json")
 
         # 添加进度/清单 JSON
         manifest = {
@@ -240,6 +248,6 @@ def create_zip(session_dir, progress):
             ],
         }
         manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2)
-        zf.writestr("manifest.json", manifest_json)
+        zf.writestr(archive_root + "manifest.json", manifest_json)
 
     return zip_path

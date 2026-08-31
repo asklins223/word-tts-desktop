@@ -267,7 +267,7 @@ FunctionEnd
     !insertmacro InstallerCreatePanel 0u 0u 315u 193u ${INSTALLER_LIGHT}
     !insertmacro InstallerCreateLabel $0 16u 10u 120u 14u "小猪wordTTS" $InstallerBrandFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
     !insertmacro InstallerCreateLabel $0 16u 24u 150u 9u "文档配音工作台" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 244u 10u 40u 11u "3.0.0" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 244u 10u 40u 11u "3.0.1" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
     !insertmacro InstallerCreateRule $0 16u 31u 283u ${INSTALLER_MID}
     !insertmacro InstallerCreatePanel 16u 30u 58u 3u ${INSTALLER_ACCENT}
     !insertmacro InstallerCreateLabel $0 224u 23u 72u 9u "DOCUMENT / VOICE" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
@@ -289,7 +289,7 @@ FunctionEnd
     SetCtlColors $InstallerFrame "${INSTALLER_INK}" "${INSTALLER_LIGHT}"
     !insertmacro InstallerCreatePanel 0u 0u 300u 140u ${INSTALLER_LIGHT}
     !insertmacro InstallerCreateLabel $0 16u 9u 120u 14u "小猪wordTTS" $InstallerBrandFont ${INSTALLER_INK} ${INSTALLER_LIGHT}
-    !insertmacro InstallerCreateLabel $0 16u 23u 150u 9u "安装程序 · 3.0.0" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
+    !insertmacro InstallerCreateLabel $0 16u 23u 150u 9u "安装程序 · 3.0.1" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
     !insertmacro InstallerCreateRule $0 16u 31u 268u ${INSTALLER_MID}
     !insertmacro InstallerCreatePanel 16u 30u 52u 3u ${INSTALLER_ACCENT}
     !insertmacro InstallerCreateLabel $0 219u 23u 74u 9u "DOCUMENT / VOICE" $InstallerSmallFont ${INSTALLER_SHADE} ${INSTALLER_LIGHT}
@@ -473,7 +473,7 @@ FunctionEnd
     IntOp $8 $8 / ${INSTALLER_PROGRESS_BASE_WIDTH}
     StrCpy $R2 $8
     !insertmacro InstallerCreateProgressLabel "小猪wordTTS" 10 ${INSTALLER_INK} ${INSTALLER_LIGHT} $InstallerBrandFont
-    !insertmacro InstallerCreateProgressLabel "安装程序 · 3.0.0" 25 ${INSTALLER_SHADE} ${INSTALLER_LIGHT} $InstallerSmallFont
+    !insertmacro InstallerCreateProgressLabel "安装程序 · 3.0.1" 25 ${INSTALLER_SHADE} ${INSTALLER_LIGHT} $InstallerSmallFont
     !insertmacro InstallerCreateProgressPanel 24 44 84 3 ${INSTALLER_ACCENT}
 
     ; A single strong mark carries the voice idea without rebuilding a fake

@@ -153,6 +153,7 @@ def normalize_item(
     category = str(raw.get("category") or raw.get("item_type") or document_type).strip()[:128]
     explicit_id = str(raw.get("identity_key") or raw.get("item_id") or "").strip()
     filename_stem = str(raw.get("filename_stem") or "").strip()
+    audio_filename_stem = str(raw.get("audio_filename_stem") or "").strip()
     number = str(raw.get("number") or raw.get("seq") or sequence)
     basis = explicit_id or filename_stem or f"{category}:{number}:{content_hash(text)[:16]}"
     identity = f"{source_basis}:{document_type}:{basis}"
@@ -163,6 +164,8 @@ def normalize_item(
         "section": raw.get("section"),
         "number": raw.get("number"),
         "filename_stem": filename_stem or None,
+        "audio_filename_stem": audio_filename_stem or None,
+        "question_numbers": raw.get("question_numbers"),
         "conversation_number": raw.get("conversation_number"),
         # Preserve parser-owned display facts for the review workbench.  The
         # legacy parsers emit the intended default gender as ``voice``; it

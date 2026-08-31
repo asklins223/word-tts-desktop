@@ -190,6 +190,31 @@ class ListeningSelectionRuleTests(unittest.TestCase):
             ["m: New question script."],
         )
 
+    def test_automatic_numbering_is_kept_for_english_question_stems(self):
+        paras = [
+            (0, "听后选择", "Normal"),
+            (1, "Who is the speaker", "Normal"),
+            (2, "A. Tom", "Normal"),
+            (3, "【录音原文】", "Normal"),
+            (4, "W: Hello.", "Normal"),
+        ]
+        metadata = [
+            {},
+            {"numbering_number": 7},
+            {},
+            {},
+            {},
+        ]
+
+        result = ListeningSelectionParser(
+            "automatic-numbering.docx",
+            preloaded_paras=(paras, metadata),
+        ).parse()
+
+        self.assertEqual(result["questions"][0]["number"], 7)
+        self.assertEqual(result["questions"][0]["stem"], "Who is the speaker")
+        self.assertEqual(result["items"][0]["text"], "W: Hello.")
+
 
 if __name__ == "__main__":
     unittest.main()

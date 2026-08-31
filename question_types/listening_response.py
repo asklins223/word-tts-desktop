@@ -2,6 +2,7 @@
 
 import re
 
+from audio_naming import audio_filename_stem, is_exam_paper_bundle
 from question_types.base import BaseParser
 from question_types.text_utils import is_chinese, sanitize
 
@@ -34,6 +35,11 @@ class ListeningResponseParser(BaseParser):
     )
     RE_LEADING_MARK = re.compile(r'^[★☆*]\s*')
     RE_LEADING_NUMBER = re.compile(r'^\d+\s*[.．、）)]\s*')
+    RE_ANSWER_OPTION_NUMBER = re.compile(
+        r'^\s*(?P<number>\d+)\s*[.．、）)]\s*[★☆*]'
+    )
+    RE_ANSWER_OPTIONS = re.compile(r'^\s*[★☆*]')
+    RE_ANSWER_PROMPT = re.compile(r'请朗读应答语|朗读应答语', re.I)
     RE_GRADE = re.compile(
         r'(?<!\d)(?P<grade>[789七八九])\s*(?:年级\s*)?上',
         re.I,
@@ -107,6 +113,20 @@ class ListeningResponseParser(BaseParser):
         current_lines = []
         response_index = 0
         grade_prefix = self._grade_prefix(self.filename, self.paras)
+        awaiting_answer_choices = False
+        use_exam_naming = is_exam_paper_bundle(self.paras)
+        answer_item_indexes = set()
+        answer_numbers = {}
+
+        def apply_exam_number(item, question_number):
+            if not use_exam_naming or question_number is None:
+                return
+            item.update({
+                "number": question_number,
+                "question_number": question_number,
+                "question_numbers": [question_number],
+                "type_path": ["听后应答"],
+            })
 
         def flush():
             nonlocal collecting, expected_count, current_lines, response_index
@@ -129,15 +149,37 @@ class ListeningResponseParser(BaseParser):
             prompt = self.RE_PROMPT.search(value)
             if prompt:
                 flush()
+                awaiting_answer_choices = False
                 collecting = True
                 expected_count = self._parse_count(prompt.group('count'))
                 continue
 
             if not collecting:
+                # 句数达到提示值时，上一段可能已经提前 flush；仍需记住
+                # 后续“请朗读应答语”后的答案选项题号，才能把它绑定回这条音频。
+                if (
+                    self.RE_CONTROL.search(value)
+                    and self.RE_ANSWER_PROMPT.search(value)
+                ):
+                    awaiting_answer_choices = True
+                    continue
+                answer_number = self.RE_ANSWER_OPTION_NUMBER.match(value)
+                is_answer_options = answer_number or self.RE_ANSWER_OPTIONS.match(value)
+                if awaiting_answer_choices and is_answer_options and items:
+                    item_index = len(items)
+                    answer_item_indexes.add(item_index)
+                    if answer_number:
+                        answer_numbers[item_index] = int(
+                            answer_number.group("number")
+                        )
+                    awaiting_answer_choices = False
                 continue
 
             if self.RE_CONTROL.search(value):
+                is_answer_prompt = bool(self.RE_ANSWER_PROMPT.search(value))
                 flush()
+                if is_answer_prompt:
+                    awaiting_answer_choices = True
                 continue
 
             current_lines.extend(self._content_lines(value))
@@ -159,4 +201,26 @@ class ListeningResponseParser(BaseParser):
                     flush()
 
         flush()
+        if use_exam_naming and answer_numbers:
+            # 部分试卷的某一行答案选项漏写了题号。用同一大题中已出现的
+            # 题号反推连续区间；只有区间基准一致时才补号，避免猜错。
+            bases = {
+                number - item_index + 1
+                for item_index, number in answer_numbers.items()
+            }
+            if len(bases) == 1:
+                base = next(iter(bases))
+                for item_index in answer_item_indexes:
+                    answer_numbers.setdefault(item_index, base + item_index - 1)
+            for item_index, number in answer_numbers.items():
+                if 1 <= item_index <= len(items):
+                    apply_exam_number(items[item_index - 1], number)
+        if use_exam_naming:
+            for ordinal, item in enumerate(items, start=1):
+                filename_stem = audio_filename_stem(["听后应答"], ordinal)
+                item.update({
+                    "type_path": ["听后应答"],
+                    "filename_stem": filename_stem,
+                    "audio_filename_stem": filename_stem,
+                })
         return self._result(items)
