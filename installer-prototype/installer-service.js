@@ -436,7 +436,14 @@ function runPowerShellDefault(script, execFileImpl) {
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePowerShellCommand(script)],
         { windowsHide: true, maxBuffer: 1024 * 1024 },
-    );
+    ).catch(error => {
+        const details = [error?.stderr, error?.stdout]
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+            .join('\n');
+        if (details) error.message = `${error.message}\n${details}`;
+        throw error;
+    });
 }
 
 function powershellLiteral(value) {

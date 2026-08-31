@@ -282,10 +282,16 @@ jobs:
               [int]$TimeoutMs = 120000
             )
 
+            $logBase = Join-Path $env:RUNNER_TEMP ("wordtts-installer-" + [guid]::NewGuid().ToString("N"))
+            $stdoutPath = "$logBase.stdout.log"
+            $stderrPath = "$logBase.stderr.log"
             $process = Start-Process `
               -FilePath $FilePath `
               -ArgumentList $Arguments `
               -WorkingDirectory (Split-Path -Parent $FilePath) `
+              -RedirectStandardOutput $stdoutPath `
+              -RedirectStandardError $stderrPath `
+              -WindowStyle Hidden `
               -PassThru
             try {
               if (-not $process.WaitForExit($TimeoutMs)) {
@@ -293,6 +299,10 @@ jobs:
                 throw "进程超时: $FilePath"
               }
               if ($process.ExitCode -ne 0) {
+                Write-Host "进程 stdout: $stdoutPath"
+                if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue }
+                Write-Host "进程 stderr: $stderrPath"
+                if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue }
                 throw "进程失败，代码 $($process.ExitCode): $FilePath"
               }
             } finally {
@@ -335,6 +345,15 @@ jobs:
               Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
+
+      - name: Upload installer lifecycle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 小猪wordTTS-Windows-installer-smoke
+          path: ${{ runner.temp }}/wordtts-installer-*.log
+          retention-days: 7
+          if-no-files-found: warn
 
       # ======================================================================
       # 8. 上传构建产物
