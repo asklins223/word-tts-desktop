@@ -106,14 +106,13 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "小猪wordTTS",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "installerHeader": null,
-      "installerSidebar": null,
-      "include": "build/installer.nsh",
+      "installerHeaderIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false
     },
     "publish": {

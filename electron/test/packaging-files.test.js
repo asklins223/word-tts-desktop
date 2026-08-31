@@ -60,14 +60,19 @@ test('build.files 引用的关键文件都真实存在', () => {
     }
 });
 
-test('Windows NSIS 自定义页面已被纳入构建配置', () => {
+test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', () => {
     const nsisInclude = path.join(APP_DIR, 'build', 'installer.nsh');
+    const installerHeader = path.join(APP_DIR, 'build', 'installerHeader.bmp');
+    const installerSidebar = path.join(APP_DIR, 'build', 'installerSidebar.bmp');
 
-    assert.ok(fs.existsSync(nsisInclude), `installer asset must exist: ${nsisInclude}`);
-    assert.equal(packageJson.build?.nsis?.include, 'build/installer.nsh');
-    assert.equal(packageJson.build?.nsis?.installerHeader, null);
-    assert.equal(packageJson.build?.nsis?.installerSidebar, null);
-    assert.equal(packageJson.build?.nsis?.allowToChangeInstallationDirectory, undefined);
+    assert.equal(fs.existsSync(nsisInclude), false, `custom installer include must be removed: ${nsisInclude}`);
+    assert.equal(fs.existsSync(installerHeader), false, `custom installer header must be removed: ${installerHeader}`);
+    assert.equal(fs.existsSync(installerSidebar), false, `custom installer sidebar must be removed: ${installerSidebar}`);
+    assert.equal(packageJson.build?.nsis?.include, undefined);
+    assert.equal(packageJson.build?.nsis?.installerHeader, undefined);
+    assert.equal(packageJson.build?.nsis?.installerSidebar, undefined);
+    assert.equal(packageJson.build?.nsis?.allowToChangeInstallationDirectory, true);
+    assert.equal(packageJson.build?.nsis?.installerHeaderIcon, 'build/icon.ico');
     const windowsWorkflow = fs.readFileSync(
         path.join(APP_DIR, '..', '.github', 'workflows', 'build-windows.yml'),
         'utf8',
@@ -137,63 +142,4 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.match(macWorkflow, /local_zip="electron\/release\/小猪wordTTS-/);
     assert.match(macWorkflow, /local_dmg="electron\/release\/小猪wordTTS-/);
     assert.match(macBuildScript, /builder_zip_path[\s\S]*rm -f \"\$builder_zip_path\"[\s\S]*latest-mac\.yml/);
-    const nsisText = fs.readFileSync(nsisInclude, 'utf8');
-    assert.match(nsisText, /\$\{VERSION\}/, 'NSIS custom pages must use the electron-builder version macro');
-    assert.doesNotMatch(nsisText, /"3\.0\.[0-9]+"/, 'NSIS custom pages must not freeze a release version');
-    assert.match(nsisText, /customWelcomePage/);
-    assert.match(nsisText, /customFinishPage/);
-    assert.match(nsisText, /Page custom InstallerWelcomeCreate InstallerWelcomeLeave/);
-    assert.match(nsisText, /Page custom InstallerFinishCreate InstallerFinishLeave/);
-    assert.doesNotMatch(nsisText, /!insertmacro MUI_PAGE_WELCOME/);
-    assert.doesNotMatch(nsisText, /!insertmacro MUI_PAGE_FINISH/);
-    assert.match(nsisText, /MUI_PAGE_CUSTOMFUNCTION_SHOW/);
-    assert.match(nsisText, /customPageAfterChangeDir/);
-    assert.match(nsisText, /InstallerHideStockChrome/);
-    assert.match(nsisText, /InstallerBuildFrame/);
-    assert.match(nsisText, /InstallerBuildCompactFrame/);
-    assert.match(nsisText, /Function InstallerDirectoryCreate/);
-    assert.match(nsisText, /Function InstallerInstallFilesCreate/);
-    assert.match(nsisText, /INSTALLER_PROGRESS_BASE_WIDTH 416/);
-    assert.match(nsisText, /INSTALLER_PROGRESS_BASE_HEIGHT 242/);
-    assert.match(nsisText, /InstallerCreateProgressLabel/);
-    assert.match(nsisText, /InstallerCreateProgressMarker/);
-    assert.match(nsisText, /nsDialogs::Create 1044/);
-    assert.match(nsisText, /CreateWindowEx/);
-    assert.match(nsisText, /InstallerInstallModeToggle/);
-    assert.match(nsisText, /DwmSetWindowAttribute/);
-    assert.match(nsisText, /MUI_INSTFILESPAGE_COLORS/);
-    assert.match(nsisText, /MUI_INSTFILESPAGE_COLORS "23201D F6F1E8"/);
-    assert.match(nsisText, /INSTALLER_ACCENT "F06445"/);
-    assert.match(nsisText, /INSTALLER_SIGNAL "FFC857"/);
-    assert.doesNotMatch(nsisText, /9BBC0F|8BAC0F|306230|0F380F|315CFF|6C5CE7|F06A4F/);
-    assert.doesNotMatch(nsisText, /Consolas|installer_frame_step|installer_compact_active/);
-    assert.doesNotMatch(nsisText, /PageEx custom/);
-    assert.match(nsisText, /WS_CAPTION/);
-    assert.match(nsisText, /StdUtils\.ExecShellAsUser/);
-    assert.match(nsisText, /\$launchLink/);
-    assert.doesNotMatch(nsisText, /ExecShell\s+"open"/);
-    assert.match(nsisText, /NSD_OnClick/);
-    assert.match(nsisText, /Function InstallerFinishToggleOpen\s+Pop \$0/);
-    assert.match(nsisText, /HIDE_RUN_AFTER_FINISH/);
-
-    const dialogControls = [...nsisText.matchAll(
-        /\$\{NSD_Create(?:Label|GroupBox|CheckBox|DirRequest|BrowseButton)\}\s+(\d+)u\s+(\d+)u\s+(\d+)u\s+(\d+)u/g,
-    )].map((match) => ({
-        x: Number(match[1]),
-        y: Number(match[2]),
-        width: Number(match[3]),
-        height: Number(match[4]),
-    }));
-    assert.ok(dialogControls.length > 0, 'expected custom NSIS dialog controls');
-    for (const control of dialogControls) {
-        assert.ok(
-            control.x >= 0 && control.x + control.width <= 315,
-            `custom control must stay inside the NSIS content width: ${JSON.stringify(control)}`,
-        );
-        assert.ok(
-            control.y >= 0 && control.y + control.height <= 193,
-            `custom control must stay above the NSIS action row: ${JSON.stringify(control)}`,
-        );
-    }
-
 });
