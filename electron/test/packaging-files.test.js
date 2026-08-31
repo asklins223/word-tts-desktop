@@ -94,8 +94,13 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
     assert.equal(packageJson.scripts['build:mac'].includes('--publish never'), true);
     assert.equal(packageJson.scripts['build:win'].includes('--publish never'), true);
     assert.ok(
-        (windowsWorkflow.match(/\$\{\{ steps\.find-installer\.outputs\.installer_path \}\}/g) || []).length >= 2,
-        'artifact upload and release must use the validated installer path',
+        (windowsWorkflow.match(/\$\{\{ steps\.find-installer\.outputs\.installer_path \}\}/g) || []).length >= 1,
+        'Windows build artifact upload must use the validated installer path',
+    );
+    assert.match(
+        windowsWorkflow,
+        /Download Windows build artifact[\s\S]*Verify release files[\s\S]*electron\/release\/小猪wordTTS-Setup-\$\{\{ steps\.version\.outputs\.version \}\}-x64\.exe/,
+        'Windows release job must download and verify the exact installer before publishing',
     );
     const macWorkflow = fs.readFileSync(
         path.join(APP_DIR, '..', '.github', 'workflows', 'build-macos.yml'),
@@ -111,9 +116,16 @@ test('Windows NSIS 自定义页面已被纳入构建配置', () => {
         'macOS workflow must validate the exact final ZIP and DMG paths',
     );
     assert.ok(
-        (macWorkflow.match(/\$\{\{ steps\.mac-artifacts\.outputs\.(?:dmg|zip) \}\}/g) || []).length >= 4,
-        'macOS artifact upload and release must use the validated exact paths',
+        (macWorkflow.match(/\$\{\{ steps\.mac-artifacts\.outputs\.(?:dmg|zip) \}\}/g) || []).length >= 2,
+        'macOS build artifact upload must use the validated exact paths',
     );
+    assert.match(
+        macWorkflow,
+        /Download macOS build artifact[\s\S]*Verify release files[\s\S]*test -s electron\/release\/latest-mac\.yml/,
+        'macOS release job must download and verify the packaged artifacts before publishing',
+    );
+    assert.match(macWorkflow, /electron\/release\/\*\.dmg/);
+    assert.match(macWorkflow, /electron\/release\/\*\.zip/);
     assert.doesNotMatch(macWorkflow, /electron\/release\/小猪wordTTS-[^$\n]*\.(?:zip|dmg)/);
     assert.match(macBuildScript, /builder_zip_path[\s\S]*rm -f \"\$builder_zip_path\"[\s\S]*latest-mac\.yml/);
     const nsisText = fs.readFileSync(nsisInclude, 'utf8');
