@@ -15,7 +15,7 @@ import xunfei
 import xunfei.config as xunfei_config
 import xunfei.downloads as xunfei_downloads
 import xunfei.runtime as xunfei_runtime
-from xunfei import XunFeiSession
+from xunfei import XunFeiSession, XunfeiError
 
 
 class _FakeKeyboard:
@@ -331,6 +331,148 @@ class XunfeiFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_composite_pause_waits_for_delayed_editor_commit_without_duplicate(self):
+        """页面异步提交停顿时，必须等回读落地而不是重复点击。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <style>.ssml-editor { width: 640px; border: 1px solid #999; }</style>
+        <div id="toolbar">
+          <button id="pause-2s" type="button">2s</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true">
+          <p><span class="range-annotation-content speaker-content">First line.</span></p>
+        </div>
+        <script>
+          let clickCount = 0;
+          const button = document.getElementById('pause-2s');
+          button.addEventListener('mousedown', event => event.preventDefault());
+          button.onclick = () => {
+            clickCount += 1;
+            const selection = window.getSelection();
+            if (!selection || !selection.rangeCount) return;
+            const range = selection.getRangeAt(0).cloneRange();
+            // 模拟讯飞 React/编辑器状态异步落地，而不是同步插入 DOM。
+            setTimeout(() => {
+              const marker = document.createElement('b');
+              marker.className = 'ssml-tag ssml-tag-break';
+              marker.setAttribute('data-type', 'break');
+              marker.setAttribute('data-value', '2000');
+              marker.textContent = '2秒';
+              range.insertNode(marker);
+            }, 120);
+          };
+          window.getPauseClickCount = () => clickCount;
+        </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                XunFeiSession._insert_composite_pause(page, 0, 2000)
+                self.assertEqual(page.evaluate("() => window.getPauseClickCount()"), 1)
+                self.assertEqual(
+                    page.locator('.ssml-editor p')
+                    .locator('[data-type="break"][data-value="2000"]')
+                    .count(),
+                    1,
+                )
+            finally:
+                browser.close()
+
+    def test_composite_pause_fails_closed_when_post_click_readback_is_opaque(self):
+        """点击后无法确认页面状态时，不能继续点第二次造成重复停顿。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <style>.ssml-editor { width: 640px; border: 1px solid #999; }</style>
+        <button id="pause-2s" type="button">2s</button>
+        <div class="ssml-editor" contenteditable="true">
+          <p><span class="range-annotation-content speaker-content">First line.</span></p>
+        </div>
+        <script>
+          let clickCount = 0;
+          const button = document.getElementById('pause-2s');
+          button.addEventListener('mousedown', event => event.preventDefault());
+          button.onclick = () => { clickCount += 1; };
+          window.getPauseClickCount = () => clickCount;
+        </script>
+        """
+        reads = 0
+
+        def opaque_readback(_page, _boundaries):
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                return [{
+                    "row": 0,
+                    "value": "2000",
+                    "count": 0,
+                    "atEndCount": 0,
+                }]
+            # Simulate a page version whose DOM probe failed just after the
+            # click. The caller must not interpret this as “not inserted”.
+            return [{"row": 0, "value": "2000"}]
+
+        def run_probe_once(check_fn, **_kwargs):
+            return check_fn()
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                with mock.patch.object(
+                    XunFeiSession,
+                    "_read_composite_pause_issues",
+                    side_effect=opaque_readback,
+                ), mock.patch(
+                    "xunfei.composite_actions._poll",
+                    side_effect=run_probe_once,
+                ):
+                    with self.assertRaisesRegex(XunfeiError, "无法确认页面停顿状态"):
+                        XunFeiSession._insert_composite_pause(page, 0, 2000)
+                self.assertEqual(page.evaluate("() => window.getPauseClickCount()"), 1)
+            finally:
+                browser.close()
+
+    def test_composite_pause_rejects_marker_that_is_not_at_row_end(self):
+        """选区漂移导致标记落在行首时，不能被数量校验放行。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <style>.ssml-editor { width: 640px; border: 1px solid #999; }</style>
+        <div id="toolbar">
+          <button id="pause-2s" type="button">2s</button>
+        </div>
+        <div class="ssml-editor" contenteditable="true">
+          <p><span class="range-annotation-content speaker-content">First line.</span></p>
+        </div>
+        <script>
+          const button = document.getElementById('pause-2s');
+          button.addEventListener('mousedown', event => event.preventDefault());
+          button.onclick = () => {
+            const marker = document.createElement('b');
+            marker.className = 'ssml-tag ssml-tag-break';
+            marker.setAttribute('data-type', 'break');
+            marker.setAttribute('data-value', '2000');
+            marker.textContent = '2秒';
+            // 故意模拟页面使用了漂移选区，把标记放在正文之前。
+            document.querySelector('.ssml-editor p').prepend(marker);
+          };
+        </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                with self.assertRaisesRegex(XunfeiError, "不在目标行末尾"):
+                    XunFeiSession._insert_composite_pause(page, 0, 2000)
+            finally:
+                browser.close()
+
     def test_composite_pause_duration_matching_rejects_wrong_duration(self):
         self.assertTrue(
             XunFeiSession._composite_pause_metadata_matches(
@@ -524,6 +666,46 @@ class XunfeiFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_single_row_selection_starts_at_speaker_content_after_marking(self):
+        """连续区间回退修正单行时不能把已有音色标签带进选区。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <div class="ssml-editor" contenteditable="true">
+                <p><span class="ssml-text-mark-speaker" data-label="Amanda-教育">
+                    <b contenteditable="false" class="ssml-tag">
+                        <span class="ssml-tag-label">Amanda-教育</span>
+                    </b>
+                    <span class="range-annotation-content speaker-content">I’m fine, thanks.</span>
+                </span></p>
+            </div>
+        """
+        rows = [{"text": "I’m fine, thanks."}]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                selected = XunFeiSession._select_editor_rows(page, rows, 0, 0)
+                self.assertEqual(
+                    XunFeiSession._normalize_selection_text(selected),
+                    XunFeiSession._normalize_selection_text(rows[0]["text"]),
+                )
+                self.assertEqual(
+                    page.evaluate(
+                        """() => {
+                            const selection = window.getSelection();
+                            return selection?.anchorNode?.parentElement?.className || '';
+                        }"""
+                    ),
+                    "range-annotation-content speaker-content",
+                )
+            finally:
+                browser.close()
+
     def test_composite_voice_card_prefers_search_result_over_recent_chip(self):
         """同名音色同时出现在搜索结果和最近使用区时不能误点快捷卡片。"""
         try:
@@ -555,6 +737,232 @@ class XunfeiFlowTests(unittest.TestCase):
                 self.assertIsNotNone(card)
                 self.assertEqual(card.evaluate("el => el.tagName"), "DIV")
                 self.assertEqual(card.locator("img").first.get_attribute("alt"), "英语-Amanda")
+            finally:
+                browser.close()
+
+    def test_composite_queue_selects_non_contiguous_rows_and_applies_each_voice(self):
+        """多段队列必须覆盖精确行集合，并能连续套用两种音色。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        texts = ["Amanda one.", "George one.", "Amanda two.", "George two."]
+        html = """
+            <style>
+                .ssml-editor { width: 620px; height: 260px; overflow: auto; }
+                #composite-panel { position: fixed; left: 650px; top: 20px;
+                    width: 320px; height: 260px; background: white; }
+            </style>
+            <button id="open-composite">多人配音</button>
+            <div class="ssml-editor" contenteditable="true">
+                %s
+            </div>
+            <script>
+                const editor = document.querySelector('.ssml-editor');
+                const selectedRows = () => {
+                    const selection = window.getSelection();
+                    const node = selection?.anchorNode;
+                    const element = node?.nodeType === Node.ELEMENT_NODE
+                        ? node : node?.parentElement;
+                    return element?.closest?.('p');
+                };
+                document.addEventListener('pointerup', (event) => {
+                    if (!event.metaKey && !event.ctrlKey) return;
+                    const paragraph = selectedRows();
+                    if (!paragraph) return;
+                    const paragraphs = Array.from(editor.querySelectorAll('p'));
+                    const rowIndex = paragraphs.indexOf(paragraph);
+                    if (rowIndex < 0 || paragraph.querySelector('.msq-pending-range')) return;
+                    const pending = document.createElement('i');
+                    pending.className = 'msq-pending-range';
+                    pending.dataset.rowIndex = String(rowIndex);
+                    pending.setAttribute('aria-hidden', 'true');
+                    paragraph.append(pending);
+                });
+                document.getElementById('open-composite').onclick = () => {
+                    if (document.getElementById('composite-panel')) return;
+                    const panel = document.createElement('div');
+                    panel.id = 'composite-panel';
+                    panel.className = 'fixed';
+                    panel.innerHTML = `
+                        <input placeholder="搜索主播 / 标签" />
+                        <div id="voice-card" class="cursor-pointer">
+                            <img alt="英语-Amanda" />
+                            <span class="voice-name">英语-Amanda</span>
+                        </div>
+                        <input class="w-12" value="50" />
+                        <input class="w-12" value="50" />
+                        <input class="w-12" value="50" />
+                        <button id="use-voice">使用</button>
+                    `;
+                    document.body.append(panel);
+                    const search = panel.querySelector('input:not(.w-12)');
+                    const card = panel.querySelector('#voice-card');
+                    const setCard = () => {
+                        const george = search.value.includes('George');
+                        const name = george ? '英语-George' : '英语-Amanda';
+                        card.dataset.voiceName = name;
+                        card.innerHTML = `<img alt="${name}" />
+                            <span class="voice-name">${name}</span>`;
+                    };
+                    search.addEventListener('input', setCard);
+                    card.addEventListener('click', () => {
+                        panel.dataset.selected = card.dataset.voiceName || '英语-Amanda';
+                    });
+                    panel.querySelector('#use-voice').onclick = () => {
+                        const name = panel.dataset.selected || '英语-Amanda';
+                        const speakerId = name.includes('George') ? '593031758' : '544508087';
+                        const params = Array.from(panel.querySelectorAll('input.w-12'))
+                            .map(input => input.value);
+                        for (const pending of Array.from(
+                            editor.querySelectorAll('.msq-pending-range')
+                        )) {
+                            const paragraph = pending.closest('p');
+                            const content = paragraph?.textContent || '';
+                            if (!paragraph) continue;
+                            paragraph.replaceChildren();
+                            const mark = document.createElement('span');
+                            mark.className = 'ssml-text-mark-speaker';
+                            mark.dataset.speakerId = speakerId;
+                            mark.dataset.rate = params[0] || '50';
+                            mark.dataset.pitch = params[1] || '50';
+                            mark.dataset.volume = params[2] || '50';
+                            const tag = document.createElement('b');
+                            tag.className = 'ssml-tag';
+                            tag.dataset.type = 'range_anchor';
+                            tag.textContent = name;
+                            const speakerContent = document.createElement('span');
+                            speakerContent.className = 'range-annotation-content speaker-content';
+                            speakerContent.textContent = content;
+                            mark.append(tag, speakerContent);
+                            paragraph.append(mark);
+                        }
+                    };
+                    setCard();
+                };
+            </script>
+        """ % "".join(f"<p>{text}</p>" for text in texts)
+        rows = [
+            {"text": text, "voice_key": voice, "speed": 35 if voice == "george" else 50,
+             "pitch": 50, "volume": 50}
+            for text, voice in zip(texts, ["amanda", "george", "amanda", "george"])
+        ]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1100, "height": 400})
+                page.set_content(html)
+                session = XunFeiSession()
+                session._select_composite_queue_rows(page, rows, [(0, 0), (2, 2)])
+                self.assertEqual(session._read_composite_queue_count(page), 2)
+                self.assertEqual(
+                    session._read_composite_queue_row_indices(page), [0, 2]
+                )
+                session._apply_composite_voice_to_queue(page, rows, [(0, 0), (2, 2)])
+
+                session._select_composite_queue_rows(page, rows, [(1, 1), (3, 3)])
+                self.assertEqual(
+                    session._read_composite_queue_row_indices(page), [1, 3]
+                )
+                session._apply_composite_voice_to_queue(page, rows, [(1, 1), (3, 3)])
+
+                self.assertTrue(
+                    session._verify_composite_voice_layout(
+                        page,
+                        rows,
+                        session._composite_signature_ranges(rows),
+                    )
+                )
+                self.assertEqual(
+                    page.locator('.msq-pending-range').count(),
+                    0,
+                )
+            finally:
+                browser.close()
+
+    def test_composite_queue_reads_actual_count_from_aggregate_pending_range(self):
+        """连续范围合并成一个 DOM 节点时仍按页面徽标读取实际段数。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <div class="ssml-editor" contenteditable="true">
+                <p>First paragraph.</p>
+                <p>Second paragraph.</p>
+            </div>
+            <i class="msq-pending-range" data-row-index="0"></i>
+            <div class="msq-queue-badge">已选 2 段</div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                session = XunFeiSession()
+                self.assertEqual(session._read_composite_queue_count(page), 2)
+                self.assertIsNone(session._read_composite_queue_row_indices(page))
+            finally:
+                browser.close()
+
+    def test_composite_ui_params_follow_labels_after_panel_remount(self):
+        """参数顺序变化且输入框失焦重挂载时，仍按语义正确设置。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        html = """
+            <div class="fixed" style="display:block; width:420px; height:320px">
+                <input placeholder="输入主播名称进行搜索" />
+                <div class="param-row" data-param="volume">
+                    <span>音量</span><input class="w-12" value="50" />
+                </div>
+                <div class="param-row" data-param="speed">
+                    <span>语速</span><input class="w-12" value="50" />
+                </div>
+                <div class="param-row" data-param="pitch">
+                    <span>语调</span><input class="w-12" value="50" />
+                </div>
+                <button>使用</button>
+            </div>
+            <script>
+                window.remountCount = 0;
+                for (const input of document.querySelectorAll('.param-row input')) {
+                    input.addEventListener('blur', event => {
+                        const old = event.currentTarget;
+                        if (!old.isConnected) return;
+                        const replacement = old.cloneNode(true);
+                        replacement.value = old.value;
+                        old.replaceWith(replacement);
+                        window.remountCount += 1;
+                    }, {once: true});
+                }
+            </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                XunFeiSession._apply_composite_ui_params(
+                    page, 35, 55, 65
+                )
+                values = page.evaluate(
+                    """() => Object.fromEntries(
+                        Array.from(document.querySelectorAll('.param-row')).map(row => [
+                            row.dataset.param,
+                            row.querySelector('input').value,
+                        ])
+                    )"""
+                )
+                self.assertEqual(
+                    values,
+                    {"speed": "35", "pitch": "55", "volume": "65"},
+                )
+                self.assertEqual(page.evaluate("() => window.remountCount"), 3)
             finally:
                 browser.close()
 

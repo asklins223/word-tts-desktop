@@ -48,6 +48,27 @@ class DesktopServerSecurityTests(unittest.TestCase):
             401,
         )
 
+    def test_runtime_version_prefers_bundled_canonical_version(self):
+        with mock.patch.object(server, "_package_version", return_value="3.0.1"), mock.patch.dict(
+            os.environ,
+            {"WORDTTS_VERSION": "99.0.0"},
+            clear=False,
+        ):
+            self.assertEqual(server._runtime_version(), "3.0.1")
+
+        with mock.patch.object(server, "_package_version", return_value=None), mock.patch.dict(
+            os.environ,
+            {"WORDTTS_VERSION": "V4.5.6"},
+            clear=False,
+        ):
+            self.assertEqual(server._runtime_version(), "4.5.6")
+
+        with tempfile.TemporaryDirectory() as directory:
+            version_path = Path(directory) / "version.json"
+            version_path.write_text('{"version": "V5.6.7"}', encoding="utf-8")
+            with mock.patch.object(server, "RESOURCE_DIR", directory):
+                self.assertEqual(server._package_version(), "5.6.7")
+
     def test_retired_legacy_routes_return_410_without_opt_in(self):
         """方案 13.1：旧路径物理删除后必须由中间件统一返回 410。"""
         previous = os.environ.pop("WORDTTS_LEGACY_API", None)

@@ -260,6 +260,125 @@ class ApplicationServiceTests(unittest.TestCase):
             self.assertEqual(segment["filename"], "听后选择-1.mp3")
             database.close()
 
+    def test_export_zip_falls_back_to_legacy_filename_stem(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-legacy-name-export-test-") as tmp:
+            root = Path(tmp)
+            database = WorkflowDatabase(root / "workflow.db")
+            database.initialize()
+            artifacts = ArtifactStore(root / "artifacts")
+            repository = WorkflowRepository(database)
+            imports = SourceImportService(database, artifacts)
+            registry = ProviderRegistry()
+            registry.register(FakeProvider(output_format="mp3"))
+            service = WorkflowApplicationService(
+                repository,
+                imports,
+                artifacts,
+                engine=WorkflowEngine(repository, artifacts),
+                providers=registry,
+            )
+            draft = service.create_draft(
+                "tts", {"generation_mode": "single_segment"}
+            )
+            item_id = repository.create_item(
+                draft.workflow_id,
+                item_type="听选信息题目",
+                sequence=0,
+                normalized_content="How many subjects?",
+                item_identity_key="legacy:question:1",
+                metadata={"filename_stem": "问题1"},
+            )
+
+            _accepted, result = service.start_generation(
+                draft.workflow_id,
+                expected_state_version=draft.state_version,
+                provider="fake",
+                account_scope="fake-account",
+            )
+            self.assertEqual(result.status, "SUCCEEDED")
+            export = service.create_export_zip(draft.workflow_id)
+            storage = repository.get_artifact_storage(
+                export["artifact_id"], workflow_id=draft.workflow_id
+            )
+            with artifacts.read(storage["storage_key"]) as handle:
+                with zipfile.ZipFile(io.BytesIO(handle.read())) as archive:
+                    self.assertEqual(
+                        archive.namelist(),
+                        ["audio/", "audio/问题1.mp3"],
+                    )
+            segment = next(
+                artifact
+                for artifact in repository.get_workspace(draft.workflow_id)["artifacts"]
+                if artifact["artifact_type"] == "tts-segment"
+                and artifact["item_id"] == item_id
+            )
+        self.assertEqual(segment["filename"], "问题1.mp3")
+        database.close()
+
+    def test_export_zip_deduplicates_duplicate_legacy_filename_stems(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-duplicate-name-export-test-") as tmp:
+            root = Path(tmp)
+            database = WorkflowDatabase(root / "workflow.db")
+            database.initialize()
+            artifacts = ArtifactStore(root / "artifacts")
+            repository = WorkflowRepository(database)
+            imports = SourceImportService(database, artifacts)
+            registry = ProviderRegistry()
+            registry.register(FakeProvider(output_format="mp3"))
+            service = WorkflowApplicationService(
+                repository,
+                imports,
+                artifacts,
+                engine=WorkflowEngine(repository, artifacts),
+                providers=registry,
+            )
+            draft = service.create_draft(
+                "tts", {"generation_mode": "single_segment"}
+            )
+            item_ids = [
+                repository.create_item(
+                    draft.workflow_id,
+                    item_type=item_type,
+                    sequence=sequence,
+                    normalized_content=f"Question {sequence + 1}",
+                    item_identity_key=f"legacy:duplicate:{sequence}",
+                    metadata={"filename_stem": "问题1"},
+                )
+                for sequence, item_type in enumerate(
+                    ("听选信息题目", "回答问题题目")
+                )
+            ]
+
+            _accepted, result = service.start_generation(
+                draft.workflow_id,
+                expected_state_version=draft.state_version,
+                provider="fake",
+                account_scope="fake-account",
+            )
+            self.assertEqual(result.status, "SUCCEEDED")
+
+            workspace_segments = {
+                artifact["item_id"]: artifact
+                for artifact in repository.get_workspace(draft.workflow_id)["artifacts"]
+                if artifact["artifact_type"] == "tts-segment"
+            }
+            self.assertEqual(
+                [workspace_segments[item_id]["filename"] for item_id in item_ids],
+                ["问题1.mp3", "问题1_2.mp3"],
+            )
+
+            export = service.create_export_zip(draft.workflow_id)
+            storage = repository.get_artifact_storage(
+                export["artifact_id"], workflow_id=draft.workflow_id
+            )
+            with artifacts.read(storage["storage_key"]) as handle:
+                with zipfile.ZipFile(io.BytesIO(handle.read())) as archive:
+                    self.assertEqual(
+                        archive.namelist(),
+                        ["audio/", "audio/问题1.mp3", "audio/问题1_2.mp3"],
+                    )
+            database.close()
+
     def test_export_zip_does_not_reuse_corrupt_historical_zip(self) -> None:
         """A deterministic export id must not turn a bad old row into success."""
         with tempfile.TemporaryDirectory(prefix="wordtts-export-integrity-test-") as tmp:

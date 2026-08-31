@@ -7,6 +7,7 @@ const {
     readUpdatePolicy,
     validateUpdatePolicy,
 } = require('./update_policy');
+const { readProjectVersion } = require('./project_version');
 
 const rootDir = path.resolve(__dirname, '..');
 const productName = '小猪wordTTS';
@@ -15,7 +16,8 @@ const githubAssetPrefix = 'wordTTS';
 // The release workflow uploads a canonical ASCII asset name even though the
 // local builder keeps the Chinese product name. The updater follows the URL
 // from latest*.yml, so metadata must use that release asset name rather than
-// the local build filename.
+// the local build filename. Windows uses latest-win.json; macOS keeps the
+// latest-mac.yml contract used by electron-updater.
 function githubAssetName(name) {
     const localName = String(name);
     const productPrefix = `${productName}-`;
@@ -37,7 +39,17 @@ function loadYaml() {
 
 function argumentValue(argv, name) {
     const index = argv.indexOf(name);
-    return index >= 0 ? argv[index + 1] : undefined;
+    if (index >= 0) {
+        const value = argv[index + 1];
+        if (!value || value.startsWith('--')) throw new Error(`${name} 后面必须提供参数值`);
+        return value;
+    }
+    const prefix = `${name}=`;
+    const inline = argv.find(value => value.startsWith(prefix));
+    if (inline === undefined) return undefined;
+    const value = inline.slice(prefix.length);
+    if (!value) throw new Error(`${name} 后面必须提供参数值`);
+    return value;
 }
 
 function escapeRegExp(value) {
@@ -95,8 +107,9 @@ function metadataForArtifact({ version, tag, policy, notes, artifact, releaseDir
             sha512: digest.sha512,
             size: digest.size,
         }],
-        // Keep these fields for older electron-updater clients. New clients
-        // use `files`, while both formats point to the same checksum.
+        // Keep the shared fields stable: macOS electron-updater consumes the
+        // legacy top-level path, while Windows also exposes this shape inside
+        // latest-win.json for the custom client and release diagnostics.
         path: assetName,
         sha512: digest.sha512,
         releaseDate,
@@ -105,6 +118,31 @@ function metadataForArtifact({ version, tag, policy, notes, artifact, releaseDir
         minimumSupportedVersion: policy.minimumSupportedVersion,
         updateMessage: policy.message,
         releaseNotes: notes,
+    };
+}
+
+function customWindowsMetadataForArtifact({ version, tag, policy, notes, artifact, releaseDir, releaseDate }) {
+    const metadata = metadataForArtifact({
+        version,
+        tag,
+        policy,
+        notes,
+        artifact,
+        releaseDir,
+        releaseDate,
+    });
+    const file = metadata.files[0];
+    return {
+        schemaVersion: 1,
+        platform: 'win32',
+        version: metadata.version,
+        tag: tag || `v${metadata.version}`,
+        artifact: {
+            url: file.url,
+            sha512: file.sha512,
+            size: file.size,
+        },
+        ...metadata,
     };
 }
 
@@ -118,8 +156,7 @@ function prepareMetadata({
     architecture = process.env.UPDATE_MAC_ARCH || null,
     releaseDate = new Date().toISOString(),
 }) {
-    const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'electron', 'package.json'), 'utf8'));
-    const resolvedVersion = version || packageJson.version;
+    const resolvedVersion = version || readProjectVersion();
     const policy = validateUpdatePolicy(readUpdatePolicy(policyPath), {
         version: resolvedVersion,
         tag,
@@ -142,15 +179,33 @@ function prepareMetadata({
         releaseDate,
     });
     const digest = checksum(path.join(releaseDir, artifact.name));
-    const filename = artifact.kind === 'windows' ? 'latest.yml' : 'latest-mac.yml';
-    // Explicitly preserve a stable key order so reviewers can diff release
-    // metadata and spot a wrong artifact/checksum without YAML noise.
-    const yaml = loadYaml().dump(metadata, {
-        noRefs: true,
-        lineWidth: -1,
-        sortKeys: false,
-    });
-    fs.writeFileSync(path.join(releaseDir, filename), yaml, 'utf8');
+    let filename;
+    if (artifact.kind === 'windows') {
+        // Windows does not consume electron-updater metadata. It downloads
+        // this self-contained Setup.exe and lets that program perform the
+        // visible update. JSON keeps that contract explicit.
+        filename = 'latest-win.json';
+        const customMetadata = customWindowsMetadataForArtifact({
+            version: policy.version,
+            tag,
+            policy,
+            notes,
+            artifact,
+            releaseDir,
+            releaseDate,
+        });
+        fs.writeFileSync(path.join(releaseDir, filename), `${JSON.stringify(customMetadata, null, 2)}\n`, 'utf8');
+    } else {
+        filename = 'latest-mac.yml';
+        // Explicitly preserve a stable key order so reviewers can diff release
+        // metadata and spot a wrong artifact/checksum without YAML noise.
+        const yaml = loadYaml().dump(metadata, {
+            noRefs: true,
+            lineWidth: -1,
+            sortKeys: false,
+        });
+        fs.writeFileSync(path.join(releaseDir, filename), yaml, 'utf8');
+    }
     return {
         filename,
         artifact: artifact.name,
@@ -163,8 +218,7 @@ function prepareMetadata({
 
 function main() {
     const argv = process.argv.slice(2);
-    const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'electron', 'package.json'), 'utf8'));
-    const version = argumentValue(argv, '--version') || process.env.UPDATE_VERSION || packageJson.version;
+    const version = argumentValue(argv, '--version') || process.env.UPDATE_VERSION || readProjectVersion();
     const tag = argumentValue(argv, '--tag') || process.env.RELEASE_TAG || null;
     if (argv.includes('--validate-only')) {
         const policy = validateUpdatePolicy(readUpdatePolicy(argumentValue(argv, '--policy') || path.join(rootDir, 'release/update-policy.json')), { version, tag });
@@ -197,6 +251,7 @@ module.exports = {
     chooseArtifact,
     checksum,
     githubAssetName,
+    customWindowsMetadataForArtifact,
     metadataForArtifact,
     prepareMetadata,
 };

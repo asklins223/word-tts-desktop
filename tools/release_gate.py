@@ -26,6 +26,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:(?:0|[1-9]\d*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))"
+    r"(?:\.(?:(?:0|[1-9]\d*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+
 
 # 产品负责人豁免的发布开放项：不阻塞发布门，但原因必须留痕。
 # 恢复额度/拿到目标设备后应删除对应豁免并补做实测。
@@ -72,16 +79,33 @@ def _forbidden_scan(path: Path, needles: Sequence[str]) -> list[str]:
 
 def run_release_gate(*, apply_waivers: bool = True) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
+    version_path = ROOT / "version.json"
     package_path = ROOT / "electron" / "package.json"
     lock_path = ROOT / "electron" / "package-lock.json"
     try:
+        source = json.loads(version_path.read_text(encoding="utf-8"))
         package = json.loads(package_path.read_text(encoding="utf-8"))
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        source_version = str(source.get("version") or "") if isinstance(source, dict) else ""
         package_version = str(package.get("version") or "")
         lock_version = str(lock.get("version") or "")
-        checks.append(_check("package-version-source", bool(package_version and package_version == lock_version),
-                             f"package.json={package_version!r}, package-lock.json={lock_version!r}"))
-    except (OSError, ValueError) as exc:
+        lock_root_version = str(lock.get("packages", {}).get("", {}).get("version") or "")
+        versions_match = (
+            bool(source_version)
+            and bool(VERSION_PATTERN.fullmatch(source_version))
+            and source_version == package_version == lock_version == lock_root_version
+        )
+        checks.append(_check(
+            "package-version-source",
+            versions_match,
+            "version.json={source!r}, package.json={package!r}, package-lock.json={lock!r}, lock root={root!r}".format(
+                source=source_version,
+                package=package_version,
+                lock=lock_version,
+                root=lock_root_version,
+            ),
+        ))
+    except (OSError, TypeError, ValueError, AttributeError) as exc:
         checks.append(_check("package-version-source", False, str(exc)))
 
     data_format_path = ROOT / "DATA_FORMAT_VERSION"

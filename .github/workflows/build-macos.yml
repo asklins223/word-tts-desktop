@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（留空则从 package.json 读取）'
+        description: '版本号（留空则从 version.json 读取）'
         required: false
         default: ''
         type: string
   workflow_call:
     inputs:
       version:
-        description: '版本号（留空则从 package.json 读取或使用 tag 版本）'
+        description: '版本号（留空则从 version.json 读取或使用 tag 版本）'
         required: false
         type: string
     outputs:
@@ -75,18 +75,11 @@ jobs:
             requested="${requested#v}"
           fi
           if [ -n "$requested" ]; then
-            if ! [[ "$requested" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-              echo "非法版本号: $requested" >&2
-              exit 1
-            fi
-            current="$(node -p "require('./package.json').version")"
-            if [ "$requested" != "$current" ]; then
-              npm version "$requested" --no-git-tag-version
-            else
-              echo "package.json 版本已是 $requested，跳过 npm version"
-            fi
+            node ../scripts/project_version.js --set "$requested"
+          else
+            node ../scripts/project_version.js --sync
           fi
-          resolved="$(node -p "require('./package.json').version")"
+          resolved="$(node ../scripts/project_version.js)"
           echo "version=$resolved" >> "$GITHUB_OUTPUT"
           echo "本次构建版本: $resolved"
 

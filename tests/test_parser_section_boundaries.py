@@ -37,7 +37,7 @@ def test_info_acquisition_stops_at_plain_next_type_heading():
     ])
 
     assert [item["text"] for item in result["items"]] == [
-        "M: What?",
+        "What?",
         "W: first",
     ]
 
@@ -51,7 +51,7 @@ def test_info_acquisition_does_not_treat_ordinal_instruction_as_boundary():
     ])
 
     assert [item["text"] for item in result["items"]] == [
-        "M: What?",
+        "What?",
         "W: first",
     ]
 
@@ -178,9 +178,9 @@ def test_arabic_numbered_sections_are_supported(parser_cls, texts):
 
     if parser_cls is InfoAcquisitionParser:
         assert [item["text"] for item in result["items"]] == [
-            "M: What is it?",
+            "What is it?",
             "W: first",
-            "W: Why?",
+            "Why?",
             "M: second",
         ]
     else:

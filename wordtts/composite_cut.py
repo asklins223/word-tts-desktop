@@ -7,6 +7,9 @@ from wordtts.config import (
     COMPOSITE_BOUNDARY_MS,
     COMPOSITE_EDGE_KEEP_MS,
     COMPOSITE_EDGE_TRIM_MIN_MS,
+    COMPOSITE_MAX_EXTRA_LONG_MARKERS,
+    COMPOSITE_MARKER_ALIGNMENT_MAX_ERROR_RATIO,
+    COMPOSITE_MARKER_ALIGNMENT_MIN_MARGIN,
     COMPOSITE_MARKER_MIN_CORE_MS,
     COMPOSITE_MARKER_STRONG_MIN_CORE_MS,
     COMPOSITE_MARKER_TARGET_TOLERANCE_MS,
@@ -23,6 +26,177 @@ from wordtts.config import (
 
 class CompositeCutError(RuntimeError):
     """合并音频缺少可验证的安全切割边界。"""
+
+
+def _composite_core_length(run):
+    """Return one candidate's strict silent core length as a finite float."""
+    try:
+        value = float(run.get("core_length", run.get("length", 0)) or 0)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def _expected_composite_boundary_positions(
+    total_duration,
+    boundary_count,
+    item_lengths=None,
+):
+    """Estimate marker positions using text time plus the known pause budget.
+
+    A simple ``text_ratio * total_duration`` estimate is biased because the
+    total duration already includes one inserted pause for every boundary. It
+    puts the first marker too early and becomes increasingly wrong later in a
+    long work.  Removing the expected pause budget first keeps the estimate
+    useful for choosing between one real marker and one natural long gap; it
+    is never used as a cut point by itself.
+    """
+    count = max(0, int(boundary_count or 0))
+    duration = max(1, int(total_duration or 0))
+    if count <= 0:
+        return []
+
+    lengths = []
+    for value in item_lengths or []:
+        try:
+            length = int(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            length = 0
+        lengths.append(max(1, length))
+
+    # When the audio is shorter than the nominal pause budget it is already
+    # malformed; use a monotonic uniform estimate only for diagnostics and let
+    # the candidate checks reject it later.
+    pause_budget = count * COMPOSITE_BOUNDARY_MS
+    if duration > pause_budget and pause_budget > 0:
+        speech_duration = duration - pause_budget
+        pause_ms = COMPOSITE_BOUNDARY_MS
+    else:
+        speech_duration = duration
+        pause_ms = 0
+
+    if len(lengths) == count + 1 and sum(lengths) > 0:
+        total_length = sum(lengths)
+        accumulated = 0
+        positions = []
+        for index, length in enumerate(lengths[:-1]):
+            accumulated += length
+            positions.append(
+                round(speech_duration * accumulated / total_length
+                      + (index + 1) * pause_ms)
+            )
+        return positions
+
+    return [
+        round(speech_duration * index / (count + 1) + index * pause_ms)
+        for index in range(1, count + 1)
+    ]
+
+
+def _composite_boundary_alignment_tolerances(
+    total_duration,
+    boundary_count,
+    item_lengths=None,
+):
+    """Return conservative per-boundary tolerances for candidate alignment."""
+    count = max(0, int(boundary_count or 0))
+    duration = max(1, int(total_duration or 0))
+    if count <= 0:
+        return []
+    pause_budget = count * COMPOSITE_BOUNDARY_MS
+    speech_duration = max(1, duration - pause_budget) if duration > pause_budget else duration
+    lengths = []
+    for value in item_lengths or []:
+        try:
+            length = int(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            length = 0
+        lengths.append(max(1, length))
+
+    if len(lengths) == count + 1 and sum(lengths) > 0:
+        total_length = sum(lengths)
+        item_durations = [speech_duration * length / total_length for length in lengths[:-1]]
+    else:
+        item_durations = [speech_duration / (count + 1)] * count
+
+    # Character counts are only a rough timing model. A generous lower bound
+    # handles short prompts, while the cap prevents a long essay from making
+    # an unrelated natural gap look acceptable.
+    return [
+        max(2200.0, min(15000.0, item_duration * 0.65 + 1200.0))
+        for item_duration in item_durations
+    ]
+
+
+def _rank_composite_marker_paths(
+    runs,
+    expected_positions,
+    tolerances,
+    boundary_count,
+):
+    """Return the best two ordered long-marker paths.
+
+    Keeping two paths per state is enough to detect an ambiguous extra marker
+    while avoiding the combinatorial cost of enumerating every subsequence.
+    Each path contains only candidates that passed the strict long-silence
+    gate; position estimates merely disambiguate those already-safe regions.
+    """
+    count = max(0, int(boundary_count or 0))
+    if count <= 0 or len(runs) < count:
+        return []
+
+    def score(run, expected, tolerance):
+        position_error = abs(float(run["center"]) - float(expected))
+        position_penalty = position_error / max(float(tolerance), 1.0)
+        duration_penalty = min(
+            abs(_composite_core_length(run) - COMPOSITE_BOUNDARY_MS)
+            / max(float(COMPOSITE_BOUNDARY_MS), 1.0),
+            1.5,
+        )
+        # Position is the primary discriminator; duration only breaks ties
+        # between already long candidates and cannot manufacture a boundary.
+        return -(position_penalty + duration_penalty * 0.18)
+
+    def keep_top_two(values):
+        unique = {}
+        for value in values:
+            path = tuple(value[1])
+            previous = unique.get(path)
+            if previous is None or value[0] > previous[0]:
+                unique[path] = value
+        return sorted(unique.values(), key=lambda value: value[0], reverse=True)[:2]
+
+    states = [[] for _ in runs]
+    for run_index, run in enumerate(runs):
+        states[run_index] = [
+            (score(run, expected_positions[0], tolerances[0]), [run_index])
+        ]
+
+    for boundary_index in range(1, count):
+        next_states = [[] for _ in runs]
+        for run_index, run in enumerate(runs):
+            options = []
+            current_score = score(
+                run,
+                expected_positions[boundary_index],
+                tolerances[boundary_index],
+            )
+            for previous_index in range(run_index):
+                previous_run = runs[previous_index]
+                if run["center"] - previous_run["center"] < COMPOSITE_MIN_OUTPUT_MS:
+                    continue
+                for previous_score, previous_path in states[previous_index]:
+                    options.append((
+                        previous_score + current_score,
+                        [*previous_path, run_index],
+                    ))
+            next_states[run_index] = keep_top_two(options)
+        states = next_states
+
+    final_paths = []
+    for state in states:
+        final_paths.extend(state)
+    return keep_top_two(final_paths)
 
 
 def _audio_dbfs(audio):
@@ -146,19 +320,16 @@ def _select_composite_silence_runs(
         )
 
     total_duration = max(1, len(audio))
-    expected_positions = []
-    lengths = [max(1, int(value or 0)) for value in (item_lengths or [])]
-    if len(lengths) == boundary_count + 1 and sum(lengths) > 0:
-        accumulated = 0
-        total_length = sum(lengths)
-        for value in lengths[:-1]:
-            accumulated += value
-            expected_positions.append(round(total_duration * accumulated / total_length))
-    else:
-        expected_positions = [
-            round(total_duration * index / (boundary_count + 1))
-            for index in range(1, boundary_count + 1)
-        ]
+    expected_positions = _expected_composite_boundary_positions(
+        total_duration,
+        boundary_count,
+        item_lengths,
+    )
+    alignment_tolerances = _composite_boundary_alignment_tolerances(
+        total_duration,
+        boundary_count,
+        item_lengths,
+    )
 
     ordered_runs = sorted(
         (
@@ -179,16 +350,14 @@ def _select_composite_silence_runs(
 
     long_marker_runs = [
         run for run in ordered_runs
-        if float(run.get("core_length", run.get("length", 0)) or 0)
-        >= COMPOSITE_MARKER_MIN_CORE_MS
+        if _composite_core_length(run) >= COMPOSITE_MARKER_MIN_CORE_MS
     ]
     strong_marker_runs = [
         run for run in long_marker_runs
         if (
-            float(run.get("core_length", run.get("length", 0)) or 0)
-            >= COMPOSITE_MARKER_STRONG_MIN_CORE_MS
+            _composite_core_length(run) >= COMPOSITE_MARKER_STRONG_MIN_CORE_MS
             and abs(
-                float(run.get("core_length", run.get("length", 0)) or 0)
+                _composite_core_length(run)
                 - COMPOSITE_BOUNDARY_MS
             )
             <= COMPOSITE_MARKER_TARGET_TOLERANCE_MS
@@ -202,7 +371,7 @@ def _select_composite_silence_runs(
         })
 
     if len(strong_marker_runs) == boundary_count:
-        ordered_runs = strong_marker_runs
+        marker_runs = strong_marker_runs
         selection_strategy = "strong_markers"
     elif len(strong_marker_runs) > boundary_count:
         if isinstance(diagnostics, dict):
@@ -213,10 +382,25 @@ def _select_composite_silence_runs(
             "接近 2 秒的强标记；拒绝猜测边界"
         )
     elif len(long_marker_runs) == boundary_count:
-        # 兼容音频编码后 2 秒停顿的 core 被压短的情况；候选数必须刚好
-        # 等于边界数，避免把额外的自然长停顿当成定位标记。
-        ordered_runs = long_marker_runs
+        # 兼容音频编码后 2 秒停顿的 core 被压短的情况；候选数刚好等于
+        # 边界数时不需要在自然停顿中作选择。
+        marker_runs = long_marker_runs
         selection_strategy = "exact_long_markers"
+    elif len(long_marker_runs) > boundary_count:
+        extra_count = len(long_marker_runs) - boundary_count
+        if extra_count > COMPOSITE_MAX_EXTRA_LONG_MARKERS:
+            if isinstance(diagnostics, dict):
+                diagnostics["strategy"] = "ambiguous_or_extra_markers"
+            raise CompositeCutError(
+                "人工停顿标记数量存在歧义："
+                f"需要 {boundary_count} 个，长停顿候选 {len(long_marker_runs)} 个；"
+                "额外候选过多，拒绝猜测边界"
+            )
+        # 有些 2 秒标记会被讯飞 MP3 编码压短，正文又可能出现一个自然
+        # 长停顿。把这类候选交给“按已知题目序列对齐”的全局选择器，只有
+        # 最佳路径明显优于次佳路径且每个位置误差可接受时才继续。
+        marker_runs = long_marker_runs
+        selection_strategy = "aligned_long_markers"
     else:
         if isinstance(diagnostics, dict):
             diagnostics["strategy"] = "ambiguous_or_missing_markers"
@@ -228,52 +412,63 @@ def _select_composite_silence_runs(
             f"全部安全候选 {len(ordered_runs)} 个；拒绝按自然停顿猜测"
         )
 
-    def score(run, expected):
-        core_length = float(run.get("core_length", run.get("length", 0)) or 0)
-        safe_length = float(run.get("length", core_length) or core_length)
-        # 页面标记不只要“长”，还应接近实际插入的 2 秒；这样正文中
-        # 偶然出现的 1.5 秒长停顿不会轻易压过真正的定位标记。
-        length_score = min(core_length, COMPOSITE_BOUNDARY_MS * 1.5) * 2.0
-        edge_score = min(safe_length, COMPOSITE_BOUNDARY_MS * 1.5) * 0.5
-        target_penalty = min(
-            abs(core_length - COMPOSITE_BOUNDARY_MS),
-            COMPOSITE_BOUNDARY_MS * 2,
-        ) * 1.5
-        distance_penalty = abs(run["center"] - expected) / total_duration * 300.0
-        return length_score + edge_score - target_penalty - distance_penalty
-
-    # states[run_index] = (累计分数, 已选择的候选索引路径)，表示当前边界
-    # 选择该候选时的最优前缀。候选数量通常很小，完整保留状态能避免贪心
-    # 选早了一个自然停顿后把后续边界全部推偏。
-    states = []
-    for boundary_index, expected in enumerate(expected_positions):
-        next_states = [None] * len(ordered_runs)
-        for run_index, run in enumerate(ordered_runs):
-            best = None
-            current_score = score(run, expected)
-            if boundary_index == 0:
-                best = (current_score, [run_index])
-            else:
-                for previous_index, previous_state in enumerate(states):
-                    if previous_state is None or previous_index >= run_index:
-                        continue
-                    previous_run = ordered_runs[previous_index]
-                    if run["center"] - previous_run["center"] < COMPOSITE_MIN_OUTPUT_MS:
-                        continue
-                    candidate = (
-                        previous_state[0] + current_score,
-                        [*previous_state[1], run_index],
-                    )
-                    if best is None or candidate[0] > best[0]:
-                        best = candidate
-            next_states[run_index] = best
-        states = next_states
-
-    candidates = [state for state in states if state is not None]
-    if not candidates:
+    ranked_paths = _rank_composite_marker_paths(
+        marker_runs,
+        expected_positions,
+        alignment_tolerances,
+        boundary_count,
+    )
+    if not ranked_paths:
+        if isinstance(diagnostics, dict):
+            diagnostics["strategy"] = "non_contiguous_markers"
         raise CompositeCutError("安全停顿顺序不连续，拒绝按比例强行切割")
-    selected_path = max(candidates, key=lambda state: state[0])[1]
-    selected = [ordered_runs[index] for index in selected_path]
+
+    best_score, selected_path = ranked_paths[0]
+    selected = [marker_runs[index] for index in selected_path]
+
+    if selection_strategy == "aligned_long_markers":
+        position_errors = [
+            abs(float(run["center"]) - float(expected))
+            for run, expected in zip(selected, expected_positions)
+        ]
+        max_position_error = max(position_errors or [0.0])
+        max_error_ratio = max(
+            (
+                error / max(float(tolerance), 1.0)
+                for error, tolerance in zip(position_errors, alignment_tolerances)
+            ),
+            default=0.0,
+        )
+        second_score = ranked_paths[1][0] if len(ranked_paths) > 1 else None
+        margin = (
+            best_score - second_score
+            if second_score is not None
+            else None
+        )
+        if isinstance(diagnostics, dict):
+            diagnostics.update({
+                "selection_margin": margin,
+                "max_position_error_ms": int(round(max_position_error)),
+                "max_position_error_ratio": round(max_error_ratio, 4),
+                "expected_centers": [int(value) for value in expected_positions],
+                "skipped_long_centers": [
+                    int(run["center"])
+                    for index, run in enumerate(marker_runs)
+                    if index not in selected_path
+                ],
+            })
+        if (
+            (margin is not None and margin < COMPOSITE_MARKER_ALIGNMENT_MIN_MARGIN)
+            or max_error_ratio > COMPOSITE_MARKER_ALIGNMENT_MAX_ERROR_RATIO
+        ):
+            if isinstance(diagnostics, dict):
+                diagnostics["strategy"] = "ambiguous_or_missing_markers"
+            raise CompositeCutError(
+                "人工停顿标记对齐存在歧义："
+                f"需要 {boundary_count} 个，长停顿候选 {len(long_marker_runs)} 个，"
+                f"最佳路径边距 {margin if margin is not None else '无'}，"
+                f"最大位置误差 {int(round(max_position_error))}ms；拒绝猜测边界"
+            )
 
     if isinstance(diagnostics, dict):
         diagnostics.update({

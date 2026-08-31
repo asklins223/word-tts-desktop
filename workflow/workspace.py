@@ -16,7 +16,11 @@ from collections import defaultdict
 from pathlib import PurePath
 from typing import Any, Mapping
 
-from audio_naming import ARCHIVE_LAYOUT_VERSION, audio_filename_from_stem
+from audio_naming import (
+    ARCHIVE_LAYOUT_VERSION,
+    audio_filename_from_stem,
+    unique_filename,
+)
 from .domain import content_hash
 from .repositories import NotFoundError, _snapshot_from_connection
 
@@ -39,7 +43,8 @@ _ITEM_METADATA_ALLOWLIST = {
     "material_source", "language", "sheet_name", "sheet_index", "row",
     "column", "entry_number", "sentence_number", "number", "tags",
     "operation_id", "scope_row_id", "projection", "parser_version",
-    "normalization_version", "voice", "voice_gender", "type_path",
+    "normalization_version", "voice", "voice_gender", "gender", "type_path",
+    "filename_stem",
     "type_hierarchy", "audio_filename_stem", "question_numbers",
     "_workflow_skip_reason",
 }
@@ -524,11 +529,35 @@ def build_workflow_workspace(
         deliverable_item_artifacts: dict[str, list[str]] = defaultdict(list)
         item_by_id = {str(row["item_id"]): row for row in item_rows}
         item_audio_filename_stems = {}
-        for item_id, item_row in item_by_id.items():
+        used_audio_filenames: set[str] = set()
+        ordered_item_rows = sorted(
+            item_by_id.items(),
+            key=lambda entry: (int(entry[1]["sequence"]), entry[0]),
+        )
+        for item_id, item_row in ordered_item_rows:
             item_metadata = _json_object(item_row["metadata_json"])
-            stem = str(item_metadata.get("audio_filename_stem") or "").strip()
-            if stem:
-                item_audio_filename_stems[item_id] = stem
+            # ``audio_filename_stem`` is the new explicit export contract;
+            # ``filename_stem`` is the legacy parser contract.  Keep the
+            # fallback here so standalone/old专项题型 do not regress to
+            # generic 001.mp3 names when they go through the durable workflow.
+            stem = str(
+                item_metadata.get("audio_filename_stem")
+                or item_metadata.get("filename_stem")
+                or ""
+            ).strip()
+            requested_filename = (
+                audio_filename_from_stem(stem, DELIVERABLE_AUDIO_FORMAT)
+                if stem else None
+            )
+            if not requested_filename:
+                requested_filename = f"{int(item_row['sequence']) + 1:03d}.mp3"
+            allocated_filename = unique_filename(
+                requested_filename, used_audio_filenames
+            )
+            if allocated_filename:
+                item_audio_filename_stems[item_id] = allocated_filename.rsplit(
+                    ".", 1
+                )[0]
         workspace_artifacts: list[dict[str, Any]] = []
         ready_artifact_ids: set[str] = set()
         artifact_facts: dict[str, dict[str, Any]] = {}

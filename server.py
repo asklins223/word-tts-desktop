@@ -10,6 +10,7 @@ FastAPI 后端服务器 — 小猪wordTTS 本地 API 宿主
 """
 
 import os
+import re
 import sys
 
 # Windows 打包后 stdout/stderr 默认使用 cp1252 编码，无法输出中文。
@@ -363,16 +364,44 @@ def _versioned_api_capability():
     return _API_TOKEN or _DEVELOPMENT_WORKFLOW_CAPABILITY
 
 
+_VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:(?:0|[1-9]\d*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))"
+    r"(?:\.(?:(?:0|[1-9]\d*)|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+
+
 def _package_version() -> str | None:
     try:
-        with open(os.path.join(RESOURCE_DIR, "electron", "package.json"), encoding="utf-8") as package_file:
-            value = json.load(package_file).get("version")
-            return str(value).strip() if value else None
-    except (OSError, TypeError, ValueError):
+        with open(os.path.join(RESOURCE_DIR, "version.json"), encoding="utf-8") as version_file:
+            payload = json.load(version_file)
+            value = payload.get("version") if isinstance(payload, dict) else payload
+            version = re.sub(r"^[vV]", "", str(value or "").strip())
+            return version if _VERSION_PATTERN.fullmatch(version) else None
+    except (OSError, TypeError, ValueError, AttributeError):
         return None
 
 
-APP_VERSION = os.environ.get("WORDTTS_VERSION") or _package_version() or "0.0.0-dev"
+def _runtime_version() -> str:
+    """Resolve the backend version without letting an environment variable drift it.
+
+    ``WORDTTS_VERSION`` is retained as a compatibility fallback for legacy
+    bundles that predate the bundled ``version.json``. Once the canonical file
+    is present, it is authoritative for both the Electron shell and backend.
+    """
+    packaged_version = _package_version()
+    if packaged_version:
+        return packaged_version
+    environment_version = re.sub(
+        r"^[vV]", "", str(os.environ.get("WORDTTS_VERSION") or "").strip()
+    )
+    if _VERSION_PATTERN.fullmatch(environment_version):
+        return environment_version
+    return "0.0.0-dev"
+
+
+APP_VERSION = _runtime_version()
 
 
 def _legacy_api_enabled() -> bool:

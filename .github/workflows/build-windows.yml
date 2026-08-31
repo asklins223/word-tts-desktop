@@ -1,14 +1,14 @@
 # ============================================================================
 # 小猪wordTTS — Windows 自动构建
 # ============================================================================
-# 在 Windows runner 上构建小猪wordTTS-Setup-x.x.x-x64.exe 安装包
+# 在 Windows runner 上构建小猪wordTTS-Setup-x.x.x-x64.exe 自绘安装包
 #
 # 触发方式:
 #   1. 手动触发 (Actions → Build Windows → Run workflow)
 #   2. 由统一的 Build and Release workflow 调用进行 tag 构建
 #
 # 产物:
-#   小猪wordTTS-Setup-<version>-x64.exe (NSIS 安装包)
+#   小猪wordTTS-Setup-<version>-x64.exe (HTML 自绘安装包)
 # ============================================================================
 
 name: Build Windows
@@ -18,14 +18,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（留空则从 package.json 读取）'
+        description: '版本号（留空则从 version.json 读取）'
         required: false
         default: ''
         type: string
   workflow_call:
     inputs:
       version:
-        description: '版本号（留空则从 package.json 读取或使用 tag 版本）'
+        description: '版本号（留空则从 version.json 读取或使用 tag 版本）'
         required: false
         type: string
     outputs:
@@ -89,18 +89,11 @@ jobs:
             $requested = ($env:GITHUB_REF_NAME).TrimStart("v")
           }
           if (-not [string]::IsNullOrWhiteSpace($requested)) {
-            if ($requested -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
-              Write-Error "非法版本号: $requested"
-              exit 1
-            }
-            $current = node -p "require('./package.json').version"
-            if ($requested -ne $current) {
-              npm version $requested --no-git-tag-version
-            } else {
-              Write-Host "package.json 版本已是 $requested，跳过 npm version"
-            }
+            node ..\scripts\project_version.js --set $requested
+          } else {
+            node ..\scripts\project_version.js --sync
           }
-          $resolved = node -p "require('./package.json').version"
+          $resolved = node ..\scripts\project_version.js
           "version=$resolved" >> $env:GITHUB_OUTPUT
           Write-Host "本次构建版本: $resolved"
 
@@ -218,7 +211,8 @@ jobs:
         working-directory: electron
         run: |
           npm run build:icons
-          npx electron-builder --win --publish never
+          npx electron-builder --win dir --publish never
+          node ../scripts/build_windows_installer.js --payload release/win-unpacked --output-dir release
         env:
           # 未配置密钥时生成未签名测试包；配置后自动生成 Authenticode 签名包。
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
@@ -265,7 +259,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      - name: Smoke test NSIS install, reinstall and uninstall
+      - name: Smoke test custom install, update and uninstall
         shell: pwsh
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.version }}
@@ -273,13 +267,12 @@ jobs:
           $installerName = "小猪wordTTS-Setup-$env:UPDATE_VERSION-x64.exe"
           $installer = Get-Item -LiteralPath (Join-Path "electron/release" $installerName) -ErrorAction SilentlyContinue
           if (-not $installer) {
-            Write-Error "未找到本次版本的 NSIS 安装包: $installerName"
+            Write-Error "未找到本次版本的自绘安装包: $installerName"
             exit 1
           }
 
           $smokeRoot = Join-Path $env:RUNNER_TEMP ("wordtts-installer-smoke-" + [guid]::NewGuid().ToString("N"))
           $installDir = Join-Path $smokeRoot "小猪wordTTS"
-          $installerArgs = @("/S", "/D=$installDir")
           New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
 
           function Invoke-CheckedProcess {
@@ -310,45 +303,33 @@ jobs:
           }
 
           try {
-            Write-Host "执行 NSIS 全新安装: $($installer.FullName)"
-            Invoke-CheckedProcess -FilePath $installer.FullName -Arguments $installerArgs
+            Write-Host "执行自绘全新安装: $($installer.FullName)"
+            Invoke-CheckedProcess -FilePath $installer.FullName -Arguments @("--headless", "--mode=install", "--target", $installDir)
 
-            $appExe = Get-ChildItem -Path $smokeRoot -Filter "小猪wordTTS.exe" -File -Recurse |
-              Select-Object -First 1
-            if (-not $appExe) {
-              throw "安装完成后未找到小猪wordTTS.exe"
-            }
-            Write-Host "安装文件校验通过: $($appExe.FullName)"
+            $appExe = Join-Path $installDir "小猪wordTTS.exe"
+            if (-not (Test-Path -LiteralPath $appExe)) { throw "安装完成后未找到小猪wordTTS.exe" }
+            Write-Host "安装文件校验通过: $appExe"
 
-            $uninstaller = Get-ChildItem -Path $smokeRoot -Filter "Uninstall *.exe" -File -Recurse |
-              Select-Object -First 1
-            if (-not $uninstaller) {
-              throw "安装完成后未找到卸载程序"
-            }
+            $uninstaller = Join-Path $installDir "小猪wordTTS-uninstaller.exe"
+            if (-not (Test-Path -LiteralPath $uninstaller)) { throw "安装完成后未找到自绘卸载程序" }
 
-            Invoke-CheckedProcess -FilePath $appExe.FullName -Arguments @("--smoke-test")
+            Invoke-CheckedProcess -FilePath $appExe -Arguments @("--smoke-test")
             Write-Host "已安装应用启动冒烟测试通过"
 
-            Write-Host "执行同版本覆盖安装，验证重装路径"
-            Invoke-CheckedProcess -FilePath $installer.FullName -Arguments $installerArgs
-            if (-not (Test-Path -LiteralPath $appExe.FullName)) {
-              throw "覆盖安装后应用文件丢失"
-            }
+            Write-Host "执行自绘更新，验证覆盖替换路径"
+            Invoke-CheckedProcess -FilePath $installer.FullName -Arguments @("--headless", "--mode=update", "--target", $installDir)
+            if (-not (Test-Path -LiteralPath $appExe)) { throw "更新完成后应用文件丢失" }
 
-            Write-Host "执行静默卸载"
-            Invoke-CheckedProcess -FilePath $uninstaller.FullName -Arguments @("/S")
-            # NSIS performs the final self-delete from a short-lived helper
-            # process after the uninstaller process returns.  Give that
-            # cleanup a bounded settling window before asserting the result;
-            # an immediate Test-Path check races the helper on Windows.
+            Write-Host "执行自绘卸载"
+            Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir)
+            # 卸载程序自身位于目标目录，Windows 需要等短生命周期清理进程
+            # 在 uninstaller 退出后完成最后一次删除。
             $uninstallDeadline = (Get-Date).AddSeconds(30)
-            while ((Test-Path -LiteralPath $appExe.FullName) -and (Get-Date) -lt $uninstallDeadline) {
+            while ((Test-Path -LiteralPath $installDir) -and (Get-Date) -lt $uninstallDeadline) {
               Start-Sleep -Milliseconds 500
             }
-            if (Test-Path -LiteralPath $appExe.FullName) {
-              throw "卸载完成后应用文件仍存在: $($appExe.FullName)"
-            }
-            Write-Host "NSIS 安装、重装、卸载生命周期测试通过"
+            if (Test-Path -LiteralPath $installDir) { throw "卸载完成后安装目录仍存在: $installDir" }
+            Write-Host "自绘安装、更新、卸载生命周期测试通过"
           } finally {
             if (Test-Path -LiteralPath $smokeRoot) {
               Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -369,17 +350,10 @@ jobs:
           if ($installer) {
             Write-Host "找到安装包: $($installer.FullName)"
             Write-Host "大小: $([math]::Round($installer.Length / 1MB, 2)) MB"
-            $blockmapPath = "$($installer.FullName).blockmap"
-            $blockmap = Get-Item -LiteralPath $blockmapPath -ErrorAction SilentlyContinue
-            if (-not $blockmap -or $blockmap.Length -le 0) {
-              Write-Error "未找到当前版本 blockmap: $blockmapPath"
-              exit 1
-            }
             echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
             echo "installer_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
-            echo "blockmap_path=$($blockmap.FullName)" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Error "未找到本次版本 NSIS 安装包 $installerName；拒绝发布脱离 resources 目录后无法独立运行的 unpacked 可执行文件"
+            Write-Error "未找到本次版本自绘安装包 $installerName；拒绝发布脱离 payload 目录后无法独立运行的 unpacked 可执行文件"
             exit 1
           }
 
@@ -389,6 +363,5 @@ jobs:
           name: 小猪wordTTS-Windows
           path: |
             ${{ steps.find-installer.outputs.installer_path }}
-            ${{ steps.find-installer.outputs.blockmap_path }}
           retention-days: 30
           if-no-files-found: error

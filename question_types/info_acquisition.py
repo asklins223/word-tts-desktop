@@ -2,6 +2,7 @@
 
 import re
 
+from audio_naming import audio_filename_stem_for_category, is_exam_paper_bundle
 from question_types.base import BaseParser
 from question_types.text_utils import (
     MAJOR_SECTION_RE,
@@ -27,7 +28,8 @@ class InfoAcquisitionParser(BaseParser):
       - 两节共用文档中的连续题号，题号不会在第二节重新开始
       - 每道题单独生成一条结果，文本去掉题号
       - 按题目出现顺序使用男声、女声交替朗读（第一题为男声）
-      - filename_stem 使用"问题x"，供 TTS 阶段生成问题1.mp3等文件
+      - filename_stem 继续保留为"问题x"供历史身份兼容；套卷输出另用
+        audio_filename_stem 生成“题型-序号”文件名
 
     文档结构示例:
         第一节 听选信息
@@ -87,6 +89,7 @@ class InfoAcquisitionParser(BaseParser):
     RE_DIALOG = re.compile(r'听第.+段对话')
     # 题目编号：1. / 1． / 1、 / 1) / 1）
     RE_QUESTION = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)')
+    RE_SPEAKER_PREFIX = re.compile(r'^\s*(?:([WwMm])\s*[:：]|\(([WwMm])\))')
 
     def parse(self):
         items = []
@@ -100,17 +103,28 @@ class InfoAcquisitionParser(BaseParser):
         answer_block = False     # 跳过每组录音后面的参考答案区
         # 每节独立编号
         idx_by_cat = {}          # {category: count}
+        use_exam_naming = is_exam_paper_bundle(self.paras)
 
         def flush():
             nonlocal collecting, current_lines
             if collecting and current_lines:
                 cat = current_category
                 idx_by_cat[cat] = idx_by_cat.get(cat, 0) + 1
-                items.append({
+                item = {
                     "category": cat,
                     "index": idx_by_cat[cat],
                     "text": sanitize('\n'.join(current_lines)),
-                })
+                }
+                if use_exam_naming:
+                    filename_stem = audio_filename_stem_for_category(
+                        cat, idx_by_cat[cat]
+                    )
+                    if filename_stem:
+                        item.update({
+                            "audio_filename_stem": filename_stem,
+                            "type_path": [filename_stem.rsplit("-", 1)[0]],
+                        })
+                items.append(item)
             collecting = False
             current_lines = []
 
@@ -207,17 +221,48 @@ class InfoAcquisitionParser(BaseParser):
             if question_number is not None and question_text:
                 question_order += 1
                 last_qnum = question_number
-                speaker = "M" if question_order % 2 == 1 else "W"
+                speaker_match = self.RE_SPEAKER_PREFIX.match(question_text)
+                explicit_speaker = next(
+                    (
+                        value
+                        for value in (
+                            speaker_match.group(1) if speaker_match else None,
+                            speaker_match.group(2) if speaker_match else None,
+                        )
+                        if value
+                    ),
+                    None,
+                )
+                speaker = (
+                    explicit_speaker.upper()
+                    if explicit_speaker
+                    else ("M" if question_order % 2 == 1 else "W")
+                )
                 section_name = (
                     "听选信息" if current_category == "听选信息录音稿" else "回答问题"
                 )
-                items.append({
-                    "category": f"{section_name}题目",
+                item_category = f"{section_name}题目"
+                idx_by_cat[item_category] = idx_by_cat.get(item_category, 0) + 1
+                item = {
+                    "category": item_category,
                     "number": question_number,
                     "filename_stem": f"问题{question_number}",
                     "voice": "male" if speaker == "M" else "female",
-                    "text": f"{speaker}: {question_text}",
-                })
+                    # Keep the source question verbatim apart from the parser's
+                    # normal whitespace cleanup.  The M/W marker is a source
+                    # fact when it exists, never a synthetic display prefix.
+                    "text": question_text,
+                }
+                if use_exam_naming:
+                    filename_stem = audio_filename_stem_for_category(
+                        item["category"], idx_by_cat[item["category"]]
+                    )
+                    if filename_stem:
+                        item.update({
+                            "audio_filename_stem": filename_stem,
+                            "type_path": [filename_stem.rsplit("-", 1)[0]],
+                        })
+                items.append(item)
                 continue
 
             # ---- 录音稿标记 ----

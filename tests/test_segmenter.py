@@ -46,9 +46,16 @@ def test_parse_document_once_equals_auto_for_all_samples():
         assert auto_summary == once_summary, path
 
 
-def test_unrecognized_document_reports_no_type():
-    results, summary = parse_document_once(
-        os.path.join(DOC_DIR, "词汇-G7-u1.docx"))
+def test_unrecognized_document_reports_no_type(tmp_path):
+    """未识别样例在测试内构造，避免依赖可被清理的示例二进制文件。"""
+    from docx import Document
+
+    path = tmp_path / "unrecognized.docx"
+    document = Document()
+    document.add_paragraph("This is an ordinary note without a supported question type.")
+    document.save(path)
+
+    results, summary = parse_document_once(path)
     assert results == []
     assert summary == "未识别到任何题型内容"
 

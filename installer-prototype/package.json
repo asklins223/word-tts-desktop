@@ -1,0 +1,7 @@
+{
+  "name": "wordtts-installer",
+  "description": "小猪wordTTS 自绘 Windows 安装程序",
+  "main": "installer-main.js",
+  "private": true,
+  "license": "MIT"
+}

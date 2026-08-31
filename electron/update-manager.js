@@ -3,9 +3,10 @@
 /**
  * GitHub Releases based update coordinator.
  *
- * The renderer only sees the serializable state produced here. The actual
- * electron-updater instance stays in the main process so release metadata,
- * download paths, and installation actions never cross the context bridge.
+ * Windows uses the same self-drawing Setup.exe as first install and uninstall.
+ * macOS keeps its existing electron-updater path until a matching custom
+ * updater is designed for that platform. The renderer only sees the
+ * serializable state produced here.
  */
 
 const UPDATE_STATUSES = new Set([
@@ -25,13 +26,14 @@ const NON_NUMERIC_IDENTIFIER = '(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)';
 const PRERELEASE_IDENTIFIER = `(?:${NUMERIC_IDENTIFIER}|${NON_NUMERIC_IDENTIFIER})`;
 const BUILD_IDENTIFIER = '[0-9A-Za-z-]+';
 const VERSION_PATTERN = new RegExp(
-    `^v?(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})`
+    `^[vV]?(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})`
     + `(?:-(${PRERELEASE_IDENTIFIER}(?:\\.${PRERELEASE_IDENTIFIER})*))?`
     + `(?:\\+${BUILD_IDENTIFIER}(?:\\.${BUILD_IDENTIFIER})*)?$`,
 );
 const RELEASE_NOTES_LIMIT = 200_000;
 const DEFAULT_RELEASE_URL = 'https://github.com/asklins223/word-tts-desktop/releases';
 const UPDATE_ARTIFACT_PROBE_TIMEOUT_MS = 8_000;
+const { createWindowsUpdateClient } = require('./windows-update-client');
 
 function parseVersion(value) {
     const match = String(value || '').trim().match(VERSION_PATTERN);
@@ -93,7 +95,7 @@ function normalizeNotes(notes) {
             if (!entry || typeof entry !== 'object') return '';
             const version = String(entry.version || '').trim();
             const note = String(entry.note || entry.releaseNotes || '').trim();
-            return version && note ? `## v${version.replace(/^v/, '')}\n\n${note}` : note;
+            return version && note ? `## v${version.replace(/^v/i, '')}\n\n${note}` : note;
         })
         .filter(Boolean)
         .join('\n\n')
@@ -129,13 +131,38 @@ function updateArtifactFileName(value) {
     }
 }
 
+function isSafeArtifactReference(value) {
+    const raw = String(value || '').trim().split(/[?#]/, 1)[0];
+    if (!raw) return false;
+    // The release workflow emits a single asset name. Relative subpaths are
+    // not valid GitHub release asset names and could redirect a download to a
+    // different URL path; absolute URLs remain supported for legacy metadata.
+    if (/^https?:\/\//i.test(raw)) return true;
+    return !/[\\/]/.test(raw);
+}
+
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function updateArtifactForPlatform(updateInfo, platform) {
     const info = updateInfo && typeof updateInfo === 'object' ? updateInfo : {};
     if (!['win32', 'darwin'].includes(platform)) return null;
     const expectedExtension = platform === 'win32' ? '.exe' : '.zip';
     const parsedVersion = parseVersion(info.version);
-    const expectedVersionToken = parsedVersion
-        ? `-${String(info.version).trim().replace(/^v/, '')}`
+    const normalizedVersion = parsedVersion
+        ? String(info.version).trim().replace(/^v/i, '')
+        : null;
+    const expectedNamePattern = normalizedVersion
+        ? platform === 'win32'
+            ? new RegExp(
+                `^(?:wordTTS|小猪wordTTS)-Setup-${escapeRegExp(normalizedVersion)}-x64\\.exe$`,
+                'i',
+            )
+            : new RegExp(
+                `^(?:wordTTS|小猪wordTTS)-${escapeRegExp(normalizedVersion)}-(?:arm64|x64|universal)\\.zip$`,
+                'i',
+            )
         : null;
     const files = Array.isArray(info.files) ? info.files : [];
     const candidates = files
@@ -148,28 +175,32 @@ function updateArtifactForPlatform(updateInfo, platform) {
         }))
         .filter(file => file.url
             && file.name
-            && expectedVersionToken
-            && file.name.includes(expectedVersionToken)
+            && isSafeArtifactReference(file.url)
+            && expectedNamePattern
+            && expectedNamePattern.test(file.name)
             && file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(expectedExtension));
 
     // Older electron-updater metadata can use the legacy top-level path. It
     // is still accepted only when it has the same concrete platform suffix,
     // checksum, and positive size as a real generated artifact.
     if (candidates.length === 0 && info.path) {
-        candidates.push({
-            url: String(info.path).trim(),
-            sha512: String(info.sha512 || '').trim(),
-            size: Number(info.size),
-            name: updateArtifactFileName(info.path),
-        });
+        const legacyUrl = String(info.path).trim();
+        if (isSafeArtifactReference(legacyUrl)) {
+            candidates.push({
+                url: legacyUrl,
+                sha512: String(info.sha512 || '').trim(),
+                size: Number(info.size),
+                name: updateArtifactFileName(info.path),
+            });
+        }
     }
     const artifact = candidates.find(file => (
         file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(expectedExtension)
         && file.name
-        && expectedVersionToken
-        && file.name.includes(expectedVersionToken)
+        && expectedNamePattern
+        && expectedNamePattern.test(file.name)
         && file.sha512
-        && Number.isFinite(file.size)
+        && Number.isSafeInteger(file.size)
         && file.size > 0
     ));
     if (!artifact) return null;
@@ -182,6 +213,7 @@ function buildUpdateArtifactUrl(releaseUrl, tag, artifactName) {
     const rawName = String(artifactName || '').trim();
     if (!rawName) return null;
     if (/^https?:\/\//i.test(rawName)) return rawName;
+    if (!isSafeArtifactReference(rawName)) return null;
     try {
         const releasesUrl = new URL(String(releaseUrl || DEFAULT_RELEASE_URL));
         const releaseIndex = releasesUrl.pathname.indexOf('/releases');
@@ -249,9 +281,9 @@ function deriveUpdatePolicy(updateInfo, currentVersion) {
     const info = updateInfo && typeof updateInfo === 'object' ? updateInfo : {};
     const updateMode = info.updateMode === 'force' || info.mode === 'force' ? 'force' : 'optional';
     const minimumSupportedVersion = parseVersion(info.minimumSupportedVersion)
-        ? String(info.minimumSupportedVersion).replace(/^v/, '')
+        ? String(info.minimumSupportedVersion).replace(/^v/i, '')
         : null;
-    const version = parseVersion(info.version) ? String(info.version).replace(/^v/, '') : null;
+    const version = parseVersion(info.version) ? String(info.version).replace(/^v/i, '') : null;
     const belowMinimum = Boolean(
         minimumSupportedVersion
         && parseVersion(currentVersion)
@@ -318,7 +350,23 @@ function createUpdateManager(options = {}) {
     const now = typeof options.now === 'function' ? options.now : () => new Date().toISOString();
     const send = typeof options.send === 'function' ? options.send : () => {};
     const releaseUrl = options.releaseUrl || DEFAULT_RELEASE_URL;
+    const useCustomWindowsUpdater = Boolean(
+        enabled
+        && platform === 'win32'
+        && options.useCustomWindowsUpdater !== false
+        && !options.autoUpdater,
+    );
     let updater = options.autoUpdater || null;
+    let windowsClient = useCustomWindowsUpdater
+        ? (options.windowsClient || createWindowsUpdateClient({
+            app,
+            currentVersion,
+            releaseUrl,
+            fetchImpl: options.fetchImpl || globalThis.fetch,
+            tempDirectory: options.updateTempDirectory || app?.getPath?.('temp'),
+            quit: () => app?.quit?.(),
+        }))
+        : null;
     let state = createInitialState({
         currentVersion,
         platform,
@@ -330,6 +378,7 @@ function createUpdateManager(options = {}) {
     let initialTimer = null;
     let intervalTimer = null;
     let checkPromise = null;
+    let checkGeneration = 0;
     let updateInfo = null;
     const pendingArtifactChecks = new Map();
     const listeners = [];
@@ -427,21 +476,26 @@ function createUpdateManager(options = {}) {
         return promise;
     };
 
-    const acceptUpdateInfo = async (info) => {
+    const acceptUpdateInfo = async (info, generation = checkGeneration) => {
+        if (generation !== checkGeneration) return false;
         const policy = deriveUpdatePolicy(info, currentVersion);
         if (!policy.version || compareVersions(policy.version, currentVersion) <= 0) return false;
         if (state.version && compareVersions(policy.version, state.version) < 0) return false;
         const artifactResult = await verifyUpdateArtifact(info);
-        if (disposed || artifactResult?.available !== true) return false;
+        // A provider can emit update-available and update-not-available close
+        // together, or resolve its check promise before the artifact probe
+        // finishes. Do not resurrect an update after a newer check result has
+        // already cleared it.
+        if (disposed || generation !== checkGeneration || artifactResult?.available !== true) return false;
         return publishInfo(info);
     };
 
     const normalizeLatestVersion = (candidate) => {
         const normalizedCandidate = parseVersion(candidate)
-            ? String(candidate).replace(/^v/, '')
+            ? String(candidate).replace(/^v/i, '')
             : null;
         const normalizedCurrent = parseVersion(currentVersion)
-            ? String(currentVersion).replace(/^v/, '')
+            ? String(currentVersion).replace(/^v/i, '')
             : null;
         if (!normalizedCandidate || !normalizedCurrent) return normalizedCandidate || normalizedCurrent;
         return compareVersions(normalizedCandidate, normalizedCurrent) < 0
@@ -484,10 +538,10 @@ function createUpdateManager(options = {}) {
         publish({ status: 'error', error: normalizeError(error), checkedAt: now() });
     };
 
-    if (enabled && !updater) {
+    if (enabled && !updater && !windowsClient) {
         try {
-            // Lazy loading is important: development, smoke-test, and browser
-            // renderer tests must not instantiate native updater backends.
+            // Only macOS reaches this branch in production. Windows is handled
+            // by the custom Setup.exe client above, not electron-updater.
             updater = require('electron-updater').autoUpdater;
         } catch (error) {
             publishError(error);
@@ -518,13 +572,17 @@ function createUpdateManager(options = {}) {
             });
         });
         attach('update-available', (info) => {
-            void acceptUpdateInfo(info).then(accepted => {
-                if (!accepted && state.status === 'checking') clearUpdateInfo();
+            const generation = checkGeneration;
+            void acceptUpdateInfo(info, generation).then(accepted => {
+                if (!accepted && generation === checkGeneration && state.status === 'checking') {
+                    clearUpdateInfo();
+                }
             });
         });
         attach('update-not-available', (info) => {
             // Keep the server response available for diagnostics without
             // treating it as an installable update.
+            checkGeneration += 1;
             clearUpdateInfo(info?.version);
         });
         attach('download-progress', (progress) => publish({
@@ -540,20 +598,51 @@ function createUpdateManager(options = {}) {
         attach('error', (error) => publishError(error));
     }
 
+    async function checkCustomWindows() {
+        if (!enabled || !windowsClient || disposed) return getStatus();
+        if (['downloading', 'downloaded', 'installing'].includes(state.status)) return getStatus();
+        if (checkPromise) return checkPromise;
+        const generation = ++checkGeneration;
+        publish({ status: 'checking', error: null, progress: null });
+        checkPromise = Promise.resolve()
+            .then(() => windowsClient.check())
+            .then(async (info) => {
+                if (generation !== checkGeneration || disposed) return getStatus();
+                if (info && compareVersions(info.version, currentVersion) > 0) {
+                    const accepted = await acceptUpdateInfo(info, generation);
+                    if (!accepted && generation === checkGeneration && state.status === 'checking') clearUpdateInfo(info.version);
+                } else if (state.status === 'checking') {
+                    clearUpdateInfo(info?.version);
+                }
+                return getStatus();
+            })
+            .catch(error => {
+                publishError(error);
+                return getStatus();
+            })
+            .finally(() => {
+                checkPromise = null;
+            });
+        return checkPromise;
+    }
+
     async function check() {
+        if (windowsClient) return checkCustomWindows();
         if (!enabled || !updater || disposed) return getStatus();
         if (['downloading', 'downloaded', 'installing'].includes(state.status)) return getStatus();
         if (checkPromise) return checkPromise;
+        const generation = ++checkGeneration;
         publish({ status: 'checking', error: null, progress: null });
         checkPromise = Promise.resolve()
             .then(() => updater.checkForUpdates())
             .then(async (result) => {
+                if (generation !== checkGeneration || disposed) return getStatus();
                 const resultInfo = result?.updateInfo || result?.versionInfo;
                 if (resultInfo) {
                     if (result?.isUpdateAvailable !== false
                         && compareVersions(resultInfo.version, currentVersion) > 0) {
-                        const accepted = await acceptUpdateInfo(resultInfo);
-                        if (!accepted && state.status === 'checking') clearUpdateInfo();
+                        const accepted = await acceptUpdateInfo(resultInfo, generation);
+                        if (!accepted && generation === checkGeneration && state.status === 'checking') clearUpdateInfo();
                     } else if (state.status === 'checking') {
                         clearUpdateInfo(resultInfo.version);
                     }
@@ -573,6 +662,26 @@ function createUpdateManager(options = {}) {
     }
 
     async function download() {
+        if (windowsClient) {
+            if (!enabled || disposed || !updateInfo || !state.version) return getStatus();
+            if (state.status === 'downloaded' || state.status === 'downloading') return getStatus();
+            publish({ status: 'downloading', progress: state.progress || null, error: null });
+            try {
+                await windowsClient.download(updateInfo, progress => publish({
+                    status: 'downloading',
+                    progress: normalizeProgress(progress),
+                    error: null,
+                }));
+                publish({
+                    status: 'downloaded',
+                    progress: { percent: 100, transferred: state.progress?.total || 0, total: state.progress?.total || 0, bytesPerSecond: 0 },
+                    error: null,
+                });
+            } catch (error) {
+                publishError(error);
+            }
+            return getStatus();
+        }
         if (!enabled || !updater || disposed) return getStatus();
         if (!updateInfo || !state.version) return getStatus();
         if (state.status === 'downloaded' || state.status === 'downloading') return getStatus();
@@ -593,6 +702,16 @@ function createUpdateManager(options = {}) {
     }
 
     async function install() {
+        if (windowsClient) {
+            if (!enabled || disposed || state.status !== 'downloaded') return getStatus();
+            publish({ status: 'installing', error: null });
+            try {
+                await windowsClient.install(updateInfo);
+            } catch (error) {
+                publishError(error);
+            }
+            return getStatus();
+        }
         if (!enabled || !updater || disposed || state.status !== 'downloaded') return getStatus();
         publish({ status: 'installing', error: null });
         try {
@@ -607,7 +726,7 @@ function createUpdateManager(options = {}) {
     }
 
     function start({ delayMs = 6_000, intervalMs = 6 * 60 * 60 * 1_000 } = {}) {
-        if (!enabled || !updater || started || disposed) return getStatus();
+        if (!enabled || (!updater && !windowsClient) || started || disposed) return getStatus();
         started = true;
         const run = () => {
             if (disposed) return;
@@ -631,6 +750,7 @@ function createUpdateManager(options = {}) {
         if (intervalTimer) clearTimeout(intervalTimer);
         listeners.forEach(([eventName, handler]) => updater?.removeListener?.(eventName, handler));
         listeners.length = 0;
+        windowsClient?.dispose?.();
     }
 
     return {

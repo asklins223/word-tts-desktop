@@ -172,6 +172,10 @@ def normalize_item(
         # must survive normalization instead of being silently discarded.
         "voice": raw.get("voice"),
         "voice_gender": raw.get("voice_gender"),
+        # Keep the generic gender field too: third-party/future parsers may
+        # emit it instead of the legacy ``voice`` name, and the workflow
+        # engine already treats both forms as equivalent facts.
+        "gender": raw.get("gender"),
         "question_type": raw.get("question_type"),
         "sub_type_code": raw.get("sub_type_code"),
         "type_path": raw.get("type_path") or raw.get("type_hierarchy"),
@@ -195,7 +199,7 @@ class LegacyWordParser(ParserPort):
         self,
         *,
         parse_callable: Callable[[str], tuple[list[Mapping[str, Any]], str]] | None = None,
-        parser_version: str = "17",
+        parser_version: str = "18",
     ) -> None:
         self.parse_callable = parse_callable
         self.parser_version = str(parser_version)

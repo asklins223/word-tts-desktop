@@ -44,6 +44,8 @@ function windowsArtifact(version) {
 
 test('更新版本比较遵循 SemVer 的预发布优先级', () => {
     assert.equal(compareVersions('1.2.3', '1.2.3'), 0);
+    assert.equal(parseVersion('V1.2.3').major, 1);
+    assert.equal(compareVersions('V1.2.4', '1.2.3'), 1);
     assert.equal(compareVersions('1.2.3', '1.2.4'), -1);
     assert.equal(compareVersions('1.2.3-alpha.2', '1.2.3-alpha.10'), -1);
     assert.equal(compareVersions('1.2.3-beta', '1.2.3-alpha'), 1);
@@ -81,6 +83,18 @@ test('更新资产只选择当前平台且与版本匹配的文件', () => {
     assert.equal(updateArtifactForPlatform(info, 'win32').name, 'wordTTS-Setup-2.0.0-x64.exe');
     assert.equal(updateArtifactForPlatform(info, 'darwin').name, 'wordTTS-2.0.0-arm64.zip');
     assert.equal(updateArtifactForPlatform({ version: '2.0.0', files: [windowsArtifact('1.9.9')] }, 'win32'), null);
+    assert.equal(updateArtifactForPlatform({
+        version: '2.0.0',
+        files: [{ url: 'other-app-2.0.0-x64.exe', sha512: 'wrong', size: 30 }],
+    }, 'win32'), null);
+    assert.equal(updateArtifactForPlatform({
+        version: '2.0.0',
+        files: [{ url: 'nested/wordTTS-Setup-2.0.0-x64.exe', sha512: 'wrong', size: 30 }],
+    }, 'win32'), null);
+    assert.equal(
+        buildUpdateArtifactUrl('https://github.com/asklins223/word-tts-desktop/releases', 'v2.0.0', '../wordTTS-Setup-2.0.0-x64.exe'),
+        null,
+    );
 });
 
 test('更新资产 URL 会固定到 Release 下载路径，并支持中文名编码', () => {
@@ -162,6 +176,44 @@ test('更新管理器按检查、下载、安装阶段发布可序列化状态',
     assert.ok(states.some(state => state.status === 'checking'));
     assert.ok(states.some(state => state.status === 'downloading'));
     manager.dispose();
+});
+
+test('Windows 生产路径使用自绘 Setup 客户端而不是 electron-updater', async () => {
+    const calls = [];
+    const info = {
+        version: '2.0.0',
+        tag: 'v2.0.0',
+        files: [windowsArtifact('2.0.0')],
+    };
+    const windowsClient = {
+        check: async () => {
+            calls.push('check');
+            return info;
+        },
+        download: async (_info, onProgress) => {
+            calls.push('download');
+            onProgress({ percent: 65, transferred: 65, total: 100, bytesPerSecond: 10 });
+            return 'C:\\Temp\\wordtts-update.exe';
+        },
+        install: async () => {
+            calls.push('install');
+            return { success: true };
+        },
+        dispose: () => calls.push('dispose'),
+    };
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        windowsClient,
+    });
+
+    assert.equal((await manager.check()).status, 'available');
+    assert.equal((await manager.download()).status, 'downloaded');
+    assert.equal((await manager.install()).status, 'installing');
+    assert.deepEqual(calls, ['check', 'download', 'install']);
+    manager.dispose();
+    assert.deepEqual(calls, ['check', 'download', 'install', 'dispose']);
 });
 
 test('只有高版本 tag 或错误平台元数据时不会展示可用更新', async () => {
@@ -326,6 +378,60 @@ test('更新器明确返回无更新时不会采纳其中携带的旧元数据',
     assert.equal(status.status, 'up-to-date');
     assert.equal(status.version, null);
     assert.equal(status.isForced, false);
+    manager.dispose();
+});
+
+test('更新探测完成前收到无更新结果时，不会被延迟事件重新污染', async () => {
+    const updater = new FakeUpdater();
+    const info = { version: '2.0.0', files: [windowsArtifact('2.0.0')] };
+    let releaseProbe;
+    const probe = new Promise(resolve => { releaseProbe = resolve; });
+    updater.checkForUpdates = () => {
+        updater.emit('update-available', info);
+        updater.emit('update-not-available', { version: '1.0.0' });
+        return Promise.resolve(null);
+    };
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        autoUpdater: updater,
+        verifyArtifact: async () => probe,
+    });
+
+    const checked = await manager.check();
+    assert.equal(checked.status, 'up-to-date');
+    releaseProbe({ available: true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(manager.getStatus().status, 'up-to-date');
+    assert.equal(manager.getStatus().version, null);
+    manager.dispose();
+});
+
+test('陈旧更新事件不会清掉新一轮仍在检查中的状态', async () => {
+    const updater = new FakeUpdater();
+    const info = { version: '2.0.0', files: [windowsArtifact('2.0.0')] };
+    let releaseProbe;
+    const probe = new Promise(resolve => { releaseProbe = resolve; });
+    updater.checkForUpdates = () => {
+        updater.emit('update-available', info);
+        updater.emit('update-not-available', { version: '1.0.0' });
+        updater.emit('checking-for-update');
+        return Promise.resolve(null);
+    };
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        autoUpdater: updater,
+        verifyArtifact: async () => probe,
+    });
+
+    const checked = await manager.check();
+    assert.equal(checked.status, 'checking');
+    releaseProbe({ available: false });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(manager.getStatus().status, 'checking');
     manager.dispose();
 });
 

@@ -233,7 +233,10 @@ class JS:
         const startNode = firstTextNode(first);
         const endNode = lastTextNode(last);
         if (!startNode || !endNode) return null;
+        const editor = first.closest('.ssml-editor');
+        if (!editor) return null;
 
+        editor.focus();
         const range = document.createRange();
         range.setStart(startNode, 0);
         range.setEnd(endNode, endNode.textContent?.length || 0);
@@ -253,10 +256,12 @@ class JS:
     (rowIndex) => {
         const paragraph = document.querySelectorAll('.ssml-editor p')[Number(rowIndex)];
         if (!paragraph) return null;
+        const editor = paragraph.closest('.ssml-editor');
+        if (!editor) return null;
         paragraph.scrollIntoView({
             block: 'center',
             inline: 'nearest',
-            behavior: 'instant',
+            behavior: 'auto',
         });
         const isMetadata = (node) => Boolean(
             node?.parentElement?.closest(
@@ -267,12 +272,17 @@ class JS:
         const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
         let node = walker.nextNode();
         while (node) {
-            if (!isMetadata(node) && node.textContent?.length) textNodes.push(node);
+            // 选行供 ArrowRight 折叠时也不能把 ProseMirror 的缩进/换行
+            // 空白当成正文，否则光标会落在真实文本之后的空白节点。
+            if (!isMetadata(node) && node.textContent?.trim().length) textNodes.push(node);
             node = walker.nextNode();
         }
         const first = textNodes[0];
         const last = textNodes[textNodes.length - 1];
         if (!first || !last) return null;
+        // JS 设置 Selection 后必须同时把焦点交还给 contenteditable；否则
+        // 后续的真实键盘 ArrowRight 可能落到工具栏/搜索框而不是编辑器。
+        editor.focus();
         const range = document.createRange();
         range.setStart(first, 0);
         range.setEnd(last, last.textContent?.length || 0);
@@ -289,6 +299,68 @@ class JS:
                 width: rect.width,
                 height: rect.height,
             },
+            activeEditor: document.activeElement === editor,
+        };
+    }
+    """
+
+    CHECK_CARET_AT_ROW_END = """
+    (rowIndex) => {
+        const paragraph = document.querySelectorAll('.ssml-editor p')[Number(rowIndex)];
+        if (!paragraph) return { ok: false, reason: 'row_missing' };
+        const editor = paragraph.closest('.ssml-editor');
+        const selection = window.getSelection?.();
+        if (!editor || !selection || selection.rangeCount !== 1) {
+            return { ok: false, reason: 'selection_missing' };
+        }
+
+        const isMetadata = (node) => Boolean(
+            node?.parentElement?.closest(
+                '.ssml-tag, .ssml-editor-placeholder, [data-type="range_anchor"]'
+            )
+        );
+        const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+        let last = null;
+        let node = walker.nextNode();
+        while (node) {
+            if (!isMetadata(node) && node.textContent?.trim().length) last = node;
+            node = walker.nextNode();
+        }
+        if (!last) return { ok: false, reason: 'no_text' };
+
+        const range = selection.getRangeAt(0);
+        const closestParagraph = (value) => {
+            const element = value?.nodeType === Node.ELEMENT_NODE
+                ? value
+                : value?.parentElement;
+            return element?.closest?.('p') || null;
+        };
+        const expectedText = String(last.textContent || '');
+        let expectedOffset = expectedText.length;
+        while (expectedOffset > 0 && /\\s/.test(expectedText[expectedOffset - 1])) {
+            expectedOffset -= 1;
+        }
+        const inTargetRow = (
+            closestParagraph(range.startContainer) === paragraph
+            && closestParagraph(range.endContainer) === paragraph
+        );
+        const activeEditor = document.activeElement === editor
+            || editor.contains(document.activeElement);
+        const atEnd = (
+            range.collapsed
+            && range.startContainer === last
+            && range.endContainer === last
+            && range.startOffset === expectedOffset
+            && range.endOffset === expectedOffset
+        );
+        return {
+            ok: Boolean(activeEditor && inTargetRow && atEnd),
+            activeEditor,
+            inTargetRow,
+            collapsed: range.collapsed === true,
+            atEnd,
+            expectedOffset,
+            actualOffset: range.startOffset,
         };
     }
     """
@@ -308,7 +380,7 @@ class JS:
         paragraph.scrollIntoView({
             block: 'center',
             inline: 'nearest',
-            behavior: 'instant',
+            behavior: 'auto',
         });
         const isMetadata = (node) => Boolean(
             node?.parentElement?.closest(
@@ -328,16 +400,89 @@ class JS:
         if (!last) return { ok: false, reason: 'no_text' };
         editor.focus();
         const range = document.createRange();
-        range.setStart(last, last.textContent?.length || 0);
-        range.setEnd(last, last.textContent?.length || 0);
+        const text = String(last.textContent || '');
+        let offset = text.length;
+        while (offset > 0 && /\\s/.test(text[offset - 1])) offset -= 1;
+        range.setStart(last, offset);
+        range.setEnd(last, offset);
         const selection = window.getSelection();
         if (!selection) return { ok: false, reason: 'no_selection' };
         selection.removeAllRanges();
         selection.addRange(range);
+        const actual = selection.rangeCount === 1
+            ? selection.getRangeAt(0)
+            : null;
+        const closestParagraph = (node) => {
+            const element = node?.nodeType === Node.ELEMENT_NODE
+                ? node
+                : node?.parentElement;
+            return element?.closest?.('p') || null;
+        };
+        const activeEditor = document.activeElement === editor
+            || editor.contains(document.activeElement);
+        const accepted = Boolean(
+            actual
+            && actual.collapsed
+            && actual.startContainer === last
+            && actual.endContainer === last
+            && actual.startOffset === offset
+            && actual.endOffset === offset
+            && closestParagraph(actual.startContainer) === paragraph
+            && closestParagraph(actual.endContainer) === paragraph
+            && activeEditor
+        );
         return {
-            ok: true,
-            text: String(last.textContent || ''),
-            collapsed: range.collapsed === true,
+            ok: accepted,
+            reason: accepted ? null : 'selection_not_at_row_end',
+            text,
+            collapsed: Boolean(actual?.collapsed),
+            activeEditor,
+            offset,
+        };
+    }
+    """
+
+    READ_COMPOSITE_QUEUE_STATE = """
+    () => {
+        const paragraphs = Array.from(
+            document.querySelectorAll('.ssml-editor p')
+        );
+        const pendingNodes = Array.from(
+            document.querySelectorAll('.msq-pending-range')
+        );
+        // 某些页面版本会在一个待处理区间内部再渲染装饰子节点；只把
+        // 最外层节点计为一个，避免队列数量被 DOM 实现细节放大。
+        const pendingRoots = pendingNodes.filter((node) => !pendingNodes.some(
+            (other) => other !== node && other.contains(node)
+        ));
+        const indexOfParagraph = (paragraph) => paragraphs.indexOf(paragraph);
+        const readRowIndex = (node) => {
+            const paragraph = node.closest?.('.ssml-editor p');
+            if (paragraph) return indexOfParagraph(paragraph);
+            for (const attribute of (
+                'data-row-index', 'data-paragraph-index', 'data-editor-row'
+            )) {
+                const raw = node.getAttribute?.(attribute);
+                if (raw == null || !/^\\d+$/.test(String(raw).trim())) continue;
+                const index = Number(raw);
+                if (Number.isInteger(index) && index >= 0 && index < paragraphs.length) {
+                    return index;
+                }
+            }
+            return null;
+        };
+        const mappedRows = pendingRoots.map(readRowIndex);
+        const rowIndices = mappedRows.every((index) => index !== null)
+            ? mappedRows
+            : null;
+        const badgeText = Array.from(
+            document.querySelectorAll('.msq-queue-badge')
+        ).map((element) => element.innerText || element.textContent || '').join(' ');
+        const badgeMatch = badgeText.match(/已选\\s*(\\d+)\\s*段/);
+        return {
+            pendingCount: pendingRoots.length,
+            rowIndices,
+            badgeCount: badgeMatch ? Number(badgeMatch[1]) : 0,
         };
     }
     """

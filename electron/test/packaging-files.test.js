@@ -60,19 +60,27 @@ test('build.files 引用的关键文件都真实存在', () => {
     }
 });
 
-test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', () => {
-    const nsisInclude = path.join(APP_DIR, 'build', 'installer.nsh');
-    const installerHeader = path.join(APP_DIR, 'build', 'installerHeader.bmp');
-    const installerSidebar = path.join(APP_DIR, 'build', 'installerSidebar.bmp');
+test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸载生命周期', () => {
+    assert.equal(packageJson.build?.win?.target?.[0]?.target, 'dir');
+    assert.equal(packageJson.build?.win?.target?.[0]?.arch?.[0], 'x64');
+    assert.equal(packageJson.build?.nsis, undefined, 'Windows must not fall back to electron-builder NSIS');
+    assert.ok(buildFiles.includes('windows-update-client.js'));
 
-    assert.equal(fs.existsSync(nsisInclude), false, `custom installer include must be removed: ${nsisInclude}`);
-    assert.equal(fs.existsSync(installerHeader), false, `custom installer header must be removed: ${installerHeader}`);
-    assert.equal(fs.existsSync(installerSidebar), false, `custom installer sidebar must be removed: ${installerSidebar}`);
-    assert.equal(packageJson.build?.nsis?.include, undefined);
-    assert.equal(packageJson.build?.nsis?.installerHeader, undefined);
-    assert.equal(packageJson.build?.nsis?.installerSidebar, undefined);
-    assert.equal(packageJson.build?.nsis?.allowToChangeInstallationDirectory, true);
-    assert.equal(packageJson.build?.nsis?.installerHeaderIcon, 'build/icon.ico');
+    const installerSourceDir = path.join(APP_DIR, '..', 'installer-prototype');
+    for (const entry of [
+        'package.json',
+        'index.html',
+        'styles.css',
+        'app.js',
+        'installer-main.js',
+        'installer-preload.js',
+        'installer-service.js',
+        'assets/app-icon.png',
+        'assets/installer-pig-doc-mic.png',
+    ]) {
+        assert.ok(fs.existsSync(path.join(installerSourceDir, entry)), `installer source is missing ${entry}`);
+    }
+
     const windowsWorkflow = fs.readFileSync(
         path.join(APP_DIR, '..', '.github', 'workflows', 'build-windows.yml'),
         'utf8',
@@ -85,33 +93,30 @@ test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', (
         path.join(APP_DIR, '..', 'build_electron_windows.bat'),
         'utf8',
     );
+    assert.match(packageJson.scripts['build:win'], /electron-builder --win dir --publish never/);
+    assert.match(packageJson.scripts['build:win'], /build_windows_installer\.js --payload/);
+    assert.match(windowsWorkflow, /electron-builder --win dir --publish never/);
+    assert.match(windowsWorkflow, /build_windows_installer\.js --payload release\/win-unpacked/);
+    assert.match(windowsWorkflow, /--headless", "--mode=install"/);
+    assert.match(windowsWorkflow, /--headless", "--mode=update"/);
+    assert.match(windowsWorkflow, /--headless", "--mode=uninstall"/);
+    assert.match(windowsWorkflow, /小猪wordTTS-uninstaller\.exe/);
     assert.ok(
         (windowsWorkflow.match(/\$installerName = "小猪wordTTS-Setup-\$env:UPDATE_VERSION-x64\.exe"/g) || []).length >= 2,
         'installer smoke and artifact validation steps must bind to the current x64 setup executable',
     );
-    assert.ok(
-        (windowsWorkflow.match(/Get-Item -LiteralPath \(Join-Path "electron\/release" \$installerName\)/g) || []).length >= 2,
-        'installer smoke and artifact validation steps must resolve the exact setup executable path',
-    );
+    assert.doesNotMatch(windowsWorkflow, /NSIS|blockmap|latest\.yml/);
     assert.doesNotMatch(windowsWorkflow, /-Filter "\*-Setup-\*\.exe"/);
     assert.doesNotMatch(windowsWorkflow, /Get-ChildItem -Path "electron\/release" -Filter "\*\.exe"/);
-    assert.match(windowsBuildScript, /electron-builder --win --publish never/);
+    assert.match(windowsBuildScript, /electron-builder --win dir --publish never/);
+    assert.match(windowsBuildScript, /scripts\\build_windows_installer\.js --payload/);
     assert.match(windowsBuildScript, /Setup-!PACKAGE_VERSION!-x64\.exe/);
-    assert.doesNotMatch(windowsBuildScript, /构建产物 \(unpacked\)/);
+    assert.doesNotMatch(windowsBuildScript, /NSIS/);
     assert.doesNotMatch(windowsBuildScript, /可直接使用 win-unpacked 目录/);
     assert.equal(packageJson.scripts.build.includes('--publish never'), true);
     assert.equal(packageJson.scripts['build:mac'].includes('--publish never'), true);
     assert.equal(packageJson.scripts['build:win'].includes('--publish never'), true);
-    assert.ok(
-        (windowsWorkflow.match(/\$\{\{ steps\.find-installer\.outputs\.installer_path \}\}/g) || []).length >= 1,
-        'Windows build artifact upload must use the validated installer path',
-    );
-    assert.match(
-        windowsWorkflow,
-        /\$blockmapPath = "\$\(\$installer\.FullName\)\.blockmap"[\s\S]*blockmap_path=\$\(\$blockmap\.FullName\)[\s\S]*steps\.find-installer\.outputs\.blockmap_path/,
-        'Windows build artifact upload must use the exact current-version blockmap',
-    );
-    assert.doesNotMatch(windowsWorkflow, /electron\/release\/\*\.blockmap/);
+    assert.match(windowsWorkflow, /steps\.find-installer\.outputs\.installer_path/);
     assert.match(
         releaseWorkflow,
         /Download Windows build artifact[\s\S]*Verify release files[\s\S]*installer="electron\/release\/小猪wordTTS-Setup-\$\{RELEASE_VERSION\}-x64\.exe/,
@@ -128,8 +133,9 @@ test('Windows NSIS 使用原生安装页面，不加载自定义安装器 UI', (
     assert.match(releaseWorkflow, /id: release[\s\S]*uses: softprops\/action-gh-release@v2/);
     assert.match(releaseWorkflow, /fail_on_unmatched_files: true/);
     assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_installer[\s\S]*wordTTS-Setup-/);
-    assert.match(releaseWorkflow, /test -s "\$blockmap"[\s\S]*cp "\$local_blockmap" "\$\{github_installer\}\.blockmap"/);
     assert.match(releaseWorkflow, /files:[\s\S]*electron\/release\/wordTTS-Setup-\$\{\{ needs\.windows\.outputs\.version \}\}-x64\.exe/);
+    assert.match(releaseWorkflow, /electron\/release\/latest-win\.json/);
+    assert.doesNotMatch(releaseWorkflow, /latest\.yml|blockmap/);
     assert.match(releaseWorkflow, /Publish release after all assets upload[\s\S]*RELEASE_ID: \$\{\{ steps\.release\.outputs\.id \}\}[\s\S]*releases\/\$\{RELEASE_ID\}[\s\S]*draft=false/);
     assert.doesNotMatch(releaseWorkflow, /--paginate --slurp|sleep [0-9]/);
     assert.doesNotMatch(releaseWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);

@@ -970,6 +970,334 @@ test('结果页从已接受工作区配置补齐实际使用的默认音色', ()
     assert.equal(file.voice_key, 'speaker:linda');
 });
 
+test('结果页按条目实际性别选择默认音色，不把解析默认值和实际音色叠加', () => {
+    const { api } = loadRendererConfigFunctions();
+    api.setVoiceCatalog([
+        { key: 'speaker:linda', name: '英语-Linda' },
+        { key: 'speaker:steve', name: '英语-Steve' },
+    ]);
+    const items = [{
+        item_id: 'item-male-question',
+        item_type: '听选信息题目',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'How many subjects does Mary have at school?',
+        metadata: { voice: 'male' },
+        voice_key: null,
+    }];
+    const workspace = {
+        items,
+        configuration: {
+            effective: {
+                default_female_voice: 'speaker:linda',
+                default_male_voice: 'speaker:steve',
+                role_voices: {},
+            },
+        },
+        artifacts: [{
+            artifact_id: 'artifact-male-question',
+            item_id: 'item-male-question',
+            artifact_type: 'tts-segment',
+            lifecycle_state: 'READY',
+            verified: true,
+            filename: '听选信息题目-1.mp3',
+            format: 'mp3',
+            mime_type: 'audio/mpeg',
+            size_bytes: 8,
+            sha256: 'e'.repeat(64),
+        }],
+    };
+
+    const [file] = api.resultFilesFromArtifacts(items, [], workspace);
+    assert.equal(file.voice_key, 'speaker:steve');
+    assert.deepEqual(JSON.parse(JSON.stringify(file.voice_keys)), ['speaker:steve']);
+
+    // 旧工作区可能同时保存了错误的默认女声和带 M 标记的正文；正文中
+    // 的实际标记优先，但不能再把 WorkItem 默认值拼成第二种音色。
+    const stale = api.resultVoiceKeysForItem({
+        normalized_content: 'M: How many subjects does Mary have at school?',
+        metadata: { voice: 'male' },
+        voice_key: 'speaker:linda',
+    }, workspace);
+    assert.deepEqual(JSON.parse(JSON.stringify(stale)), ['speaker:steve']);
+});
+
+test('结果页不会把旧 Artifact 音色数组叠加到已接受的单一性别音色', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{
+        item_id: 'item-stale-artifact-voice',
+        item_type: '听选信息题目',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'How many subjects does Mary have at school?',
+        metadata: { voice: 'male' },
+    }];
+    const artifacts = [{
+        artifact_id: 'artifact-stale-artifact-voice',
+        item_id: 'item-stale-artifact-voice',
+        artifact_type: 'tts-segment',
+        lifecycle_state: 'READY',
+        verified: true,
+        filename: '听选信息题目-1.mp3',
+        format: 'mp3',
+        mime_type: 'audio/mpeg',
+        size_bytes: 8,
+        sha256: '1'.repeat(64),
+        voice_keys: ['speaker:linda', 'speaker:steve'],
+    }];
+    const workspace = {
+        items,
+        configuration: {
+            effective: {
+                default_female_voice: 'speaker:linda',
+                default_male_voice: 'speaker:steve',
+                role_voices: {},
+            },
+        },
+        artifacts,
+    };
+
+    const [file] = api.resultFilesFromArtifacts(items, artifacts, workspace);
+    assert.deepEqual(JSON.parse(JSON.stringify(file.voice_keys)), ['speaker:steve']);
+});
+
+test('结果页兼容旧记录时保留 Artifact 的真实音色数组', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{
+        item_id: 'item-legacy-voice-facts',
+        item_type: '听后选择',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'A legacy recording without frozen configuration.',
+    }];
+    const artifacts = [{
+        artifact_id: 'artifact-legacy-voice-facts',
+        item_id: 'item-legacy-voice-facts',
+        artifact_type: 'tts-segment',
+        lifecycle_state: 'READY',
+        verified: true,
+        filename: '001.mp3',
+        format: 'mp3',
+        mime_type: 'audio/mpeg',
+        size_bytes: 8,
+        sha256: '2'.repeat(64),
+        voice_keys: ['speaker:linda', 'speaker:steve'],
+    }];
+
+    const [file] = api.resultFilesFromArtifacts(items, artifacts);
+    assert.deepEqual(JSON.parse(JSON.stringify(file.voice_keys)), ['speaker:linda', 'speaker:steve']);
+});
+
+test('结果页不会把正在水合的空配置误判为已接受配置', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{
+        item_id: 'item-empty-effective-config',
+        item_type: '听后选择',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'A legacy recording while the workspace is hydrating.',
+    }];
+    const artifacts = [{
+        artifact_id: 'artifact-empty-effective-config',
+        item_id: 'item-empty-effective-config',
+        artifact_type: 'tts-segment',
+        lifecycle_state: 'READY',
+        verified: true,
+        filename: '001.mp3',
+        format: 'mp3',
+        mime_type: 'audio/mpeg',
+        size_bytes: 8,
+        sha256: '3'.repeat(64),
+        voice_keys: ['speaker:linda', 'speaker:steve'],
+    }];
+
+    const [file] = api.resultFilesFromArtifacts(items, artifacts, {
+        items,
+        artifacts,
+        configuration: { effective: {} },
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(file.voice_keys)), ['speaker:linda', 'speaker:steve']);
+});
+
+test('结果页不会把默认音色字段为空的旧配置当成已接受配置', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{
+        item_id: 'item-null-effective-voices',
+        item_type: '听后选择',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'An old record with an incomplete configuration projection.',
+    }];
+    const artifacts = [{
+        artifact_id: 'artifact-null-effective-voices',
+        item_id: 'item-null-effective-voices',
+        artifact_type: 'tts-segment',
+        lifecycle_state: 'READY',
+        verified: true,
+        filename: '001.mp3',
+        format: 'mp3',
+        mime_type: 'audio/mpeg',
+        size_bytes: 8,
+        sha256: '5'.repeat(64),
+        voice_keys: ['speaker:legacy-one', 'speaker:legacy-two'],
+    }];
+
+    const [file] = api.resultFilesFromArtifacts(items, artifacts, {
+        items,
+        artifacts,
+        configuration: {
+            effective: {
+                default_female_voice: null,
+                default_male_voice: null,
+                role_voices: {},
+            },
+        },
+    });
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(file.voice_keys)),
+        ['speaker:legacy-one', 'speaker:legacy-two'],
+    );
+});
+
+test('历史原文带 M/W 标记但没有已接受配置时保留 Artifact 的真实音色', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{
+        item_id: 'item-legacy-marked-content',
+        item_type: '听后选择',
+        status: 'SUCCEEDED',
+        sequence: 0,
+        normalized_content: 'W: Are you ready?\nM: Yes, I am.',
+    }];
+    const artifacts = [{
+        artifact_id: 'artifact-legacy-marked-content',
+        item_id: 'item-legacy-marked-content',
+        artifact_type: 'tts-segment',
+        lifecycle_state: 'READY',
+        verified: true,
+        filename: '001.mp3',
+        format: 'mp3',
+        mime_type: 'audio/mpeg',
+        size_bytes: 8,
+        sha256: '4'.repeat(64),
+        voice_keys: ['speaker:legacy-woman', 'speaker:legacy-man'],
+    }];
+    const workspace = {
+        items,
+        artifacts,
+        configuration: { effective: {} },
+    };
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.resultVoiceKeysForItem(items[0], workspace))),
+        [],
+    );
+    const [file] = api.resultFilesFromArtifacts(items, artifacts, workspace);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(file.voice_keys)),
+        ['speaker:legacy-woman', 'speaker:legacy-man'],
+    );
+    assert.equal(file.voice_key, 'speaker:legacy-woman');
+});
+
+test('没有已接受配置且没有具体音色事实时不凭空生成默认音色', () => {
+    const { api } = loadRendererConfigFunctions();
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.resultVoiceKeysForItem({
+            normalized_content: 'M: An old question without a frozen voice.',
+        }, { configuration: { effective: {} } }))),
+        [],
+    );
+    assert.equal(
+        api.resultVoiceKeyFromAcceptedConfiguration(
+            { normalized_content: 'An unmarked old question.' },
+            { configuration: { effective: {} } },
+        ),
+        '',
+    );
+});
+
+test('结果页保持角色指定音色优先于解析器性别默认槽位', () => {
+    const { api } = loadRendererConfigFunctions();
+    const workspace = {
+        configuration: {
+            effective: {
+                default_female_voice: 'speaker:linda',
+                default_male_voice: 'speaker:steve',
+                role_voices: { teacher: 'speaker:teacher' },
+            },
+        },
+    };
+    assert.equal(
+        api.resultVoiceKeyFromAcceptedConfiguration({
+            role: 'Teacher',
+            metadata: { voice: 'male' },
+        }, workspace),
+        'speaker:teacher',
+    );
+});
+
+test('结果页使用持久化题目序号排序，即使工作区兼容行缺少 sequence', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [
+        { item_id: 'item-2', item_type: '听后选择', status: 'SUCCEEDED', sequence: 2, normalized_content: 'third' },
+        { item_id: 'item-0', item_type: '听后选择', status: 'SUCCEEDED', sequence: 0, normalized_content: 'first' },
+        { item_id: 'item-1', item_type: '听后选择', status: 'SUCCEEDED', sequence: 1, normalized_content: 'second' },
+    ];
+    const artifacts = [
+        { artifact_id: 'artifact-2', item_id: 'item-2', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, created_at: '2026-01-01T00:00:03Z' },
+        { artifact_id: 'artifact-0', item_id: 'item-0', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, created_at: '2026-01-01T00:00:01Z' },
+        { artifact_id: 'artifact-1', item_id: 'item-1', artifact_type: 'tts-segment', lifecycle_state: 'READY', verified: true, created_at: '2026-01-01T00:00:02Z' },
+    ];
+    const workspace = {
+        items: items.map(item => ({ item_id: item.item_id, status: item.status })),
+        artifacts: [
+            { ...artifacts[0], filename: '听后选择-3.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 8, sha256: 'f'.repeat(64) },
+            { ...artifacts[1], filename: '听后选择-1.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 8, sha256: 'a'.repeat(64) },
+            { ...artifacts[2], filename: '听后选择-2.mp3', format: 'mp3', mime_type: 'audio/mpeg', size_bytes: 8, sha256: 'b'.repeat(64) },
+        ],
+    };
+
+    const files = api.resultFilesFromArtifacts(items, artifacts, workspace);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(files.map(file => [file.filename, file.sequence]))),
+        [
+            ['听后选择-1.mp3', 0],
+            ['听后选择-2.mp3', 1],
+            ['听后选择-3.mp3', 2],
+        ],
+    );
+});
+
+test('结果页忽略同题目的非 TTS 产物，不遮蔽有效音频', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [{ item_id: 'item-with-parse-output', item_type: '听后选择', status: 'SUCCEEDED', sequence: 0 }];
+    const artifacts = [
+        {
+            artifact_id: 'parse-output-newer',
+            item_id: 'item-with-parse-output',
+            artifact_type: 'parse-output',
+            created_at: '2026-01-02T00:00:00Z',
+        },
+        {
+            artifact_id: 'tts-audio',
+            item_id: 'item-with-parse-output',
+            artifact_type: 'tts-segment',
+            lifecycle_state: 'READY',
+            verified: true,
+            created_at: '2026-01-01T00:00:00Z',
+            filename: '听后选择-1.mp3',
+            format: 'mp3',
+            mime_type: 'audio/mpeg',
+            size_bytes: 8,
+            sha256: '1'.repeat(64),
+        },
+    ];
+
+    const [file] = api.resultFilesFromArtifacts(items, artifacts);
+    assert.equal(file.artifact_id, 'tts-audio');
+    assert.equal(file.filename, '听后选择-1.mp3');
+});
+
 test('交付页从录音稿汇总一段音频实际使用的多个音色', () => {
     const { api } = loadRendererConfigFunctions();
     api.setVoiceCatalog([

@@ -10,7 +10,7 @@ const NON_NUMERIC_IDENTIFIER = '(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)';
 const PRERELEASE_IDENTIFIER = `(?:${NUMERIC_IDENTIFIER}|${NON_NUMERIC_IDENTIFIER})`;
 const BUILD_IDENTIFIER = '[0-9A-Za-z-]+';
 const VERSION_PATTERN = new RegExp(
-    `^v?(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})`
+    `^[vV]?(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})\\.(${NUMERIC_IDENTIFIER})`
     + `(?:-(${PRERELEASE_IDENTIFIER}(?:\\.${PRERELEASE_IDENTIFIER})*))?`
     + `(?:\\+${BUILD_IDENTIFIER}(?:\\.${BUILD_IDENTIFIER})*)?$`,
 );
@@ -32,7 +32,7 @@ function parseVersion(value) {
 function normalizeVersion(value, label = '版本号') {
     const text = String(value || '').trim();
     if (!parseVersion(text)) throw new Error(`${label}不是合法 SemVer: ${text || '(空)'}`);
-    return text.replace(/^v/, '');
+    return text.replace(/^v/i, '');
 }
 
 function compareVersions(left, right) {
@@ -74,7 +74,7 @@ function validateUpdatePolicy(policy, { version, tag } = {}) {
     if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
         throw new Error('更新策略必须是 JSON 对象');
     }
-    const requiredKeys = ['version', 'mode', 'minimumSupportedVersion', 'message'];
+    const requiredKeys = ['mode', 'minimumSupportedVersion', 'message'];
     const allowedKeys = new Set(['$schema', ...requiredKeys]);
     const missingKeys = requiredKeys.filter(key => !Object.prototype.hasOwnProperty.call(policy, key));
     if (missingKeys.length > 0) {
@@ -87,19 +87,15 @@ function validateUpdatePolicy(policy, { version, tag } = {}) {
     if (policy.$schema !== undefined && typeof policy.$schema !== 'string') {
         throw new Error('更新策略 $schema 必须是字符串');
     }
-    if (typeof policy.version !== 'string') {
-        throw new Error('更新策略 version 必须是字符串');
-    }
     if (typeof policy.message !== 'string') {
         throw new Error('更新策略 message 必须是字符串');
     }
     if (policy.minimumSupportedVersion !== null && typeof policy.minimumSupportedVersion !== 'string') {
         throw new Error('minimumSupportedVersion 必须是字符串或 null');
     }
-    const policyVersion = normalizeVersion(policy.version, '更新策略 version');
-    const expectedVersion = version == null ? null : normalizeVersion(version, '构建 version');
-    if (expectedVersion && policyVersion !== expectedVersion) {
-        throw new Error(`更新策略 version=${policyVersion} 与构建版本=${expectedVersion} 不一致`);
+    const policyVersion = version == null ? null : normalizeVersion(version, '构建版本');
+    if (!policyVersion) {
+        throw new Error('校验更新策略时必须提供构建版本；版本统一从 version.json 读取');
     }
     if (tag) {
         const releaseTag = String(tag).trim();
@@ -108,7 +104,7 @@ function validateUpdatePolicy(policy, { version, tag } = {}) {
         }
         const normalizedTag = normalizeVersion(releaseTag, 'Release tag');
         if (normalizedTag !== policyVersion) {
-            throw new Error(`Release tag=${normalizedTag} 与更新策略 version=${policyVersion} 不一致`);
+            throw new Error(`Release tag=${normalizedTag} 与构建版本=${policyVersion} 不一致`);
         }
     }
 

@@ -4,7 +4,7 @@
 
 | 检查 | 当前状态 | 说明 |
 | --- | --- | --- |
-| package/package-lock 同版本 | PASS | 版本源为 `electron/package.json`，当前 `2.7.44`。 |
+| package/package-lock 同版本 | PASS | 唯一手工版本源为 `version.json`，构建前自动同步 Electron package/package-lock。 |
 | DATA_FORMAT_VERSION | PASS | 文件与 `workflow.version` 一致。 |
 | Renderer/Preload/Proxy 禁止旧 token、路径和 EventSource | PASS | 静态扫描通过。 |
 | Electron single instance | PASS | 主进程请求 single-instance lock。 |

@@ -7,7 +7,10 @@ import re
 import zipfile
 from datetime import datetime
 
-from audio_naming import ARCHIVE_ROOT_FOLDER
+from audio_naming import (
+    ARCHIVE_ROOT_FOLDER,
+    audio_type_label,
+)
 from wordtts.audio_io import sanitize_dirname
 from wordtts.config import (
     AUDIO_ALGORITHM_VERSION,
@@ -63,11 +66,10 @@ def save_progress(session_dir, progress):
 
 
 def _category_to_prefix(category):
-    """将 category 转为文件名前缀，去除"录音稿"后缀。"""
+    """将 category 转为文件名前缀，去除“录音稿”后缀。"""
     if not category:
         return "audio"
-    # 去掉"录音稿"后缀
-    prefix = category.replace("录音稿", "").strip()
+    prefix = audio_type_label(category)
     # 处理"模仿朗读-外网" → "模仿朗读_外网"
     prefix = prefix.replace("-", "_")
     # 清理不安全字符
@@ -99,9 +101,9 @@ def build_progress(source_filename, source_path, parse_results, config):
     每条解析结果（每个音频条目）独立生成一个音频文件。
 
     文件命名规则：
-      - 信息获取题目（听选信息题目/回答问题题目）：问题x.mp3（x 为题号）
+      - 套卷条目：解析器显式提供题型路径时使用题型-序号.mp3
       - 完整试卷题型提供 audio_filename_stem 时，使用其完整题型路径和局部序号
-      - 其他题型：题型-录音稿x.mp3（x 为同题型内的顺序号）
+      - 专项条目：题型-录音稿x.mp3（x 为同题型内的顺序号）
     """
     config = {
         **normalize_tts_config(config),
@@ -134,10 +136,11 @@ def build_progress(source_filename, source_path, parse_results, config):
                     seq = default_seq
                 item_id = f"{prefix}_{filename_stem}"
             else:
-                # 其他题型：题型-录音稿x
+                # 专项题型沿用历史文件名，避免无关专项任务发生破坏性改名。
                 seq = default_seq
                 filename_stem = _unique_filename_stem(
-                    f"{prefix}-录音稿{seq}", used_filename_stems
+                    f"{prefix}-录音稿{seq}",
+                    used_filename_stems,
                 )
                 item_id = filename_stem
             text_preview = raw_item.get("text", "")[:80].replace('\n', ' ')

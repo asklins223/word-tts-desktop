@@ -2,6 +2,7 @@
 
 import re
 
+from audio_naming import audio_filename_stem_for_category, is_exam_paper_bundle
 from question_types.base import BaseParser
 from question_types.text_utils import (
     MAJOR_TYPE_HEADING_RE,
@@ -59,16 +60,27 @@ class InfoRetellingParser(BaseParser):
         collecting = False
         current_lines = []
         script_idx = 0
+        use_exam_naming = is_exam_paper_bundle(self.paras)
 
         def flush():
             nonlocal collecting, current_lines, script_idx
             if collecting and current_lines:
                 script_idx += 1
-                items.append({
+                item = {
                     "category": "信息转述录音稿",
                     "index": script_idx,
                     "text": sanitize('\n'.join(current_lines)),
-                })
+                }
+                if use_exam_naming:
+                    filename_stem = audio_filename_stem_for_category(
+                        item["category"], script_idx
+                    )
+                    if filename_stem:
+                        item.update({
+                            "audio_filename_stem": filename_stem,
+                            "type_path": [filename_stem.rsplit("-", 1)[0]],
+                        })
+                items.append(item)
             collecting = False
             current_lines = []
 

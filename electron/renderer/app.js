@@ -375,12 +375,12 @@ function normalizeUpdateState(rawState = {}) {
         ...source,
         status,
         currentVersion: String(source.currentVersion || updateState.currentVersion || ''),
-        version: source.version ? String(source.version).replace(/^v/, '') : null,
-        latestVersion: source.latestVersion ? String(source.latestVersion).replace(/^v/, '') : null,
+        version: source.version ? String(source.version).replace(/^v/i, '') : null,
+        latestVersion: source.latestVersion ? String(source.latestVersion).replace(/^v/i, '') : null,
         isForced: Boolean(source.isForced),
         updateMode: source.updateMode === 'force' ? 'force' : (source.updateMode === 'optional' ? 'optional' : null),
         minimumSupportedVersion: source.minimumSupportedVersion
-            ? String(source.minimumSupportedVersion).replace(/^v/, '')
+            ? String(source.minimumSupportedVersion).replace(/^v/i, '')
             : null,
         releaseName: String(source.releaseName || ''),
         releaseNotes: source.releaseNotes || '',
@@ -413,7 +413,7 @@ function hasInstallableUpdate(state = {}) {
 
 function versionDisplay(value, fallback = '—') {
     const text = String(value || '').trim();
-    return text ? `v${text.replace(/^v/, '')}` : fallback;
+    return text ? `v${text.replace(/^v/i, '')}` : fallback;
 }
 
 function updateStatusPresentation(state = {}) {
@@ -2872,7 +2872,7 @@ function workspaceItemsToParseResults(workspace) {
             metadata,
             role: item?.role || null,
             voice_key: item?.voice_key || null,
-            voice: item?.voice || metadata.voice || metadata.voice_gender || null,
+            voice: item?.voice || metadata.voice || metadata.voice_gender || metadata.gender || null,
             question_type: item?.question_type || metadata.question_type || null,
             sub_type_code: item?.sub_type_code || metadata.sub_type_code || null,
             type_path: item?.type_path || metadata.type_path || metadata.type_hierarchy || null,
@@ -6582,9 +6582,39 @@ function itemDisplayFacts(item) {
     };
 }
 
+function resultHasUsableAcceptedVoiceConfiguration(workspace = null, item = null) {
+    const configuration = workspace?.configuration?.effective;
+    if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) return false;
+    // A workspace can briefly expose an empty `effective` object while it is
+    // being hydrated.  Treating that placeholder as an accepted snapshot
+    // hides the real voice_keys stored on legacy artifacts and makes the
+    // delivery page invent the female fallback.  The normalized server
+    // projection always carries both default fields, even when an old record
+    // or a hydration placeholder has both values set to null. Field presence
+    // alone is therefore not evidence that a voice was accepted; require an
+    // actual non-empty voice key. Role-only configs are also meaningful for
+    // explicitly role-labelled items.
+    const hasDefaultVoice = [
+        configuration.default_female_voice,
+        configuration.default_male_voice,
+    ].some(value => String(value ?? '').trim());
+    const roleVoices = configuration.role_voices;
+    const role = normalizeRoleKeyClient(item?.role);
+    const hasRoleVoiceForItem = role && roleVoices
+        && typeof roleVoices === 'object'
+        && !Array.isArray(roleVoices)
+        && Boolean(roleVoices[role] || roleVoices[`role:${role}`]);
+    return hasDefaultVoice || Boolean(hasRoleVoiceForItem);
+}
+
 function resultVoiceKeyFromAcceptedConfiguration(item, workspace = null) {
     const configuration = workspace?.configuration?.effective;
     if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) return '';
+    // An empty effective object is a hydration placeholder, not a frozen
+    // generation decision.  Returning the built-in Amanda/George fallback
+    // here would make old Artifact voice facts look like a new accepted
+    // configuration and can overwrite the actual voice used by that record.
+    if (!resultHasUsableAcceptedVoiceConfiguration(workspace, item)) return '';
     const explicit = String(item?.voice_key || '').trim();
     if (explicit) return explicit;
 
@@ -6598,6 +6628,24 @@ function resultVoiceKeyFromAcceptedConfiguration(item, workspace = null) {
         || roleVoices[`role:${role}`]
     );
     if (roleVoice) return String(roleVoice).trim();
+
+    const metadata = item?.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+        ? item.metadata
+        : {};
+    const itemGender = [
+        item?.voice,
+        item?.voice_gender,
+        item?.gender,
+        metadata.voice,
+        metadata.voice_gender,
+        metadata.gender,
+    ].map(reviewGenderFromValue).find(Boolean);
+    if (itemGender === 'male') {
+        return String(configuration.default_male_voice || 'george').trim();
+    }
+    if (itemGender === 'female') {
+        return String(configuration.default_female_voice || 'amanda').trim();
+    }
 
     // Keep this fallback aligned with WorkflowEngine._effective_plan_item for
     // older workspaces whose durable provider plan predates the voice
@@ -6615,16 +6663,24 @@ function resultVoiceKeysFromAcceptedContent(item, workspace = null) {
     const text = String(item?.normalized_content ?? item?.text ?? item?.content ?? '').trim();
     if (!text) return [];
 
-    const configuration = workspace?.configuration?.effective
+    const hasAcceptedConfiguration = resultHasUsableAcceptedVoiceConfiguration(workspace, item);
+    const configuration = hasAcceptedConfiguration && workspace?.configuration?.effective
         && typeof workspace.configuration.effective === 'object'
         && !Array.isArray(workspace.configuration.effective)
         ? workspace.configuration.effective
         : {};
     const configuredItemVoice = String(item?.voice_key || '').trim()
-        || resultVoiceKeyFromAcceptedConfiguration(item, workspace)
+        || (hasAcceptedConfiguration ? resultVoiceKeyFromAcceptedConfiguration(item, workspace) : '')
         || String(configuration.default_female_voice || '').trim();
-    const femaleVoice = String(configuration.default_female_voice || configuredItemVoice || 'amanda').trim();
-    const maleVoice = String(configuration.default_male_voice || 'george').trim();
+    const femaleVoice = String(
+        configuration.default_female_voice
+        || configuredItemVoice
+        || (hasAcceptedConfiguration ? 'amanda' : '')
+    ).trim();
+    const maleVoice = String(
+        configuration.default_male_voice
+        || (hasAcceptedConfiguration ? 'george' : '')
+    ).trim();
     const defaultVoice = configuredItemVoice || femaleVoice;
     const roleVoices = configuration.role_voices
         && typeof configuration.role_voices === 'object'
@@ -6694,6 +6750,46 @@ function resultVoiceKeysFromAcceptedContent(item, workspace = null) {
     return values;
 }
 
+function resultContentHasExplicitVoiceEvidence(item) {
+    const text = String(item?.normalized_content ?? item?.text ?? item?.content ?? '').trim();
+    if (!text) return false;
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.some(line => (
+        /^[WwMm]\s*[:：]/.test(line)
+        || /^\([WwMm]\)\s*/.test(line)
+    ))) return true;
+    const roleLabels = new Set();
+    lines.forEach(line => {
+        const match = /^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$/.exec(line);
+        if (match && roleLooksLikeLabel(match[1])) {
+            roleLabels.add(normalizeRoleKeyClient(match[1]));
+        }
+    });
+    return roleLabels.size >= 2;
+}
+
+function resultItemHasAcceptedVoiceFacts(item, workspace = null) {
+    if (resultHasUsableAcceptedVoiceConfiguration(workspace, item)) return true;
+    if (String(item?.voice_key || '').trim()) return true;
+    if (Array.isArray(item?.segments) && item.segments.some(segment => (
+        String(segment?.voice_key || '').trim()
+        || (Array.isArray(segment?.voice_keys) && segment.voice_keys.length > 0)
+    ))) return true;
+    const metadata = item?.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+        ? item.metadata
+        : {};
+    return [
+        item?.voice,
+        item?.voice_gender,
+        item?.gender,
+        metadata.voice,
+        metadata.voice_gender,
+        metadata.gender,
+    ].map(reviewGenderFromValue).some(Boolean)
+        || (resultHasUsableAcceptedVoiceConfiguration(workspace, item)
+            && resultContentHasExplicitVoiceEvidence(item));
+}
+
 function resultVoiceKeysForItem(item, workspace = null) {
     const values = [];
     const append = value => {
@@ -6704,22 +6800,66 @@ function resultVoiceKeysForItem(item, workspace = null) {
         const key = String(value ?? '').trim();
         if (key && !values.includes(key)) values.push(key);
     };
-    append(item?.voice_keys);
-    append(item?.metadata?.voice_keys);
+    const legacyVoiceKeys = [];
+    const appendLegacy = value => {
+        if (Array.isArray(value)) {
+            value.forEach(appendLegacy);
+            return;
+        }
+        const key = String(value ?? '').trim();
+        if (key && !legacyVoiceKeys.includes(key)) legacyVoiceKeys.push(key);
+    };
+    appendLegacy(item?.voice_keys);
+    appendLegacy(item?.metadata?.voice_keys);
+    appendLegacy(item?.voice_key);
+    const segmentVoiceKeys = [];
+    const appendSegment = value => {
+        if (Array.isArray(value)) {
+            value.forEach(appendSegment);
+            return;
+        }
+        const key = String(value ?? '').trim();
+        if (key && !segmentVoiceKeys.includes(key)) segmentVoiceKeys.push(key);
+    };
     if (Array.isArray(item?.segments)) {
         item.segments.forEach(segment => {
-            append(segment?.voice_keys);
-            append(segment?.voice_key);
+            appendSegment(segment?.voice_keys);
+            appendSegment(segment?.voice_key);
         });
     }
-    // A composite result may have one WorkItem voice_key even though its
-    // recording script switches speakers. Union the accepted text mapping
-    // with any explicit metadata so the delivery page reflects the whole
-    // audio rather than only its first/default voice.
-    append(resultVoiceKeysFromAcceptedContent(item, workspace));
-    append(item?.voice_key);
-    if (!values.length) append(resultVoiceKeyFromAcceptedConfiguration(item, workspace));
-    return values;
+    const contentVoiceKeys = resultVoiceKeysFromAcceptedContent(item, workspace);
+    // Explicit W/M/role markers describe the actual audio and are stronger
+    // than stale WorkItem/artifact voice arrays from an older attempt.
+    if (resultContentHasExplicitVoiceEvidence(item)) {
+        // Without a frozen configuration those markers have no reliable
+        // mapping to catalog keys. Keep any concrete item fact as a fallback;
+        // otherwise resultFilesFromArtifacts will retain the Artifact facts.
+        if (contentVoiceKeys.length) return contentVoiceKeys;
+        if (legacyVoiceKeys.length) {
+            legacyVoiceKeys.forEach(append);
+            return values;
+        }
+        return [];
+    }
+    // Segment-level metadata is the precise source for callers that already
+    // split the item into voice-specific pieces.
+    if (segmentVoiceKeys.length) return segmentVoiceKeys;
+    // For an unmarked question, the accepted snapshot (including parser
+    // gender metadata) determines exactly one default slot. Do not union it
+    // with legacy arrays: that was the source of the “one male voice shown as
+    // two voices” symptom.
+    const acceptedVoiceKey = resultHasUsableAcceptedVoiceConfiguration(workspace, item)
+        ? resultVoiceKeyFromAcceptedConfiguration(item, workspace)
+        : '';
+    if (acceptedVoiceKey) return [acceptedVoiceKey];
+    // Preserve old records only when no accepted configuration can resolve
+    // the item. This keeps historical data readable without allowing it to
+    // override a frozen generation decision.
+    if (legacyVoiceKeys.length) {
+        legacyVoiceKeys.forEach(append);
+        return values;
+    }
+    return contentVoiceKeys;
 }
 
 function resultFilesFromArtifacts(items, artifacts, workspace = null) {
@@ -6758,8 +6898,8 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
         ))
         .forEach(artifact => {
             const itemId = String(artifact?.item_id || '');
-            if (!itemId || seenItemIds.has(itemId)) return;
             if (artifact.artifact_type !== 'tts-segment') return;
+            if (!itemId || seenItemIds.has(itemId)) return;
             // The newest TTS artifact is authoritative for this item. If it is
             // not deliverable, do not fall back to an older attempt's audio.
             seenItemIds.add(itemId);
@@ -6813,10 +6953,22 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
             const artifactVoiceKeys = Array.isArray(artifact?.voice_keys)
                 ? artifact.voice_keys
                 : (artifact?.voice_keys ? [artifact.voice_keys] : []);
-            const voiceKeys = [...new Set([
-                ...artifactVoiceKeys,
-                ...resultVoiceKeysForItem(item, workspace),
-            ].map(value => String(value || '').trim()).filter(Boolean))];
+            const acceptedVoiceKeys = resultVoiceKeysForItem(item, workspace);
+            // Accepted item/content metadata is authoritative. Artifact voice
+            // arrays are only a compatibility fallback for old records where
+            // the item has no resolvable voice fact; unioning both revives a
+            // stale default as a second voice in the delivery page.
+            const useAcceptedVoiceKeys = resultItemHasAcceptedVoiceFacts(item, workspace);
+            const voiceKeys = [...new Set(((useAcceptedVoiceKeys && acceptedVoiceKeys.length)
+                ? acceptedVoiceKeys
+                : artifactVoiceKeys
+            ).map(value => String(value || '').trim()).filter(Boolean))];
+            const primaryVoiceKey = (useAcceptedVoiceKeys && acceptedVoiceKeys[0])
+                || artifactVoiceKeys[0]
+                || resultVoiceKeyFromAcceptedConfiguration(item, workspace)
+                || acceptedVoiceKeys[0]
+                || '';
+            const sequenceValue = Number(item.sequence);
             latestByItem.set(itemId, {
                 filename,
                 artifact_id: String(artifact.artifact_id),
@@ -6828,9 +6980,10 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
                 text_preview: text.slice(0, 160),
                 role: item.role ?? null,
                 voice_keys: voiceKeys,
-                voice_key: String(item.voice_key || '').trim()
-                    || resultVoiceKeyFromAcceptedConfiguration(item, workspace)
-                    || null,
+                voice_key: primaryVoiceKey || null,
+                sequence: Number.isSafeInteger(sequenceValue) && sequenceValue >= 0
+                    ? sequenceValue
+                    : null,
                 size_bytes: sizeBytes,
                 format,
                 mime_type: mimeType,
@@ -6840,10 +6993,8 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
         });
 
     return [...latestByItem.values()].sort((left, right) => {
-        const leftItem = workspaceItems.get(left.item_id) || itemById.get(left.item_id) || {};
-        const rightItem = workspaceItems.get(right.item_id) || itemById.get(right.item_id) || {};
-        const leftSequence = Number(leftItem.sequence ?? Number.MAX_SAFE_INTEGER);
-        const rightSequence = Number(rightItem.sequence ?? Number.MAX_SAFE_INTEGER);
+        const leftSequence = left.sequence ?? Number.MAX_SAFE_INTEGER;
+        const rightSequence = right.sequence ?? Number.MAX_SAFE_INTEGER;
         return leftSequence - rightSequence || left.filename.localeCompare(right.filename);
     });
 }

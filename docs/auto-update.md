@@ -2,155 +2,150 @@
 
 ## 目标与边界
 
-小猪wordTTS 不增加自建服务器。正式桌面包发布到 GitHub Releases，客户端通过 `electron-updater` 查询同一 Release 下的更新元数据，下载对应平台安装包，再由系统安装器完成覆盖升级。
+桌面包发布到 GitHub Releases，不增加自建更新服务器。Windows 和 macOS 使用两条明确分开的更新链路：
 
-当前支持范围：
+- Windows：使用独立的 HTML 自绘 `Setup.exe` 完成首次安装、更新和卸载；客户端读取 `latest-win.json`，下载并校验新的 Setup.exe，再启动它的 `update` 模式。
+- macOS：继续使用 `electron-updater` 和 `latest-mac.yml`；DMG 负责首次安装，ZIP 负责自动更新。
+- 开发模式和 `--smoke-test` 不访问更新服务。
+- 当前 macOS Actions 按 runner 架构构建一个包；如果要同时覆盖 Intel 与 Apple Silicon，应增加对应架构构建并把两个 ZIP 一起放进同一个 macOS 元数据流程。
 
-- Windows：NSIS 安装包本地构建名为 `小猪wordTTS-Setup-<version>-x64.exe`，GitHub 下载资产名为 `wordTTS-Setup-<version>-x64.exe`，元数据为 `latest.yml`。
-- macOS：DMG 负责首次安装，ZIP 负责自动更新；本地构建名为 `小猪wordTTS-<version>-<arch>.zip`，GitHub 下载资产名为 `wordTTS-<version>-<arch>.zip`，元数据为 `latest-mac.yml`。
-- 开发模式和 `--smoke-test` 不会访问更新服务。
-- 当前 macOS Actions 按 runner 架构构建一个包；如果要同时覆盖 Intel 与 Apple Silicon，应增加对应架构构建并把两个 ZIP 一起放进同一个 `latest-mac.yml`。
+Windows 不再使用 `electron-updater`、`latest.yml` 或系统安装页面。这样安装器的视觉、交互、安装/卸载文案和流程都由 `installer-prototype/` 控制。
 
-GitHub Release 对客户端必须是已发布的非 Draft Release。两个平台的构建会先把安装包上传为 Actions Artifact，只有两端构建都成功后，统一发布 job 才会汇总 Artifact、生成两份 `latest*.yml` 并创建 Draft Release；所有安装包和元数据上传完成后才公开 Release。客户端还会探测当前平台的具体安装包，避免只看到 tag、半成品 Release 或上传中的元数据就显示更新。客户端不把 GitHub Token 写入安装包；因此当前方案按公开仓库/公开 Release 设计。私有仓库需要另行设计鉴权，不能直接把 Token 放进 renderer 或安装包。
+## Windows 结构
 
-## 代码与产物职责
+```text
+electron/release/win-unpacked/       Electron 应用目录
+                │
+                ▼
+scripts/build_windows_installer.js   把应用目录嵌入独立的 Setup.exe
+                │
+                ▼
+小猪wordTTS-Setup-<version>-x64.exe  用户分发包
+```
+
+Windows Setup 是一个短生命周期的 Electron 包，运行时把 `payload` 写入用户选择的目录，并保存 `install-state.json`。已安装目录中会留下同一套自绘程序作为 `小猪wordTTS-uninstaller.exe`，因此卸载也不会回到原生页面。
+
+关键文件：
 
 | 文件 | 职责 |
 | --- | --- |
-| `electron/update-manager.js` | 主进程更新状态机：检查、下载、已下载、安装、错误和定时检查。 |
-| `electron/main.js` | 只在可信本地 renderer 上开放更新 IPC；固定 GitHub Release 页面地址。 |
-| `electron/preload.js` | 通过 context bridge 暴露最小更新 API，不暴露 Node 或任意远程 URL。 |
-| `electron/renderer/index.html` / `app.js` / `styles.css` | 固定的“版本中心”页面、更新日志、进度和强更遮罩。 |
-| `release/update-policy.json` | 每个版本发布前必须填写的强更/非强更策略。 |
-| `scripts/validate_update_policy.js` | 发布前检查版本号、tag 和策略字段是否一致。 |
-| `scripts/prepare_update_metadata.js` | 根据实际安装包计算 SHA-512、大小，并生成 `latest.yml` 或 `latest-mac.yml`。 |
-| `.github/workflows/build-macos.yml` / `build-windows.yml` | 可复用的平台构建、校验和构建 Artifact；两个平台在统一发布流程中并行执行。 |
-| `.github/workflows/build-release.yml` | 监听 `v*` tag，调用两个平台构建，汇总 Artifact，生成两端 Release 元数据并一次性发布 GitHub Release。 |
+| `installer-prototype/index.html` / `styles.css` / `app.js` | 安装、更新、卸载共用的自绘 UI 和静态交互。 |
+| `installer-prototype/installer-main.js` | Electron 窗口、IPC、UAC 提权和自动启动。 |
+| `installer-prototype/installer-service.js` | 文件替换、快捷方式、注册表、数据保留和卸载清理。 |
+| `scripts/build_windows_installer.js` | 先构建应用目录，再生成独立 Setup.exe。 |
+| `electron/windows-update-client.js` | Windows 更新元数据、下载、大小/SHA-512 校验和 Setup 启动。 |
+| `electron/update-manager.js` | 统一更新状态机；Windows 走上面的客户端，macOS 才加载 `electron-updater`。 |
+| `scripts/prepare_update_metadata.js` | Windows 生成 `latest-win.json`，macOS 生成 `latest-mac.yml`。 |
 
-安装包、校验值和策略的关系是：
+安装状态会记录版本、安装位置、范围、快捷方式和应用数据目录。更新只替换应用文件，不删除用户数据；卸载默认保留个人设置和历史任务，可选择删除缓存或全部个人数据。
 
-```text
-release/update-policy.json + CHANGELOG.md + electron/package.json
-                    │
-                    ▼
-        tag → Actions 构建真实安装包
-                    │
-                    ▼
-  prepare_update_metadata.js 计算文件大小和 SHA-512
-                    │
-                    ▼
-       GitHub Release + latest*.yml + 更新日志
-                    │
-                    ▼
-     客户端检查 → 下载 → 用户确认重启 → 覆盖安装
-```
+## Windows 更新流程
 
-## 更新策略配置
+1. 已安装的应用读取 GitHub Releases 的 `latest-win.json`。
+2. 客户端确认版本高于当前版本，并确认元数据包含当前版本的 `.exe`、正数文件大小和 SHA-512。
+3. 客户端下载 Setup.exe 到临时目录，流式计算 SHA-512，并校验完整大小。
+4. 用户点击“重启并安装”后，应用启动下载好的 Setup.exe：
 
-`release/update-policy.json` 是发布前的唯一策略入口。示例：
+   ```text
+   Setup.exe --mode=update --auto-start --target-version <latest-win.json.version> --target <当前安装目录>
+   ```
+
+5. Setup 使用与首次安装相同的自绘界面，必要时通过 UAC 启动带操作计划的管理员实例，关闭旧应用后原子替换应用目录。
+
+更新下载失败、校验失败或 Setup 启动失败都会回到版本中心的错误状态，不会静默覆盖旧版本。
+
+## 更新元数据
+
+Windows 元数据由实际安装包计算，不手工复制校验值。简化示例：
 
 ```json
 {
-  "$schema": "./update-policy.schema.json",
-  "version": "2.7.46",
-  "mode": "optional",
+  "schemaVersion": 1,
+  "platform": "win32",
+  "version": "3.0.2",
+  "tag": "v3.0.2",
+  "artifact": {
+    "url": "wordTTS-Setup-3.0.2-x64.exe",
+    "sha512": "<base64 sha512>",
+    "size": 123456789
+  },
+  "updateMode": "optional",
   "minimumSupportedVersion": null,
-  "message": "这是一个可选更新。你可以在方便时下载并重启安装。"
+  "updateMessage": "这是一个可选更新。",
+  "releaseNotes": "..."
 }
 ```
 
-字段规则：
+`files`、`path`、`sha512` 和 `size` 也会保留在 JSON 中，方便状态机和诊断代码使用。GitHub Release 的 Windows 资产名为 `wordTTS-Setup-<version>-x64.exe`，本地构建名为 `小猪wordTTS-Setup-<version>-x64.exe`。
 
-- `version` 必须等于 `electron/package.json` 版本，也必须等于 `v<version>` tag 去掉 `v` 后的值。
-- `mode: "optional"` 是非强制更新：后台监测到新版本后显示版本中心角标，不打断正在进行的任务。
-- `mode: "force"` 是强制更新：检测到该 Release 后显示强更遮罩，必须下载并重启安装才能继续使用。
-- `minimumSupportedVersion` 可用于只强制淘汰旧版本。例如新 Release 为 `2.7.46`，设置为 `2.7.40` 后，`< 2.7.40` 的客户端必须升级，较新的客户端仍按 `mode` 判断。
-- `message` 会进入客户端状态页和强更提示，限制为 500 个字符；不要放入 Token、内部地址或个人信息。
-- CI 同时拒绝缺少必填字段、未知字段和错误类型；即使 `minimumSupportedVersion` 不设，也要明确写成 `null`。
+macOS 仍按 `latest-mac.yml` 的格式发布 ZIP；Windows JSON 和 macOS YAML 不能互换。
 
-策略下发在 `latest.yml` / `latest-mac.yml` 中，额外字段包括 `updateMode`、`minimumSupportedVersion`、`updateMessage` 和 `releaseNotes`。旧的 `files`、`sha512` 和 `size` 字段仍由脚本按实际文件生成，不能手工复制上一版。
+## 更新策略
 
-## 正常 tag 发布步骤
+`release/update-policy.json` 是每个版本的唯一策略入口：
 
-每次推 tag 前按下面顺序完成：
+- `mode: "optional"`：显示可选更新，不打断正在进行的任务。
+- `mode: "force"`：收到有效更新包后显示强更遮罩，必须下载并重启安装。
+- `minimumSupportedVersion`：只淘汰低于指定版本的客户端。
+- `message`：显示在版本中心和强更提示中，最多 500 个字符。
 
-1. 更新版本。推荐在 `electron/` 目录执行 `npm version <新版本> --no-git-tag-version`，让 `package.json` 和 lock 文件同步；例如 `npm version 2.7.46 --no-git-tag-version`。
-2. 修改 `release/update-policy.json` 的 `version`、`mode`、`minimumSupportedVersion` 和 `message`。
-3. 在 `CHANGELOG.md` 顶部增加严格匹配的 `## v<新版本>` 标题和更新内容。Actions 会把这一节提取为 Release body 和应用内更新日志。
-4. 在仓库根目录执行预检：
+版本号不在策略文件里重复维护，统一从根目录 `version.json` 读取；构建时会同步到
+`electron/package.json`、`electron/package-lock.json` 和安装器构建元数据。Release 的
+`latest-win.json.version` 就是 Windows 安装器实际更新到的目标版本。CI 会在构建前运行：
 
-   ```bash
-   node scripts/validate_update_policy.js --version 2.7.46 --tag v2.7.46
-   ```
+```bash
+node scripts/project_version.js --set 3.0.2
+node scripts/validate_update_policy.js --tag v3.0.2
+```
 
-5. 审阅 `git diff`，确认没有把强更误留在 `force`，并提交上述版本、策略、日志和代码变更。
-6. 创建并推送 tag：
+## 正常发布步骤
 
-   ```bash
-   git tag v2.7.46
-   git push origin main --follow-tags
-   ```
+1. 只更新根目录 `version.json`，或运行 `node scripts/project_version.js --set <version>`。
+2. 按需更新 `release/update-policy.json`（只维护更新规则，不再填写版本号）。
+3. 在 `CHANGELOG.md` 增加严格匹配的 `## v<version>` 章节。
+4. 推送 `v<version>` tag。
+5. `Build and Release` 会把唯一版本源同步到 Electron、后端和自绘 Setup；Windows 先构建 `dir` 应用，再生成自绘 Setup.exe。
+6. 发布 job 汇总两个构建产物，生成 `latest-win.json` 和 `latest-mac.yml`，创建 Draft Release，上传所有资产后再公开。
 
-7. 等待 `Build and Release` 完成。它会并行执行 macOS 和 Windows 构建，两个构建成功后由同一个 Release job 汇总 Artifact、生成两端元数据，并一次性发布 GitHub Release；单独运行 `Build macOS` 或 `Build Windows` 只生成对应构建 Artifact，不发布 Release。
-8. 在 GitHub Release 页面确认至少存在：
+最终 Release 至少包含：
 
-   - Windows：`latest.yml`、`wordTTS-Setup-2.7.46-x64.exe`。
-   - macOS：`latest-mac.yml`、`wordTTS-2.7.46-<arch>.zip`，以及用于首次安装的 `.dmg`。
+- Windows：`latest-win.json`、`wordTTS-Setup-<version>-x64.exe`。
+- macOS：`latest-mac.yml`、`wordTTS-<version>-<arch>.zip` 和首次安装用的 `.dmg`。
 
-不要先推 tag、再补策略文件。CI 会在构建早期因为版本不一致失败；这是有意设计的发布门。
+## 签名
 
-## 客户端行为
+- Windows：配置 `WINDOWS_CSC_LINK`、`WINDOWS_CSC_KEY_PASSWORD`，对最终自绘 Setup.exe 进行 Authenticode 签名。未签名包只适合内部验证。
+- macOS：配置 `MAC_CSC_LINK`、`MAC_CSC_KEY_PASSWORD`，需要公证时再配置 Apple 相关凭据。
 
-- 启动约 6 秒后自动检查，之后默认每 6 小时检查一次；版本中心也可以手动检查。
-- 非强更只显示版本中心的“新”角标和可选下载按钮，不强迫用户中断生成任务。
-- 下载过程中显示百分比、已传输大小和速度；下载完成后显示“重启并安装”。关闭应用不会绕过这个按钮自动安装，用户可以稍后再处理。
-- 强更只在客户端收到有效的新版本元数据且当前平台安装包可下载后生效。单纯 tag、Draft Release、缺少当前平台安装包或上传中的资产都不会显示“新”角标，也不会锁死应用；网络失败时用户可以重试或打开 Release 页面手动处理。
-- 安装由 `electron-updater` 调用平台安装器完成；应用数据目录仍是原来的 `WordTTS`，更新不会删除文档、任务记录或偏好设置。
-
-## 签名与首次安装
-
-自动更新最容易在签名环节失败，发布前应配置：
-
-- macOS：`MAC_CSC_LINK`、`MAC_CSC_KEY_PASSWORD`，以及需要公证时的 `APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`。当前脚本在没有 Developer ID 时会生成 ad-hoc 包供本地验证，但这不是面向普通用户的生产签名方案，Gatekeeper 或 Squirrel.Mac 可能拒绝自动更新。
-- Windows：`WINDOWS_CSC_LINK`、`WINDOWS_CSC_KEY_PASSWORD`。未签名包可以用于内部验证，但签名包更适合生产分发，并能减少 SmartScreen 和更新校验问题。
+签名应作用于最终分发的 Setup.exe，而不是只签名 `win-unpacked` 目录中的应用壳。
 
 ## 审阅清单
 
-审阅代码或一次 Release 时，重点确认：
+- Windows 构建目标是 `dir`，随后确实运行 `scripts/build_windows_installer.js`。
+- Windows 用户分发的是独立 Setup.exe，不是 `win-unpacked` 目录或单独的 Electron 应用 exe。
+- Windows 更新代码没有加载 `electron-updater`，只读取 `latest-win.json`。
+- Setup.exe、安装目录中的 uninstaller 和更新客户端都能在无 Node/Python 环境下运行。
+- Windows 更新包下载后校验大小和 SHA-512，再启动 `--mode=update`。
+- 安装、更新、卸载都使用同一套自绘 HTML 页面；卸载不会误删用户数据。
+- Release 不是 Draft，tag、`version.json`、构建包版本和更新元数据版本一致。
+- macOS Release 同时存在 `latest-mac.yml` 和 ZIP，不能只上传 DMG。
 
-- 更新逻辑只在 packaged app 启用，开发/冒烟不会联网。
-- renderer 不能传入任意下载 URL；外部页面只能打开固定的 GitHub Releases 地址。
-- `latest*.yml` 的 `files.url`、`sha512`、`size` 与本次实际产物一致。
-- Windows 发布的是 NSIS 安装包，不是 `win-unpacked` 内的可执行文件；macOS 元数据引用 ZIP，不引用 DMG。
-- 发布 Release 前必须同时存在两端安装包与 `latest*.yml`；客户端只接受当前平台扩展名、校验字段齐全且远端可访问的资产。
-- Release 不是 Draft，tag、package version、policy version 三者一致。
-- `latest*.yml` 的 `files.url` 与 `path` 必须使用 GitHub Release 实际下载资产名；发布脚本会把本地中文构建名转换为 GitHub 的 ASCII 规范名。
-- `optional` 与 `force` 的判断有对应 CHANGELOG 和产品审批记录。
-- Release 之间不复用旧版本号。若包有问题，应发布更高版本修复，而不是替换同版本资产后期待客户端稳定恢复。
-
-## 故障处理
-
-- 页面显示“检查失败”：先检查网络和 GitHub Release 是否为已发布状态，再用版本中心的“重试检查”或打开 Release 页面手动下载。
-- Windows 下载后提示签名错误：检查新的 `.exe` 是否由正确证书签名，以及 Release 中的 `latest.yml` 是否由当前包重新生成。
-- macOS 找不到更新：检查 Release 是否同时有 `latest-mac.yml` 和 `.zip`；不能只上传 DMG。确认 ZIP 内的应用名称和构建架构与客户端一致。
-- 强更规则误配：修改 `release/update-policy.json` 后发布更高版本，并把 `minimumSupportedVersion` 调整到正确范围；不要删除正在被旧客户端查询的 Release 元数据。
-
-## 本地检查命令
+## 本地检查
 
 ```bash
-# 策略与 tag 预检
 node scripts/validate_update_policy.js
-
-# Electron 单元/静态测试
+node scripts/project_version.js --sync
+node --check installer-prototype/installer-main.js
+node --check installer-prototype/installer-service.js
+node --check electron/windows-update-client.js
 cd electron
 npm test
 ```
 
-生成元数据需要真实的 `electron/release` 安装包和 `release-notes.md`，通常由 tag workflow 自动完成。手工验证时先生成日志，再在目标平台执行：
+生成 Windows 元数据需要真实的 `electron/release/小猪wordTTS-Setup-<version>-x64.exe` 和 `release-notes.md`：
 
 ```bash
-RELEASE_TAG=v2.7.46 node scripts/extract_release_notes.js
-UPDATE_VERSION=2.7.46 RELEASE_TAG=v2.7.46 node scripts/prepare_update_metadata.js --platform win32
+node scripts/project_version.js --set 3.0.2
+RELEASE_TAG=v3.0.2 \
+  node scripts/prepare_update_metadata.js --platform win32
 ```
-
-上面的 Windows 命令只能在 `electron/release` 已有对应 NSIS 安装包时执行；macOS 使用 `--platform darwin`，并需要对应架构 ZIP。

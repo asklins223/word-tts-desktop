@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#151a22">
+  <title>小猪wordTTS · 安装程序</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <svg class="svg-defs" aria-hidden="true" focusable="false">
+    <symbol id="icon-file" viewBox="0 0 24 24">
+      <path d="M6.5 2.75h7.25L19 8v13.25H6.5z"/>
+      <path d="M13.75 2.75V8H19M9 12h7M9 15.5h7M9 19h4"/>
+    </symbol>
+    <symbol id="icon-monitor" viewBox="0 0 24 24">
+      <rect x="3.25" y="3" width="17.5" height="12.5" rx="1.5"/>
+      <path d="M8 20.75h8M12 15.5v5.25M8.25 8.5h2.25M13.5 8.5h2.25M9.25 11.5h5.5"/>
+    </symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24">
+      <path d="M19.25 8.5A7.8 7.8 0 0 0 5.3 6.1L3.5 8M3.5 8V3.5M3.5 8H8"/>
+      <path d="M4.75 15.5a7.8 7.8 0 0 0 13.95 2.4l1.8-1.9M20.5 16v4.5M20.5 16H16"/>
+    </symbol>
+    <symbol id="icon-trash" viewBox="0 0 24 24">
+      <path d="M4.5 6.5h15M9 6.5V4.25h6V6.5M7 6.5l.75 13.25h8.5L17 6.5M10 10v6.25M14 10v6.25"/>
+    </symbol>
+    <symbol id="icon-folder" viewBox="0 0 24 24">
+      <path d="M3.25 6.5h6l1.65 2h9.85v9.9a2.1 2.1 0 0 1-2.1 2.1H5.35a2.1 2.1 0 0 1-2.1-2.1z"/>
+      <path d="M3.25 9h17.5"/>
+    </symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24">
+      <path d="M12 2.75 19 5.5v5.1c0 4.55-2.85 8.55-7 10.65-4.15-2.1-7-6.1-7-10.65V5.5z"/>
+      <path d="m8.75 12 2.15 2.15 4.45-4.45"/>
+    </symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24">
+      <path d="m5.25 12.5 4.2 4.2 9.3-9.4"/>
+    </symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24">
+      <path d="M4 12h15M14 6.5 19.5 12 14 17.5"/>
+    </symbol>
+    <symbol id="icon-minus" viewBox="0 0 24 24">
+      <path d="M5 12h14"/>
+    </symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24">
+      <path d="m6 6 12 12M18 6 6 18"/>
+    </symbol>
+    <symbol id="icon-lock" viewBox="0 0 24 24">
+      <rect x="5" y="10.5" width="14" height="10.5" rx="2"/>
+      <path d="M8 10.5V7.75a4 4 0 0 1 8 0v2.75M12 14.5v3"/>
+    </symbol>
+    <symbol id="icon-spark" viewBox="0 0 24 24">
+      <path d="M12 3.25v4M12 16.75v4M3.25 12h4M16.75 12h4M5.82 5.82l2.83 2.83M15.35 15.35l2.83 2.83M18.18 5.82l-2.83 2.83M8.65 15.35l-2.83 2.83"/>
+    </symbol>
+  </svg>
+
+  <main class="prototype-canvas">
+    <article class="installer-window" aria-label="小猪wordTTS 安装程序">
+      <aside class="brand-panel">
+        <div class="brand-lockup">
+          <img class="brand-icon" src="./assets/app-icon.png" alt="">
+          <div>
+            <div class="brand-name">小猪wordTTS</div>
+            <div class="brand-subtitle">文档配音工作台</div>
+          </div>
+        </div>
+
+        <div class="brand-artwork">
+          <div class="brand-artwork-glow" aria-hidden="true"></div>
+          <div class="brand-artwork-image" id="brand-artwork-image" role="img" aria-label="小猪准备入住"></div>
+        </div>
+      </aside>
+
+      <section class="installer-workspace">
+        <header class="window-bar">
+          <div class="window-title">
+            <img src="./assets/app-icon.png" alt="">
+            <span>小猪wordTTS 安装程序</span>
+          </div>
+          <div class="window-actions">
+            <span class="version-label" id="window-version">—</span>
+            <span class="window-divider" aria-hidden="true"></span>
+            <button class="window-action" type="button" data-window-action="minimize" aria-label="最小化">
+              <svg class="ui-icon"><use href="#icon-minus"></use></svg>
+            </button>
+            <button class="window-action window-action-close" type="button" data-window-action="close" aria-label="关闭">
+              <svg class="ui-icon"><use href="#icon-close"></use></svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="workspace-body">
+          <nav class="stepper" aria-label="操作流程">
+            <div class="step is-active" data-step-index="0" aria-current="step">
+              <span class="step-dot"></span><span class="step-label">欢迎</span>
+            </div>
+            <div class="step" data-step-index="1">
+              <span class="step-dot"></span><span class="step-label">安装范围</span>
+            </div>
+            <div class="step" data-step-index="2">
+              <span class="step-dot"></span><span class="step-label">安装位置</span>
+            </div>
+            <div class="step" data-step-index="3">
+              <span class="step-dot"></span><span class="step-label">安装</span>
+            </div>
+            <div class="step" data-step-index="4">
+              <span class="step-dot"></span><span class="step-label">完成</span>
+            </div>
+          </nav>
+
+          <div class="screens" aria-live="polite">
+            <section class="screen is-active" data-screen="welcome" aria-labelledby="welcome-title">
+              <div class="screen-copy screen-copy-welcome">
+                <h1 id="welcome-title">小猪准备入住啦</h1>
+                <p class="screen-description" id="welcome-description">这台电脑还没找到小猪wordTTS，跟着我把它安顿好，几步就能开工。</p>
+              </div>
+              <div class="welcome-facts" aria-label="当前操作摘要">
+                <div class="welcome-fact">
+                  <span class="welcome-fact-index">01</span>
+                  <span><small id="welcome-fact-one-label">当前状况</small><strong id="welcome-fact-one-value">还没安装</strong></span>
+                </div>
+                <div class="welcome-fact">
+                  <span class="welcome-fact-index">02</span>
+                  <span><small id="welcome-fact-two-label">这次要做</small><strong id="welcome-fact-two-value">把小猪安顿好</strong></span>
+                </div>
+                <div class="welcome-fact">
+                  <span class="welcome-fact-index">03</span>
+                  <span><small id="welcome-fact-three-label">放心事项</small><strong id="welcome-fact-three-value">你的文档不动</strong></span>
+                </div>
+              </div>
+              <div class="mode-note" id="mode-note"><svg class="inline-icon"><use href="#icon-file"></use></svg><span>已经替你判断好接下来该走哪条路。</span></div>
+            </section>
+
+            <section class="screen" data-screen="scope" aria-labelledby="scope-title" hidden>
+              <div class="screen-copy">
+                <h1 id="scope-title">小猪住哪一户？</h1>
+                <p class="screen-description">先决定是只给你用，还是让这台电脑上的每个账户都能喊小猪出来干活。</p>
+              </div>
+              <div class="choice-grid" role="radiogroup" aria-label="安装范围">
+                <label class="choice-card is-selected">
+                  <input type="radio" name="scope" value="per-user" checked>
+                  <span class="choice-check" aria-hidden="true"></span>
+                  <span class="choice-content">
+                    <strong>只给我用</strong>
+                    <small>不打扰其他 Windows 账户，安静住在你的账户里。</small>
+                  </span>
+                  <span class="choice-badge">推荐</span>
+                </label>
+                <label class="choice-card">
+                  <input type="radio" name="scope" value="per-machine">
+                  <span class="choice-check" aria-hidden="true"></span>
+                  <span class="choice-content">
+                    <strong>全家都能用</strong>
+                    <small>这台电脑上的所有 Windows 账户都能启动，需要管理员权限。</small>
+                  </span>
+                  <svg class="choice-icon"><use href="#icon-shield"></use></svg>
+                </label>
+              </div>
+              <div class="inline-message">
+                <svg class="inline-icon"><use href="#icon-lock"></use></svg>
+                <span>放心，文档、声音配置和历史任务不会被这一步碰到。</span>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="update-check" aria-labelledby="update-check-title" hidden>
+              <div class="screen-copy">
+                <h1 id="update-check-title">先看看要换哪一版</h1>
+                <p class="screen-description">旧版本在这儿，新版本也到位。确认一下，马上给小猪换件新外套。</p>
+              </div>
+              <div class="version-compare" aria-label="版本对比">
+                <div class="version-card">
+                  <span>当前版本</span>
+                  <strong id="installed-version">已安装</strong>
+                  <small>已安装</small>
+                </div>
+                <div class="version-bridge"><svg class="ui-icon"><use href="#icon-refresh"></use></svg><span>可用更新</span></div>
+                <div class="version-card version-card-target">
+                  <span>目标版本</span>
+                  <strong id="target-version">—</strong>
+                  <small id="target-version-detail">Windows x64 · 本地安装包</small>
+                </div>
+              </div>
+              <div class="inline-message">
+                <svg class="inline-icon"><use href="#icon-lock"></use></svg>
+                <span>文档、声音配置和历史任务都在原地，不跟着版本一起搬家。</span>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="update-options" aria-labelledby="update-options-title" hidden>
+              <div class="screen-copy">
+                <h1 id="update-options-title">该留的都留着</h1>
+                <p class="screen-description">应用文件会换成新的，个人设置和历史任务会自动保留；下面只调整快捷方式入口。</p>
+              </div>
+              <div class="toggle-list update-toggle-list">
+                <div class="toggle-row toggle-row-static" aria-label="设置和历史任务自动保留">
+                  <span><strong>设置和历史任务留下</strong><small>声音配置、文档记录和任务上下文继续原样待命</small></span>
+                  <span class="setting-status">自动保留</span>
+                </div>
+                <label class="toggle-row">
+                  <span><strong>让快捷方式跟着换新</strong><small>桌面和开始菜单都指向新版本</small></span>
+                  <input type="checkbox" id="refresh-shortcuts" checked>
+                  <span class="switch" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="mode-note"><svg class="inline-icon"><use href="#icon-refresh"></use></svg><span>更新只换程序外套，原文档和已有音频文件一根汗毛都不动。</span></div>
+            </section>
+
+            <section class="screen" data-screen="update-confirm" aria-labelledby="update-confirm-title" hidden>
+              <div class="screen-copy">
+                <h1 id="update-confirm-title">确认给小猪换装</h1>
+                <p class="screen-description">点下确认，旧外套退场，新外套上身，设置和历史任务继续营业。</p>
+              </div>
+              <dl class="summary-list">
+                <div class="summary-row"><dt>当前版本</dt><dd id="update-current-version">已安装</dd></div>
+                <div class="summary-row"><dt>更新到</dt><dd><span id="update-target-version">—</span> · Windows x64</dd></div>
+                <div class="summary-row"><dt>用户数据</dt><dd id="summary-update-data">保留个人设置和历史任务</dd></div>
+              </dl>
+              <div class="inline-message">
+                <svg class="inline-icon"><use href="#icon-shield"></use></svg>
+                <span>如果小猪还在工作，会先请它放下手里的活儿再换装。</span>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="location" aria-labelledby="location-title" hidden>
+              <div class="screen-copy">
+                <h1 id="location-title">给小猪挑个窝</h1>
+                <p class="screen-description">选个空闲文件夹放程序文件，住址以后也能在设置里查到。</p>
+              </div>
+              <div class="field-block">
+                <label class="field-label" for="install-path">小猪的住址</label>
+                <div class="path-control">
+                  <input id="install-path" type="text" value="C:\Users\当前用户\AppData\Local\小猪wordTTS" spellcheck="false" autocomplete="off">
+                  <button class="browse-button" type="button" id="browse-path">
+                    <svg class="ui-icon"><use href="#icon-folder"></use></svg>
+                    <span>挑个文件夹</span>
+                  </button>
+                </div>
+                <div class="field-hint">这里会创建小猪wordTTS 的程序文件。</div>
+              </div>
+              <div class="space-check">
+                <span class="status-dot status-dot-success"></span>
+                <span>空间够，小猪放得下</span>
+                <span class="space-separator">·</span>
+                <span>预计占用约 420 MB</span>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="uninstall-options" aria-labelledby="uninstall-options-title" hidden>
+              <div class="screen-copy">
+                <h1 id="uninstall-options-title">哪些东西留下？</h1>
+                <p class="screen-description">小猪要退租了。程序文件会搬走，原始 Word / Excel 文档不会跟着跑路。</p>
+              </div>
+              <div class="warning-panel warning-panel-danger">
+                <span class="warning-icon"><svg class="ui-icon"><use href="#icon-trash"></use></svg></span>
+                <div><strong>小猪准备收拾行李</strong><p>程序文件、快捷方式和本次安装记录会被清理。</p></div>
+              </div>
+              <div class="toggle-list uninstall-toggle-list">
+                <label class="toggle-row">
+                  <span><strong>留个纪念：保留设置和历史任务</strong><small>以后反悔重新安装，还能接着用</small></span>
+                  <input type="checkbox" id="preserve-uninstall-data" checked>
+                  <span class="switch" aria-hidden="true"></span>
+                </label>
+                <label class="toggle-row">
+                  <span><strong>顺手把本地缓存也带走</strong><small>只清理小猪wordTTS 自己生成的缓存文件</small></span>
+                  <input type="checkbox" id="delete-uninstall-cache">
+                  <span class="switch" aria-hidden="true"></span>
+                </label>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="uninstall-confirm" aria-labelledby="uninstall-confirm-title" hidden>
+              <div class="screen-copy">
+                <h1 id="uninstall-confirm-title">最后确认一下</h1>
+                <p class="screen-description">再看一眼清单，点下开始后，小猪就要拎包出门啦。</p>
+              </div>
+              <dl class="summary-list">
+                <div class="summary-row"><dt>应用</dt><dd>小猪wordTTS <span id="uninstall-version">已安装</span></dd></div>
+                <div class="summary-row"><dt>程序文件</dt><dd>移除</dd></div>
+                <div class="summary-row"><dt>用户数据</dt><dd id="summary-uninstall-data">保留个人设置和历史任务</dd></div>
+              </dl>
+              <div class="confirm-warning">
+                <svg class="inline-icon"><use href="#icon-shield"></use></svg>
+                <span>原始文档不会被删除；缓存如果带走了，这一页可没有时光机。</span>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="confirm" aria-labelledby="confirm-title" hidden>
+              <div class="screen-copy">
+                <h1 id="confirm-title">行李清单对一下</h1>
+                <p class="screen-description">确认无误就开搬：写入程序文件，再把快捷方式安排上。</p>
+              </div>
+              <dl class="summary-list">
+                <div class="summary-row"><dt>安装范围</dt><dd id="summary-scope">仅当前用户</dd></div>
+                <div class="summary-row"><dt>安装位置</dt><dd id="summary-path">C:\Users\当前用户\AppData\Local\小猪wordTTS</dd></div>
+                <div class="summary-row"><dt>应用版本</dt><dd id="confirm-app-version">— · Windows x64</dd></div>
+              </dl>
+              <div class="toggle-list">
+                <label class="toggle-row">
+                  <span><strong>在桌面留个入口</strong><small>以后双击就能喊小猪开工</small></span>
+                  <input type="checkbox" id="desktop-shortcut" checked>
+                  <span class="switch" aria-hidden="true"></span>
+                </label>
+                <label class="toggle-row">
+                  <span><strong>也放进开始菜单</strong><small>从 Windows 应用列表里也能找到</small></span>
+                  <input type="checkbox" id="start-menu-shortcut" checked>
+                  <span class="switch" aria-hidden="true"></span>
+                </label>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="progress" aria-labelledby="progress-title" hidden>
+              <div class="screen-copy">
+                <h1 id="progress-title">小猪正在搬家…</h1>
+                <p class="screen-description" id="progress-description">先别关窗，小猪还在认真搬行李。</p>
+              </div>
+              <div class="progress-zone">
+                <div class="progress-heading"><span id="progress-stage">正在准备应用文件</span><strong id="progress-percent">0%</strong></div>
+                <div class="progress-track" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                  <span class="progress-fill" id="progress-fill"></span>
+                </div>
+                <div class="progress-meta"><span id="progress-file">正在检查安装包…</span><span id="progress-count">准备中</span></div>
+              </div>
+              <div class="operation-error" id="operation-error" role="alert" hidden>
+                <span class="warning-icon"><svg class="ui-icon"><use href="#icon-shield"></use></svg></span>
+                <div><strong>这次操作没有完成</strong><p id="operation-error-message"></p></div>
+              </div>
+              <div class="install-phases" aria-label="操作阶段">
+                <span class="phase is-active" data-phase="prepare"><i></i><span data-phase-label>整理行李</span></span>
+                <span class="phase" data-phase="write"><i></i><span data-phase-label>搬进小窝</span></span>
+                <span class="phase" data-phase="shortcut"><i></i><span data-phase-label>留好入口</span></span>
+                <span class="phase" data-phase="finish"><i></i><span data-phase-label>关门营业</span></span>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="finish" aria-labelledby="finish-title" hidden>
+              <div class="finish-layout">
+                <div class="finish-icon"><svg class="ui-icon"><use href="#icon-check"></use></svg></div>
+                <div>
+                  <h1 id="finish-title">入住成功，开门营业！</h1>
+                  <p class="screen-description" id="finish-description">小猪wordTTS 已经准备好，随时可以开始工作。</p>
+                </div>
+              </div>
+              <div class="finish-summary" id="finish-summary"><span class="status-dot status-dot-success"></span><span id="finish-summary-text">程序文件与快捷方式已准备好</span><span class="finish-version" id="finish-version">—</span></div>
+              <label class="launch-option">
+                <input type="checkbox" id="launch-after-finish" checked>
+                <span class="fake-checkbox" aria-hidden="true"><svg class="ui-icon"><use href="#icon-check"></use></svg></span>
+                <span id="launch-label">现在就把小猪叫醒</span>
+              </label>
+            </section>
+          </div>
+
+          <footer class="action-bar">
+            <div class="action-hint" id="action-hint">已经替你判断好接下来该走哪条路。</div>
+            <div class="action-group">
+              <button class="button button-ghost" type="button" id="secondary-action">先不折腾了</button>
+              <button class="button button-primary" type="button" id="primary-action">开始入住<svg class="button-icon"><use href="#icon-arrow"></use></svg></button>
+            </div>
+          </footer>
+        </div>
+      </section>
+    </article>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

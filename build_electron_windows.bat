@@ -5,11 +5,12 @@ set "PYTHONIOENCODING=utf-8"
 REM ============================================================================
 REM 小猪wordTTS -- Electron 混合打包脚本 (Windows)
 REM ============================================================================
-REM 产出: electron\release\小猪wordTTS-Setup-<version>-x64.exe (NSIS 安装包)
+REM 产出: electron\release\小猪wordTTS-Setup-<version>-x64.exe (HTML 自绘安装包)
 REM
 REM 流程:
 REM   1. PyInstaller 打包 server.py -> server_backend\ (server_backend.exe)
-REM   2. electron-builder 打包 Electron 壳 + server_backend -> .exe (NSIS)
+REM   2. electron-builder 打包 Electron 壳 + server_backend -> win-unpacked
+REM   3. 将 win-unpacked 嵌入自绘 Setup.exe
 REM
 REM 用法:
 REM   build_electron_windows.bat              -> 完整构建 (PyInstaller + electron-builder)
@@ -109,6 +110,15 @@ if not "!NODE_MAJOR!"=="24" (
     exit /b 1
 )
 
+REM version.json 是唯一手工维护的应用版本；electron/package*.json
+REM 只是 electron-builder/npm 所需的同步元数据。
+call :log "同步项目版本信息..."
+node "%SCRIPT_DIR%\scripts\project_version.js" --sync
+if !errorlevel! neq 0 (
+    call :err "项目版本同步失败"
+    exit /b 1
+)
+
 REM ---- electron-builder ----
 if not exist "%ELECTRON_DIR%\node_modules\electron-builder" (
     call :warn "electron-builder 未安装，正在安装..."
@@ -198,22 +208,32 @@ call :log "清理旧构建产物..."
 if exist "%ELECTRON_DIR%\release\win-unpacked" rmdir /s /q "%ELECTRON_DIR%\release\win-unpacked"
 del /q "%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*.exe" >nul 2>&1
 
-pushd "%ELECTRON_DIR%"
 set "PACKAGE_VERSION="
-for /f "delims=" %%v in ('node -p "require('./package.json').version"') do set "PACKAGE_VERSION=%%v"
-popd
+for /f "delims=" %%v in ('node "%SCRIPT_DIR%\scripts\project_version.js"') do set "PACKAGE_VERSION=%%v"
 if not defined PACKAGE_VERSION (
-    call :err "无法读取 electron/package.json 版本号"
+    call :err "无法读取 version.json 版本号"
     exit /b 1
 )
 
 pushd "%ELECTRON_DIR%"
-call npx electron-builder --win --publish never
+call npx electron-builder --win dir --publish never
 set "BUILD_EXIT=!errorlevel!"
 popd
 
 if !BUILD_EXIT! neq 0 (
     call :err "electron-builder 打包失败 (exit code: !BUILD_EXIT!)"
+    exit /b 1
+)
+
+REM 自绘 HTML 安装程序会嵌入上一步生成的完整应用目录，
+REM 自己执行安装、更新、卸载、快捷方式和注册表写入。
+call :log "构建自绘 HTML 安装程序..."
+pushd "%SCRIPT_DIR%"
+node scripts\build_windows_installer.js --payload "%ELECTRON_DIR%\release\win-unpacked" --output-dir "%ELECTRON_DIR%\release"
+set "BUILD_EXIT=!errorlevel!"
+popd
+if !BUILD_EXIT! neq 0 (
+    call :err "自绘 Windows 安装程序构建失败 (exit code: !BUILD_EXIT!)"
     exit /b 1
 )
 
@@ -248,11 +268,11 @@ if !errorlevel! neq 0 (
 )
 call :log "打包 Electron 桌面冒烟测试通过"
 
-REM 只接受当前 package.json 版本对应的 NSIS 安装包；unpacked 目录不能
-REM 作为用户分发包，也没有 electron-updater 所需的安装器语义。
+REM 只接受当前 version.json 对应的自绘 Setup.exe；win-unpacked 目录
+REM 只作为嵌入 payload，不能直接作为用户分发包。
 set "EXE_PATH=%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-!PACKAGE_VERSION!-x64.exe"
 if not exist "!EXE_PATH!" (
-    call :err "未找到当前版本 NSIS 安装包: !EXE_PATH!"
+    call :err "未找到 version.json 对应的自绘安装包: !EXE_PATH!"
     exit /b 1
 )
 call :log "构建产物: !EXE_PATH!"
@@ -261,7 +281,7 @@ call :log "打包完成 OK"
 
 echo.
 echo   +-------------------------------------------------------------+
-echo   ^| 分发提示：NSIS 安装包可直接分发给 Windows 用户              ^|
+echo   ^| 分发提示：HTML 自绘 Setup.exe 可直接分发给 Windows 用户       ^|
 echo   ^|                                                             ^|
 echo   ^| 用户双击 .exe 安装包即可安装，无需安装 Python 或 Node.js    ^|
 echo   ^| 安装后从开始菜单启动小猪wordTTS                              ^|

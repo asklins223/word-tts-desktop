@@ -750,7 +750,15 @@ class CompositeActionsMixin:
     def _apply_composite_ui_params(
         cls, page, speed, pitch, volume, *, cancel_check=None
     ):
-        """在多人配音面板中用键盘设置三项参数并逐项回读。"""
+        """在多人配音面板中设置三项参数并逐项回读。
+
+        讯飞切换音色时会重挂载参数表单，不能把一次查询得到的输入框
+        Locator 当成永久节点；不同页面版本也可能改变三个参数的 DOM
+        顺序。每一项都重新读取当前弹层，并优先按行文案识别参数，最后
+        才使用已知顺序兜底。键盘输入没有落地时再对同一个可见控件做一
+        次 Playwright fill，所有路径都必须通过输入值回读才能继续点击
+        “使用”。
+        """
         _check_cancel_requested(cancel_check)
         targets = (
             clamp_param(speed),
@@ -758,9 +766,17 @@ class CompositeActionsMixin:
             clamp_param(volume),
         )
         labels = ("语速", "语调", "音量")
-        scope = cls._composite_ui_scope(page, cancel_check=cancel_check)
 
         def find_inputs():
+            # 参数操作必须锁定真正的多人配音弹层；如果弹层正在切换音色
+            # 的重挂载窗口，返回 None 让外层轮询，而不是误取右侧栏输入框。
+            scope = cls._composite_panel_scope(
+                page,
+                require_apply_control=True,
+                cancel_check=cancel_check,
+            )
+            if scope is None:
+                return None
             inputs = scope.locator('input.w-12:visible')
             if inputs.count() >= 3:
                 return inputs
@@ -778,46 +794,121 @@ class CompositeActionsMixin:
         if inputs is None or inputs.count() < 3:
             raise XunfeiError("“多人配音”面板的语速、语调、音量输入框未完整加载")
 
+        def resolve_field(label, fallback_index):
+            """重新获取某项输入框，优先使用参数行的中文标签。"""
+            current = find_inputs()
+            if current is None or current.count() < 3:
+                return None
+            try:
+                descriptors = current.evaluate_all(
+                    """(elements) => elements.map((element, index) => {
+                        const wanted = ['语速', '语调', '音量'];
+                        let node = element.parentElement;
+                        let fallback = null;
+                        while (node && node !== document.body) {
+                            const text = String(node.innerText || '')
+                                .replace(/\\s+/g, '');
+                            const matched = wanted.find((item) => text.includes(item));
+                            if (matched && fallback === null) fallback = matched;
+                            const inputCount = node.querySelectorAll(
+                                'input.w-12, input[placeholder="数值"]'
+                            ).length;
+                            // 参数行通常只包含一个输入框；优先在这个最小
+                            // 语义容器内匹配，避免把整个弹层的文案都算进去。
+                            if (matched && inputCount === 1) {
+                                return {index, label: matched};
+                            }
+                            node = node.parentElement;
+                        }
+                        return {index, label: fallback};
+                    })"""
+                )
+            except Exception:
+                descriptors = []
+            matches = [
+                item for item in descriptors
+                if isinstance(item, dict) and item.get("label") == label
+            ]
+            if len(matches) == 1:
+                return current.nth(int(matches[0]["index"]))
+            # 旧版弹层没有稳定参数行文案时，保留已验证的默认顺序兜底。
+            try:
+                return current.nth(fallback_index) if current.count() > fallback_index else None
+            except Exception:
+                return None
+
+        def read_field_value(label, fallback_index):
+            field = resolve_field(label, fallback_index)
+            if field is None:
+                return None
+            try:
+                return field.input_value(timeout=1000).strip()
+            except Exception:
+                return None
+
+        def read_expected_value(label, fallback_index, expected_value):
+            actual_value = read_field_value(label, fallback_index)
+            return actual_value if actual_value == expected_value else None
+
         for index, (label, value) in enumerate(zip(labels, targets)):
             _check_cancel_requested(cancel_check)
-            field = inputs.nth(index)
-
-            def read_expected_value():
-                try:
-                    actual_value = field.input_value(timeout=1000).strip()
-                except Exception:
-                    return None
-                return actual_value if actual_value == str(value) else None
-
-            try:
-                field.click(timeout=3000)
-                page.keyboard.press(_SELECT_ALL)
-                page.keyboard.type(str(value))
-                page.keyboard.press("Tab")
-                # 输入框的 DOM value 会先于讯飞 React 表单状态更新；
-                # 不能只看到 input_value 正确就立即点击“使用”，否则
-                # 会把上一组音色的旧参数带入标记。80ms 足够让 blur/input
-                # 状态落地，仍比原先每项固定 180ms 更快。
-                _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+            expected_value = str(value)
+            actual = None
+            last_error = None
+            # 正常路径仍使用真实键盘；只有回读失败时才用 fill 重试。
+            # 每次重试都重新定位，覆盖讯飞切卡后 React 重挂载输入节点的
+            # 短暂窗口，也避免继续操作已经脱离 DOM 的旧 Locator。
+            for method in ("keyboard", "fill"):
                 _check_cancel_requested(cancel_check)
-                actual = _poll(
-                    read_expected_value,
-                    timeout=1.2,
-                    interval=0.025,
-                    max_interval=0.12,
+                field = _poll(
+                    lambda: resolve_field(label, index),
+                    timeout=2.5,
+                    interval=0.05,
+                    max_interval=0.2,
                     page=page,
                     cancel_check=cancel_check,
                 )
-            except XunfeiCancelled:
-                raise
-            except Exception as error:
-                raise XunfeiError(
-                    f"多人配音 UI 参数[{label}]设置失败: {error}"
-                ) from error
-            if actual != str(value):
+                if field is None:
+                    last_error = "输入框未重新挂载"
+                    continue
+                try:
+                    if method == "keyboard":
+                        field.click(timeout=3000)
+                        page.keyboard.press(_SELECT_ALL)
+                        page.keyboard.type(expected_value)
+                        page.keyboard.press("Tab")
+                    else:
+                        # fill 仍然作用于可见的真实输入框，并触发 input
+                        # 事件；它只作为键盘路径未落地时的 UI 级重试。
+                        field.fill(expected_value, timeout=3000)
+                        field.press("Tab")
+                    # 输入框的 DOM value 会先于讯飞 React 表单状态更新；
+                    # 不能只在点击后立即读值。80ms 足够让 blur/input 状态
+                    # 落地，仍比每项固定长等待更快。
+                    _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+                    _check_cancel_requested(cancel_check)
+                    actual = _poll(
+                        lambda: read_expected_value(
+                            label, index, expected_value
+                        ),
+                        timeout=1.2,
+                        interval=0.025,
+                        max_interval=0.12,
+                        page=page,
+                        cancel_check=cancel_check,
+                    )
+                    if actual == expected_value:
+                        break
+                    last_error = f"回读为 {actual!r}"
+                except XunfeiCancelled:
+                    raise
+                except Exception as error:
+                    last_error = str(error)
+            if actual != expected_value:
                 raise XunfeiError(
                     f"多人配音 UI 参数[{label}]回读不一致："
                     f"期望 {value}，实际 {actual!r}"
+                    + (f"（{last_error}）" if last_error else "")
                 )
 
     @classmethod
@@ -1100,6 +1191,46 @@ class CompositeActionsMixin:
         return True
 
     @classmethod
+    def _verify_composite_voice_layout(cls, page, rows, signature_ranges):
+        """回读整份编辑器，确认批量队列没有漏行或串行。
+
+        每个队列组的局部回读只能证明“请求的行”有正确标记，不能覆盖
+        页面把某个选区错误扩展到额外行、或后一个组改写前一个组的情况。
+        这里按最终配置组再做一次全量校验：这些区间由
+        ``_composite_signature_ranges`` 生成，理论上恰好覆盖全部编辑器
+        行，因此不会为了验证而再次操作页面。
+        """
+        if not rows or not signature_ranges:
+            return False
+        try:
+            if page.locator(".ssml-editor p").count() != len(rows):
+                return False
+        except Exception:
+            return False
+        for entry in signature_ranges:
+            ranges = entry.get("ranges") if isinstance(entry, dict) else None
+            if not ranges:
+                return False
+            first_index = ranges[0][0]
+            row = rows[first_index]
+            info = dict(get_voice_info(row.get("voice_key") or DEFAULT_FEMALE))
+            voice_name = str(info.get("name") or row.get("voice_key") or "")
+            speaker_number = cls._speaker_number(
+                row.get("voice_key") or DEFAULT_FEMALE,
+                info,
+            )
+            if not cls._verify_composite_voice_marks_ranges(
+                page,
+                rows,
+                ranges,
+                voice_name,
+                speaker_number,
+                row,
+            ):
+                return False
+        return True
+
+    @classmethod
     def _apply_composite_voice_to_selection(
         cls, page, rows, first_index, last_index, *, config_row=None,
         verify_ranges=None, cancel_check=None,
@@ -1243,7 +1374,12 @@ class CompositeActionsMixin:
 
     @classmethod
     def _read_composite_pause_issues(cls, page, boundaries):
-        """一次回读所有停顿标记，避免每个段落都单独查询 DOM。"""
+        """一次回读所有停顿标记，避免每个段落都单独查询 DOM。
+
+        仅确认“这一行出现过一个 2 秒节点”还不够：选区漂移时，停顿
+        可能被插到行首或正文中间，DOM 数量仍然会看起来正确。这里同时
+        检查目标标记后面是否还残留正文，确保它确实位于该行末尾。
+        """
         expected = [
             {"row": int(row_index), "value": str(int(boundary_ms))}
             for row_index, boundary_ms in boundaries
@@ -1293,15 +1429,52 @@ class CompositeActionsMixin:
                             (duration) => Math.round(duration) === Number(value)
                         ));
                     };
-                    const paragraphs = document.querySelectorAll('.ssml-editor p');
-                    return expected.map(({row, value}) => {
-                        const paragraph = paragraphs[row];
+                    const markerRoots = (paragraph, value) => {
                         const nodes = paragraph
                             ? [paragraph, ...paragraph.querySelectorAll('*')]
                             : [];
-                        const count = nodes.filter((el) => isTargetPause(el, value)).length;
-                        return {row, value, count};
-                    }).filter(item => item.count !== 1);
+                        const matches = nodes.filter((el) => isTargetPause(el, value));
+                        // 某些页面版本会让一个停顿节点的子节点也带上
+                        // break/pause 类名。只把最外层语义节点计数一次，
+                        // 避免真实存在一个标记却被误报成重复。
+                        return matches.filter((el) => !matches.some(
+                            (other) => other !== el && other.contains(el)
+                        ));
+                    };
+                    const hasTextAfter = (paragraph, marker) => {
+                        try {
+                            const range = document.createRange();
+                            range.setStartAfter(marker);
+                            range.setEnd(paragraph, paragraph.childNodes.length);
+                            const fragment = range.cloneContents();
+                            fragment.querySelectorAll(
+                                '.ssml-tag, .ssml-editor-placeholder, '
+                                + '[data-type="range_anchor"], [data-type="break"], '
+                                + '[data-type="pause"], [class*="ssml-tag-break"], '
+                                + '[class*="pause"], [class*="break"]'
+                            ).forEach((node) => node.remove());
+                            return Boolean(String(fragment.textContent || '')
+                                .replace(/\\s+/g, ''));
+                        } catch (_error) {
+                            // 无法建立 Range 时不能把位置当成安全；由上层
+                            // 把它作为校验失败处理，禁止继续生成。
+                            return true;
+                        }
+                    };
+                    const paragraphs = document.querySelectorAll('.ssml-editor p');
+                    return expected.map(({row, value}) => {
+                        const paragraph = paragraphs[row];
+                        const markers = markerRoots(paragraph, value);
+                        const atEndCount = markers.filter(
+                            (marker) => !hasTextAfter(paragraph, marker)
+                        ).length;
+                        return {
+                            row,
+                            value,
+                            count: markers.length,
+                            atEndCount,
+                        };
+                    }).filter(item => item.count !== 1 || item.atEndCount !== 1);
                 }""",
                 expected,
             )
@@ -1321,30 +1494,107 @@ class CompositeActionsMixin:
             raise XunfeiError("多人配音停顿位置超出编辑器段落范围")
         label = f"{int(boundary_ms) / 1000:g}s"
 
-        def marker_present():
-            return not cls._read_composite_pause_issues(page, [(row_index, boundary_ms)])
+        def pause_issues():
+            return cls._read_composite_pause_issues(page, [(row_index, boundary_ms)])
+
+        def ensure_pause_state_is_observable(issues):
+            """回读失败时禁止再次点击，避免一次成功变成重复停顿。"""
+            if not verify:
+                return
+            if not isinstance(issues, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("count"), int)
+                or not isinstance(item.get("atEndCount"), int)
+                for item in issues
+            ):
+                raise XunfeiError(
+                    "讯飞停顿插入校验失败：无法确认页面停顿状态，"
+                    "拒绝重复插入"
+                )
+
+        def raise_on_invalid_existing_marker(issues):
+            """遇到重复/位置错误时停止，不能再盲目补插一个。"""
+            for item in issues or []:
+                count = item.get("count") if isinstance(item, dict) else None
+                at_end_count = item.get("atEndCount") if isinstance(item, dict) else None
+                if isinstance(count, int) and count > 1:
+                    raise XunfeiError(
+                        "讯飞停顿插入校验失败：检测到重复停顿标记，"
+                        f"行 {int(item.get('row', row_index)) + 1}"
+                    )
+                if (
+                    isinstance(count, int)
+                    and count == 1
+                    and isinstance(at_end_count, int)
+                    and at_end_count != 1
+                ):
+                    raise XunfeiError(
+                        "讯飞停顿插入校验失败：停顿标记不在目标行末尾，"
+                        f"行 {int(item.get('row', row_index)) + 1}"
+                    )
+
+        def wait_for_marker():
+            """等待页面状态落地，避免点击返回后立刻误判为成功。"""
+            def marker_is_ready():
+                issues = pause_issues()
+                ensure_pause_state_is_observable(issues)
+                return not issues
+
+            inserted = _poll(
+                marker_is_ready,
+                timeout=3,
+                interval=0.04,
+                max_interval=0.2,
+                page=page,
+                cancel_check=cancel_check,
+            )
+            if inserted:
+                return True
+            issues = pause_issues()
+            ensure_pause_state_is_observable(issues)
+            raise_on_invalid_existing_marker(issues)
+            return False
+
+        def caret_is_valid():
+            state = _safe_eval(page, JS.CHECK_CARET_AT_ROW_END, row_index)
+            return isinstance(state, dict) and state.get("ok") is True
 
         def settled(clicked):
-            # verify=False 的批量路径依赖随后的整批回读修复；单次插入只
-            # 以点击成功为完成条件。verify=True 时必须回读到标记才算数。
+            # 点击成功只代表 Playwright 找到了控件，不代表编辑器已经把
+            # 标记写入自己的状态。verify=True 时必须等待目标节点落地。
             if not clicked:
                 return False
-            return not verify or marker_present()
+            return not verify or wait_for_marker()
 
         def log_inserted():
             if emit_log:
                 _log(f"[xunfei]   已在第 {row_index + 1} 行后插入 {label} 停顿")
 
+        # 补偿重试必须幂等：如果上一次点击已经成功，只是页面回读稍慢，
+        # 不能再插入第二个停顿；如果已经存在但位置错误，也应停止而不是
+        # 继续生成一份结构不确定的音频。
+        initial_issues = pause_issues()
+        ensure_pause_state_is_observable(initial_issues)
+        if not initial_issues:
+            log_inserted()
+            return
+        raise_on_invalid_existing_marker(initial_issues)
+
         # 主路径：一次 evaluate 把原生光标折叠到该行末尾（等价于原脚本
         # “选整行 -> ArrowRight”的落点，但省掉两三次重型 select_text
         # 往返），再用一步定位的真实 click 点击停顿时长按钮。是否真正
-        # 插入由回读校验决定，失败才逐级降级。
+        # 插入由回读校验决定，失败才逐级降级；选区本身也必须由页面
+        # 回读确认，不能只相信 evaluate 返回了一个对象。
         _check_cancel_requested(cancel_check)
         try:
             placed = page.evaluate(JS.PLACE_CARET_AT_ROW_END, row_index)
         except Exception:
             placed = None
-        if isinstance(placed, dict) and placed.get("ok"):
+        if (
+            isinstance(placed, dict)
+            and placed.get("ok") is True
+            and caret_is_valid()
+        ):
             _check_cancel_requested(cancel_check)
             if settled(
                 cls._click_composite_ui_control(
@@ -1364,7 +1614,7 @@ class CompositeActionsMixin:
         page.keyboard.press("ArrowRight")
         _wait_with_cancel(page, 0.01, cancel_check=cancel_check)
         _check_cancel_requested(cancel_check)
-        if settled(
+        if caret_is_valid() and settled(
             cls._click_composite_ui_control(
                 page, label, cancel_check=cancel_check
             )
@@ -1398,22 +1648,37 @@ class CompositeActionsMixin:
         def collapse_pause_selection_to_end():
             """重建原脚本的“选整行 -> ArrowRight -> 行尾”契约。"""
             _check_cancel_requested(cancel_check)
+            selected = False
             try:
                 target.scroll_into_view_if_needed(timeout=5000)
                 target.select_text(timeout=5000)
+                selected = True
             except Exception:
-                paragraph.scroll_into_view_if_needed(timeout=5000)
-                paragraph.select_text(timeout=5000)
+                try:
+                    paragraph.scroll_into_view_if_needed(timeout=5000)
+                    paragraph.select_text(timeout=5000)
+                    selected = True
+                except Exception:
+                    selected = False
+            if not selected:
+                return False
             page.keyboard.press("ArrowRight")
             # select_text + ArrowRight 都是同步的浏览器输入动作；给页面
             # 一个很短的事件循环机会，实际插入结果由下面的回读轮询确认。
             _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
             _check_cancel_requested(cancel_check)
+            return caret_is_valid()
 
-        collapse_pause_selection_to_end()
+        if not collapse_pause_selection_to_end():
+            raise XunfeiError(
+                f"讯飞停顿选区校验失败：无法把光标定位到第 {row_index + 1} 行末尾"
+            )
 
         def restore_selection():
-            collapse_pause_selection_to_end()
+            if not collapse_pause_selection_to_end():
+                raise XunfeiError(
+                    f"讯飞停顿选区校验失败：无法恢复第 {row_index + 1} 行末尾"
+                )
 
         clicked = _poll(
             lambda: (
@@ -1434,21 +1699,10 @@ class CompositeActionsMixin:
         )
         if not clicked:
             raise XunfeiError(f"未找到讯飞停顿按钮或时长菜单: {label}")
-        if verify:
-            inserted = _poll(
-                lambda: not cls._read_composite_pause_issues(
-                    page, [(row_index, boundary_ms)]
-                ),
-                timeout=3,
-                interval=0.04,
-                max_interval=0.2,
-                page=page,
-                cancel_check=cancel_check,
+        if verify and not wait_for_marker():
+            raise XunfeiError(
+                f"讯飞停顿插入校验失败：第 {row_index + 1} 行未找到 {boundary_ms}ms 标记"
             )
-            if not inserted:
-                raise XunfeiError(
-                    f"讯飞停顿插入校验失败：第 {row_index + 1} 行未找到 {boundary_ms}ms 标记"
-                )
         log_inserted()
 
     @classmethod
@@ -1543,6 +1797,10 @@ class CompositeActionsMixin:
                         f"已完成：{voice_name}，{sum(last - first + 1 for first, last in ranges)} 行，"
                         f"耗时 {group_duration_ms}ms"
                     )
+                if not cls._verify_composite_voice_layout(page, rows, queue_plan):
+                    raise XunfeiError(
+                        "多人配音全量音色标记回读失败：存在漏行、串行或重复标记"
+                    )
                 queue_error = None
                 break
             except XunfeiCancelled:
@@ -1608,6 +1866,10 @@ class CompositeActionsMixin:
                         page, rows, first_index, last_index,
                         cancel_check=cancel_check,
                     )
+            if not cls._verify_composite_voice_layout(page, rows, queue_plan):
+                raise XunfeiError(
+                    "多人配音连续区间音色标记回读失败：存在漏行、串行或重复标记"
+                )
             marking_mode = "连续区间回退"
             marking_group_count = len(correction_groups) + 1
         else:
@@ -1633,7 +1895,10 @@ class CompositeActionsMixin:
                 row_index,
                 boundary_ms,
                 emit_log=False,
-                verify=False,
+                # 每一处都要等页面回读到“目标行末尾的唯一 2 秒标记”
+                # 才进入下一处，避免批量点击把一次选区/渲染失败拖到
+                # 最后才发现。
+                verify=True,
                 cancel_check=cancel_check,
             )
         if boundaries:

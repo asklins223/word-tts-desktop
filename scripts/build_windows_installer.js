@@ -1,0 +1,183 @@
+'use strict';
+
+/**
+ * Build the self-drawing Windows setup executable.
+ *
+ * The application itself is built by electron-builder's `dir` target first.
+ * This script creates a short-lived electron-builder project that embeds that
+ * directory as an external payload and packages the approved HTML UI as a
+ * portable executable. Keeping the payload outside the asar makes the setup
+ * runtime able to copy files without depending on an archive implementation.
+ */
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { normalizeProjectVersion, readProjectVersion } = require('./project_version');
+
+const rootDir = path.resolve(__dirname, '..');
+const installerSourceDir = path.join(rootDir, 'installer-prototype');
+const electronDir = path.join(rootDir, 'electron');
+
+function argumentValue(argv, name, fallback = null) {
+    const index = argv.indexOf(name);
+    if (index >= 0) {
+        const value = argv[index + 1];
+        if (!value || value.startsWith('--')) throw new Error(`${name} 后面必须提供参数值`);
+        return value;
+    }
+    const prefix = `${name}=`;
+    const inline = argv.find(value => value.startsWith(prefix));
+    if (inline !== undefined) {
+        const value = inline.slice(prefix.length);
+        if (!value) throw new Error(`${name} 后面必须提供参数值`);
+        return value;
+    }
+    return fallback;
+}
+
+function parseArguments(argv = process.argv.slice(2)) {
+    return {
+        payloadDir: path.resolve(argumentValue(argv, '--payload', path.join(electronDir, 'release', 'win-unpacked'))),
+        outputDir: path.resolve(argumentValue(argv, '--output-dir', path.join(electronDir, 'release'))),
+        version: argumentValue(argv, '--version', null),
+        dryRun: argv.includes('--dry-run'),
+    };
+}
+
+function copySourceTree(sourceDir, targetDir) {
+    fs.cpSync(sourceDir, targetDir, {
+        recursive: true,
+        filter(source) {
+            const relative = path.relative(sourceDir, source);
+            if (!relative) return true;
+            return !relative.split(path.sep).includes('payload')
+                && !relative.split(path.sep).includes('node_modules')
+                && !relative.split(path.sep).includes('.git');
+        },
+    });
+}
+
+function createBuildProject({ payloadDir, outputDir, version, workDir }) {
+    if (!fs.existsSync(payloadDir)) {
+        throw new Error(`Windows 应用 payload 不存在: ${payloadDir}`);
+    }
+    const appExecutable = path.join(payloadDir, '小猪wordTTS.exe');
+    if (!fs.existsSync(appExecutable)) {
+        throw new Error(`payload 中缺少小猪wordTTS.exe: ${appExecutable}`);
+    }
+    copySourceTree(installerSourceDir, workDir);
+    fs.copyFileSync(path.join(rootDir, 'version.json'), path.join(workDir, 'version.json'));
+    fs.cpSync(payloadDir, path.join(workDir, 'payload'), { recursive: true });
+    fs.mkdirSync(path.join(workDir, 'build'), { recursive: true });
+    fs.copyFileSync(path.join(electronDir, 'build', 'icon.ico'), path.join(workDir, 'build', 'icon.ico'));
+
+    const sourcePackage = JSON.parse(fs.readFileSync(path.join(installerSourceDir, 'package.json'), 'utf8'));
+    const appPackage = JSON.parse(fs.readFileSync(path.join(electronDir, 'package.json'), 'utf8'));
+    const canonicalVersion = readProjectVersion();
+    const resolvedVersion = version
+        ? normalizeProjectVersion(version, '构建版本')
+        : canonicalVersion;
+    if (resolvedVersion !== canonicalVersion) {
+        throw new Error(`构建版本 ${resolvedVersion} 与 version.json 中的版本 ${canonicalVersion} 不一致，请先更新 version.json`);
+    }
+    if (appPackage.version !== resolvedVersion) {
+        throw new Error(`Electron package 版本 ${appPackage.version} 未同步到项目版本 ${resolvedVersion}，请先运行 node scripts/project_version.js --sync`);
+    }
+    const packageJson = {
+        ...sourcePackage,
+        version: resolvedVersion,
+        main: 'installer-main.js',
+        build: {
+            appId: 'com.wordtts.installer',
+            productName: '小猪wordTTS 安装程序',
+            executableName: '小猪wordTTS-Setup',
+            electronVersion: appPackage.devDependencies.electron,
+            asar: true,
+            compression: 'maximum',
+            directories: {
+                output: outputDir,
+                buildResources: 'build',
+            },
+            files: [
+                'index.html',
+                'styles.css',
+                'app.js',
+                'installer-main.js',
+                'installer-preload.js',
+                'installer-service.js',
+                'version.json',
+                'assets/**/*',
+            ],
+            extraResources: [
+                { from: 'payload', to: 'payload' },
+            ],
+            win: {
+                target: [{ target: 'portable', arch: ['x64'] }],
+                icon: 'build/icon.ico',
+                signAndEditExecutable: true,
+            },
+            portable: {
+                artifactName: '小猪wordTTS-Setup-${version}-${arch}.${ext}',
+            },
+        },
+    };
+    fs.writeFileSync(path.join(workDir, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
+    return { packageJson, resolvedVersion };
+}
+
+function runBuilder(projectDir, electronDir, env = process.env) {
+    const executable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    const result = spawnSync(
+        executable,
+        ['electron-builder', '--projectDir', projectDir, '--win', 'portable', '--publish', 'never'],
+        { cwd: electronDir, env, stdio: 'inherit' },
+    );
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`自绘 Windows 安装程序构建失败，退出码: ${result.status}`);
+}
+
+function main() {
+    const args = parseArguments();
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-build-'));
+    try {
+        const { resolvedVersion } = createBuildProject({ ...args, workDir });
+        const outputName = `小猪wordTTS-Setup-${resolvedVersion}-x64.exe`;
+        const outputPath = path.join(args.outputDir, outputName);
+        console.log(`自绘 Windows 安装程序配置已生成: ${outputPath}`);
+        if (args.dryRun) return;
+        // Never let a failed builder invocation pass because a previous run
+        // left an installer with the same version in the output directory.
+        fs.rmSync(outputPath, { force: true });
+        try {
+            runBuilder(workDir, electronDir, process.env);
+            if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size <= 0) {
+                throw new Error(`electron-builder 未生成有效的自绘安装程序: ${outputPath}`);
+            }
+        } catch (error) {
+            // A failed builder may leave a partial file behind. Remove it too,
+            // otherwise a later release step could mistake that file for a
+            // successful same-version build.
+            fs.rmSync(outputPath, { force: true });
+            throw error;
+        }
+        console.log(`自绘 Windows 安装程序构建完成: ${outputPath}`);
+    } finally {
+        fs.rmSync(workDir, { recursive: true, force: true });
+    }
+}
+
+if (require.main === module) {
+    try {
+        main();
+    } catch (error) {
+        console.error(`[错误] ${error.message}`);
+        process.exitCode = 1;
+    }
+}
+
+module.exports = {
+    createBuildProject,
+    parseArguments,
+};

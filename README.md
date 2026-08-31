@@ -4,7 +4,7 @@
 
 小猪wordTTS 是一款面向教学 Word/Excel 文档的本机配音工作台。应用会解析 `.docx` 与 `.xlsx` 内容（包括词汇题目），按文档标记自动分配男女声，生成可试听、可单独保存或打包下载的音频，并把最近生成的任务保存在当前电脑中。
 
-当前正式版本为 **3.0.1（支持更多试卷解析）**。
+当前正式版本以 `version.json`、版本中心和 GitHub Release 元数据为准；构建前会自动同步到 Electron 与后端产物。
 
 ## 主要能力
 
@@ -16,7 +16,7 @@
 - 生成过程提供结构化时间线、断线恢复、取消与失败重试信息。
 - macOS 与 Windows 桌面安装包均由 GitHub Actions 自动构建。
 - 桌面端内置版本中心：启动后自动检查 GitHub Releases，支持可选/强制更新、下载、重启安装和更新日志展示。
-- Windows NSIS 安装包使用原生安装页面和自定义应用图标，支持选择安装目录；安装权限与文件解包仍由 NSIS 安全处理；macOS 保持打开即用或拖入 Applications 的原生流程。
+- Windows 使用独立的 HTML 自绘 Setup.exe，安装、更新、卸载共用同一套可高度定制的界面，并支持选择安装目录、安装范围和数据保留策略；macOS 保持打开即用或拖入 Applications 的原生流程。
 - 正式桌面 App 默认开启真实讯飞调用，双击安装包即可使用；`--smoke-test` 始终只走逻辑离线流程，不打开真实页面。直接诊断后端时可用 `--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 显式离线。
 - Renderer 只保留新的工作台单一入口；workflow 数据与任务记录由现有服务端目录独立持久化，界面更新不会创建第二套 Shell。
 

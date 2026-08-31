@@ -310,6 +310,27 @@ class WorkflowRuntimeTests(unittest.TestCase):
             {blocker["code"] for blocker in workspace["blockers"]},
         )
 
+    def test_workspace_preserves_parser_gender_and_legacy_filename_stem(self) -> None:
+        snapshot = self.repository.create_workflow(
+            "tts", {"generation_mode": "single_segment"}
+        )
+        item_id = self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="听选信息题目",
+            sequence=0,
+            normalized_content="How many subjects?",
+            item_identity_key="question:1",
+            metadata={
+                "gender": "male",
+                "filename_stem": "问题1",
+            },
+        )
+
+        workspace = self.repository.get_workspace(snapshot.workflow_id)
+        item = next(item for item in workspace["items"] if item["item_id"] == item_id)
+        self.assertEqual(item["metadata"]["gender"], "male")
+        self.assertEqual(item["metadata"]["filename_stem"], "问题1")
+
     def test_pause_resume_and_restart_takeover_are_fenced_by_server_state(self) -> None:
         workflow_id = self._workflow_with_items()
         accepted = self.repository.command(workflow_id, "generate", 0)
@@ -544,6 +565,62 @@ class WorkflowRuntimeTests(unittest.TestCase):
             [item["voice_key"] for item in workspace["items"]],
             ["speaker:linda", "speaker:steve", "speaker:teacher"],
         )
+
+    def test_tts_plan_uses_parser_gender_metadata_for_unmarked_items(self) -> None:
+        snapshot = self.repository.create_workflow(
+            "tts",
+            {
+                "generation_mode": "composite_cut",
+                "default_female_voice": "speaker:linda",
+                "default_male_voice": "speaker:steve",
+            },
+        )
+        self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="听选信息题目",
+            sequence=0,
+            normalized_content="How many subjects does Mary have at school?",
+            item_identity_key="question:1",
+            metadata={"voice": "male"},
+        )
+        self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="听选信息题目",
+            sequence=1,
+            normalized_content="What subject does Bill like best?",
+            item_identity_key="question:2",
+            metadata={"voice": "female"},
+        )
+
+        result = WorkflowEngine(
+            self.repository,
+            ArtifactStore(Path(self.temp.name) / "parser-gender-artifacts"),
+        ).run_tts(snapshot.workflow_id, FakeProvider())
+        self.assertEqual(result.status, "SUCCEEDED")
+        with self.database.read_transaction() as con:
+            row = con.execute("SELECT ordered_plan_json FROM provider_submissions").fetchone()
+        plan = json.loads(row["ordered_plan_json"])
+        self.assertEqual(
+            [(item["voice_key"], item["speed"]) for item in plan],
+            [("speaker:steve", 35), ("speaker:linda", 50)],
+        )
+
+    def test_effective_plan_accepts_json_string_metadata_override(self) -> None:
+        plan_item = WorkflowEngine._effective_plan_item(
+            {
+                "item_id": "item-json-male",
+                "normalized_content": "A question",
+                "voice_key": None,
+            },
+            {
+                "default_female_voice": "speaker:linda",
+                "default_male_voice": "speaker:steve",
+            },
+            metadata='{"voice":"male"}',
+        )
+
+        self.assertEqual(plan_item["voice_key"], "speaker:steve")
+        self.assertEqual(plan_item["speed"], 35)
 
     def test_preview_plan_is_bounded_and_terminalizes_as_partial_success(self) -> None:
         snapshot = self.repository.create_workflow(

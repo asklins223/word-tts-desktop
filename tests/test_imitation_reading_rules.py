@@ -47,7 +47,7 @@ def test_script_marker_accepts_colon_inside_wrapping_brackets():
 def test_new_rule_voice_survives_workflow_parser_normalization():
     parsed = LegacyWordParser().parse(NEW_FIXTURE)
 
-    assert parsed.parser_version == "17"
+    assert parsed.parser_version == "18"
     assert [item.metadata["voice"] for item in parsed.items] == ["female", "female"]
 
 

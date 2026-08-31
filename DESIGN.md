@@ -67,9 +67,9 @@
 
 ## Asset provenance
 
-- 保留既有品牌图标：[electron/renderer/assets/app-icon.png](electron/renderer/assets/app-icon.png)，品牌资产本身不重绘；新增插画素材只用于工作台背景与状态空面。
-- 新增导入工作台背景：[electron/renderer/assets/pig-document-desk-background.png](electron/renderer/assets/pig-document-desk-background.png)，使用内置 `image_gen` 生成的手绘小猪、文档与声音波形插画；中心保留低干扰留白供 HTML 操作文案使用。
-- 新增跨页面小猪素材：[electron/renderer/assets/pig-mascot-sticker.png](electron/renderer/assets/pig-mascot-sticker.png)，使用内置 `image_gen` 生成的透明背景小猪贴纸，用于空状态和全局拖拽提示，不替代语义图标。
+- 保留既有品牌图标：[electron/renderer/assets/app-icon.png](electron/renderer/assets/app-icon.png)，品牌资产不替换；新增插画素材只用于工作台背景与状态空面。
+- 新增导入工作台背景：[electron/renderer/assets/pig-import-vivid-background.png](electron/renderer/assets/pig-import-vivid-background.png)，使用内置 `image_gen` 生成的高饱和贴纸风小猪、文档与声音波形插画；中心保留低干扰留白供 HTML 操作文案使用。
+- 新增跨页面小猪素材：[electron/renderer/assets/pig-review-check.png](electron/renderer/assets/pig-review-check.png)、[pig-generation-broadcast.png](electron/renderer/assets/pig-generation-broadcast.png) 和 [pig-delivery-verified.png](electron/renderer/assets/pig-delivery-verified.png)，使用内置 `image_gen` 生成的透明背景小猪贴纸，分别对应核对、生成和交付状态，不替代语义图标。
 - SVG 图标为界面语义图标，使用统一线宽；不以 emoji 或 Unicode 字符替代图标。
 
 ## Evidence boundary

@@ -33,6 +33,46 @@ def load_document_once(filepath, *, include_structure=False):
     )
 
 
+def _order_detected_types_by_source(paras, detected_types):
+    """按文档中的首次题型标记排列解析结果。
+
+    ``detect_types_in_content`` 的注册顺序是稳定的检测优先级，不能直接
+    改成文档顺序，否则会影响专项识别和外部调用方的兼容契约。套卷解析
+    需要的却是试卷顺序：解析结果会继续进入 ``LegacyWordParser``，并由
+    它分配持久化 sequence，最终决定核对页、交付页和 ZIP 中的顺序。
+    因此把“识别顺序”和“输出顺序”分成两个明确步骤。
+
+    题型标记按段落扫描而不是把全文拼成一个大字符串，避免跨段匹配
+    或段落中的换行改变排序；未找到标记的扩展题型稳定地排在原检测顺序
+    的末尾。
+    """
+    if not detected_types:
+        return []
+
+    from . import QUESTION_TYPE_MAP
+
+    paragraph_count = len(paras)
+    positions = {}
+    for doc_type in detected_types:
+        position = paragraph_count
+        question_type = QUESTION_TYPE_MAP.get(doc_type)
+        markers = getattr(question_type, "content_markers", ()) if question_type else ()
+        for index, paragraph in enumerate(paras):
+            text = str(paragraph[1] or "")
+            if any(marker.search(text) for marker in markers):
+                position = index
+                break
+        positions[doc_type] = position
+
+    return [
+        doc_type
+        for _, doc_type in sorted(
+            enumerate(detected_types),
+            key=lambda pair: (positions.get(pair[1], paragraph_count), pair[0]),
+        )
+    ]
+
+
 def _build_parser(parser_cls, filepath, preloaded):
     """优先复用已加载段落；解析器未迁移（自定义 __init__）时照旧构建。"""
     if preloaded is not None:
@@ -111,6 +151,7 @@ def parse_document_once(filepath):
     detected_types = detect_types_in_content(paras)
     if not detected_types:
         return [], "未识别到任何题型内容"
+    detected_types = _order_detected_types_by_source(paras, detected_types)
     results = []
     errors = []
     preloaded = (paras, metadata, blocks)

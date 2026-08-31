@@ -372,12 +372,12 @@ function normalizeUpdateState(rawState = {}) {
         ...source,
         status,
         currentVersion: String(source.currentVersion || updateState.currentVersion || ''),
-        version: source.version ? String(source.version).replace(/^v/, '') : null,
-        latestVersion: source.latestVersion ? String(source.latestVersion).replace(/^v/, '') : null,
+        version: source.version ? String(source.version).replace(/^v/i, '') : null,
+        latestVersion: source.latestVersion ? String(source.latestVersion).replace(/^v/i, '') : null,
         isForced: Boolean(source.isForced),
         updateMode: source.updateMode === 'force' ? 'force' : (source.updateMode === 'optional' ? 'optional' : null),
         minimumSupportedVersion: source.minimumSupportedVersion
-            ? String(source.minimumSupportedVersion).replace(/^v/, '')
+            ? String(source.minimumSupportedVersion).replace(/^v/i, '')
             : null,
         releaseName: String(source.releaseName || ''),
         releaseNotes: source.releaseNotes || '',
@@ -397,7 +397,7 @@ function normalizeUpdateState(rawState = {}) {
 
 function versionDisplay(value, fallback = '—') {
     const text = String(value || '').trim();
-    return text ? `v${text.replace(/^v/, '')}` : fallback;
+    return text ? `v${text.replace(/^v/i, '')}` : fallback;
 }
 
 function updateStatusPresentation(state = {}) {
@@ -5752,14 +5752,18 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
         ))
         .forEach(artifact => {
             const itemId = String(artifact?.item_id || '');
-            if (!itemId || seenItemIds.has(itemId)) return;
             if (artifact.artifact_type !== 'tts-segment') return;
+            if (!itemId || seenItemIds.has(itemId)) return;
             // The newest TTS artifact is authoritative for this item. If it is
             // not deliverable, do not fall back to an older attempt's audio.
             seenItemIds.add(itemId);
 
-            const item = itemById.get(itemId) || {};
             const workspaceItem = workspaceItems.get(itemId);
+            // Workspace fields win, while older endpoint rows can still fill
+            // fields that were not included in the compatibility response.
+            const item = workspaceItem
+                ? { ...(itemById.get(itemId) || {}), ...workspaceItem }
+                : (itemById.get(itemId) || {});
             const hasWorkspaceMetadata = hasAuthoritativeWorkspaceArtifacts
                 || workspaceArtifacts.has(String(artifact.artifact_id));
             const metadata = hasWorkspaceMetadata
@@ -5804,10 +5808,16 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
                 doc_type: item.item_type || '音频',
                 category: item.item_type || '',
                 item_id: itemId,
-                text: workspaceItem?.normalized_content || item.normalized_content || '',
-                text_preview: String(workspaceItem?.normalized_content || item.normalized_content || '').slice(0, 160),
+                text: item.normalized_content || '',
+                text_preview: String(item.normalized_content || '').slice(0, 160),
                 role: item.role || null,
+                voice_keys: Array.isArray(artifact?.voice_keys)
+                    ? artifact.voice_keys
+                    : (artifact?.voice_keys ? [artifact.voice_keys] : []),
                 voice_key: item.voice_key || null,
+                sequence: Number.isSafeInteger(Number(item.sequence)) && Number(item.sequence) >= 0
+                    ? Number(item.sequence)
+                    : null,
                 size_bytes: sizeBytes,
                 format,
                 mime_type: mimeType,
@@ -5817,8 +5827,8 @@ function resultFilesFromArtifacts(items, artifacts, workspace = null) {
         });
 
     return [...latestByItem.values()].sort((left, right) => {
-        const leftSequence = Number(itemById.get(left.item_id)?.sequence ?? Number.MAX_SAFE_INTEGER);
-        const rightSequence = Number(itemById.get(right.item_id)?.sequence ?? Number.MAX_SAFE_INTEGER);
+        const leftSequence = left.sequence ?? Number.MAX_SAFE_INTEGER;
+        const rightSequence = right.sequence ?? Number.MAX_SAFE_INTEGER;
         return leftSequence - rightSequence || left.filename.localeCompare(right.filename);
     });
 }

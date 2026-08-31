@@ -854,9 +854,9 @@ function registerIpcHandlers() {
         isTrustedSender: isTrustedRendererEvent,
     });
 
-    // 更新能力只接受本地 renderer 的请求。下载和安装仍由
-    // electron-updater 在主进程完成，避免把 GitHub Release 元数据或文件
-    // 路径暴露给页面脚本。
+    // 更新能力只接受本地 renderer 的请求。下载和安装始终由主进程的
+    // 平台专用客户端完成：Windows 启动自绘 Setup.exe，macOS 使用
+    // electron-updater；GitHub Release 元数据和文件路径不会暴露给页面脚本。
     ipcMain.handle('update-status', async (event) => {
         if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
         return safeUpdateStatus();
@@ -1741,6 +1741,25 @@ app.whenReady().then(async () => {
 
     createWindow();
     updateManager?.start?.();
+}).catch(error => {
+    // Failures before waitForServer's recovery path (for example, inability
+    // to allocate a local port or initialize the update manager) must not
+    // become unhandled promise rejections. Let the normal shutdown path stop
+    // any backend process that was already started.
+    const detail = error?.stack || error?.message || String(error);
+    console.error(`[main] 启动失败: ${detail}`);
+    smokeLog(`startup failed: ${detail}`);
+    if (isSmokeTest) {
+        exitSmokeTest(1, mainWindow);
+        return;
+    }
+    if (!isQuitting) {
+        dialog.showErrorBox(
+            `${PRODUCT_NAME} 无法启动`,
+            `${error?.message || String(error)}\n\n请重新启动应用；如果问题持续存在，请重新安装完整版本。`,
+        );
+        app.quit();
+    }
 });
 
 app.on('window-all-closed', () => {

@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（留空则从 package.json 读取或使用 tag 版本）'
+        description: '版本号（构建时同步到 version.json；留空则使用 tag 版本）'
         required: false
         default: ''
         type: string
@@ -59,6 +59,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
 
+      - name: Resolve canonical project version
+        run: node scripts/project_version.js --set "${GITHUB_REF_NAME#v}"
+
       - name: Install release script dependencies
         working-directory: electron
         run: npm ci --ignore-scripts
@@ -95,7 +98,6 @@ jobs:
 
       - name: Validate update policy
         env:
-          UPDATE_VERSION: ${{ needs.macos.outputs.version }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/validate_update_policy.js
 
@@ -107,13 +109,11 @@ jobs:
       - name: Prepare Windows auto-update metadata
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          UPDATE_VERSION: ${{ needs.windows.outputs.version }}
         run: node scripts/prepare_update_metadata.js --platform win32
 
       - name: Prepare macOS auto-update metadata
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          UPDATE_VERSION: ${{ needs.macos.outputs.version }}
           UPDATE_MAC_ARCH: ${{ needs.macos.outputs.architecture }}
         run: node scripts/prepare_update_metadata.js --platform darwin
 
@@ -126,12 +126,10 @@ jobs:
           installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
           mac_zip="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
           mac_dmg="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
-          blockmap="${installer}.blockmap"
           test -s "$installer"
-          test -s "$blockmap"
           test -s "$mac_zip"
           test -s "$mac_dmg"
-          test -s electron/release/latest.yml
+          test -s electron/release/latest-win.json
           test -s electron/release/latest-mac.yml
           echo "Release 文件校验通过: $installer / $mac_zip / $mac_dmg"
 
@@ -143,19 +141,16 @@ jobs:
           set -euo pipefail
           local_installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
           github_installer="electron/release/wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
-          local_blockmap="${local_installer}.blockmap"
           local_zip="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
           local_dmg="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
           github_zip="electron/release/wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
           github_dmg="electron/release/wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
 
           cp "$local_installer" "$github_installer"
-          cp "$local_blockmap" "${github_installer}.blockmap"
           cp "$local_zip" "$github_zip"
           cp "$local_dmg" "$github_dmg"
 
           test -s "$github_installer"
-          test -s "${github_installer}.blockmap"
           test -s "$github_zip"
           test -s "$github_dmg"
           echo "GitHub 资产名已准备: $(basename "$github_installer") / $(basename "$github_zip") / $(basename "$github_dmg")"
@@ -165,10 +160,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            electron/release/latest.yml
+            electron/release/latest-win.json
             electron/release/latest-mac.yml
             electron/release/wordTTS-Setup-${{ needs.windows.outputs.version }}-x64.exe
-            electron/release/wordTTS-Setup-${{ needs.windows.outputs.version }}-x64.exe.blockmap
             electron/release/wordTTS-${{ needs.macos.outputs.version }}-${{ needs.macos.outputs.architecture }}.dmg
             electron/release/wordTTS-${{ needs.macos.outputs.version }}-${{ needs.macos.outputs.architecture }}.zip
           name: 小猪wordTTS ${{ github.ref_name }}

@@ -46,7 +46,7 @@ QUALITY_BITRATE = {
 # 音频生成算法版本。改变讯飞音频拼接、合并切割策略或参数寻址方式时递增，
 # 避免复用旧算法产物。4 是原有“单段合成后拼接”算法，保留为历史兼容版本。
 LEGACY_AUDIO_ALGORITHM_VERSION = 4
-AUDIO_ALGORITHM_VERSION = 8
+AUDIO_ALGORITHM_VERSION = 9
 
 # Electron 主进程用它确认内置后端和渲染器来自同一次构建。旧版客户端如果
 # 把旧后端混进新前端，不能继续以“看似启动成功”的方式走逐条生成流程。
@@ -54,7 +54,7 @@ BACKEND_CONTRACT_VERSION = 5
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则、音频边界等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 17
+PARSER_VERSION = 18
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
 # 女声 Amanda 默认 50/50/50，男声 George 默认 35/50/50（语速 35）。
@@ -95,10 +95,16 @@ COMPOSITE_MIN_SAFE_SILENCE_MS = 450
 # 这个值。候选足够时优先使用长标记，避免第三个边界被自然停顿抢走。
 COMPOSITE_MARKER_MIN_CORE_MS = 900
 # 强标记应接近页面插入的 2 秒停顿。强标记数量必须与边界数一致；数量不足
-# 时，只允许在候选数恰好等于边界数的情况下使用较宽松的长停顿集合；数量
-# 多于边界或候选仍有歧义时宁可失败，不把自然停顿静默当成题目边界。
+# 时，切割器可以在长停顿候选中按题目顺序做全局对齐；只有对齐唯一且误差
+# 足够小时才接受，不能把自然停顿静默当成题目边界。
 COMPOSITE_MARKER_STRONG_MIN_CORE_MS = 1400
 COMPOSITE_MARKER_TARGET_TOLERANCE_MS = 650
+# 讯飞合并音频偶尔会把页面插入的 2 秒停顿压缩成约 0.9~1.4 秒，同时正文
+# 可能出现一个自然长停顿。最多容忍两个额外长候选，但必须经过全局对齐和
+# 歧义边距校验；这个上限避免把一长串自然停顿交给猜测算法。
+COMPOSITE_MAX_EXTRA_LONG_MARKERS = 2
+COMPOSITE_MARKER_ALIGNMENT_MIN_MARGIN = 0.25
+COMPOSITE_MARKER_ALIGNMENT_MAX_ERROR_RATIO = 1.5
 COMPOSITE_EDGE_KEEP_MS = 90
 COMPOSITE_EDGE_TRIM_MIN_MS = 180
 # 合并作品最外层的静音不属于题目之间的人工边界。只在它确实很长时

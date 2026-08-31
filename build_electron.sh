@@ -148,6 +148,11 @@ check_environment() {
         exit 1
     fi
 
+    # version.json 是唯一手工维护的应用版本；electron/package*.json
+    # 只是 electron-builder/npm 所需的同步元数据。
+    log "同步项目版本信息..."
+    node "$SCRIPT_DIR/scripts/project_version.js" --sync
+
     # electron-builder
     if [ ! -d "$ELECTRON_DIR/node_modules/electron-builder" ]; then
         warn "electron-builder 未安装，正在安装..."
@@ -231,7 +236,7 @@ build_electron_app() {
     log "=== 步骤 2/2: electron-builder 打包应用 ==="
 
     local package_version
-    package_version="$(node -p "require('$ELECTRON_DIR/package.json').version")"
+    package_version="$(node "$SCRIPT_DIR/scripts/project_version.js")"
     local expected_zip_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.zip"
 
     log "生成 macOS / Windows 应用图标..."

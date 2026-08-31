@@ -483,7 +483,7 @@ select:disabled { color: var(--ink-muted); background: var(--surface-soft); }
 .upload-zone-large.has-error { border-color: var(--danger); }
 .upload-zone-large.is-processing { cursor: progress; }
 .upload-zone-large.is-disabled { cursor: not-allowed; opacity: .62; }
-.upload-visual { position: absolute; inset: 0; overflow: hidden; color: var(--primary); background: var(--surface-blue) url("assets/pig-document-desk-background.png") center bottom / cover no-repeat; }
+.upload-visual { position: absolute; inset: 0; overflow: hidden; color: var(--primary); background: var(--surface-blue) url("assets/pig-import-vivid-background.png") center bottom / cover no-repeat; }
 .scope-grid,
 .upload-scope,
 .scope-axis { display: none; }
@@ -569,10 +569,15 @@ progress { width: 100%; height: 7px; accent-color: var(--primary); }
 .review-item-skip-reason { color: var(--attention-strong); font-size: 11px; }
 .review-truncated-note { margin: 13px 9px; color: var(--ink-muted); font-size: 11px; }
 .review-inspector { position: relative; overflow: auto; }
-.inspector-empty { display: grid; align-content: center; min-height: 100%; padding: 18px 4px; text-align: center; }
+.inspector-empty { position: relative; display: grid; align-content: center; min-height: 100%; padding: 18px 4px; text-align: center; }
+.inspector-empty::before { display: block; width: 94px; height: 100px; margin: 0 auto 1px; content: ""; background: url("assets/pig-review-check.png") center / contain no-repeat; }
 .inspector-mark { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin: 0 auto 13px; color: var(--primary); background: var(--primary-soft); border-radius: 12px; }
 .inspector-empty h2 { margin: 0; color: var(--ink-strong); font-size: 16px; font-weight: 780; }
 .inspector-empty p { max-width: 26ch; margin: 8px auto 0; color: var(--ink-muted); font-size: 12px; line-height: 1.65; }
+.review-empty { display: grid; justify-items: center; align-content: center; min-height: 235px; padding: 25px 14px; text-align: center; }
+.review-empty::before { display: block; width: 94px; height: 100px; margin-bottom: 2px; content: ""; background: url("assets/pig-review-check.png") center / contain no-repeat; }
+.review-empty strong { color: var(--ink-strong); font-size: 13px; }
+.review-empty p { max-width: 34ch; margin: 6px 0 0; color: var(--ink-muted); font-size: 11px; line-height: 1.6; }
 .inspector-heading { display: flex; align-items: center; gap: 10px; padding-bottom: 15px; border-bottom: 1px solid var(--line); }
 .review-inspector-index { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 30px; color: var(--primary-hover); background: var(--primary-soft); border-radius: 8px; font-family: var(--font-mono); font-size: 11px; font-weight: 780; }
 .inspector-heading h2 { max-width: 20ch; margin: 3px 0 0; overflow: hidden; color: var(--ink-strong); font-size: 16px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
@@ -967,8 +972,9 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 
 .delivery-frame { padding-bottom: 20px; }
 .result-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 315px); overflow: hidden; }
-.result-overview { min-width: 0; padding: 23px; }
-.delivery-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.result-overview { position: relative; min-width: 0; padding: 23px; }
+.result-overview::after { position: absolute; right: 13px; bottom: 15px; width: 145px; height: 166px; content: ""; pointer-events: none; background: url("assets/pig-delivery-verified.png") center / contain no-repeat; }
+.delivery-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-right: 135px; }
 .result-heading-copy { display: flex; align-items: flex-start; gap: 13px; min-width: 0; }
 .result-success-icon { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; flex: 0 0 auto; color: var(--success); background: var(--success-soft); border: 1px solid rgba(47, 106, 89, .24); border-radius: 13px; }
 .result-error-mark { display: none; }
@@ -981,7 +987,7 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 .result-heading-copy h1 { margin: 3px 0 0; color: var(--ink-strong); font-size: 28px; font-weight: 820; letter-spacing: -.035em; line-height: 1.18; }
 .result-summary { max-width: 66ch; margin: 8px 0 0; color: var(--ink-muted); font-size: 12px; line-height: 1.6; }
 .result-header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
-.result-metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 28px; border-top: 1px solid var(--line); }
+.result-metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 28px; padding-right: 135px; border-top: 1px solid var(--line); }
 .result-metric { display: grid; gap: 4px; min-width: 0; padding: 14px 12px 0 0; border-right: 1px solid var(--line); }
 .result-metric:not(:first-child) { padding-left: 14px; }
 .result-metric:last-child { border-right: 0; }
@@ -1111,7 +1117,7 @@ input[type="range"] { width: 100%; accent-color: var(--primary); }
 .history-stat.is-skipped strong { color: var(--attention-strong); }
 .history-item-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .history-empty { display: grid; min-height: 260px; place-items: center; padding: 28px; text-align: center; }
-.history-empty-mark { position: relative; display: inline-block; width: 112px; height: 130px; background: url("assets/pig-mascot-sticker.png") center / contain no-repeat; border: 0; border-radius: 0; }
+.history-empty-mark { position: relative; display: inline-block; width: 112px; height: 130px; background: url("assets/pig-review-check.png") center / contain no-repeat; border: 0; border-radius: 0; }
 .history-empty-mark::before,
 .history-empty-mark::after { display: none; }
 .history-empty h2 { margin: 13px 0 0; color: var(--ink-strong); font-size: 16px; font-weight: 780; }
@@ -1197,7 +1203,7 @@ html[data-theme="dark"] .update-required-overlay { background: rgba(6, 20, 29, .
 .status-right { justify-content: flex-end; gap: 8px; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .global-drop-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 28px; pointer-events: none; background: rgba(238, 247, 255, .86); }
 .global-drop-frame { display: grid; justify-items: center; gap: 9px; width: min(620px, 100%); padding: 40px 28px; color: var(--ink-strong); background: var(--surface); border: 2px dashed var(--primary); border-radius: 18px; box-shadow: 0 18px 50px rgba(47, 71, 111, .16); text-align: center; }
-.global-drop-mark { display: inline-flex; align-items: center; justify-content: center; width: 90px; height: 112px; background: url("assets/pig-mascot-sticker.png") center / contain no-repeat; }
+.global-drop-mark { display: inline-flex; align-items: center; justify-content: center; width: 90px; height: 112px; background: url("assets/pig-review-check.png") center / contain no-repeat; }
 .global-drop-mark svg { display: none; }
 .global-drop-frame strong { font-size: 19px; font-weight: 800; }
 .global-drop-frame > span:last-child { color: var(--ink-muted); font-size: 12px; }
@@ -1374,6 +1380,7 @@ body[data-active-workspace="review"] .toast { bottom: 70px; }
     .import-intake,
     .import-guide { padding: 17px; }
     .upload-zone-large { min-height: 285px; }
+    .upload-copy { align-self: start; justify-self: end; max-width: calc(100% - 78px); margin: 24px 14px 0 0; }
     .import-recent-strip { align-items: flex-start; flex-direction: column; }
     .import-recent-strip strong { white-space: normal; }
     .review-workbench { grid-template-columns: 1fr; }
@@ -1401,6 +1408,9 @@ body[data-active-workspace="review"] .toast { bottom: 70px; }
     .generation-console-footer { grid-template-columns: 1fr; padding-right: 15px; padding-left: 15px; }
     .generation-control-actions { justify-content: flex-start; }
     .result-overview { padding: 18px; }
+    .result-overview::after { right: 12px; bottom: 14px; width: 105px; height: 120px; opacity: .9; }
+    .delivery-heading { padding-right: 98px; }
+    .result-metrics { padding-right: 0; }
     .delivery-heading { align-items: flex-start; flex-direction: column; }
     .result-header-actions { justify-content: flex-start; }
     .result-metrics { margin-top: 20px; }

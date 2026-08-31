@@ -21,6 +21,7 @@ from audio_naming import (
     ARCHIVE_LAYOUT_VERSION,
     ARCHIVE_ROOT_FOLDER,
     audio_filename_from_stem,
+    unique_filename,
 )
 from workflow.artifact_store import ArtifactStore, ArtifactStoreError
 from workflow.domain import DomainError, canonical_json, content_hash
@@ -413,6 +414,35 @@ class WorkflowApplicationService:
         all_segments = self.repository.list_verified_tts_segments(workflow_id)
         item_rows = self.repository.list_items(workflow_id)
         item_by_id = {str(item["item_id"]): item for item in item_rows}
+        # Allocate names from the same complete, sequence-ordered item set as
+        # the workspace projection. Legacy parser rows can reuse ``问题1`` in
+        # different categories; reserving every item name keeps subset/full
+        # exports deterministic and prevents duplicate ZIP entries.
+        item_export_filename_bases: dict[str, str] = {}
+        used_export_filenames: set[str] = set()
+        for item_id, item in sorted(
+            item_by_id.items(),
+            key=lambda entry: (int(entry[1]["sequence"]), entry[0]),
+        ):
+            try:
+                parsed_metadata = json.loads(str(item.get("metadata_json") or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_metadata = {}
+            metadata = parsed_metadata if isinstance(parsed_metadata, Mapping) else {}
+            stem = str(
+                metadata.get("audio_filename_stem")
+                or metadata.get("filename_stem")
+                or ""
+            ).strip()
+            requested_filename = (
+                audio_filename_from_stem(stem, "mp3") if stem else None
+            ) or f"{int(item['sequence']) + 1:03d}.mp3"
+            allocated_filename = unique_filename(
+                requested_filename, used_export_filenames
+            )
+            item_export_filename_bases[item_id] = allocated_filename.rsplit(
+                ".", 1
+            )[0]
         requested_ids: list[str] | None = None
         requested_set: set[str] | None = None
         if include_item_ids is not None:
@@ -577,19 +607,13 @@ class WorkflowApplicationService:
                 archive.writestr(directory, b"")
                 for segment in segments:
                     fmt = str(segment.get("format") or "mp3").lower().lstrip(".") or "bin"
-                    item = item_by_id.get(str(segment["item_id"]), {})
-                    try:
-                        item_metadata = json.loads(str(item.get("metadata_json") or "{}"))
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        item_metadata = {}
-                    custom_name = (
-                        audio_filename_from_stem(
-                            item_metadata.get("audio_filename_stem"), fmt
-                        )
-                        if isinstance(item_metadata, Mapping)
-                        else None
+                    item_id = str(segment["item_id"])
+                    allocated_base = item_export_filename_bases.get(item_id)
+                    filename = (
+                        f"{allocated_base}.{fmt}"
+                        if allocated_base
+                        else f"{int(segment['sequence']) + 1:0{width}d}.{fmt}"
                     )
-                    filename = custom_name or f"{int(segment['sequence']) + 1:0{width}d}.{fmt}"
                     entry_name = f"{ARCHIVE_ROOT_FOLDER}/{filename}"
                     info = zipfile.ZipInfo(entry_name, date_time=(1980, 1, 1, 0, 0, 0))
                     info.compress_type = zipfile.ZIP_DEFLATED

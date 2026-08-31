@@ -29,8 +29,8 @@ def test_full_2026_exam_is_supported(path):
     assert [result["doc_type"] for result in results] == [
         "听后选择",
         "听后应答",
-        "听后记录并转述信息",
         "模仿朗读",
+        "听后记录并转述信息",
     ]
 
     by_type = {result["doc_type"]: result for result in results}
@@ -56,8 +56,8 @@ def test_full_2026_exam_is_supported(path):
         "听后应答-5.mp3",
         "听后应答-6.mp3",
         "听后应答-7.mp3",
-        "听后记录并转述信息-第一节听后记录-1.mp3",
         "模仿朗读-1.mp3",
+        "听后记录并转述信息-第一节听后记录-1.mp3",
     ]
 
     assert [

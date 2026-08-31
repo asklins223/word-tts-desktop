@@ -28,10 +28,11 @@ EXAM_PAPER_SCORE_MARKER = re.compile(
 )
 
 # Keep every ZIP entry below one predictable directory.  The layout version
-# participates in the deterministic export id so a historical flat ZIP is
-# never mistaken for the new folder-wrapped layout.
+# participates in the deterministic export id so a historical flat ZIP or a
+# ZIP produced before duplicate-name allocation is never mistaken for the
+# current delivery layout.
 ARCHIVE_ROOT_FOLDER = "audio"
-ARCHIVE_LAYOUT_VERSION = "folder-v1"
+ARCHIVE_LAYOUT_VERSION = "folder-v2"
 
 
 def is_exam_paper_bundle(paragraphs: Iterable[Any]) -> bool:
@@ -107,6 +108,27 @@ def audio_filename_stem(type_path: Iterable[Any], ordinal: Any) -> str:
     return f"{'-'.join(path)}-{ordinal_values[0]}"
 
 
+def audio_type_label(category: Any) -> str:
+    """Return the stable filename label for one parser category.
+
+    Legacy parsers describe generated audio as ``<题型>录音稿`` while the
+    user-facing filename should still be ``<题型>-<序号>``.  Keep other
+    category qualifiers (for example ``题目``) because they distinguish two
+    different audio streams in the old exam-paper format.
+    """
+
+    label = str(category or "").strip()
+    if label.endswith("录音稿"):
+        label = label[:-3].strip()
+    return label
+
+
+def audio_filename_stem_for_category(category: Any, ordinal: Any) -> str:
+    """Build a safe ``category-ordinal`` stem for legacy/fallback items."""
+
+    return audio_filename_stem([audio_type_label(category)], ordinal)
+
+
 def safe_audio_filename_stem(value: Any, *, limit: int = 240) -> str:
     """Keep a parser-provided stem as one safe basename."""
 
@@ -126,15 +148,46 @@ def audio_filename_from_stem(stem: Any, fmt: Any) -> str | None:
     return f"{safe_stem}.{extension}"
 
 
+def unique_filename(filename: Any, used_filenames: set[str]) -> str:
+    """Return a deterministic, case-insensitive unique filename.
+
+    The caller supplies already-sanitized basenames and keeps the set for one
+    ordered export. Keeping this small policy in the shared naming module
+    makes the legacy progress path, durable workspace projection, and ZIP
+    exporter agree when old parser metadata contains duplicate stems.
+    """
+
+    raw = str(filename or "").strip()
+    if not raw:
+        return ""
+    used = {str(value).casefold() for value in used_filenames}
+    candidate = raw
+    suffix = 2
+    if "." in raw:
+        base, extension = raw.rsplit(".", 1)
+        while candidate.casefold() in used:
+            candidate = f"{base}_{suffix}.{extension}"
+            suffix += 1
+    else:
+        while candidate.casefold() in used:
+            candidate = f"{raw}_{suffix}"
+            suffix += 1
+    used_filenames.add(candidate.casefold())
+    return candidate
+
+
 __all__ = [
     "ARCHIVE_LAYOUT_VERSION",
     "ARCHIVE_ROOT_FOLDER",
     "EXAM_PAPER_MARKERS",
     "EXAM_PAPER_LEGACY_MARKERS",
+    "audio_filename_stem_for_category",
     "audio_filename_stem",
     "audio_filename_from_stem",
+    "audio_type_label",
     "format_question_numbers",
     "is_exam_paper_bundle",
     "normalize_question_numbers",
     "safe_audio_filename_stem",
+    "unique_filename",
 ]

@@ -17,6 +17,8 @@ Electron 应用启动时 spawn 此可执行文件，无需用户安装 Python。
 import sys
 import os
 
+SPEC_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # GitHub 的 Windows runner 可能把 Python 控制台设为 cp1252。spec 中的中文
 # 诊断不应反过来令构建失败，因此在任何输出前固定为 UTF-8。
 for _stream in (sys.stdout, sys.stderr):
@@ -29,14 +31,18 @@ from PyInstaller.utils.hooks import collect_data_files
 # 数据文件（资源）
 # ============================================================================
 datas = [
+    # The desktop release version is shared by the Electron shell and the
+    # backend. Keep it beside the frozen backend so direct backend launches
+    # report the same version as the packaged application.
+    (os.path.join(SPEC_DIR, 'version.json'), '.'),
     # 迁移运行器通过 ``Path(__file__).parent / 'migrations'`` 在运行时
     # 读取 SQL。db 本身不是一个带 package data 的第三方包，因此必须显式
     # 将迁移目录放进 frozen backend；否则首个 /api/v1/workflows 请求会在
     # 初始化数据库时抛出 ``MigrationError: no migration files found``，
     # Electron 端只能看到没有诊断信息的 HTTP 500。
-    ('db/migrations', 'db/migrations'),
+    (os.path.join(SPEC_DIR, 'db', 'migrations'), 'db/migrations'),
     # 首次启动在线刷新失败时使用的音色目录种子缓存。
-    ('resources/voices.json', 'resources'),
+    (os.path.join(SPEC_DIR, 'resources', 'voices.json'), 'resources'),
 ]
 
 # Playwright 官方 hook（playwright/_impl/__pyinstaller/）在某些 PyInstaller

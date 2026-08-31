@@ -62,10 +62,10 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         self.assertEqual(
             [item["text"] for item in questions],
             [
-                "M: What is Amy doing?",
-                "W: Where is Tom?",
-                "M: Who helps Amy?",
-                "W: Why is Tom happy?",
+                "What is Amy doing?",
+                "Where is Tom?",
+                "Who helps Amy?",
+                "Why is Tom happy?",
             ],
         )
         self.assertEqual(
@@ -73,7 +73,13 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
             ["问题1", "问题2", "问题3", "问题4"],
         )
 
-        synthesized_segments = [core.parse_speakers(item["text"])[0] for item in questions]
+        synthesized_segments = [
+            core.parse_speakers(
+                item["text"],
+                default_voice=core.default_voice_for_item(item),
+            )[0]
+            for item in questions
+        ]
         self.assertEqual(
             [voice for voice, _ in synthesized_segments],
             [
@@ -97,6 +103,27 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
             item for item in result["items"] if item["category"].endswith("录音稿")
         ]
         self.assertEqual(len(scripts), 2)
+
+    def test_source_question_speaker_marker_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "信息获取.docx")
+            document = Document()
+            for text in [
+                "第一节 听选信息",
+                "听下面一段录音，回答第1个问题。",
+                "1. M: Which subject do you like?",
+                "录音稿：",
+                "M: I like science.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = InfoAcquisitionParser(path).parse()
+
+        question = next(
+            item for item in result["items"] if item["category"].endswith("题目")
+        )
+        self.assertEqual(question["text"], "M: Which subject do you like?")
+        self.assertEqual(question["voice"], "male")
 
     @staticmethod
     def _make_document_new_format(path: Path) -> None:
@@ -258,17 +285,20 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
                     "category": "听选信息题目",
                     "number": 1,
                     "filename_stem": "问题1",
+                    "audio_filename_stem": "听选信息题目-1",
                     "text": "M: First question?",
                 },
                 {
                     "category": "回答问题题目",
                     "number": 7,
                     "filename_stem": "问题7",
+                    "audio_filename_stem": "回答问题题目-1",
                     "text": "M: Seventh question?",
                 },
                 {
                     "category": "回答问题录音稿",
                     "index": 1,
+                    "audio_filename_stem": "回答问题-1",
                     "text": "(W) Script text.",
                 },
             ],
@@ -283,7 +313,11 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
 
         self.assertEqual(
             [item["filename"] for item in progress["items"]],
-            ["问题1.mp3", "问题7.mp3", "回答问题-录音稿1.mp3"],
+            [
+                "听选信息题目-1.mp3",
+                "回答问题题目-1.mp3",
+                "回答问题-1.mp3",
+            ],
         )
 
 

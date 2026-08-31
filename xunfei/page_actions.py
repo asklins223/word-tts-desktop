@@ -288,14 +288,6 @@ class PageActionsMixin:
         first = paragraphs.nth(first_index)
         last = paragraphs.nth(last_index)
         expected_values = [row["text"] for row in rows[first_index:last_index + 1]]
-        if first_index == last_index:
-            # Playwright 的 select_text 只选当前段落，绝不退化为编辑器全选。
-            first.select_text(timeout=5000)
-            _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
-            _check_cancel_requested(cancel_check)
-            return cls._verify_editor_selection(page, expected_values)
-
-        errors = []
 
         def paragraph_text_target(paragraph):
             # 讯飞完成一次音色标记后，段落开头会多出一个不可编辑的
@@ -312,6 +304,41 @@ class PageActionsMixin:
             except Exception:
                 pass
             return paragraph
+
+        if first_index == last_index:
+            # 已标注行不能再对整个 <p> 使用 select_text：Chromium 可能把
+            # 选区边界提升到外层 speaker mark，虽然 Selection.toString()
+            # 看起来只有正文，讯飞实际处理时仍可能把旧标签一起带入。用
+            # 页面 Range 明确落在正文文本节点；未标注行也沿用同一条轻量
+            # 路径，避免单行修正和批量选区的语义不一致。
+            selected = _safe_eval(page, JS.SELECT_EDITOR_ROW, first_index)
+            expected_text = rows[first_index]["text"]
+            if (
+                isinstance(selected, dict)
+                and cls._normalize_selection_text(selected.get("text"))
+                == cls._normalize_selection_text(expected_text)
+                and selected.get("activeEditor") is True
+            ):
+                _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+                _check_cancel_requested(cancel_check)
+                return cls._verify_editor_selection(page, expected_values)
+            # 页面脚本失败时，只有没有 speaker 正文标记的普通行才允许
+            # 回退到原生 select_text；已标注行宁可停下，也不能把标签带入。
+            content = first.locator(
+                'span.range-annotation-content.speaker-content'
+                ':not(.ssml-tag):not([data-type="range_anchor"]):visible'
+            )
+            if content.count() > 0:
+                raise XunfeiError(
+                    f"多人配音 UI 单行正文选区失败：第 {first_index + 1} 行无法精确定位"
+                )
+            # Playwright 的 select_text 只选当前段落，绝不退化为编辑器全选。
+            paragraph_text_target(first).select_text(timeout=5000)
+            _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+            _check_cancel_requested(cancel_check)
+            return cls._verify_editor_selection(page, expected_values)
+
+        errors = []
 
         # 方式一：先真实选中首行，再滚动到末行并 Shift-click。这个动作
         # 不要求首尾同时出现在视口中，最适合打包客户端的窄窗口和长文档。
@@ -423,6 +450,28 @@ class PageActionsMixin:
         兜底，避免长文档被误判为空队列。
         """
         try:
+            state = _safe_eval(page, JS.READ_COMPOSITE_QUEUE_STATE)
+            if isinstance(state, dict):
+                pending_count = state.get("pendingCount")
+                badge_count = state.get("badgeCount")
+                # 讯飞不同版本对连续选区的 DOM 表达不一致：有的版本把
+                # 一整个连续范围渲染成一个 pending 节点，有的版本按段落
+                # 渲染多个节点；而徽标通常显示实际段数。两者都存在时
+                # 取较大值，既兼容两种表达，也能在状态不一致时让数量校验
+                # 失败并清理重试，避免把漏段当成成功。
+                if (
+                    isinstance(pending_count, int)
+                    and pending_count > 0
+                    and isinstance(badge_count, int)
+                    and badge_count > 0
+                ):
+                    return max(pending_count, badge_count)
+                if isinstance(pending_count, int) and pending_count > 0:
+                    return pending_count
+                if isinstance(badge_count, int) and badge_count > 0:
+                    return badge_count
+                if pending_count == 0:
+                    return 0
             # 浮动工具条在滚动期间可能短暂隐藏，但队列状态仍然保留；
             # 读取隐藏条的文本比把短暂不可见误判成队列已清空更安全。
             pending = page.locator(".msq-pending-range")
@@ -442,6 +491,35 @@ class PageActionsMixin:
             return 0
         except Exception:
             return 0
+
+    @classmethod
+    def _read_composite_queue_row_indices(cls, page):
+        """回读多段队列对应的编辑器行号（页面提供时）。
+
+        队列装饰在不同讯飞版本中有两种形态：有的节点直接挂在目标
+        ``<p>`` 内，有的节点是编辑器外层的浮动装饰，只能回读数量。这里
+        对前一种形态做严格行号校验；无法完整映射时返回 ``None``，由调用
+        方继续使用数量校验，不把页面版本差异误判成错误。
+        """
+        state = _safe_eval(page, JS.READ_COMPOSITE_QUEUE_STATE)
+        if not isinstance(state, dict):
+            return None
+        indices = state.get("rowIndices")
+        if not isinstance(indices, list):
+            return None
+        result = []
+        for index in indices:
+            if not isinstance(index, int) or index < 0:
+                return None
+            result.append(index)
+        # 当一个 pending 节点代表连续多段时，节点能映射到的可能只是
+        # 起始行，而徽标记录了完整段数。此时行号并不完整，交给调用方
+        # 做数量校验即可；继续拿不完整行号比较会把合法选择误判为失败。
+        badge_count = state.get("badgeCount")
+        if isinstance(badge_count, int) and badge_count > 0:
+            if len(result) != badge_count:
+                return None
+        return result
 
     @classmethod
     def _clear_composite_queue(cls, page, cancel_check=None):
@@ -488,11 +566,14 @@ class PageActionsMixin:
         页面版本没有正确接受它，调用方会清空队列并切回原生 select_text。
         """
         _check_cancel_requested(cancel_check)
-        normalized_ranges = [
-            (int(first), int(last))
-            for first, last in ranges
-            if int(first) <= int(last)
-        ]
+        try:
+            normalized_ranges = [
+                (int(first), int(last))
+                for first, last in (ranges or [])
+                if int(first) <= int(last)
+            ]
+        except (TypeError, ValueError):
+            raise XunfeiError("多人配音多段选区范围格式异常")
         if not normalized_ranges:
             raise XunfeiError("多人配音多段选区没有可加入的目标区间")
         if cls._read_composite_queue_count(page) != 0:
@@ -502,6 +583,13 @@ class PageActionsMixin:
             for first, last in normalized_ranges
         ):
             raise XunfeiError("多人配音多段选区索引越界")
+        selected_indices = [
+            row_index
+            for first, last in normalized_ranges
+            for row_index in range(first, last + 1)
+        ]
+        if len(set(selected_indices)) != len(selected_indices):
+            raise XunfeiError("多人配音多段选区包含重复行，拒绝重复套用音色")
 
         paragraphs = page.locator(".ssml-editor p")
         if paragraphs.count() != len(rows):
@@ -530,9 +618,16 @@ class PageActionsMixin:
                         f"多人配音快速选区失败：第 {row_index + 1} 行不可见"
                     )
                 expected_text = rows[row_index].get("text") or ""
-                if cls._normalize_selection_text(selected.get("text")) != cls._normalize_selection_text(expected_text):
+                if (
+                    cls._normalize_selection_text(selected.get("text"))
+                    != cls._normalize_selection_text(expected_text)
+                ):
                     raise XunfeiError(
                         f"多人配音快速选区回读失败：第 {row_index + 1} 行正文不一致"
+                    )
+                if selected.get("activeEditor") is not True:
+                    raise XunfeiError(
+                        f"多人配音快速选区失败：第 {row_index + 1} 行编辑器未获得焦点"
                     )
                 box = selected.get("box")
                 if not isinstance(box, dict):
@@ -552,7 +647,7 @@ class PageActionsMixin:
                         el.scrollIntoView({
                         block: 'center',
                         inline: 'nearest',
-                        behavior: 'instant',
+                        behavior: 'auto',
                         });
                         const rect = el.getBoundingClientRect();
                         return {
@@ -571,6 +666,10 @@ class PageActionsMixin:
             target.select_text(timeout=5000)
             _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
             _check_cancel_requested(cancel_check)
+            # 原生 select_text 也必须回读正文。否则段落内容在页面异步
+            # 重绘/排序后发生漂移时，仍会把一个“数量正确但正文错误”的
+            # 选区加入讯飞队列。
+            cls._verify_editor_selection(page, [rows[row_index]["text"]])
             return target, box
 
         def enqueue_current_selection(target, box):
@@ -619,6 +718,7 @@ class PageActionsMixin:
         expected_count = sum(
             last - first + 1 for first, last in normalized_ranges
         )
+        expected_indices = selected_indices
         def expected_queue_count():
             current = cls._read_composite_queue_count(page)
             return current if current == expected_count else None
@@ -636,6 +736,13 @@ class PageActionsMixin:
             raise XunfeiError(
                 "多人配音多段选区数量校验失败："
                 f"期望 {expected_count} 个待选段，实际 {actual_count} 个"
+            )
+        actual_indices = cls._read_composite_queue_row_indices(page)
+        if actual_indices is not None and sorted(actual_indices) != sorted(expected_indices):
+            cls._clear_composite_queue(page, cancel_check=cancel_check)
+            raise XunfeiError(
+                "多人配音多段选区行号校验失败："
+                f"期望 {expected_indices}，实际 {actual_indices}"
             )
         _log(
             f"[xunfei]   多人配音已加入多段选区："

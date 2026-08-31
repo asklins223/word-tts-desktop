@@ -35,9 +35,9 @@ def test_legacy_exam_bundle_is_parsed_without_cross_section_leaks():
 
     assert summary == "检测到 3 种题型，成功提取 16 条内容"
     assert [result["doc_type"] for result in results] == [
+        "模仿朗读",
         "信息获取",
         "信息转述及询问",
-        "模仿朗读",
     ]
 
     by_type = {result["doc_type"]: result for result in results}
@@ -88,23 +88,30 @@ def test_legacy_exam_bundle_is_parsed_without_cross_section_leaks():
     progress = build_progress(FIXTURE.name, str(FIXTURE), results, {})
     assert progress["total_items"] == 16
     assert [item["filename"] for item in progress["items"]] == [
-        "问题1.mp3",
-        "问题2.mp3",
-        "听选信息-录音稿1.mp3",
-        "问题3.mp3",
-        "问题4.mp3",
-        "听选信息-录音稿2.mp3",
-        "问题5.mp3",
-        "问题6.mp3",
-        "听选信息-录音稿3.mp3",
-        "问题7.mp3",
-        "问题8.mp3",
-        "问题9.mp3",
-        "问题10.mp3",
-        "回答问题-录音稿1.mp3",
-        "信息转述-录音稿1.mp3",
         "模仿朗读-1.mp3",
+        "听选信息题目-1.mp3",
+        "听选信息题目-2.mp3",
+        "听选信息-1.mp3",
+        "听选信息题目-3.mp3",
+        "听选信息题目-4.mp3",
+        "听选信息-2.mp3",
+        "听选信息题目-5.mp3",
+        "听选信息题目-6.mp3",
+        "听选信息-3.mp3",
+        "回答问题题目-1.mp3",
+        "回答问题题目-2.mp3",
+        "回答问题题目-3.mp3",
+        "回答问题题目-4.mp3",
+        "回答问题-1.mp3",
+        "信息转述-1.mp3",
     ]
+
+    questions = [
+        item for item in info_items if item["category"].endswith("题目")
+    ]
+    assert questions[0]["text"] == "How many subjects does Mary have at school?"
+    assert questions[0]["voice"] == "male"
+    assert not questions[0]["text"].startswith(("M:", "W:"))
 
     parsed = LegacyWordParser().parse(FIXTURE)
     assert parsed.item_count == 16

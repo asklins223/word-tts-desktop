@@ -8,6 +8,7 @@ from pydub.generators import Sine
 
 import wordtts as core
 import wordtts.batch
+from wordtts import composite_cut as composite_cut_core
 import wordtts.synthesis
 
 
@@ -461,6 +462,100 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(diagnostics["strategy"], "ambiguous_or_extra_markers")
+
+    def test_composite_cut_aligns_shortened_markers_with_one_natural_gap(self):
+        """压缩后的长标记加一个自然长停顿时仍按题目顺序安全切割。"""
+        total_duration = 256053
+        item_lengths = [46, 36, 287, 27, 38, 329, 30, 45, 361, 33, 50, 34, 41, 471, 414, 400]
+        boundary_count = len(item_lengths) - 1
+        expected = composite_cut_core._expected_composite_boundary_positions(
+            total_duration,
+            boundary_count,
+            item_lengths,
+        )
+        offsets = [400, -250, 900, -450, 250, -600, 300, -400, 500, -200, 300, -500, 400, -300, 600]
+        core_lengths = [2000, 2000, 1100, 2000, 1300, 2000, 2000, 1050, 2000, 2000, 1000, 2000, 2000, 1400, 2000]
+        marker_centers = [position + offset for position, offset in zip(expected, offsets)]
+        runs = [
+            {
+                "start": center - 500,
+                "end": center + 500,
+                "center": center,
+                "core_length": core_length,
+                "length": max(500, core_length),
+            }
+            for center, core_length in zip(marker_centers, core_lengths)
+        ]
+        natural_center = expected[2] + 8000
+        runs.insert(3, {
+            "start": natural_center - 400,
+            "end": natural_center + 400,
+            "center": natural_center,
+            "core_length": 1200,
+            "length": 1400,
+        })
+        diagnostics = {}
+
+        selected = core._select_composite_silence_runs(
+            AudioSegment.silent(duration=total_duration),
+            runs,
+            boundary_count,
+            item_lengths=item_lengths,
+            diagnostics=diagnostics,
+        )
+
+        self.assertEqual(len(selected), boundary_count)
+        self.assertNotIn(natural_center, [run["center"] for run in selected])
+        self.assertEqual(diagnostics["strategy"], "aligned_long_markers")
+        self.assertEqual(diagnostics["skipped_long_centers"], [natural_center])
+        self.assertEqual(diagnostics["selected_count"], boundary_count)
+        self.assertEqual(diagnostics["strong_marker_count"], 11)
+
+    def test_composite_cut_rejects_ambiguous_extra_long_marker(self):
+        """两个几乎同样可信的长停顿不能靠猜测决定切点。"""
+        total_duration = 30000
+        item_lengths = [10] * 16
+        boundary_count = 15
+        expected = composite_cut_core._expected_composite_boundary_positions(
+            total_duration,
+            boundary_count,
+            item_lengths,
+        )
+        centers = [position + 300 for position in expected]
+        runs = [
+            {
+                "start": center - 500,
+                "end": center + 500,
+                "center": center,
+                "core_length": 1200,
+                "length": 1200,
+            }
+            for center in centers
+        ]
+        # 这个额外候选与第 3 个真实候选都非常接近，不能证明哪一个是
+        # 页面插入的停顿；安全策略应继续拒绝，而不是静默错切。
+        ambiguous_center = expected[2] + 500
+        runs.insert(3, {
+            "start": ambiguous_center - 400,
+            "end": ambiguous_center + 400,
+            "center": ambiguous_center,
+            "core_length": 1200,
+            "length": 1200,
+        })
+        diagnostics = {}
+
+        with self.assertRaisesRegex(core.CompositeCutError, "对齐存在歧义"):
+            core._select_composite_silence_runs(
+                AudioSegment.silent(duration=total_duration),
+                runs,
+                boundary_count,
+                item_lengths=item_lengths,
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual(diagnostics["strategy"], "ambiguous_or_missing_markers")
+        self.assertEqual(diagnostics["candidate_count"], 16)
+        self.assertEqual(diagnostics["long_marker_count"], 16)
 
     def test_composite_cut_returns_diagnostics_for_selected_markers(self):
         tone = Sine(440).to_audio_segment(duration=600).apply_gain(-3)

@@ -11,6 +11,7 @@ attempt.
 from __future__ import annotations
 
 import io
+import json
 import re
 import threading
 import time
@@ -249,15 +250,19 @@ class WorkflowEngine:
         preview = item_ids is None and bool(configuration.get("preview")) and len(all_items) > preview_limit
         items = all_items[:preview_limit] if preview else all_items
         ordered_plan = [
-            self._effective_plan_item({
-                "ordinal": index,
-                "item_id": str(item["item_id"]),
-                "identity_key": str(item["item_identity_key"]),
-                "content": str(item["normalized_content"]),
-                "content_hash": str(item["content_hash"]),
-                "role": item["role"],
-                "voice_key": item["voice_key"],
-            }, configuration)
+            self._effective_plan_item(
+                {
+                    "ordinal": index,
+                    "item_id": str(item["item_id"]),
+                    "identity_key": str(item["item_identity_key"]),
+                    "content": str(item["normalized_content"]),
+                    "content_hash": str(item["content_hash"]),
+                    "role": item["role"],
+                    "voice_key": item["voice_key"],
+                },
+                configuration,
+                metadata_json=item.get("metadata_json"),
+            )
             for index, item in enumerate(items)
         ]
         input_hash = content_hash({
@@ -764,11 +769,49 @@ class WorkflowEngine:
     def _role_key(value: Any) -> str:
         return " ".join(str(value or "").strip().split()).casefold()
 
+    @staticmethod
+    def _gender_from_value(value: Any) -> str | None:
+        """Normalize parser gender facts without treating voice keys as gender."""
+
+        key = str(value or "").strip().casefold()
+        if key in {
+            "female", "女", "女声", "女生", "女性", "woman", "girl", "f",
+            "w", "default_female", "__default_female__", "forced_female",
+            "forced-female",
+        }:
+            return "female"
+        if key in {
+            "male", "男", "男声", "男生", "男性", "man", "boy", "m",
+            "default_male", "__default_male__", "forced_male", "forced-male",
+        }:
+            return "male"
+        return None
+
+    @staticmethod
+    def _item_metadata(item: Mapping[str, Any], metadata: Any = None) -> Mapping[str, Any]:
+        """Read parser metadata from either a mapping or the durable JSON column."""
+
+        candidate = metadata
+        if candidate is None:
+            candidate = item.get("metadata")
+        if candidate is None:
+            candidate = item.get("metadata_json")
+        if isinstance(candidate, str):
+            try:
+                decoded = json.loads(candidate)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded = None
+            candidate = decoded
+        return candidate if isinstance(candidate, Mapping) else {}
+
     @classmethod
     def _effective_plan_item(
         cls,
         item: Mapping[str, Any],
         configuration: Mapping[str, Any] | None,
+        *,
+        metadata: Mapping[str, Any] | str | None = None,
+        metadata_json: Any = None,
     ) -> dict[str, Any]:
         """Materialize renderer voice settings into the durable TTS plan.
 
@@ -780,6 +823,25 @@ class WorkflowEngine:
         """
 
         config = configuration if isinstance(configuration, Mapping) else {}
+        item_metadata = cls._item_metadata(
+            item,
+            metadata if metadata is not None else metadata_json,
+        )
+        item_gender = next(
+            (
+                gender
+                for value in (
+                    item.get("voice"),
+                    item.get("voice_gender"),
+                    item.get("gender"),
+                    item_metadata.get("voice"),
+                    item_metadata.get("voice_gender"),
+                    item_metadata.get("gender"),
+                )
+                if (gender := cls._gender_from_value(value))
+            ),
+            None,
+        )
         role = cls._role_key(item.get("role"))
         role_voices = config.get("role_voices")
         role_voices = role_voices if isinstance(role_voices, Mapping) else {}
@@ -789,9 +851,15 @@ class WorkflowEngine:
             else None
         )
         male_role = bool(re.match(r"^(mr|mr\.|sir|男|先生)\b", role))
+        male_slot = item_gender == "male" if item_gender else male_role
         default_female = str(config.get("default_female_voice") or "amanda").strip()
         default_male = str(config.get("default_male_voice") or "george").strip()
-        voice_key = str(item.get("voice_key") or role_voice or (default_male if male_role else default_female) or "amanda").strip()
+        voice_key = str(
+            item.get("voice_key")
+            or role_voice
+            or (default_male if male_slot else default_female)
+            or "amanda"
+        ).strip()
 
         role_configs = config.get("role_configs")
         role_configs = role_configs if isinstance(role_configs, Mapping) else {}
@@ -802,7 +870,7 @@ class WorkflowEngine:
         else:
             params = None
         if not isinstance(params, Mapping):
-            params = role_configs.get("__default_male__" if male_role else "__default_female__")
+            params = role_configs.get("__default_male__" if male_slot else "__default_female__")
         if not isinstance(params, Mapping):
             params = voice_configs.get(voice_key)
         if not isinstance(params, Mapping):
@@ -820,7 +888,7 @@ class WorkflowEngine:
 
         result = dict(item)
         result["voice_key"] = voice_key
-        result["speed"] = parameter("speed", 35 if male_role else 50)
+        result["speed"] = parameter("speed", 35 if male_slot else 50)
         result["pitch"] = parameter("pitch", 50)
         result["volume"] = parameter("volume", 50)
         return result
