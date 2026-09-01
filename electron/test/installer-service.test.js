@@ -326,6 +326,63 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
     }
 });
 
+test('Windows portable 卸载即使首次删除成功也会安排退出后的收尾清理', {
+    skip: process.platform !== 'win32',
+}, async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-portable-cleanup-'));
+    const target = path.join(root, 'installed', '小猪wordTTS');
+    const dataPath = path.join(root, 'user-data');
+    const tempDirectory = path.join(root, 'temp');
+    const spawned = [];
+    const environment = {
+        ...process.env,
+        SystemRoot: process.env.SystemRoot || 'C:\\Windows',
+        USERPROFILE: process.env.USERPROFILE || path.join(root, 'profile'),
+        PUBLIC: process.env.PUBLIC || path.join(root, 'public'),
+        ProgramData: process.env.ProgramData || path.join(root, 'program-data'),
+        ProgramFiles: process.env.ProgramFiles || path.join(root, 'program-files'),
+    };
+
+    try {
+        await fsp.mkdir(target, { recursive: true });
+        await fsp.writeFile(path.join(target, '小猪wordTTS.exe'), 'installed application');
+        const service = createInstallerService({
+            platform: 'win32',
+            dataPath,
+            tempDirectory,
+            environment,
+            // The test is about the portable wrapper handoff, not shell
+            // integration. Avoid requiring a real registry or shortcut host.
+            runPowerShell: async () => {},
+            spawn: (executable, args, options) => {
+                const child = new EventEmitter();
+                child.unref = () => {};
+                spawned.push({ executable, args, options });
+                process.nextTick(() => child.emit('spawn'));
+                return child;
+            },
+        });
+
+        const result = await service.run({
+            mode: 'uninstall',
+            targetPath: target,
+            scope: 'per-user',
+        });
+
+        assert.equal(result.success, true);
+        assert.equal(result.scheduledCleanup, true);
+        assert.equal(spawned.length, 1);
+        assert.equal(spawned[0].options.cwd, tempDirectory);
+        const encodedIndex = spawned[0].args.indexOf('-EncodedCommand');
+        assert.notEqual(encodedIndex, -1);
+        const cleanupScript = Buffer.from(spawned[0].args[encodedIndex + 1], 'base64').toString('utf16le');
+        assert.match(cleanupScript, /\$missingAttempts = 0/);
+        assert.match(cleanupScript, /\$missingAttempts -ge 10/);
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
 test('取消安装不会留下半成品目录', async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-cancel-'));
     try {

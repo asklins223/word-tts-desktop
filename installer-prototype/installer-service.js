@@ -619,6 +619,7 @@ function cleanupScript(targetPath, scriptPath, pid) {
         `$log = ${powershellLiteral(logPath)}`,
         `$processId = ${Number(pid) || 0}`,
         '$targetRoot = ([IO.Path]::GetFullPath($target)).TrimEnd(\'\\\') + \'\\\'',
+        '$missingAttempts = 0',
         'function Write-CleanupLog([string]$message) {',
         '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -ErrorAction SilentlyContinue } catch {}',
         '}',
@@ -650,9 +651,18 @@ function cleanupScript(targetPath, scriptPath, pid) {
         '  & cmd.exe /d /c "rmdir /s /q `"$target`"" 2>$null | Out-Null',
         '  Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue',
         '  if (-not (Test-Path -LiteralPath $target)) {',
-        '    Write-CleanupLog ("cleanup complete attempt=" + $attempt)',
-        '    break',
+        '    # electron-builder portable runs SetOutPath $EXEDIR after the',
+        '    # embedded app exits. That call can recreate the install folder',
+        '    # after the first successful delete, so require a stable absence',
+        '    # window before declaring cleanup complete.',
+        '    $missingAttempts += 1',
+        '    if ($missingAttempts -ge 10) {',
+        '      Write-CleanupLog ("cleanup complete attempt=" + $attempt)',
+        '      break',
+        '    }',
+        '    continue',
         '  }',
+        '  $missingAttempts = 0',
         '  if (($attempt % 10) -eq 0) { Write-CleanupLog ("target still exists attempt=" + $attempt) }',
         '}',
         'if (-not (Test-Path -LiteralPath $target)) {',
@@ -1060,19 +1070,20 @@ function createInstallerService(options = {}) {
         formatProgress(onProgress, { percent: 45, phase: 'write', stage: '正在移除应用文件', file: '正在清理应用目录…', count: '正在移除' });
         formatProgress(onProgress, { percent: 78, phase: 'shortcut', stage: '正在清理快捷方式', file: '正在移除开始菜单和桌面快捷方式…', count: '最后一步' });
         let scheduledCleanup = false;
-        try {
-            await removePath(normalizedTarget);
-        } catch (error) {
-            if (platform === 'win32') {
-                await scheduleUninstallCleanup(normalizedTarget);
-                scheduledCleanup = true;
-            } else {
-                throw new InstallerError('UNINSTALL_FAILED', '无法移除应用目录，请检查文件权限。', error);
-            }
-        }
-        if (platform === 'win32' && await pathExists(normalizedTarget)) {
+        if (platform === 'win32') {
+            // A portable electron-builder wrapper executes SetOutPath
+            // $EXEDIR after the embedded app exits. That can recreate the
+            // install directory even when this process removes it
+            // successfully, so Windows always needs a post-exit cleanup.
+            try { await removePath(normalizedTarget); } catch (_) { /* defer to the cleanup process */ }
             await scheduleUninstallCleanup(normalizedTarget);
             scheduledCleanup = true;
+        } else {
+            try {
+                await removePath(normalizedTarget);
+            } catch (error) {
+                throw new InstallerError('UNINSTALL_FAILED', '无法移除应用目录，请检查文件权限。', error);
+            }
         }
         // Never trust an install-state file to redirect uninstall into an
         // arbitrary directory. The service's own data directory is the only
