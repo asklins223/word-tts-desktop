@@ -540,7 +540,7 @@ test('Windows cmd.exe 真实执行 TEMP 外壳自清理批处理', {
         ], { windowsHide: true });
 
         assert.equal(fs.existsSync(stagedExecutable), false);
-        assert.equal(fs.existsSync(scriptPath), false);
+        assert.equal(fs.existsSync(scriptPath), true);
         assert.match(fs.readFileSync(logPath, 'utf8'), /staged cleanup complete/);
     } finally {
         await fsp.rm(root, { recursive: true, force: true });

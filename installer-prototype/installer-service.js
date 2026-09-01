@@ -884,9 +884,10 @@ function relocatedExecutableCleanupBatch() {
         'exit /b 2',
         ':wordtts_cleanup_complete',
         '>>"%log%" echo %date% %time% staged cleanup complete',
-        // cmd.exe parses this entire line before executing it, so the batch
-        // can remove itself and still return a deterministic success code.
-        'del /f /q "%~f0" >nul 2>&1 & exit /b 0',
+        // Keep the sub-kilobyte diagnostic batch beside its log. Deleting the
+        // currently executing .cmd makes cmd.exe try to read a vanished file
+        // and override an otherwise successful cleanup with exit code 1.
+        'exit /b 0',
         '',
     ].join('\r\n');
 }
