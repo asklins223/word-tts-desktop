@@ -284,26 +284,26 @@ jobs:
           Write-Host "使用 Node (Electron): $electron"
           # 使用临时 profile 启动持久化上下文，headless:true 避免 runner 无显示问题
           $pyCode = @'
-from playwright.sync_api import sync_playwright
-import tempfile, shutil, os
-tmp = tempfile.mkdtemp(prefix='pw-persistent-smoke-')
-print(f'临时 profile: {tmp}')
-p = sync_playwright().start()
-try:
-    ctx = p.chromium.launch_persistent_context(
-        tmp,
-        headless=True,
-        args=['--no-first-run','--no-default-browser-check','--disable-background-networking'],
-    )
-    page = ctx.new_page()
-    page.goto('about:blank')
-    print('persistent context ok')
-    ctx.close()
-finally:
-    p.stop()
-    shutil.rmtree(tmp, ignore_errors=True)
-print('Playwright 持久化上下文冒烟通过')
-'@
+          from playwright.sync_api import sync_playwright
+          import tempfile, shutil, os
+          tmp = tempfile.mkdtemp(prefix='pw-persistent-smoke-')
+          print(f'临时 profile: {tmp}')
+          p = sync_playwright().start()
+          try:
+              ctx = p.chromium.launch_persistent_context(
+                  tmp,
+                  headless=True,
+                  args=['--no-first-run','--no-default-browser-check','--disable-background-networking'],
+              )
+              page = ctx.new_page()
+              page.goto('about:blank')
+              print('persistent context ok')
+              ctx.close()
+          finally:
+              p.stop()
+              shutil.rmtree(tmp, ignore_errors=True)
+          print('Playwright 持久化上下文冒烟通过')
+          '@
           $pyFile = Join-Path $env:TEMP "pw-persistent-smoke.py"
           Set-Content -Path $pyFile -Value $pyCode -Encoding utf8
           python $pyFile
@@ -440,20 +440,20 @@ print('Playwright 持久化上下文冒烟通过')
             $env:PLAYWRIGHT_NODEJS_PATH = $appExe
             $env:ELECTRON_RUN_AS_NODE = "1"
             $pyCode2 = @'
-from playwright.sync_api import sync_playwright
-import tempfile, shutil
-tmp = tempfile.mkdtemp(prefix='pw-installed-smoke-')
-p = sync_playwright().start()
-try:
-    ctx = p.chromium.launch_persistent_context(tmp, headless=True, args=['--no-first-run'])
-    page = ctx.new_page()
-    page.goto('about:blank')
-    print('installed persistent ok')
-    ctx.close()
-finally:
-    p.stop()
-    shutil.rmtree(tmp, ignore_errors=True)
-'@
+          from playwright.sync_api import sync_playwright
+          import tempfile, shutil
+          tmp = tempfile.mkdtemp(prefix='pw-installed-smoke-')
+          p = sync_playwright().start()
+          try:
+              ctx = p.chromium.launch_persistent_context(tmp, headless=True, args=['--no-first-run'])
+              page = ctx.new_page()
+              page.goto('about:blank')
+              print('installed persistent ok')
+              ctx.close()
+          finally:
+              p.stop()
+              shutil.rmtree(tmp, ignore_errors=True)
+          '@
             $pyFile2 = Join-Path $env:TEMP "pw-installed-smoke.py"
             Set-Content -Path $pyFile2 -Value $pyCode2 -Encoding utf8
             python $pyFile2
