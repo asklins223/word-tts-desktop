@@ -13,6 +13,7 @@ const UNINSTALLER_EXECUTABLE = '小猪wordTTS-uninstaller.exe';
 const PAYLOAD_ARCHIVE_NAME = 'wordtts-payload.7z';
 const PAYLOAD_EXTRACTOR_NAME = 'wordtts-7za.exe';
 const PAYLOAD_EXTRACTION_ARGUMENT = '--wordtts-extract-payload=';
+const PAYLOAD_EXTRACTION_ENV = 'WORDTTS_PAYLOAD_EXPORT_DIR';
 const RELOCATED_UNINSTALLER_PATTERN = /^wordtts-uninstaller-stage-\d+-\d+-[0-9a-f]+\.exe$/i;
 const INSTALL_STATE_FILE = 'install-state.json';
 const INSTALL_STATE_VERSION = 1;
@@ -771,8 +772,21 @@ function launchEnvironment(environment = process.env) {
         'WORDTTS_RELOCATED_UNINSTALLER',
         'WORDTTS_RELOCATED_READY',
         'WORDTTS_RELOCATION_SOURCE_PID',
+        PAYLOAD_EXTRACTION_ENV,
     ]) {
         delete childEnvironment[key];
+    }
+    return childEnvironment;
+}
+
+function setupProcessEnvironment(environment, setupExecutable, payloadExportDirectory = '') {
+    const childEnvironment = launchEnvironment(environment);
+    if (setupExecutable) {
+        childEnvironment.PORTABLE_EXECUTABLE_FILE = setupExecutable;
+        childEnvironment.PORTABLE_EXECUTABLE_DIR = path.win32.dirname(setupExecutable);
+    }
+    if (payloadExportDirectory) {
+        childEnvironment[PAYLOAD_EXTRACTION_ENV] = payloadExportDirectory;
     }
     return childEnvironment;
 }
@@ -1386,15 +1400,6 @@ function createInstallerService(options = {}) {
         return staged;
     }
 
-    function setupProcessEnvironment() {
-        const childEnvironment = launchEnvironment(environment);
-        if (setupExecutable) {
-            childEnvironment.PORTABLE_EXECUTABLE_FILE = setupExecutable;
-            childEnvironment.PORTABLE_EXECUTABLE_DIR = path.dirname(setupExecutable);
-        }
-        return childEnvironment;
-    }
-
     async function materializePayloadArchive() {
         if (await pathExists(payloadPath)) return null;
         if (platform !== 'win32' || !setupExecutable || !(await pathExists(setupExecutable))) {
@@ -1411,7 +1416,7 @@ function createInstallerService(options = {}) {
                 [`${PAYLOAD_EXTRACTION_ARGUMENT}${extractionRoot}`],
                 {
                     cwd: tempDirectory,
-                    env: setupProcessEnvironment(),
+                    env: setupProcessEnvironment(environment, setupExecutable, extractionRoot),
                     windowsHide: true,
                     maxBuffer: 256 * 1024,
                 },
@@ -1964,6 +1969,7 @@ function createInstallerService(options = {}) {
             UNINSTALLER_EXECUTABLE,
             PAYLOAD_ARCHIVE_NAME,
             PAYLOAD_EXTRACTOR_NAME,
+            PAYLOAD_EXTRACTION_ENV,
             INSTALL_STATE_FILE,
             INSTALL_LOCATION_FILE,
         },
@@ -1978,6 +1984,7 @@ module.exports = {
     InstallerError,
     PAYLOAD_ARCHIVE_NAME,
     PAYLOAD_EXTRACTOR_NAME,
+    PAYLOAD_EXTRACTION_ENV,
     PRODUCT_NAME,
     UNINSTALLER_EXECUTABLE,
     createInstallerService,
@@ -1990,6 +1997,7 @@ module.exports = {
     resolveCleanupLauncherPath,
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,
+    setupProcessEnvironment,
     shortcutPaths,
     validateInstallTargetPath,
     waitForCleanupReady,

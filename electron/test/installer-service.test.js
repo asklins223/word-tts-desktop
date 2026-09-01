@@ -15,6 +15,7 @@ const {
     cleanupScript,
     INSTALL_LOCATION_FILE,
     InstallerError,
+    PAYLOAD_EXTRACTION_ENV,
     launchEnvironment,
     normalizeTargetPath,
     parseInstallerArguments,
@@ -63,9 +64,30 @@ test('完成后启动应用会清理 portable Setup 的临时环境变量', () =
         'WORDTTS_RELOCATED_UNINSTALLER',
         'WORDTTS_RELOCATED_READY',
         'WORDTTS_RELOCATION_SOURCE_PID',
+        PAYLOAD_EXTRACTION_ENV,
     ]) {
         assert.equal(environment[key], undefined, `${key} must not leak into the installed app`);
     }
+});
+
+test('自绘 Setup 导出 payload 时只通过私有环境变量传递临时目录', () => {
+    const { setupProcessEnvironment } = require('../../installer-prototype/installer-service');
+    const environment = setupProcessEnvironment(
+        {
+            PATH: 'C:\\Windows\\System32',
+            ELECTRON_RUN_AS_NODE: '1',
+            PORTABLE_EXECUTABLE_FILE: 'C:\\Temp\\Setup.exe',
+            [PAYLOAD_EXTRACTION_ENV]: 'C:\\attacker\\should-not-leak',
+        },
+        'C:\\Temp\\Setup.exe',
+        'C:\\Temp\\wordtts-payload-123',
+    );
+
+    assert.equal(environment.PATH, 'C:\\Windows\\System32');
+    assert.equal(environment.PORTABLE_EXECUTABLE_FILE, 'C:\\Temp\\Setup.exe');
+    assert.equal(environment.PORTABLE_EXECUTABLE_DIR, 'C:\\Temp');
+    assert.equal(environment[PAYLOAD_EXTRACTION_ENV], 'C:\\Temp\\wordtts-payload-123');
+    assert.equal(environment.ELECTRON_RUN_AS_NODE, undefined);
 });
 
 test('Windows 快捷方式优先使用 Electron 解析出的重定向桌面和开始菜单目录', () => {

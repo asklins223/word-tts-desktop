@@ -11,6 +11,7 @@ const {
     DEFAULT_7Z_COMPRESSION_LEVEL,
     PAYLOAD_ARCHIVE_NAME,
     PAYLOAD_EXTRACTOR_NAME,
+    PAYLOAD_EXTRACTION_ENV,
     PAYLOAD_EXTRACTION_MARKER,
     createBuildProject,
     describeBuildProgress,
@@ -124,9 +125,9 @@ test('自绘 portable 模板把 payload 导出入口写进 NSIS Section，并可
         restore = patchPortableTemplate(templatePath, { payloadArchivePath });
         const patched = fs.readFileSync(templatePath, 'utf8');
         const normalizedArchivePath = path.win32.normalize(path.resolve(payloadArchivePath));
-        assert.match(patched, /!include "FileFunc\.nsh"/);
         assert.match(patched, new RegExp(`${PAYLOAD_EXTRACTION_MARKER}`));
-        assert.match(patched, /\$\{GetOptions\} \$R0 "--wordtts-extract-payload=" \$R1/);
+        assert.match(patched, new RegExp(`ReadEnvStr \\$R1 "${PAYLOAD_EXTRACTION_ENV}"`));
+        assert.doesNotMatch(patched, /\$\{GetOptions\}/);
         assert.match(patched, /SetCompress off[\s\S]*File \/oname=wordtts-payload\.7z[\s\S]*SetCompress auto/);
         assert.match(patched, /File \/oname=wordtts-payload\.7z/);
         assert.ok(patched.includes(`"${normalizedArchivePath}"`));
@@ -400,6 +401,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsInstallerBuildScript, /wordtts-payload\.7z/);
     assert.match(windowsInstallerBuildScript, /wordtts-7za\.exe/);
     assert.match(windowsInstallerBuildScript, /WORDTTS_PAYLOAD_EXTRACTION/);
+    assert.match(windowsInstallerBuildScript, /WORDTTS_PAYLOAD_EXPORT_DIR/);
     assert.match(windowsInstallerBuildScript, /buildBlockMap/);
     assert.match(windowsInstallerBuildScript, /solid: false/);
     assert.doesNotMatch(windowsInstallerBuildScript, /useZip:\s*true/);
@@ -426,6 +428,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsInstallerBuildScript, /PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK/);
     assert.match(windowsInstallerBuildScript, /\$EXEPATH\.cleanup\.cmd/);
     assert.match(installerService, /安装目录删除后仍然存在/);
+    assert.match(installerService, /WORDTTS_PAYLOAD_EXPORT_DIR/);
     assert.match(windowsWorkflow, /\[handoff\] NSIS relocated uninstaller active/);
     assert.match(windowsWorkflow, /\[complete\] installer operation succeeded/);
     assert.match(windowsWorkflow, /staged cleanup complete/);

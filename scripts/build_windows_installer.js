@@ -28,6 +28,7 @@ const BUILD_PROGRESS_INTERVAL_MS = 15_000;
 const PAYLOAD_ARCHIVE_NAME = 'wordtts-payload.7z';
 const PAYLOAD_EXTRACTOR_NAME = 'wordtts-7za.exe';
 const PAYLOAD_EXTRACTION_MARKER = 'WORDTTS_PAYLOAD_EXTRACTION';
+const PAYLOAD_EXTRACTION_ENV = 'WORDTTS_PAYLOAD_EXPORT_DIR';
 const PORTABLE_UNINSTALL_RELOCATION_LABEL = 'wordtts_continue_portable';
 const PORTABLE_UNINSTALL_RELOCATION_BLOCK = [
     '  # An installed portable executable cannot remove its own directory.',
@@ -408,18 +409,19 @@ function payloadExtractionBlock(payloadArchivePath) {
     const source = nsisEscapeString(path.win32.normalize(path.resolve(payloadArchivePath)));
     return [
         `  ; ${PAYLOAD_EXTRACTION_MARKER}`,
-        '  ${GetParameters} $R0',
-        '  ${GetOptions} $R0 "--wordtts-extract-payload=" $R1',
-        '  ${IfNot} ${Errors}',
-        '    StrCmp $R1 "" wordtts_payload_extraction_done',
-        '    ClearErrors',
-        '    SetOutPath "$R1"',
-        '    SetCompress off',
-        `    File /oname=${PAYLOAD_ARCHIVE_NAME} "${source}"`,
-        '    SetCompress auto',
-        '    SetErrorLevel 0',
-        '    Quit',
-        '  ${EndIf}',
+        // Do not parse the portable wrapper's command line here. Its
+        // GetOptions path is sensitive to quoting and silently skipped the
+        // export in the real Windows smoke test. The service owns this
+        // private environment variable and removes it from launched apps.
+        `  ReadEnvStr $R1 "${PAYLOAD_EXTRACTION_ENV}"`,
+        '  StrCmp $R1 "" wordtts_payload_extraction_done',
+        '  ClearErrors',
+        '  SetOutPath "$R1"',
+        '  SetCompress off',
+        `  File /oname=${PAYLOAD_ARCHIVE_NAME} "${source}"`,
+        '  SetCompress auto',
+        '  SetErrorLevel 0',
+        '  Quit',
         'wordtts_payload_extraction_done:',
         '',
     ].join('\n');
@@ -438,7 +440,6 @@ function patchPortableTemplate(templatePath, { payloadArchivePath = null } = {})
         '  !endif',
         '',
     ].join('\n');
-    const payloadInclude = '!include "FileFunc.nsh"\n';
     const payloadMarkerPattern = new RegExp(
         `^[ \\t]*; ${PAYLOAD_EXTRACTION_MARKER}\\r?\\n[\\s\\S]*?^[ \\t]*wordtts_payload_extraction_done:\\r?\\n`,
         'm',
@@ -484,15 +485,6 @@ function patchPortableTemplate(templatePath, { payloadArchivePath = null } = {})
         restoreContent = restoreContent.replace(portableUnpackMarker, portableUnpackRestoreBlock);
     }
     if (payloadArchivePath) {
-        if (!patched.includes(payloadInclude.trim())) {
-            if (!/^!include "common\.nsh"\r?\n/m.test(patched)) {
-                throw new Error(`无法确认 electron-builder portable 的 common.nsh include: ${templatePath}`);
-            }
-            patched = patched.replace(
-                /^!include "common\.nsh"\r?\n/m,
-                value => `${value}${payloadInclude}`,
-            );
-        }
         patched = patched.replace(payloadMarkerPattern, '');
         if (!/^Section\r?\n/m.test(patched)) {
             throw new Error(`无法确认 electron-builder portable 的 Section: ${templatePath}`);
@@ -657,6 +649,7 @@ module.exports = {
     DEFAULT_7Z_COMPRESSION_LEVEL,
     PAYLOAD_ARCHIVE_NAME,
     PAYLOAD_EXTRACTOR_NAME,
+    PAYLOAD_EXTRACTION_ENV,
     PAYLOAD_EXTRACTION_MARKER,
     createPayloadArchive,
     createBuildProject,
