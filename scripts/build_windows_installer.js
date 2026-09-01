@@ -148,13 +148,37 @@ function runBuilder(projectDir, electronDir, env = process.env) {
 
 function patchPortableTemplate(templatePath) {
     const original = fs.readFileSync(templatePath, 'utf8');
-    const marker = /^[ \t]+SetOutPath \$EXEDIR\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
-    if (!marker.test(original) || (original.match(/SetOutPath \$EXEDIR/g) || []).length !== 1) {
+    const exedirMarker = /^[ \t]+SetOutPath \$EXEDIR\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
+    const tempMarker = /^[ \t]+SetOutPath \$TEMP\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
+    let patched = null;
+    let restoreContent = original;
+    if (exedirMarker.test(original)) {
+        if ((original.match(/SetOutPath \$EXEDIR/g) || []).length !== 1) {
+            throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
+        }
+        patched = original.replace(exedirMarker, value => value.replace('$EXEDIR', '$TEMP'));
+        restoreContent = original;
+    } else if (tempMarker.test(original)) {
+        // Already patched (e.g. previous run left the file patched). Keep the
+        // patched content for this build but restore to the unpatched state
+        // afterwards so the working tree stays clean.
+        if ((original.match(/SetOutPath \$TEMP/g) || []).length !== 1) {
+            throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
+        }
+        patched = original;
+        restoreContent = original.replace(tempMarker, value => value.replace('$TEMP', '$EXEDIR'));
+    } else {
         throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
     }
-    const patched = original.replace(marker, value => value.replace('$EXEDIR', '$TEMP'));
-    fs.writeFileSync(templatePath, patched, 'utf8');
-    return () => fs.writeFileSync(templatePath, original, 'utf8');
+    if (patched !== original) {
+        fs.writeFileSync(templatePath, patched, 'utf8');
+    }
+    // Verify the patch is active before letting the builder run.
+    const active = fs.readFileSync(templatePath, 'utf8');
+    if (!tempMarker.test(active) || exedirMarker.test(active)) {
+        throw new Error(`自绘安装程序模板补丁未生效: ${templatePath}`);
+    }
+    return () => fs.writeFileSync(templatePath, restoreContent, 'utf8');
 }
 
 function main() {

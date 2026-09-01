@@ -296,7 +296,8 @@ jobs:
             param(
               [Parameter(Mandatory = $true)][string]$FilePath,
               [string[]]$Arguments = @(),
-              [int]$TimeoutMs = 120000
+              [int]$TimeoutMs = 120000,
+              [string]$WorkingDirectory = $null
             )
 
             $logBase = Join-Path $env:RUNNER_TEMP ("wordtts-installer-" + [guid]::NewGuid().ToString("N"))
@@ -307,10 +308,28 @@ jobs:
             $env:WORDTTS_INSTALLER_LOG = $diagnosticPath
             $process = $null
             try {
+              # Never keep the uninstaller's own install directory as the
+              # working directory while the deferred cleanup tries to delete it.
+              # A Windows process holds a handle on its CWD, so a CWD inside the
+              # target would make the final rmdir permanently fail.
+              $effectiveWorkDir = $WorkingDirectory
+              if (-not $effectiveWorkDir) {
+                $candidate = Split-Path -Parent $FilePath
+                # If the executable lives inside the smoke-test target, run from
+                # the runner temp instead of the target itself.
+                if ($candidate -and $installDir -and ($candidate -eq $installDir -or $candidate.StartsWith($installDir + "\", [System.StringComparison]::OrdinalIgnoreCase))) {
+                  $effectiveWorkDir = $env:RUNNER_TEMP
+                } else {
+                  $effectiveWorkDir = $candidate
+                }
+              }
+              if (-not $effectiveWorkDir -or -not (Test-Path -LiteralPath $effectiveWorkDir)) {
+                $effectiveWorkDir = $env:RUNNER_TEMP
+              }
               $process = Start-Process `
                 -FilePath $FilePath `
                 -ArgumentList $Arguments `
-                -WorkingDirectory (Split-Path -Parent $FilePath) `
+                -WorkingDirectory $effectiveWorkDir `
                 -RedirectStandardOutput $stdoutPath `
                 -RedirectStandardError $stderrPath `
                 -WindowStyle Hidden `
@@ -371,16 +390,47 @@ jobs:
             if ($updatedState.version -ne $env:UPDATE_VERSION) { throw "更新完成后安装状态版本错误: $($updatedState.version)" }
 
             Write-Host "执行自绘卸载"
-            Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir)
+            Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir) -WorkingDirectory $env:RUNNER_TEMP
             # 卸载程序自身位于目标目录，Windows 需要等短生命周期清理进程
             # 在 uninstaller 退出后完成最后一次删除。安装包包含 Python 和
             # Chromium，清理大目录可能超过进程退出时间。清理脚本会在
-            # 120 秒内持续终止残留子进程并重试，这里多留出文件系统缓冲时间。
-            $uninstallDeadline = (Get-Date).AddSeconds(150)
+            # 180 秒内持续终止残留子进程并重试（每 500ms 一次，共 360 次，
+            # 含 15s 的 portable wrapper 交接宽限期），这里多留出文件系统缓冲时间。
+            $uninstallDeadline = (Get-Date).AddSeconds(180)
+            $lastPollLog = Get-Date
             while ((Test-Path -LiteralPath $installDir) -and (Get-Date) -lt $uninstallDeadline) {
               Start-Sleep -Milliseconds 500
+              # 双保险：即使 detached 的 PowerShell 清理因 Job 终止而被回收，
+              # 调用方也持续尝试删除，避免把一次成功的卸载误判为残留。
+              # 轻量重试（仅 rmdir/Remove-Item），重量级的 attrib 归一由
+              # detached 清理脚本每 10 轮处理，避免在轮询中反复遍历大目录。
+              try { & cmd.exe /d /c "rmdir /s /q `"$installDir`"" 2>$null | Out-Null } catch {}
+              try { Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+              if ((Get-Date) -gt $lastPollLog.AddSeconds(10)) {
+                $lastPollLog = Get-Date
+                try {
+                  $remaining = (Get-ChildItem -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+                  Write-Host "卸载轮询中：目标仍存在，已尝试主动清理，剩余文件数约 $remaining"
+                } catch { Write-Host "卸载轮询中：目标仍存在" }
+              }
             }
-            if (Test-Path -LiteralPath $installDir) { throw "卸载完成后安装目录仍存在: $installDir" }
+            if (Test-Path -LiteralPath $installDir) {
+              Write-Host "卸载后目录仍存在，输出诊断信息"
+              try { Get-ChildItem -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, Length, Attributes | Format-Table -AutoSize | Out-String | Write-Host } catch { Write-Host "无法列出剩余文件: $_" }
+              $diagLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-*.log" -ErrorAction SilentlyContinue
+              foreach ($log in $diagLogs) {
+                Write-Host "卸载清理日志: $($log.FullName)"
+                try { Get-Content -LiteralPath $log.FullName -Raw -ErrorAction SilentlyContinue | Write-Host } catch {}
+              }
+              $installerLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-installer-*.log" -ErrorAction SilentlyContinue
+              foreach ($log in $installerLogs) {
+                Write-Host "安装器日志: $($log.FullName)"
+                try { Get-Content -LiteralPath $log.FullName -Raw -ErrorAction SilentlyContinue | Write-Host } catch {}
+              }
+              # 最后一次强制尝试，收集错误供上传的日志使用
+              try { & handle.exe -accepteula -nobanner "$installDir" 2>$null | Out-String | Write-Host } catch {}
+              throw "卸载完成后安装目录仍存在: $installDir"
+            }
             Write-Host "自绘安装、更新、卸载生命周期测试通过"
           } finally {
             if (Test-Path -LiteralPath $smokeRoot) {

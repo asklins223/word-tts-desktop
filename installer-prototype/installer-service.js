@@ -631,6 +631,7 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         `$launcherProcessId = ${Number(launcherPid) || 0}`,
         `$launcherPath = ${powershellLiteral(launcherPath || '')}`,
         '$targetRoot = ([IO.Path]::GetFullPath($target)).TrimEnd(\'\\\') + \'\\\'',
+        '$targetLong = "\\\\?\\" + [IO.Path]::GetFullPath($target)',
         '$missingAttempts = 0',
         // Give the portable wrapper a fixed handoff window even when Windows
         // cannot report its parent PID/image path reliably. The wrapper may
@@ -643,7 +644,11 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -ErrorAction SilentlyContinue } catch {}',
         '}',
         'Write-CleanupLog ("cleanup started target=" + $target + " pid=" + $processId + " launcherPid=" + $launcherProcessId + " launcherPath=" + $launcherPath)',
-        'for ($attempt = 0; $attempt -lt 240; $attempt++) {',
+        // Extend to 360 attempts (180s) to cover WMI latency and large
+        // Chromium/Python tree deletion on slower runners. The workflow waits
+        // 180s after the uninstaller exits, so this loop must finish within
+        // that budget even when each iteration includes a WMI probe.
+        'for ($attempt = 0; $attempt -lt 360; $attempt++) {',
         '  Start-Sleep -Milliseconds 500',
         '  if ($processId -gt 0) {',
         '    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue',
@@ -656,41 +661,55 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         '  # Wait for that exact parent/path before deleting anything, rather',
         '  # than relying on a short "missing" window.',
         '  $launcherRunning = $false',
-        '  $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue',
-        '  foreach ($process in $processes) {',
-        '    $childProcessId = [int]$process.ProcessId',
-        '    $processPath = [string]$process.ExecutablePath',
-        '    $fullProcessPath = $null',
-        '    if ($processPath) {',
-        '      try { $fullProcessPath = [IO.Path]::GetFullPath($processPath) } catch { $fullProcessPath = $null }',
-        '    }',
-        '    $isLauncher = $false',
-        '    if ($launcherProcessId -gt 0 -and $childProcessId -eq $launcherProcessId) {',
-        '      # This PID was captured from the Electron process while the',
-        '      # portable wrapper was its direct parent. Keep it protected even',
-        '      # when WMI withholds the image path or formats it differently.',
-        '      $isLauncher = $true',
-        '    }',
-        '    if (-not $isLauncher -and $launcherPath -and $fullProcessPath) {',
-        '      $isLauncher = [StringComparer]::OrdinalIgnoreCase.Equals($fullProcessPath, [IO.Path]::GetFullPath($launcherPath))',
-        '    }',
-        '    if ($isLauncher) {',
-        '      $launcherRunning = $true',
-        '      continue',
-        '    }',
-        '    # Chromium/Python helpers can outlive the Electron parent. Only',
-        '    # stop processes whose executable is inside this install, never by',
-        '    # name. The launcher is explicitly excluded above.',
-        '    if ($fullProcessPath -and $fullProcessPath.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase)) {',
-        '      if ($childProcessId -eq $PID) { continue }',
-        '      Stop-Process -Id $childProcessId -Force -ErrorAction SilentlyContinue',
-        '    }',
-        '  }',
-        '  if (-not $launcherRunning -and $launcherProcessId -gt 0) {',
-        '    # WMI can temporarily return no process image information on a',
-        '    # busy runner. A direct PID probe still lets us protect the wrapper',
-        '    # from the delete attempt until it has really exited.',
+        '  # Fast PID check first - Get-Process is much faster than WMI and',
+        '  # lets us skip the heavy Win32_Process enumeration when the wrapper',
+        '  # is still alive by PID alone.',
+        '  if ($launcherProcessId -gt 0) {',
         '    try { $launcherRunning = $null -ne (Get-Process -Id $launcherProcessId -ErrorAction SilentlyContinue) } catch { $launcherRunning = $false }',
+        '  }',
+        '  # Only do the expensive WMI scan every 4 iterations or when PID',
+        '  # check says launcher is gone but we still need to confirm by path',
+        '  # and to kill lingering Chromium/Python helpers inside the target.',
+        '  $shouldScan = (-not $launcherRunning -and (($attempt % 4) -eq 0)) -or ($attempt -lt 30)',
+        '  if ($shouldScan) {',
+        '    $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue',
+        '    if (-not $processes) { $processes = Get-WmiObject Win32_Process -ErrorAction SilentlyContinue }',
+        '    foreach ($process in $processes) {',
+        '      $childProcessId = [int]$process.ProcessId',
+        '      $processPath = [string]$process.ExecutablePath',
+        '      $fullProcessPath = $null',
+        '      if ($processPath) {',
+        '        try { $fullProcessPath = [IO.Path]::GetFullPath($processPath) } catch { $fullProcessPath = $null }',
+        '      }',
+        '      $isLauncher = $false',
+        '      if ($launcherProcessId -gt 0 -and $childProcessId -eq $launcherProcessId) {',
+        '        # This PID was captured from the Electron process while the',
+        '        # portable wrapper was its direct parent. Keep it protected even',
+        '        # when WMI withholds the image path or formats it differently.',
+        '        $isLauncher = $true',
+        '      }',
+        '      if (-not $isLauncher -and $launcherPath -and $fullProcessPath) {',
+        '        try { $isLauncher = [StringComparer]::OrdinalIgnoreCase.Equals($fullProcessPath, [IO.Path]::GetFullPath($launcherPath)) } catch {}',
+        '      }',
+        '      if ($isLauncher) {',
+        '        $launcherRunning = $true',
+        '        continue',
+        '      }',
+        '      # Chromium/Python helpers can outlive the Electron parent. Only',
+        '      # stop processes whose executable is inside this install, never by',
+        '      # name. The launcher is explicitly excluded above.',
+        '      if ($fullProcessPath -and $fullProcessPath.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase)) {',
+        '        if ($childProcessId -eq $PID) { continue }',
+        '        Stop-Process -Id $childProcessId -Force -ErrorAction SilentlyContinue',
+        '      }',
+        '    }',
+        '    if (-not $launcherRunning -and $launcherPath) {',
+        '      # Double-check by path if PID probe was inconclusive',
+        '      try {',
+        '        $launcherByPath = Get-CimInstance Win32_Process -Filter ("ExecutablePath = \'" + $launcherPath.Replace("\'", "\'\'") + "\'") -ErrorAction SilentlyContinue',
+        '        if ($launcherByPath) { $launcherRunning = $true }',
+        '      } catch {}',
+        '    }',
         '  }',
         '  if ($launcherRunning) {',
         '    $missingAttempts = 0',
@@ -702,10 +721,20 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         '    if (($attempt % 10) -eq 0) { Write-CleanupLog ("waiting for portable launcher grace period attempt=" + $attempt) }',
         '    continue',
         '  }',
+        '  # Clear read-only / hidden attributes that can make rmdir/Remove-Item',
+        '  # leave a large tree half-removed. Throttle to every 10 attempts to',
+        '  # avoid repeatedly enumerating a large Chromium/Python tree.',
+        '  if (($attempt % 10) -eq 0) {',
+        '    try { & attrib.exe -R "$target\\*" /S /D 2>$null | Out-Null } catch {}',
+        '    try { Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = [IO.FileAttributes]::Normal } catch {} } | Out-Null } catch {}',
+        '  }',
         '  # rmdir is less prone than the PowerShell provider to leaving a',
         '  # large Chromium/Python tree half-removed after a sharing violation.',
+        '  # Try both normal and long-path (\\\\?\\) forms for MAX_PATH cases.',
         '  & cmd.exe /d /c "rmdir /s /q `"$target`"" 2>$null | Out-Null',
+        '  try { & cmd.exe /d /c "rmdir /s /q `"$targetLong`"" 2>$null | Out-Null } catch {}',
         '  Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue',
+        '  try { Remove-Item -LiteralPath $targetLong -Recurse -Force -ErrorAction SilentlyContinue } catch {}',
         '  if (-not (Test-Path -LiteralPath $target)) {',
         '    # electron-builder portable runs SetOutPath $EXEDIR after the',
         '    # embedded app exits. That call can recreate the install folder',
@@ -719,10 +748,15 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         '    continue',
         '  }',
         '  $missingAttempts = 0',
-        '  if (($attempt % 10) -eq 0) { Write-CleanupLog ("target still exists attempt=" + $attempt) }',
+        '  if (($attempt % 10) -eq 0) {',
+        '    try { $remaining = (Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count } catch { $remaining = "unknown" }',
+        '    Write-CleanupLog ("target still exists attempt=" + $attempt + " remaining=" + $remaining)',
+        '  }',
         '}',
         'if (-not (Test-Path -LiteralPath $target)) {',
         '  Start-Process -FilePath "cmd.exe" -ArgumentList @("/d", "/c", "del /f /q `"$script`" `"$log`"") -WindowStyle Hidden -Wait',
+        '} else {',
+        '  Write-CleanupLog ("cleanup failed target still exists after all attempts")',
         '}',
     ].join('\n');
 }
@@ -1069,16 +1103,20 @@ function createInstallerService(options = {}) {
         try {
             await fsp.mkdir(tempDirectory, { recursive: true });
             await fsp.writeFile(scriptPath, script, 'utf8');
-            child = spawnImpl(
-                platform === 'win32' ? 'powershell.exe' : process.execPath,
-                platform === 'win32'
-                    // Windows PowerShell can interpret a UTF-8 script without
-                    // a BOM using the active ANSI code page. Encode the
-                    // command as UTF-16LE so Chinese install paths survive
-                    // the handoff regardless of the system locale.
-                    ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePowerShellCommand(script)]
-                    : ['-e', ''],
-                {
+            if (platform === 'win32') {
+                // Windows PowerShell can interpret a UTF-8 script without
+                // a BOM using the active ANSI code page. Encode the
+                // command as UTF-16LE so Chinese install paths survive
+                // the handoff regardless of the system locale.
+                // Use cmd /c start /b to break away from Electron's job object.
+                // A plain detached PowerShell child would still be in the same
+                // job and would be terminated together with the uninstaller when
+                // the job closes (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE). The
+                // intermediate cmd+start creates a new process that outlives the
+                // uninstaller even when the parent job is killed.
+                const psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePowerShellCommand(script)];
+                const cmdArgs = ['/d', '/c', 'start', '""', '/b', 'powershell.exe'].concat(psArgs);
+                child = spawnImpl('cmd.exe', cmdArgs, {
                     detached: true,
                     stdio: 'ignore',
                     windowsHide: true,
@@ -1089,8 +1127,15 @@ function createInstallerService(options = {}) {
                     // final rmdir can never succeed. Run from the temp folder
                     // that contains the cleanup script instead.
                     cwd: tempDirectory,
-                },
-            );
+                });
+            } else {
+                child = spawnImpl(process.execPath, ['-e', ''], {
+                    detached: true,
+                    stdio: 'ignore',
+                    windowsHide: true,
+                    cwd: tempDirectory,
+                });
+            }
             if (!child || typeof child !== 'object') {
                 throw new Error('卸载清理进程没有成功创建。');
             }
