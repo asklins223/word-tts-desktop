@@ -181,14 +181,14 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
                 target: [{ target: 'portable', arch: ['x64'] }],
                 icon: 'build/icon.ico',
                 signAndEditExecutable: true,
+                // electron-builder's portable target does not expose the
+                // `packElevateHelper` option. The helper is unused by this
+                // custom installer, so keep the default copy but exclude
+                // only elevate.exe from the slow timestamped signing path.
+                signExts: ['!elevate.exe'],
             },
             portable: {
                 artifactName: '小猪wordTTS-Setup-${version}-${arch}.${ext}',
-                // This installer performs its own UAC handoff with
-                // Start-Process -Verb RunAs. electron-builder's helper is
-                // unused here, and signing it can block for several minutes
-                // on the runner's timestamp service.
-                packElevateHelper: false,
             },
         },
     };
