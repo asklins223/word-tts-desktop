@@ -613,11 +613,25 @@
   async function finishAndClose() {
     const shouldLaunch = currentConfig().finish.launch && launchAfterFinish.checked;
     if (runtime) {
-      if (shouldLaunch) {
-        const result = await runtime.launch();
-        if (!result?.success) showToast(result?.message || '应用启动失败，请从开始菜单手动打开。');
+      try {
+        if (shouldLaunch) {
+          const result = await runtime.launch();
+          if (!result?.success) {
+            // Keep the finish screen visible so the user can retry or use the
+            // shortcut instead of closing immediately and hiding the only
+            // useful error message.
+            showToast(result?.message || '应用启动失败，请从开始菜单手动打开。');
+            return;
+          }
+          // Give Windows a short handoff window before the self-drawing Setup
+          // process exits. The installed app is already detached, but this
+          // avoids racing its first Electron startup on slower machines.
+          await new Promise(resolve => window.setTimeout(resolve, 240));
+        }
+        await runtime.close();
+      } catch (error) {
+        showToast(error?.message || '安装程序关闭失败，请手动关闭窗口。');
       }
-      await runtime.close();
       return;
     }
     showToast(shouldLaunch ? '原型演示：将启动小猪wordTTS。' : '原型演示：安装器已关闭。');

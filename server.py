@@ -11,6 +11,7 @@ FastAPI 后端服务器 — 小猪wordTTS 本地 API 宿主
 
 import os
 import re
+import shutil
 import sys
 
 # Windows 打包后 stdout/stderr 默认使用 cp1252 编码，无法输出中文。
@@ -132,6 +133,14 @@ if getattr(sys, "frozen", False):
             # A stale inherited value of 0 would launch Electron's desktop
             # entrypoint instead of making the paired binary act as Node.
             os.environ["ELECTRON_RUN_AS_NODE"] = "1"
+        else:
+            # The standalone packaged-backend smoke runs before electron-builder
+            # has created the sibling Electron executable.  Use the runner's
+            # Node in that narrow case instead of failing when Playwright's
+            # bundled driver node was intentionally removed from the payload.
+            _system_node = shutil.which("node") or shutil.which("node.exe")
+            if _system_node:
+                os.environ["PLAYWRIGHT_NODEJS_PATH"] = _system_node
 
 # ============================================================================
 # 导入核心模块

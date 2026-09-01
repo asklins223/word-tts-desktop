@@ -4,10 +4,11 @@
  * Build the self-drawing Windows setup executable.
  *
  * The application itself is built by electron-builder's `dir` target first.
- * This script creates a short-lived electron-builder project that embeds that
- * directory as an external payload and packages the approved HTML UI as a
- * portable executable. Keeping the payload outside the asar makes the setup
- * runtime able to copy files without depending on an archive implementation.
+ * This script creates a short-lived electron-builder project that archives the
+ * directory as a lazy payload and packages the approved HTML UI as a portable
+ * executable. The setup UI starts with only a small 7za extractor available;
+ * it exports the payload on demand when the installer service is ready to
+ * install, update, or uninstall the application.
  */
 
 const fs = require('node:fs');
@@ -15,12 +16,18 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { normalizeProjectVersion, readProjectVersion } = require('./project_version');
+const { archive } = require('../electron/node_modules/app-builder-lib/out/targets/archive');
+const { buildBlockMap } = require('../electron/node_modules/app-builder-lib/out/targets/blockmap/blockmap');
+const { getPath7za } = require('../electron/node_modules/app-builder-lib/out/toolsets/7zip');
 
 const rootDir = path.resolve(__dirname, '..');
 const installerSourceDir = path.join(rootDir, 'installer-prototype');
 const electronDir = path.join(rootDir, 'electron');
 const DEFAULT_7Z_COMPRESSION_LEVEL = '5';
 const BUILD_PROGRESS_INTERVAL_MS = 15_000;
+const PAYLOAD_ARCHIVE_NAME = 'wordtts-payload.7z';
+const PAYLOAD_EXTRACTOR_NAME = 'wordtts-7za.exe';
+const PAYLOAD_EXTRACTION_MARKER = 'WORDTTS_PAYLOAD_EXTRACTION';
 const PORTABLE_UNINSTALL_RELOCATION_LABEL = 'wordtts_continue_portable';
 const PORTABLE_UNINSTALL_RELOCATION_BLOCK = [
     '  # An installed portable executable cannot remove its own directory.',
@@ -118,7 +125,44 @@ function copySourceTree(sourceDir, targetDir) {
     });
 }
 
-function createBuildProject({ payloadDir, outputDir, version, workDir }) {
+async function createPayloadArchive(payloadDir, archivePath, env = process.env) {
+    const previousCompressionLevel = process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL;
+    const previousFilter = process.env.ELECTRON_BUILDER_7Z_FILTER;
+    process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL =
+        env.ELECTRON_BUILDER_COMPRESSION_LEVEL || DEFAULT_7Z_COMPRESSION_LEVEL;
+    if (env.ELECTRON_BUILDER_7Z_FILTER) {
+        process.env.ELECTRON_BUILDER_7Z_FILTER = env.ELECTRON_BUILDER_7Z_FILTER;
+    }
+    try {
+        // Keep each payload file in its own 7z stream. A solid archive makes a
+        // one-line JS change invalidate most of the Chromium/Python archive,
+        // which would turn the outer Setup blockmap into another full update.
+        await archive('7z', archivePath, path.resolve(payloadDir), {
+            withoutDir: true,
+            compression: 'normal',
+            solid: false,
+            isArchiveHeaderCompressed: false,
+        });
+    } finally {
+        if (previousCompressionLevel === undefined) delete process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL;
+        else process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL = previousCompressionLevel;
+        if (previousFilter === undefined) delete process.env.ELECTRON_BUILDER_7Z_FILTER;
+        else process.env.ELECTRON_BUILDER_7Z_FILTER = previousFilter;
+    }
+    if (!fs.existsSync(archivePath) || fs.statSync(archivePath).size <= 0) {
+        throw new Error(`无法生成 Windows payload 归档: ${archivePath}`);
+    }
+    return archivePath;
+}
+
+async function stagePayloadExtractor(workDir) {
+    const extractor = await getPath7za();
+    const stagedExtractor = path.join(workDir, PAYLOAD_EXTRACTOR_NAME);
+    fs.copyFileSync(extractor, stagedExtractor);
+    return stagedExtractor;
+}
+
+function createBuildProject({ payloadDir, outputDir, version, workDir, extractorPath = null }) {
     const resolvedPayloadDir = path.resolve(payloadDir);
     if (!fs.existsSync(resolvedPayloadDir)) {
         throw new Error(`Windows 应用 payload 不存在: ${resolvedPayloadDir}`);
@@ -173,12 +217,13 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
                 'version.json',
                 'assets/**/*',
             ],
-            extraResources: [
-                // Read directly from the completed dir build. Staging this
-                // tree under workDir first creates a second ~1 GB copy before
-                // electron-builder copies it into its own output.
-                { from: resolvedPayloadDir, to: 'payload' },
-            ],
+            // The large application payload is embedded as a lazy NSIS File by
+            // patchPortableTemplate below. Only the small 7za extractor ships
+            // inside the Electron installer UI, so portable.exe can display
+            // the self-drawing window before Chromium/Python is unpacked.
+            extraResources: extractorPath
+                ? [{ from: path.resolve(extractorPath), to: PAYLOAD_EXTRACTOR_NAME }]
+                : [],
             win: {
                 target: [{ target: 'portable', arch: ['x64'] }],
                 icon: 'build/icon.ico',
@@ -352,7 +397,35 @@ function runBuilder(projectDir, electronDir, outputDir, env = process.env) {
     });
 }
 
-function patchPortableTemplate(templatePath) {
+function nsisEscapeString(value) {
+    return String(value)
+        .replace(/\r\n|\r|\n/g, ' ')
+        .replace(/\$(?!\{)/g, '$$$$')
+        .replace(/"/g, '$\\"');
+}
+
+function payloadExtractionBlock(payloadArchivePath) {
+    const source = nsisEscapeString(path.win32.normalize(path.resolve(payloadArchivePath)));
+    return [
+        `  ; ${PAYLOAD_EXTRACTION_MARKER}`,
+        '  ${GetParameters} $R0',
+        '  ${GetOptions} $R0 "--wordtts-extract-payload=" $R1',
+        '  ${IfNot} ${Errors}',
+        '    StrCmp $R1 "" wordtts_payload_extraction_done',
+        '    ClearErrors',
+        '    SetOutPath "$R1"',
+        '    SetCompress off',
+        `    File /oname=${PAYLOAD_ARCHIVE_NAME} "${source}"`,
+        '    SetCompress auto',
+        '    SetErrorLevel 0',
+        '    Quit',
+        '  ${EndIf}',
+        'wordtts_payload_extraction_done:',
+        '',
+    ].join('\n');
+}
+
+function patchPortableTemplate(templatePath, { payloadArchivePath = null } = {}) {
     const original = fs.readFileSync(templatePath, 'utf8');
     const exedirMarker = /^[ \t]+SetOutPath \$EXEDIR\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
     const tempMarker = /^[ \t]+SetOutPath \$TEMP\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
@@ -365,6 +438,11 @@ function patchPortableTemplate(templatePath) {
         '  !endif',
         '',
     ].join('\n');
+    const payloadInclude = '!include "FileFunc.nsh"\n';
+    const payloadMarkerPattern = new RegExp(
+        `^[ \\t]*; ${PAYLOAD_EXTRACTION_MARKER}\\r?\\n[\\s\\S]*?^[ \\t]*wordtts_payload_extraction_done:\\r?\\n`,
+        'm',
+    );
     const countMatches = (value, pattern) => (
         value.match(new RegExp(pattern.source, `${pattern.flags}g`)) || []
     ).length;
@@ -405,6 +483,25 @@ function patchPortableTemplate(templatePath) {
     if (portableUnpackMarker.test(restoreContent)) {
         restoreContent = restoreContent.replace(portableUnpackMarker, portableUnpackRestoreBlock);
     }
+    if (payloadArchivePath) {
+        if (!patched.includes(payloadInclude.trim())) {
+            if (!/^!include "common\.nsh"\r?\n/m.test(patched)) {
+                throw new Error(`无法确认 electron-builder portable 的 common.nsh include: ${templatePath}`);
+            }
+            patched = patched.replace(
+                /^!include "common\.nsh"\r?\n/m,
+                value => `${value}${payloadInclude}`,
+            );
+        }
+        patched = patched.replace(payloadMarkerPattern, '');
+        if (!/^Section\r?\n/m.test(patched)) {
+            throw new Error(`无法确认 electron-builder portable 的 Section: ${templatePath}`);
+        }
+        patched = patched.replace(
+            /^Section\r?\n/m,
+            value => `${value}${payloadExtractionBlock(payloadArchivePath)}`,
+        );
+    }
     const relocationPattern = new RegExp(`^[ \\t]*${PORTABLE_UNINSTALL_RELOCATION_LABEL}:\\r?\\n`, 'm');
     if (!relocationPattern.test(patched)) {
         if (!/^Section\r?\n/m.test(patched)) {
@@ -429,23 +526,43 @@ function patchPortableTemplate(templatePath) {
     if (selfCleanupPattern.test(restoreContent)) {
         restoreContent = restoreContent.replace(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, '');
     }
-    if (patched !== original) {
-        fs.writeFileSync(templatePath, patched, 'utf8');
+    // Treat the node_modules template edit as a transaction. A future
+    // electron-builder template change can make the validation below fail;
+    // leaving a half-patched portable.nsi behind would make the next local
+    // build fail for a misleading reason and could affect another build in
+    // the same workspace.
+    const shouldRestoreOnFailure = restoreContent !== original || patched !== original;
+    try {
+        if (patched !== original) {
+            fs.writeFileSync(templatePath, patched, 'utf8');
+        }
+        // Verify the patch is active before letting the builder run.
+        const active = fs.readFileSync(templatePath, 'utf8');
+        if (!tempMarker.test(active)
+            || exedirMarker.test(active)
+            || !portableUnpackMarker.test(active)
+            || portableUnpackPattern.test(active)
+            || !relocationPattern.test(active)
+            || !selfCleanupPattern.test(active)
+            || !active.includes('$EXEPATH.cleanup.cmd')
+            || !active.includes('$SYSDIR\\cmd.exe')
+            || !active.includes('WORDTTS_RELOCATED_UNINSTALLER')) {
+            throw new Error(`自绘安装程序模板补丁未生效: ${templatePath}`);
+        }
+        if (payloadArchivePath && !active.includes(`; ${PAYLOAD_EXTRACTION_MARKER}`)) {
+            throw new Error(`自绘安装程序 payload 延迟解包补丁未生效: ${templatePath}`);
+        }
+        return () => fs.writeFileSync(templatePath, restoreContent, 'utf8');
+    } catch (error) {
+        if (shouldRestoreOnFailure) {
+            try {
+                fs.writeFileSync(templatePath, restoreContent, 'utf8');
+            } catch (restoreError) {
+                error.restoreError = restoreError;
+            }
+        }
+        throw error;
     }
-    // Verify the patch is active before letting the builder run.
-    const active = fs.readFileSync(templatePath, 'utf8');
-    if (!tempMarker.test(active)
-        || exedirMarker.test(active)
-        || !portableUnpackMarker.test(active)
-        || portableUnpackPattern.test(active)
-        || !relocationPattern.test(active)
-        || !selfCleanupPattern.test(active)
-        || !active.includes('$EXEPATH.cleanup.cmd')
-        || !active.includes('$SYSDIR\\cmd.exe')
-        || !active.includes('WORDTTS_RELOCATED_UNINSTALLER')) {
-        throw new Error(`自绘安装程序模板补丁未生效: ${templatePath}`);
-    }
-    return () => fs.writeFileSync(templatePath, restoreContent, 'utf8');
 }
 
 async function main() {
@@ -455,19 +572,28 @@ async function main() {
     // the setup build away from electron/release so it cannot remove the
     // application's win-unpacked directory that the next smoke step checks.
     const builderOutputDir = path.join(workDir, 'release');
+    const payloadArchivePath = path.join(workDir, PAYLOAD_ARCHIVE_NAME);
     try {
+        let extractorPath = null;
+        if (!args.dryRun) {
+            await createPayloadArchive(args.payloadDir, payloadArchivePath, process.env);
+            extractorPath = await stagePayloadExtractor(workDir);
+        }
         const { resolvedVersion } = createBuildProject({
             ...args,
             outputDir: builderOutputDir,
             workDir,
+            extractorPath,
         });
         const outputName = `小猪wordTTS-Setup-${resolvedVersion}-x64.exe`;
         const outputPath = path.join(args.outputDir, outputName);
+        const blockmapPath = `${outputPath}.blockmap`;
         console.log(`自绘 Windows 安装程序配置已生成: ${outputPath}`);
         if (args.dryRun) return;
         // Never let a failed builder invocation pass because a previous run
         // left an installer with the same version in the output directory.
         fs.rmSync(outputPath, { force: true });
+        fs.rmSync(blockmapPath, { force: true });
         try {
             // electron-builder's stock portable template switches the output
             // directory to $EXEDIR after the embedded app exits. When the
@@ -482,7 +608,9 @@ async function main() {
                 'nsis',
                 'portable.nsi',
             );
-            const restorePortableTemplate = patchPortableTemplate(portableTemplatePath);
+            const restorePortableTemplate = patchPortableTemplate(portableTemplatePath, {
+                payloadArchivePath,
+            });
             try {
                 await runBuilder(workDir, electronDir, builderOutputDir, process.env);
             } finally {
@@ -497,14 +625,20 @@ async function main() {
             if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size <= 0) {
                 throw new Error(`无法复制有效的自绘安装程序到输出目录: ${outputPath}`);
             }
+            await buildBlockMap(outputPath, 'gzip', blockmapPath);
+            if (!fs.existsSync(blockmapPath) || fs.statSync(blockmapPath).size <= 0) {
+                throw new Error(`无法生成自绘安装程序 blockmap: ${blockmapPath}`);
+            }
         } catch (error) {
             // A failed builder may leave a partial file behind. Remove it too,
             // otherwise a later release step could mistake that file for a
             // successful same-version build.
             fs.rmSync(outputPath, { force: true });
+            fs.rmSync(blockmapPath, { force: true });
             throw error;
         }
         console.log(`自绘 Windows 安装程序构建完成: ${outputPath}`);
+        console.log(`自绘 Windows 安装程序差分索引完成: ${blockmapPath}`);
     } finally {
         fs.rmSync(workDir, { recursive: true, force: true });
     }
@@ -521,6 +655,10 @@ module.exports = {
     PORTABLE_UNINSTALL_RELOCATION_BLOCK,
     PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK,
     DEFAULT_7Z_COMPRESSION_LEVEL,
+    PAYLOAD_ARCHIVE_NAME,
+    PAYLOAD_EXTRACTOR_NAME,
+    PAYLOAD_EXTRACTION_MARKER,
+    createPayloadArchive,
     createBuildProject,
     describeBuildProgress,
     patchPortableTemplate,

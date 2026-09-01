@@ -9,6 +9,7 @@
 #
 # 产物:
 #   小猪wordTTS-Setup-<version>-x64.exe (HTML 自绘安装包)
+#   小猪wordTTS-Setup-<version>-x64.exe.blockmap (自定义更新差分索引)
 # ============================================================================
 
 name: Build Windows
@@ -190,9 +191,14 @@ jobs:
           $env:WORDTTS_PORT = "$port"
           $env:WORDTTS_API_TOKEN = $token
           $env:WORDTTS_VERSION = "${{ steps.version.outputs.version }}"
+          # This smoke runs before electron-builder creates the sibling
+          # Electron executable.  The frozen backend intentionally omits a
+          # second Playwright Node binary, so provide setup-node's Node here.
+          $previousPlaywrightNode = $env:PLAYWRIGHT_NODEJS_PATH
+          $env:PLAYWRIGHT_NODEJS_PATH = (Get-Command node -ErrorAction Stop).Source
           $backend = Resolve-Path "electron/server_backend_build/server_backend/server_backend.exe"
-          $process = Start-Process -FilePath $backend -WorkingDirectory (Split-Path $backend) -PassThru
           try {
+            $process = Start-Process -FilePath $backend -WorkingDirectory (Split-Path $backend) -PassThru
             $ready = $false
             for ($attempt = 0; $attempt -lt 180; $attempt++) {
               Start-Sleep -Milliseconds 500
@@ -214,7 +220,12 @@ jobs:
             }
             Write-Host "打包后端启动冒烟测试通过"
           } finally {
-            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            if ($null -eq $previousPlaywrightNode) {
+              Remove-Item Env:PLAYWRIGHT_NODEJS_PATH -ErrorAction SilentlyContinue
+            } else {
+              $env:PLAYWRIGHT_NODEJS_PATH = $previousPlaywrightNode
+            }
           }
 
       # ======================================================================
@@ -240,12 +251,29 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
-          # Keep the portable payload in 7z, but avoid BCJ2: the bundled
-          # NSIS 7z extractor must also unpack it during install/update.
+          # Keep the current self-drawing portable Setup route. The large app
+          # payload is embedded as a lazy 7z resource, so the UI can appear
+          # before application files are extracted; avoid BCJ2 because the
+          # bundled 7za extractor must also unpack that resource.
           ELECTRON_BUILDER_7Z_FILTER: BCJ
           # electron-builder 26.15.x otherwise maps 7z "normal" to -mx=9.
           # Level 5 is substantially faster for the bundled Chromium payload.
           ELECTRON_BUILDER_COMPRESSION_LEVEL: '5'
+
+      - name: Audit Setup payload and real Range differential update
+        shell: pwsh
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $installer = Join-Path "electron/release" "小猪wordTTS-Setup-$env:UPDATE_VERSION-x64.exe"
+          $blockmap = "$installer.blockmap"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "缺少 Setup.exe: $installer" }
+          if (-not (Test-Path -LiteralPath $blockmap)) { throw "缺少 Setup.exe.blockmap: $blockmap" }
+          node scripts/verify_windows_installer_update.js `
+            --installer $installer `
+            --blockmap $blockmap `
+            --version $env:UPDATE_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
@@ -633,7 +661,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: 小猪wordTTS-Windows-failed-installer
-          path: electron/release/小猪wordTTS-Setup-*-x64.exe
+          path: |
+            electron/release/小猪wordTTS-Setup-*-x64.exe
+            electron/release/小猪wordTTS-Setup-*-x64.exe.blockmap
           retention-days: 3
           compression-level: 0
           if-no-files-found: warn
@@ -649,15 +679,22 @@ jobs:
         run: |
           $installerName = "小猪wordTTS-Setup-$env:UPDATE_VERSION-x64.exe"
           $installer = Get-Item -LiteralPath (Join-Path "electron/release" $installerName) -ErrorAction SilentlyContinue
-          if ($installer) {
-            Write-Host "找到安装包: $($installer.FullName)"
-            Write-Host "大小: $([math]::Round($installer.Length / 1MB, 2)) MB"
-            echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
-            echo "installer_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
-          } else {
+          if (-not $installer) {
             Write-Error "未找到本次版本自绘安装包 $installerName；拒绝发布脱离 payload 目录后无法独立运行的 unpacked 可执行文件"
             exit 1
           }
+          $blockmap = Get-Item -LiteralPath "$($installer.FullName).blockmap" -ErrorAction SilentlyContinue
+          if (-not $blockmap -or $blockmap.Length -le 0) {
+            Write-Error "未找到本次版本自绘安装包差分索引 $($installer.Name).blockmap"
+            exit 1
+          }
+          Write-Host "找到安装包: $($installer.FullName)"
+          Write-Host "大小: $([math]::Round($installer.Length / 1MB, 2)) MB"
+          Write-Host "找到差分索引: $($blockmap.FullName)"
+          echo "installer_path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          echo "installer_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+          echo "blockmap_path=$($blockmap.FullName)" >> $env:GITHUB_OUTPUT
+          echo "blockmap_name=$($blockmap.Name)" >> $env:GITHUB_OUTPUT
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -665,6 +702,7 @@ jobs:
           name: 小猪wordTTS-Windows
           path: |
             ${{ steps.find-installer.outputs.installer_path }}
+            ${{ steps.find-installer.outputs.blockmap_path }}
           retention-days: 30
           # Setup.exe already contains a compressed 7z payload.
           compression-level: 0

@@ -10,6 +10,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {
     buildWindowsArtifactUrl,
+    buildWindowsBlockMapUrl,
     buildWindowsMetadataUrl,
     createWindowsUpdateClient,
     downloadResponseToFile,
@@ -26,6 +27,14 @@ test('Windows 更新地址固定到 latest-win.json 和 Release 下载资产', (
     assert.equal(
         buildWindowsArtifactUrl(RELEASE_URL, 'v3.0.2', 'wordTTS-Setup-3.0.2-x64.exe'),
         'https://github.com/asklins223/word-tts-desktop/releases/download/v3.0.2/wordTTS-Setup-3.0.2-x64.exe',
+    );
+    assert.equal(
+        buildWindowsBlockMapUrl(RELEASE_URL, 'v3.0.2', 'wordTTS-Setup-3.0.2-x64.exe'),
+        'https://github.com/asklins223/word-tts-desktop/releases/download/v3.0.2/wordTTS-Setup-3.0.2-x64.exe.blockmap',
+    );
+    assert.equal(
+        buildWindowsBlockMapUrl('', 'v3.0.2', 'https://cdn.example.test/setup.exe?download=1'),
+        'https://cdn.example.test/setup.exe.blockmap?download=1',
     );
 });
 
@@ -77,6 +86,176 @@ test('Windows 更新元数据会跳过错误候选并统一选中的安装包字
     assert.equal(normalized.path, 'wordTTS-Setup-3.0.2-x64.exe');
     assert.equal(normalized.sha512, 'right');
     assert.equal(normalized.size, 2);
+});
+
+test('Windows 更新优先使用 Setup.exe blockmap 做分块差分，失败时仍可回退全量', async () => {
+    const { buildBlockMap } = require('../node_modules/app-builder-lib/out/targets/blockmap/blockmap');
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-windows-update-differential-'));
+    const installedDirectory = path.join(root, 'installed');
+    const oldInstallerPath = path.join(installedDirectory, '小猪wordTTS-uninstaller.exe');
+    const oldBytes = Buffer.alloc(384 * 1024);
+    for (let index = 0; index < oldBytes.length; index += 1) oldBytes[index] = (index * 31 + 7) % 251;
+    const newBytes = Buffer.from(oldBytes);
+    newBytes.fill(0x5a, 120 * 1024, 148 * 1024);
+    const oldBlockmapPath = path.join(root, 'old.exe.blockmap');
+    const newBlockmapPath = path.join(root, 'new.exe.blockmap');
+    const metadata = {
+        schemaVersion: 1,
+        platform: 'win32',
+        version: '3.0.2',
+        tag: 'v3.0.2',
+        artifact: {
+            url: 'wordTTS-Setup-3.0.2-x64.exe',
+            sha512: crypto.createHash('sha512').update(newBytes).digest('base64'),
+            size: newBytes.length,
+        },
+    };
+    const requests = [];
+    try {
+        await fsp.mkdir(installedDirectory, { recursive: true });
+        await fsp.writeFile(oldInstallerPath, oldBytes);
+        await buildBlockMap(oldInstallerPath, 'gzip', oldBlockmapPath);
+        const newArtifactPath = path.join(root, 'new.exe');
+        await fsp.writeFile(newArtifactPath, newBytes);
+        await buildBlockMap(newArtifactPath, 'gzip', newBlockmapPath);
+        const oldBlockmapBytes = await fsp.readFile(oldBlockmapPath);
+        const newBlockmapBytes = await fsp.readFile(newBlockmapPath);
+        const client = createWindowsUpdateClient({
+            releaseUrl: RELEASE_URL,
+            currentVersion: '3.0.1',
+            tempDirectory: path.join(root, 'temp'),
+            app: { getPath: () => path.join(installedDirectory, '小猪wordTTS.exe') },
+            fetchImpl: async (url, request = {}) => {
+                requests.push({ url, request });
+                if (url.endsWith('3.0.1-x64.exe.blockmap')) {
+                    return {
+                        ok: true,
+                        status: 200,
+                        arrayBuffer: async () => oldBlockmapBytes.buffer.slice(oldBlockmapBytes.byteOffset, oldBlockmapBytes.byteOffset + oldBlockmapBytes.byteLength),
+                    };
+                }
+                if (url.endsWith('3.0.2-x64.exe.blockmap')) {
+                    return {
+                        ok: true,
+                        status: 200,
+                        arrayBuffer: async () => newBlockmapBytes.buffer.slice(newBlockmapBytes.byteOffset, newBlockmapBytes.byteOffset + newBlockmapBytes.byteLength),
+                    };
+                }
+                const range = String(request.headers?.Range || request.headers?.range || '');
+                const match = range.match(/^bytes=(\d+)-(\d+)$/);
+                if (!match) throw new Error(`unexpected non-range request: ${url}`);
+                const start = Number(match[1]);
+                const end = Number(match[2]) + 1;
+                const bytes = newBytes.subarray(start, end);
+                return {
+                    ok: true,
+                    status: 206,
+                    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+                };
+            },
+        });
+
+        const downloadedPath = await client.download(metadata);
+        assert.deepEqual(await fsp.readFile(downloadedPath), newBytes);
+        const rangeRequests = requests.filter(entry => entry.request.headers?.Range || entry.request.headers?.range);
+        assert.ok(rangeRequests.length > 0, 'expected at least one HTTP range request');
+        const downloadedBytes = rangeRequests.reduce((sum, entry) => {
+            const match = String(entry.request.headers.Range || entry.request.headers.range).match(/bytes=\d+-(\d+)/);
+            return sum + Number(match[1]) + 1;
+        }, 0);
+        assert.ok(downloadedBytes < newBytes.length * 0.95, 'differential path should download less than the full Setup');
+        client.dispose();
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('Windows 更新在差分索引缺失、Range 不可用、差分损坏或节省不足时回退全量', async () => {
+    const { buildBlockMap } = require('../node_modules/app-builder-lib/out/targets/blockmap/blockmap');
+    const scenarios = ['missing-blockmap', 'range-unsupported', 'corrupt-range', 'invalid-blockmap', 'no-savings'];
+    for (const scenario of scenarios) {
+        const root = await fsp.mkdtemp(path.join(os.tmpdir(), `wordtts-windows-update-fallback-${scenario}-`));
+        const installedDirectory = path.join(root, 'installed');
+        const oldInstallerPath = path.join(installedDirectory, '小猪wordTTS-uninstaller.exe');
+        const oldBytes = Buffer.alloc(384 * 1024);
+        for (let index = 0; index < oldBytes.length; index += 1) oldBytes[index] = (index * 17 + 13) % 251;
+        const newBytes = scenario === 'no-savings'
+            ? Buffer.alloc(oldBytes.length, 0x5a)
+            : Buffer.from(oldBytes);
+        if (scenario !== 'no-savings') newBytes.fill(0x5a, 120 * 1024, 148 * 1024);
+        const oldBlockmapPath = path.join(root, 'old.exe.blockmap');
+        const newBlockmapPath = path.join(root, 'new.exe.blockmap');
+        const metadata = {
+            schemaVersion: 1,
+            platform: 'win32',
+            version: '3.0.2',
+            tag: 'v3.0.2',
+            artifact: {
+                url: 'wordTTS-Setup-3.0.2-x64.exe',
+                sha512: crypto.createHash('sha512').update(newBytes).digest('base64'),
+                size: newBytes.length,
+            },
+        };
+        const requests = [];
+        try {
+            await fsp.mkdir(installedDirectory, { recursive: true });
+            await fsp.writeFile(oldInstallerPath, oldBytes);
+            await buildBlockMap(oldInstallerPath, 'gzip', oldBlockmapPath);
+            const newArtifactPath = path.join(root, 'new.exe');
+            await fsp.writeFile(newArtifactPath, newBytes);
+            await buildBlockMap(newArtifactPath, 'gzip', newBlockmapPath);
+            const oldBlockmapBytes = await fsp.readFile(oldBlockmapPath);
+            const newBlockmapBytes = await fsp.readFile(newBlockmapPath);
+            const responseFor = (bytes, status = 200) => {
+                const copy = Buffer.from(bytes);
+                return {
+                    ok: status >= 200 && status < 300,
+                    status,
+                    arrayBuffer: async () => copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength),
+                };
+            };
+            const client = createWindowsUpdateClient({
+                releaseUrl: RELEASE_URL,
+                currentVersion: '3.0.1',
+                tempDirectory: path.join(root, 'temp'),
+                app: { getPath: () => path.join(installedDirectory, '小猪wordTTS.exe') },
+                fetchImpl: async (url, request = {}) => {
+                    requests.push({ url, request });
+                    if (url.includes('.blockmap')) {
+                        if (scenario === 'missing-blockmap') return responseFor(Buffer.from('missing'), 404);
+                        if (scenario === 'invalid-blockmap') return responseFor(Buffer.from('{}'));
+                        if (url.includes('3.0.1-x64.exe.blockmap')) return responseFor(oldBlockmapBytes);
+                        return responseFor(newBlockmapBytes);
+                    }
+                    const range = String(request.headers?.Range || request.headers?.range || '');
+                    const match = range.match(/^bytes=(\d+)-(\d+)$/);
+                    if (match) {
+                        const start = Number(match[1]);
+                        const end = Number(match[2]) + 1;
+                        if (scenario === 'range-unsupported') return responseFor(newBytes, 200);
+                        if (scenario === 'corrupt-range') return responseFor(Buffer.alloc(end - start, 0));
+                        return responseFor(newBytes.subarray(start, end), 206);
+                    }
+                    return responseFor(newBytes);
+                },
+            });
+
+            const downloadedPath = await client.download(metadata);
+            assert.deepEqual(await fsp.readFile(downloadedPath), newBytes, scenario);
+            const rangeRequests = requests.filter(entry => entry.request.headers?.Range || entry.request.headers?.range);
+            const fullRequests = requests.filter(entry => !entry.url.includes('.blockmap')
+                && !(entry.request.headers?.Range || entry.request.headers?.range));
+            assert.ok(fullRequests.length >= 1, `${scenario}: expected full-download fallback`);
+            if (['range-unsupported', 'corrupt-range'].includes(scenario)) {
+                assert.ok(rangeRequests.length >= 1, `${scenario}: expected differential attempt before fallback`);
+            } else {
+                assert.equal(rangeRequests.length, 0, `${scenario}: should not issue ranges`);
+            }
+            client.dispose();
+        } finally {
+            await fsp.rm(root, { recursive: true, force: true });
+        }
+    }
 });
 
 test('Windows 更新包落盘失败时会收敛为可捕获错误而不会悬挂', async () => {

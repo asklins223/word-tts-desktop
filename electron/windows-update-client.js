@@ -5,13 +5,21 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const os = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { once } = require('node:events');
 const { finished } = require('node:stream/promises');
 const { spawn } = require('node:child_process');
+const {
+    computeOperations,
+    OperationKind,
+} = require('./node_modules/electron-updater/out/differentialDownloader/downloadPlanBuilder');
 
 const DEFAULT_METADATA_NAME = 'latest-win.json';
+const DEFAULT_BLOCKMAP_SUFFIX = '.blockmap';
 const UPDATE_ERROR_LIMIT = 500;
 const UPDATE_METADATA_TIMEOUT_MS = 15_000;
+const BLOCKMAP_MAX_BYTES = 8 * 1024 * 1024;
+const DIFFERENTIAL_FALLBACK_THRESHOLD = 0.95;
 const NUMERIC_IDENTIFIER = '(?:0|[1-9]\\d*)';
 const NON_NUMERIC_IDENTIFIER = '(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)';
 const PRERELEASE_IDENTIFIER = `(?:${NUMERIC_IDENTIFIER}|${NON_NUMERIC_IDENTIFIER})`;
@@ -95,6 +103,57 @@ function buildWindowsArtifactUrl(releaseUrl, tag, artifactName) {
     }
 }
 
+function buildWindowsBlockMapUrl(releaseUrl, tag, artifactName) {
+    const blockMapReference = appendBlockMapSuffix(artifactName);
+    if (!blockMapReference) return null;
+    return buildWindowsArtifactUrl(releaseUrl, tag, blockMapReference);
+}
+
+function appendBlockMapSuffix(reference) {
+    const raw = String(reference || '').trim();
+    if (!raw) return null;
+    if (/^https?:\/\//i.test(raw)) {
+        try {
+            const url = new URL(raw);
+            if (!url.pathname.toLowerCase().endsWith(DEFAULT_BLOCKMAP_SUFFIX)) {
+                url.pathname = `${url.pathname}${DEFAULT_BLOCKMAP_SUFFIX}`;
+            }
+            return url.toString();
+        } catch (_) {
+            return null;
+        }
+    }
+    const match = raw.match(/^([^?#]*)([?#].*)?$/);
+    const name = match?.[1] || '';
+    if (!name) return null;
+    return name.toLowerCase().endsWith(DEFAULT_BLOCKMAP_SUFFIX)
+        ? raw
+        : `${name}${DEFAULT_BLOCKMAP_SUFFIX}${match?.[2] || ''}`;
+}
+
+function replaceArtifactVersion(reference, fromVersion, toVersion) {
+    const from = String(fromVersion || '').trim().replace(/^v/i, '');
+    const to = String(toVersion || '').trim().replace(/^v/i, '');
+    const raw = String(reference || '').trim();
+    if (!from || !to || !raw) return null;
+    const name = updateArtifactFileName(raw);
+    const pattern = new RegExp(`-${escapeRegExp(from)}-x64\\.exe(?:\\.blockmap)?$`, 'i');
+    const replacedName = name.replace(pattern, `-${to}-x64.exe${name.toLowerCase().endsWith(DEFAULT_BLOCKMAP_SUFFIX) ? DEFAULT_BLOCKMAP_SUFFIX : ''}`);
+    if (replacedName === name) return null;
+    if (/^https?:\/\//i.test(raw)) {
+        try {
+            const url = new URL(raw);
+            const segments = url.pathname.split('/');
+            segments[segments.length - 1] = replacedName;
+            url.pathname = segments.join('/');
+            return url.toString();
+        } catch (_) {
+            return null;
+        }
+    }
+    return replacedName;
+}
+
 function updateArtifactFileName(value) {
     const raw = String(value || '').trim().split(/[?#]/, 1)[0];
     if (!raw) return '';
@@ -116,6 +175,17 @@ function isSafeArtifactReference(value) {
     return !/[\\/]/.test(raw);
 }
 
+function normalizeBlockMapReference(value) {
+    const raw = typeof value === 'object' && value !== null
+        ? value.url
+        : value;
+    const reference = String(raw || '').trim();
+    if (!reference || !isSafeArtifactReference(reference)) return '';
+    return reference.toLowerCase().split(/[?#]/, 1)[0].endsWith(DEFAULT_BLOCKMAP_SUFFIX)
+        ? reference
+        : '';
+}
+
 function normalizeWindowsMetadata(payload) {
     if (!payload || typeof payload !== 'object') {
         throw Object.assign(new Error('更新元数据格式不正确。'), { code: 'INVALID_UPDATE_METADATA' });
@@ -135,11 +205,15 @@ function normalizeWindowsMetadata(payload) {
         payload.path ? { url: payload.path, sha512: payload.sha512, size: payload.size } : null,
     ].filter(file => file && typeof file === 'object');
     const artifact = rawArtifacts
-        .map(file => ({
-            url: String(file.url || '').trim(),
-            sha512: String(file.sha512 || payload.sha512 || '').trim(),
-            size: Number(file.size ?? payload.size),
-        }))
+        .map(file => {
+            const blockmap = normalizeBlockMapReference(file.blockmap || payload.blockmap);
+            return {
+                url: String(file.url || '').trim(),
+                sha512: String(file.sha512 || payload.sha512 || '').trim(),
+                size: Number(file.size ?? payload.size),
+                ...(blockmap ? { blockmap } : {}),
+            };
+        })
         .find(file => {
             const artifactName = updateArtifactFileName(file.url);
             return Boolean(
@@ -330,6 +404,203 @@ async function downloadResponseToFile(response, destination, expectedSize, onPro
     };
 }
 
+async function responseToBuffer(response, maxBytes = BLOCKMAP_MAX_BYTES) {
+    const chunks = [];
+    let total = 0;
+    const append = value => {
+        const chunk = Buffer.from(value || []);
+        total += chunk.length;
+        if (total > maxBytes) {
+            throw Object.assign(new Error('更新差分索引超过允许大小。'), { code: 'UPDATE_BLOCKMAP_TOO_LARGE' });
+        }
+        chunks.push(chunk);
+    };
+    if (response?.body?.getReader) {
+        const reader = response.body.getReader();
+        while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            append(part.value);
+        }
+    } else if (response?.body && Symbol.asyncIterator in Object(response.body)) {
+        const reader = response.body[Symbol.asyncIterator]();
+        while (true) {
+            const part = await reader.next();
+            if (part.done) break;
+            append(part.value);
+        }
+    } else if (typeof response?.arrayBuffer === 'function') {
+        append(await response.arrayBuffer());
+    } else {
+        throw Object.assign(new Error('更新差分索引没有可读取的内容。'), { code: 'UPDATE_BLOCKMAP_EMPTY' });
+    }
+    return Buffer.concat(chunks, total);
+}
+
+function validateBlockMap(blockMap, expectedSize, label) {
+    if (!blockMap || typeof blockMap !== 'object' || !Array.isArray(blockMap.files) || blockMap.files.length !== 1) {
+        throw Object.assign(new Error(`${label}格式不正确。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
+    }
+    const file = blockMap.files[0];
+    if (!file || !Array.isArray(file.sizes) || !Array.isArray(file.checksums)
+        || file.sizes.length === 0 || file.sizes.length !== file.checksums.length) {
+        throw Object.assign(new Error(`${label}缺少有效分块信息。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
+    }
+    const offset = Number(file.offset || 0);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+        throw Object.assign(new Error(`${label}起始位置不正确。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
+    }
+    const payloadSize = file.sizes.reduce((sum, value) => {
+        const size = Number(value);
+        if (!Number.isSafeInteger(size) || size <= 0) {
+            throw Object.assign(new Error(`${label}包含无效分块大小。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
+        }
+        return sum + size;
+    }, 0);
+    if (!Number.isSafeInteger(payloadSize) || offset + payloadSize !== Number(expectedSize)) {
+        throw Object.assign(new Error(`${label}与安装包大小不一致。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
+    }
+    if (file.checksums.some(value => typeof value !== 'string' || value.length === 0)) {
+        throw Object.assign(new Error(`${label}包含无效分块校验值。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
+    }
+    return blockMap;
+}
+
+async function fetchBlockMap(url, fetchImpl, signal = null) {
+    const response = await fetchImpl(url, {
+        method: 'GET',
+        redirect: 'follow',
+        cache: 'no-store',
+        ...(signal ? { signal } : {}),
+    });
+    if (!response || !response.ok) {
+        throw Object.assign(new Error(`更新差分索引请求失败（HTTP ${Number(response?.status) || 0}）。`), {
+            code: 'UPDATE_BLOCKMAP_HTTP_ERROR',
+        });
+    }
+    let bytes = await responseToBuffer(response);
+    try {
+        bytes = zlib.gunzipSync(bytes);
+    } catch (error) {
+        // A few self-hosted mirrors serve the JSON sidecar uncompressed. Keep
+        // accepting that form, but reject arbitrary binary data below.
+        if (bytes[0] !== 0x7b && bytes[0] !== 0x5b) {
+            throw Object.assign(new Error('更新差分索引解压失败。'), {
+                code: 'UPDATE_BLOCKMAP_INVALID',
+                cause: error,
+            });
+        }
+    }
+    try {
+        return JSON.parse(bytes.toString('utf8'));
+    } catch (error) {
+        throw Object.assign(new Error('更新差分索引解析失败。'), {
+            code: 'UPDATE_BLOCKMAP_INVALID',
+            cause: error,
+        });
+    }
+}
+
+async function fetchRange(url, start, end, fetchImpl, signal = null) {
+    if (end <= start) return Buffer.alloc(0);
+    const response = await fetchImpl(url, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: { Range: `bytes=${start}-${end - 1}` },
+        ...(signal ? { signal } : {}),
+    });
+    if (!response || Number(response.status) !== 206) {
+        throw Object.assign(new Error('更新服务器不支持分块下载。'), { code: 'UPDATE_RANGE_UNSUPPORTED' });
+    }
+    const bytes = await responseToBuffer(response, end - start);
+    if (bytes.length !== end - start) {
+        throw Object.assign(new Error('更新分块大小校验失败。'), { code: 'UPDATE_RANGE_SIZE_MISMATCH' });
+    }
+    return bytes;
+}
+
+async function readLocalRange(handle, start, end) {
+    const length = end - start;
+    if (length <= 0) return Buffer.alloc(0);
+    const buffer = Buffer.allocUnsafe(length);
+    let position = 0;
+    while (position < length) {
+        const result = await handle.read(buffer, position, length - position, start + position);
+        if (!result || result.bytesRead <= 0) break;
+        position += result.bytesRead;
+    }
+    if (position !== length) {
+        throw Object.assign(new Error('本地安装包分块读取失败。'), { code: 'UPDATE_LOCAL_RANGE_MISMATCH' });
+    }
+    return buffer;
+}
+
+async function writeDifferentialFile({
+    oldPath,
+    destination,
+    newUrl,
+    operations,
+    downloadSize,
+    onProgress,
+    fetchImpl,
+    fsImpl,
+    fsPromisesImpl,
+    signal,
+}) {
+    const oldHandle = await fsPromisesImpl.open(oldPath, 'r');
+    const file = fsImpl.createWriteStream(destination);
+    const fileFinished = finished(file, { cleanup: true });
+    const streamFailure = fileFinished.then(
+        () => new Promise(() => {}),
+        error => Promise.reject(error),
+    );
+    streamFailure.catch(() => {});
+    const startedAt = Date.now();
+    let transferred = 0;
+    const emitProgress = () => {
+        const elapsedSeconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
+        try {
+            onProgress?.({
+                percent: downloadSize > 0 ? Math.min(99, (transferred / downloadSize) * 100) : 100,
+                transferred,
+                total: downloadSize,
+                bytesPerSecond: transferred / elapsedSeconds,
+            });
+        } catch (_) {
+            // UI progress is deliberately non-fatal.
+        }
+    };
+    emitProgress();
+    try {
+        for (const operation of operations) {
+            if (signal?.aborted) throw Object.assign(new Error('更新下载已取消。'), { name: 'AbortError' });
+            const bytes = operation.kind === OperationKind.COPY
+                ? await readLocalRange(oldHandle, operation.start, operation.end)
+                : await fetchRange(newUrl, operation.start, operation.end, fetchImpl, signal);
+            await writeChunk(file, bytes, streamFailure);
+            if (operation.kind === OperationKind.DOWNLOAD) transferred += bytes.length;
+            emitProgress();
+        }
+        await closeWriteStream(file, fileFinished);
+    } catch (error) {
+        file.destroy();
+        await fileFinished.catch(() => {});
+        throw error;
+    } finally {
+        await oldHandle.close().catch(() => {});
+    }
+    return { transferred, total: downloadSize };
+}
+
+function blockMapReferenceForArtifact(artifact) {
+    const explicit = normalizeBlockMapReference(artifact?.blockmap);
+    if (explicit) return explicit;
+    const rawArtifact = String(artifact?.url || '').trim();
+    return appendBlockMapSuffix(/^https?:\/\//i.test(rawArtifact)
+        ? rawArtifact
+        : updateArtifactFileName(rawArtifact));
+}
+
 function createWindowsUpdateClient(options = {}) {
     const releaseUrl = options.releaseUrl || '';
     const metadataUrl = options.metadataUrl || buildWindowsMetadataUrl(releaseUrl);
@@ -340,6 +611,13 @@ function createWindowsUpdateClient(options = {}) {
     const spawnImpl = options.spawn || spawn;
     const app = options.app || null;
     const environment = options.environment || process.env;
+    const currentVersion = String(options.currentVersion || '').trim().replace(/^v/i, '');
+    const useDifferential = options.useDifferential !== false;
+    const logger = options.logger || {
+        info() {},
+        warn() {},
+        debug: null,
+    };
     const metadataTimeoutMs = options.metadataTimeoutMs;
     let latestInfo = null;
     let downloadedPath = null;
@@ -352,6 +630,88 @@ function createWindowsUpdateClient(options = {}) {
         downloadedPath = null;
         downloadedInfo = null;
         if (stalePath) await fspImpl.rm(stalePath, { force: true }).catch(() => {});
+    }
+
+    async function tryDifferentialDownload(normalized, artifact, url, destination, onProgress, signal) {
+        if (!useDifferential || !VERSION_PATTERN.test(currentVersion)
+            || currentVersion === normalized.version || !url) return null;
+        const installedExecutable = app?.getPath?.('exe');
+        const oldPath = options.currentInstallerPath
+            || (installedExecutable
+                ? path.join(path.dirname(installedExecutable), '小猪wordTTS-uninstaller.exe')
+                : null);
+        if (!oldPath) return null;
+
+        let oldStat;
+        try {
+            oldStat = await fspImpl.stat(oldPath);
+        } catch (_) {
+            return null;
+        }
+        if (!oldStat.isFile() || oldStat.size <= 0) return null;
+
+        const oldArtifactReference = replaceArtifactVersion(artifact.url, normalized.version, currentVersion);
+        const newBlockMapReference = blockMapReferenceForArtifact(artifact);
+        const oldBlockMapReference = replaceArtifactVersion(
+            newBlockMapReference,
+            normalized.version,
+            currentVersion,
+        );
+        if (!oldArtifactReference || !oldBlockMapReference) return null;
+        const newBlockMapUrl = buildWindowsArtifactUrl(
+            releaseUrl,
+            normalized.tag,
+            newBlockMapReference,
+        );
+        const oldBlockMapUrl = buildWindowsArtifactUrl(
+            releaseUrl,
+            `v${currentVersion}`,
+            oldBlockMapReference,
+        );
+        if (!newBlockMapUrl || !oldBlockMapUrl) return null;
+
+        try {
+            const [oldBlockMap, newBlockMap] = await Promise.all([
+                fetchBlockMap(oldBlockMapUrl, fetchImpl, signal),
+                fetchBlockMap(newBlockMapUrl, fetchImpl, signal),
+            ]);
+            validateBlockMap(oldBlockMap, oldStat.size, '旧版本差分索引');
+            validateBlockMap(newBlockMap, artifact.size, '新版本差分索引');
+            const operations = computeOperations(oldBlockMap, newBlockMap, logger);
+            const downloadSize = operations
+                .filter(operation => operation.kind === OperationKind.DOWNLOAD)
+                .reduce((sum, operation) => sum + operation.end - operation.start, 0);
+            // A nearly-full set of ranges costs more round trips than one
+            // sequential download. The blockmap lookup is cheap, so choose
+            // the full path whenever differential saving is negligible.
+            if (downloadSize >= Number(artifact.size) * DIFFERENTIAL_FALLBACK_THRESHOLD) {
+                return null;
+            }
+            logger.info?.(`Windows 差分更新：下载 ${downloadSize}/${artifact.size} bytes`);
+            await writeDifferentialFile({
+                oldPath,
+                destination,
+                newUrl: url,
+                operations,
+                downloadSize,
+                onProgress,
+                fetchImpl,
+                fsImpl,
+                fsPromisesImpl: fspImpl,
+                signal,
+            });
+            await verifyFileIntegrity(destination, artifact, fsImpl, fspImpl);
+            return destination;
+        } catch (error) {
+            await fspImpl.rm(destination, { force: true }).catch(() => {});
+            if (error?.name === 'AbortError') throw error;
+            // Blockmaps are an optimization, not a release prerequisite for
+            // already-installed clients. Missing sidecars, mirrors without
+            // Range support, or a stale local uninstaller all fall back to the
+            // existing full Setup download.
+            logger.debug?.(`Windows 差分更新不可用，回退全量下载：${error?.message || error}`);
+            return null;
+        }
     }
 
     async function check() {
@@ -381,6 +741,30 @@ function createWindowsUpdateClient(options = {}) {
         activeDownloadController = downloadController;
         let committed = false;
         try {
+            const differentialPath = await tryDifferentialDownload(
+                normalized,
+                artifact,
+                url,
+                destination,
+                onProgress,
+                downloadController?.signal,
+            );
+            if (differentialPath) {
+                if (disposed) throw clientDisposedError();
+                downloadedPath = differentialPath;
+                downloadedInfo = normalized;
+                committed = true;
+                try {
+                    onProgress?.({ percent: 100, transferred: Number(artifact.size), total: Number(artifact.size), bytesPerSecond: 0 });
+                } catch (_) {
+                    // UI callbacks are non-fatal.
+                }
+                if (disposed) {
+                    await clearDownloadedFile();
+                    throw clientDisposedError();
+                }
+                return differentialPath;
+            }
             const response = await fetchImpl(url, {
                 method: 'GET',
                 redirect: 'follow',
@@ -526,9 +910,13 @@ function createWindowsUpdateClient(options = {}) {
 
 module.exports = {
     DEFAULT_METADATA_NAME,
+    DEFAULT_BLOCKMAP_SUFFIX,
     buildWindowsArtifactUrl,
+    buildWindowsBlockMapUrl,
     buildWindowsMetadataUrl,
     createWindowsUpdateClient,
     downloadResponseToFile,
+    fetchBlockMap,
     normalizeWindowsMetadata,
+    replaceArtifactVersion,
 };

@@ -8,11 +8,14 @@ const fsp = fs.promises;
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { getPath7za } = require('../node_modules/app-builder-lib/out/toolsets/7zip');
+const { createPayloadArchive } = require('../../scripts/build_windows_installer');
 const {
     createInstallerService,
     cleanupScript,
     INSTALL_LOCATION_FILE,
     InstallerError,
+    launchEnvironment,
     normalizeTargetPath,
     parseInstallerArguments,
     readRegistryInstallLocations,
@@ -20,6 +23,7 @@ const {
     resolveCleanupLauncherPath,
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,
+    shortcutPaths,
     validateInstallTargetPath,
     waitForCleanupReady,
 } = require('../../installer-prototype/installer-service');
@@ -37,6 +41,71 @@ function execFileAsync(executable, args, options = {}) {
         });
     });
 }
+
+test('完成后启动应用会清理 portable Setup 的临时环境变量', () => {
+    const environment = launchEnvironment({
+        PATH: 'C:\\Windows\\System32',
+        ELECTRON_RUN_AS_NODE: '1',
+        PORTABLE_EXECUTABLE_DIR: 'C:\\Temp',
+        PORTABLE_EXECUTABLE_FILE: 'C:\\Temp\\小猪wordTTS-Setup.exe',
+        PORTABLE_EXECUTABLE_APP_FILENAME: '小猪wordTTS-Setup.exe',
+        WORDTTS_RELOCATED_UNINSTALLER: 'C:\\Temp\\staged.exe',
+        WORDTTS_RELOCATED_READY: 'C:\\Temp\\staged.ready',
+        WORDTTS_RELOCATION_SOURCE_PID: '1234',
+    });
+
+    assert.equal(environment.PATH, 'C:\\Windows\\System32');
+    for (const key of [
+        'ELECTRON_RUN_AS_NODE',
+        'PORTABLE_EXECUTABLE_DIR',
+        'PORTABLE_EXECUTABLE_FILE',
+        'PORTABLE_EXECUTABLE_APP_FILENAME',
+        'WORDTTS_RELOCATED_UNINSTALLER',
+        'WORDTTS_RELOCATED_READY',
+        'WORDTTS_RELOCATION_SOURCE_PID',
+    ]) {
+        assert.equal(environment[key], undefined, `${key} must not leak into the installed app`);
+    }
+});
+
+test('Windows 快捷方式优先使用 Electron 解析出的重定向桌面和开始菜单目录', () => {
+    const links = shortcutPaths({
+        USERPROFILE: 'C:\\Users\\Alice',
+        APPDATA: 'C:\\Users\\Alice\\AppData\\Roaming',
+    }, 'per-user', {
+        desktop: 'D:\\OneDrive\\Desktop',
+        startMenu: 'D:\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs',
+    });
+
+    assert.equal(links.desktop, 'D:\\OneDrive\\Desktop\\小猪wordTTS.lnk');
+    assert.equal(links.startMenu, 'D:\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\小猪wordTTS.lnk');
+    assert.ok(links.desktopCandidates.includes('C:\\Users\\Alice\\Desktop\\小猪wordTTS.lnk'));
+});
+
+test('Windows 全家可用安装忽略当前用户开始菜单目录，使用公共开始菜单', () => {
+    const links = shortcutPaths({
+        USERPROFILE: 'C:\\Users\\Alice',
+        PUBLIC: 'C:\\Users\\Public',
+        APPDATA: 'C:\\Users\\Alice\\AppData\\Roaming',
+        ProgramData: 'D:\\ProgramData',
+    }, 'per-machine', {
+        desktop: 'D:\\OneDrive\\Desktop',
+        startMenu: 'D:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs',
+    });
+
+    assert.equal(
+        links.desktop,
+        'C:\\Users\\Public\\Desktop\\小猪wordTTS.lnk',
+    );
+    assert.equal(
+        links.startMenu,
+        'D:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\小猪wordTTS.lnk',
+    );
+    assert.ok(links.startMenuCandidates.includes(
+        'D:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\小猪wordTTS.lnk',
+    ));
+    assert.ok(!links.startMenu.endsWith('Users\\Alice\\小猪wordTTS.lnk'));
+});
 
 test('Windows 卸载清理不会把临时 Electron 子进程误当成 portable 外壳', () => {
     const target = 'C:\\Apps\\小猪wordTTS';
@@ -325,6 +394,41 @@ test('安装器启动已安装应用失败时不会误报成功', async () => {
     }
 });
 
+test('安装完成后启动应用会等待 spawn，并清理 portable 环境变量', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-launch-success-'));
+    const target = path.join(root, 'installed', '小猪wordTTS');
+    const child = new EventEmitter();
+    child.unref = () => {};
+    let spawnCall = null;
+    try {
+        await fsp.mkdir(target, { recursive: true });
+        await fsp.writeFile(path.join(target, '小猪wordTTS.exe'), 'installed application');
+        const service = createInstallerService({
+            platform: process.platform,
+            environment: {
+                ...process.env,
+                ELECTRON_RUN_AS_NODE: '1',
+                PORTABLE_EXECUTABLE_FILE: path.join(root, 'setup.exe'),
+            },
+            spawn: (executable, args, options) => {
+                spawnCall = { executable, args, options };
+                process.nextTick(() => child.emit('spawn'));
+                return child;
+            },
+        });
+
+        await service.launchInstalledApp(target);
+        assert.equal(spawnCall.executable, path.join(target, '小猪wordTTS.exe'));
+        assert.deepEqual(spawnCall.args, []);
+        assert.equal(spawnCall.options.cwd, target);
+        assert.equal(spawnCall.options.detached, true);
+        assert.equal(spawnCall.options.env.ELECTRON_RUN_AS_NODE, undefined);
+        assert.equal(spawnCall.options.env.PORTABLE_EXECUTABLE_FILE, undefined);
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
 test('安装状态文件中的路径字段不会重定向安装器的恢复或注册表操作', async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-state-guard-'));
     const target = path.join(root, 'installed', '小猪wordTTS');
@@ -511,6 +615,80 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
         assert.equal(deleted.success, true);
         assert.equal(fs.existsSync(target), false);
         assert.equal(fs.existsSync(dataPath), false);
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('归档 payload 在临时目录尚不存在时可以真实完成安装和更新', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-archive-service-'));
+    const payload = path.join(root, 'payload');
+    const resources = path.join(root, 'resources');
+    const archivePath = path.join(resources, 'wordtts-payload.7z');
+    const extractorPath = path.join(resources, 'wordtts-7za.exe');
+    const setupPath = path.join(root, 'setup.exe');
+    const target = path.join(root, 'installed', '小猪wordTTS');
+    const dataPath = path.join(root, 'user-data');
+    const tempDirectory = path.join(root, 'temp-does-not-exist');
+    const shellEnvironment = process.platform === 'win32'
+        ? {
+            ...process.env,
+            USERPROFILE: path.join(root, 'user-profile'),
+            APPDATA: path.join(root, 'app-data'),
+            PUBLIC: path.join(root, 'public'),
+            ProgramData: path.join(root, 'program-data'),
+            ProgramFiles: path.join(root, 'program-files'),
+        }
+        : undefined;
+    try {
+        await fsp.mkdir(payload, { recursive: true });
+        await fsp.mkdir(resources, { recursive: true });
+        await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v1');
+        await fsp.writeFile(path.join(payload, 'runtime.txt'), 'runtime v1');
+        await fsp.writeFile(setupPath, 'setup v1');
+        await createPayloadArchive(payload, archivePath, { ELECTRON_BUILDER_COMPRESSION_LEVEL: '1' });
+        await fsp.copyFile(await getPath7za(), extractorPath);
+        const service = createInstallerService({
+            platform: process.platform,
+            resourcesPath: resources,
+            payloadPath: path.join(resources, 'payload-directory-does-not-exist'),
+            payloadArchivePath: archivePath,
+            payloadExtractorPath: extractorPath,
+            setupExecutable: setupPath,
+            dataPath,
+            tempDirectory,
+            environment: shellEnvironment,
+            runPowerShell: async () => {},
+        });
+
+        const installed = await service.run({
+            mode: 'install',
+            targetPath: target,
+            scope: 'per-user',
+            version: '3.0.4',
+            desktopShortcut: false,
+            startMenuShortcut: false,
+        });
+        assert.equal(installed.success, true);
+        assert.equal(await fsp.readFile(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v1');
+        assert.equal(await fsp.readFile(path.join(target, 'runtime.txt'), 'utf8'), 'runtime v1');
+        assert.equal(fs.existsSync(tempDirectory), true);
+
+        await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v2');
+        await fsp.writeFile(path.join(payload, 'runtime.txt'), 'runtime v2');
+        await fsp.writeFile(setupPath, 'setup v2');
+        await fsp.rm(archivePath, { force: true });
+        await createPayloadArchive(payload, archivePath, { ELECTRON_BUILDER_COMPRESSION_LEVEL: '1' });
+        const updated = await service.run({
+            mode: 'update',
+            targetPath: target,
+            scope: 'per-user',
+            version: '3.0.5',
+        });
+        assert.equal(updated.success, true);
+        assert.equal(await fsp.readFile(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v2');
+        assert.equal(await fsp.readFile(path.join(target, 'runtime.txt'), 'utf8'), 'runtime v2');
+        assert.equal(await fsp.readFile(path.join(target, '小猪wordTTS-uninstaller.exe'), 'utf8'), 'setup v2');
     } finally {
         await fsp.rm(root, { recursive: true, force: true });
     }

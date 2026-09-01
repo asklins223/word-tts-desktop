@@ -4,12 +4,12 @@
 
 桌面包发布到 GitHub Releases，不增加自建更新服务器。Windows 和 macOS 使用两条明确分开的更新链路：
 
-- Windows：使用独立的 HTML 自绘 `Setup.exe` 完成首次安装、更新和卸载；客户端读取 `latest-win.json`，下载并校验新的 Setup.exe，再启动它的 `update` 模式。
+- Windows：使用独立的 HTML 自绘 `Setup.exe` 完成首次安装、更新和卸载；客户端读取 `latest-win.json`，优先结合 `.blockmap` 和 HTTP Range 下载差异，再启动它的 `update` 模式。
 - macOS：继续使用 `electron-updater` 和 `latest-mac.yml`；DMG 负责首次安装，ZIP 负责自动更新。
 - 开发模式和 `--smoke-test` 不访问更新服务。
 - 当前 macOS Actions 按 runner 架构构建一个包；如果要同时覆盖 Intel 与 Apple Silicon，应增加对应架构构建并把两个 ZIP 一起放进同一个 macOS 元数据流程。
 
-Windows 不再使用 `electron-updater`、`latest.yml` 或系统安装页面。这样安装器的视觉、交互、安装/卸载文案和流程都由 `installer-prototype/` 控制。
+Windows 不再使用 `electron-updater`、`latest.yml` 或系统安装页面。这样安装器的视觉、交互、安装/卸载文案和流程都由 `installer-prototype/` 控制；差分下载只复用 electron-builder 的 blockmap 运算，不改变这套自绘 Setup 方案。
 
 ## Windows 结构
 
@@ -17,13 +17,14 @@ Windows 不再使用 `electron-updater`、`latest.yml` 或系统安装页面。�
 electron/release/win-unpacked/       Electron 应用目录
                 │
                 ▼
-scripts/build_windows_installer.js   把应用目录嵌入独立的 Setup.exe
+scripts/build_windows_installer.js   把应用目录归档并嵌入独立的 Setup.exe
                 │
                 ▼
 小猪wordTTS-Setup-<version>-x64.exe  用户分发包
+小猪wordTTS-Setup-<version>-x64.exe.blockmap  差分索引
 ```
 
-Windows Setup 是一个短生命周期的 Electron 包，运行时把 `payload` 写入用户选择的目录，并保存 `install-state.json`。已安装目录中会留下同一套自绘程序作为 `小猪wordTTS-uninstaller.exe`，因此卸载也不会回到原生页面。卸载启动后会先把该可执行文件迁移到系统临时目录；经过标记校验的临时副本同步删除并确认安装目录消失，同时预写一个只删除该临时副本的批处理。Electron 退出后，仍掌握外层生命周期的 portable NSIS 外壳启动该批处理并随即释放自身文件句柄，不再由 Electron 反向派生 PowerShell 等待父进程。只有旧版或未迁移的 portable 外壳才使用延迟目录收尾脚本，避免新路径重新引入安装目录锁定。
+Windows Setup 是一个短生命周期的 Electron 包，启动时只携带自绘页面、安装逻辑和小型 `wordtts-7za.exe`；完整应用先作为非固实 `wordtts-payload.7z` 资源按需导出，因此页面不必等待整个 Chromium/Python 目录先复制完。首次安装或更新时，服务层把归档解压到 staging 目录，再原子替换应用目录，并保存 `install-state.json`。已安装目录中会留下同一套自绘程序作为 `小猪wordTTS-uninstaller.exe`，因此卸载也不会回到原生页面。卸载启动后会先把该可执行文件迁移到系统临时目录；经过标记校验的临时副本同步删除并确认安装目录消失，同时预写一个只删除该临时副本的批处理。Electron 退出后，仍掌握外层生命周期的 portable NSIS 外壳启动该批处理并随即释放自身文件句柄，不再由 Electron 反向派生 PowerShell 等待父进程。只有旧版或未迁移的 portable 外壳才使用延迟目录收尾脚本，避免新路径重新引入安装目录锁定。
 
 关键文件：
 
@@ -43,14 +44,15 @@ Windows Setup 是一个短生命周期的 Electron 包，运行时把 `payload` 
 
 1. 已安装的应用读取 GitHub Releases 的 `latest-win.json`。
 2. 客户端确认版本高于当前版本，并确认元数据包含当前版本的 `.exe`、正数文件大小和 SHA-512。
-3. 客户端下载 Setup.exe 到临时目录，流式计算 SHA-512，并校验完整大小。
-4. 用户点击“重启并安装”后，应用启动下载好的 Setup.exe：
+3. 客户端先查找本机当前版本留下的 `小猪wordTTS-uninstaller.exe`，并尝试下载当前版本和目标版本的 `.blockmap`。如果服务端支持 HTTP Range，客户端只下载 blockmap 计算出的新增分块，并把旧安装器中可复用的分块直接复制到临时 Setup.exe。
+4. 差分路径完成后仍会计算新 Setup.exe 的完整大小和 SHA-512；如果旧安装器、blockmap、Range 响应或差分结果缺失/异常，则删除临时文件并自动回退到原有的全量 Setup.exe 下载。
+5. 用户点击“重启并安装”后，应用启动下载好的 Setup.exe：
 
    ```text
    Setup.exe --mode=update --auto-start --target-version <latest-win.json.version> --target <当前安装目录>
    ```
 
-5. Setup 使用与首次安装相同的自绘界面，必要时通过 UAC 启动带操作计划的管理员实例，关闭旧应用后原子替换应用目录。
+6. Setup 使用与首次安装相同的自绘界面，必要时通过 UAC 启动带操作计划的管理员实例，关闭旧应用后原子替换应用目录。
 
 更新下载失败、校验失败或 Setup 启动失败都会回到版本中心的错误状态，不会静默覆盖旧版本。
 
@@ -67,7 +69,13 @@ Windows 元数据由实际安装包计算，不手工复制校验值。简化示
   "artifact": {
     "url": "wordTTS-Setup-3.0.2-x64.exe",
     "sha512": "<base64 sha512>",
-    "size": 123456789
+    "size": 123456789,
+    "blockmap": "wordTTS-Setup-3.0.2-x64.exe.blockmap"
+  },
+  "blockmap": {
+    "url": "wordTTS-Setup-3.0.2-x64.exe.blockmap",
+    "sha512": "<base64 sha512>",
+    "size": 45678
   },
   "updateMode": "optional",
   "minimumSupportedVersion": null,
@@ -109,7 +117,7 @@ node scripts/validate_update_policy.js --tag v3.0.2
 
 最终 Release 至少包含：
 
-- Windows：`latest-win.json`、`wordTTS-Setup-<version>-x64.exe`。
+- Windows：`latest-win.json`、`wordTTS-Setup-<version>-x64.exe`、对应的 `wordTTS-Setup-<version>-x64.exe.blockmap`。`.blockmap` 缺失时旧客户端仍可全量更新，但新客户端会回退全量下载。
 - macOS：`latest-mac.yml`、`wordTTS-<version>-<arch>.zip` 和首次安装用的 `.dmg`。
 
 ## 签名
@@ -126,6 +134,8 @@ node scripts/validate_update_policy.js --tag v3.0.2
 - Windows 更新代码没有加载 `electron-updater`，只读取 `latest-win.json`。
 - Setup.exe、安装目录中的 uninstaller 和更新客户端都能在无 Node/Python 环境下运行。
 - Windows 更新包下载后校验大小和 SHA-512，再启动 `--mode=update`。
+- Windows 发布资产同时包含 Setup.exe 和同名 `.blockmap`；更新客户端优先走差分，任何前置条件不满足都必须安全回退全量下载。
+- 自绘安装器应先显示页面，再在安装/更新操作开始时导出并解压 payload；不能重新把完整 `win-unpacked` 目录作为 `extraResources` 复制进 Setup 启动阶段。
 - 安装、更新、卸载都使用同一套自绘 HTML 页面；卸载不会误删用户数据。
 - Windows 生命周期冒烟除了检查安装目录消失，还必须看到迁移卸载器的成功日志和临时外壳自清理完成日志；异步 `[error]` 不能被绿色步骤掩盖。
 - Release 不是 Draft，tag、`version.json`、构建包版本和更新元数据版本一致。

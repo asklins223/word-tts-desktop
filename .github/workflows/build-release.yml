@@ -130,14 +130,16 @@ jobs:
         run: |
           set -euo pipefail
           installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          blockmap="${installer}.blockmap"
           mac_zip="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
           mac_dmg="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
           test -s "$installer"
+          test -s "$blockmap"
           test -s "$mac_zip"
           test -s "$mac_dmg"
           test -s electron/release/latest-win.json
           test -s electron/release/latest-mac.yml
-          echo "Release 文件校验通过: $installer / $mac_zip / $mac_dmg"
+          echo "Release 文件校验通过: $installer / $blockmap / $mac_zip / $mac_dmg"
 
       - name: Prepare canonical GitHub asset names
         env:
@@ -147,6 +149,8 @@ jobs:
           set -euo pipefail
           local_installer="electron/release/小猪wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
           github_installer="electron/release/wordTTS-Setup-${RELEASE_VERSION}-x64.exe"
+          local_blockmap="${local_installer}.blockmap"
+          github_blockmap="${github_installer}.blockmap"
           local_zip="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
           local_dmg="electron/release/小猪wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
           github_zip="electron/release/wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
@@ -155,13 +159,15 @@ jobs:
           # These are same-directory renames after metadata generation; moving
           # avoids copying roughly 1 GB of already-verified release payloads.
           mv "$local_installer" "$github_installer"
+          mv "$local_blockmap" "$github_blockmap"
           mv "$local_zip" "$github_zip"
           mv "$local_dmg" "$github_dmg"
 
           test -s "$github_installer"
+          test -s "$github_blockmap"
           test -s "$github_zip"
           test -s "$github_dmg"
-          echo "GitHub 资产名已准备: $(basename "$github_installer") / $(basename "$github_zip") / $(basename "$github_dmg")"
+          echo "GitHub 资产名已准备: $(basename "$github_installer") / $(basename "$github_blockmap") / $(basename "$github_zip") / $(basename "$github_dmg")"
 
       - name: Upload all release assets
         id: release
@@ -171,6 +177,7 @@ jobs:
             electron/release/latest-win.json
             electron/release/latest-mac.yml
             electron/release/wordTTS-Setup-${{ needs.windows.outputs.version }}-x64.exe
+            electron/release/wordTTS-Setup-${{ needs.windows.outputs.version }}-x64.exe.blockmap
             electron/release/wordTTS-${{ needs.macos.outputs.version }}-${{ needs.macos.outputs.architecture }}.dmg
             electron/release/wordTTS-${{ needs.macos.outputs.version }}-${{ needs.macos.outputs.architecture }}.zip
           name: 小猪wordTTS ${{ github.ref_name }}

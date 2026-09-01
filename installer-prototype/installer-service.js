@@ -10,6 +10,9 @@ const { execFileSync, spawn } = require('node:child_process');
 const PRODUCT_NAME = '小猪wordTTS';
 const APP_EXECUTABLE = '小猪wordTTS.exe';
 const UNINSTALLER_EXECUTABLE = '小猪wordTTS-uninstaller.exe';
+const PAYLOAD_ARCHIVE_NAME = 'wordtts-payload.7z';
+const PAYLOAD_EXTRACTOR_NAME = 'wordtts-7za.exe';
+const PAYLOAD_EXTRACTION_ARGUMENT = '--wordtts-extract-payload=';
 const RELOCATED_UNINSTALLER_PATTERN = /^wordtts-uninstaller-stage-\d+-\d+-[0-9a-f]+\.exe$/i;
 const INSTALL_STATE_FILE = 'install-state.json';
 const INSTALL_STATE_VERSION = 1;
@@ -751,6 +754,29 @@ function runPowerShellDefault(script, execFileImpl) {
     });
 }
 
+function launchEnvironment(environment = process.env) {
+    const childEnvironment = {
+        ...process.env,
+        ...environment,
+    };
+    // These values belong to the temporary portable Setup wrapper. Passing
+    // them into the installed Electron executable can make it resolve its
+    // resources/temp directory as if it were still the installer, which is
+    // why "open after finish" used to be a no-op on some Windows machines.
+    for (const key of [
+        'ELECTRON_RUN_AS_NODE',
+        'PORTABLE_EXECUTABLE_DIR',
+        'PORTABLE_EXECUTABLE_FILE',
+        'PORTABLE_EXECUTABLE_APP_FILENAME',
+        'WORDTTS_RELOCATED_UNINSTALLER',
+        'WORDTTS_RELOCATED_READY',
+        'WORDTTS_RELOCATION_SOURCE_PID',
+    ]) {
+        delete childEnvironment[key];
+    }
+    return childEnvironment;
+}
+
 function powershellLiteral(value) {
     return `'${String(value).replace(/'/g, "''")}'`;
 }
@@ -833,16 +859,80 @@ namespace WordTtsInstaller
 }
 `;
 
-function shortcutPaths(environment, scope) {
+function shortcutPaths(environment, scope, knownFolders = {}) {
+    const profile = environment.USERPROFILE || os.homedir();
+    const defaultDesktop = path.win32.join(profile, 'Desktop');
+    const profileRoot = path.win32.parse(profile).root || 'C:\\';
+    const publicDesktop = path.win32.join(
+        environment.PUBLIC || path.win32.join(profileRoot, 'Users', 'Public'),
+        'Desktop',
+    );
+    const knownDesktop = scope === 'per-user' && knownFolders.desktop
+        ? path.win32.normalize(String(knownFolders.desktop))
+        : null;
+    const redirectedDesktopCandidates = scope === 'per-user'
+        ? [environment.OneDriveCommercial, environment.OneDriveConsumer, environment.OneDrive]
+            .filter(Boolean)
+            .map(root => path.win32.join(root, 'Desktop'))
+            .filter(candidate => existsSyncSafe(candidate))
+        : [];
+    // Windows often redirects Desktop into OneDrive while leaving USERPROFILE
+    // unchanged. Prefer an existing redirected Desktop, but keep the normal
+    // profile path as the creation fallback and as the path used by older
+    // installs/tests that do not have a redirected folder yet.
     const desktop = scope === 'per-machine'
-        ? path.win32.join(environment.PUBLIC || 'C:\\Users\\Public', 'Desktop')
-        : path.win32.join(environment.USERPROFILE || os.homedir(), 'Desktop');
-    const startMenu = scope === 'per-machine'
+        ? publicDesktop
+        : knownDesktop || redirectedDesktopCandidates[0] || defaultDesktop;
+    const desktopCandidates = [desktop, defaultDesktop, ...redirectedDesktopCandidates];
+    const fallbackStartMenu = scope === 'per-machine'
         ? path.win32.join(environment.ProgramData || 'C:\\ProgramData', 'Microsoft', 'Windows', 'Start Menu', 'Programs')
-        : path.win32.join(environment.APPDATA || path.win32.join(environment.USERPROFILE || os.homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+        : path.win32.join(
+            environment.APPDATA || path.win32.join(profile, 'AppData', 'Roaming'),
+            'Microsoft',
+            'Windows',
+            'Start Menu',
+            'Programs',
+        );
+    // Electron's appData-based Start Menu path is the current user's folder.
+    // It must not override the common Start Menu when the installer is running
+    // in per-machine mode; otherwise a machine-wide install silently creates a
+    // shortcut visible only to the elevating user.
+    const knownStartMenu = scope === 'per-user' && knownFolders.startMenu
+        ? path.win32.normalize(String(knownFolders.startMenu))
+        : null;
+    const defaultStartMenu = knownStartMenu || path.win32.normalize(fallbackStartMenu);
+    // A previous buggy per-machine build could have put its shortcut in the
+    // elevating user's Start Menu. Keep that location as a cleanup candidate,
+    // but never use it as the creation target for a machine-wide install.
+    const legacyUserStartMenu = scope === 'per-machine'
+        ? path.win32.normalize(
+            String(
+                knownFolders.startMenu
+                || path.win32.join(
+                    environment.APPDATA || path.win32.join(profile, 'AppData', 'Roaming'),
+                    'Microsoft',
+                    'Windows',
+                    'Start Menu',
+                    'Programs',
+                ),
+            ),
+        )
+        : null;
+    const startMenuCandidates = [defaultStartMenu, fallbackStartMenu, legacyUserStartMenu];
+    const uniqueWindowsPaths = values => values.reduce((result, value) => {
+        const normalized = path.win32.normalize(String(value));
+        if (!result.some(existing => pathEquals(existing, normalized, 'win32'))) result.push(normalized);
+        return result;
+    }, []);
     return {
         desktop: path.win32.join(desktop, `${PRODUCT_NAME}.lnk`),
-        startMenu: path.win32.join(startMenu, `${PRODUCT_NAME}.lnk`),
+        startMenu: path.win32.join(defaultStartMenu, `${PRODUCT_NAME}.lnk`),
+        desktopCandidates: uniqueWindowsPaths(desktopCandidates.map(root => path.win32.join(root, `${PRODUCT_NAME}.lnk`))),
+        startMenuCandidates: uniqueWindowsPaths(
+            startMenuCandidates
+                .filter(Boolean)
+                .map(root => path.win32.join(root, `${PRODUCT_NAME}.lnk`)),
+        ),
     };
 }
 
@@ -1085,6 +1175,11 @@ function createInstallerService(options = {}) {
     const spawnImpl = options.spawn || spawn;
     const waitForCleanupReadyImpl = options.waitForCleanupReady || waitForCleanupReady;
     const payloadPath = options.payloadPath || path.join(resourcesPath, 'payload');
+    const payloadArchivePath = options.payloadArchivePath || path.join(resourcesPath, PAYLOAD_ARCHIVE_NAME);
+    const payloadExtractorPath = options.payloadExtractorPath || path.join(resourcesPath, PAYLOAD_EXTRACTOR_NAME);
+    const knownFolders = options.knownFolders && typeof options.knownFolders === 'object'
+        ? options.knownFolders
+        : {};
     let lastPlan = null;
 
     function validateServiceTargetPath(targetPath) {
@@ -1244,6 +1339,8 @@ function createInstallerService(options = {}) {
             installed,
             allowedModes: [mode],
             payloadPath,
+            payloadArchivePath,
+            payloadExtractorPath,
             dataPath: userDataPath,
             shortcuts: state?.shortcuts || { desktop: true, startMenu: true },
             setupExecutable,
@@ -1287,6 +1384,120 @@ function createInstallerService(options = {}) {
             throw error;
         }
         return staged;
+    }
+
+    function setupProcessEnvironment() {
+        const childEnvironment = launchEnvironment(environment);
+        if (setupExecutable) {
+            childEnvironment.PORTABLE_EXECUTABLE_FILE = setupExecutable;
+            childEnvironment.PORTABLE_EXECUTABLE_DIR = path.dirname(setupExecutable);
+        }
+        return childEnvironment;
+    }
+
+    async function materializePayloadArchive() {
+        if (await pathExists(payloadPath)) return null;
+        if (platform !== 'win32' || !setupExecutable || !(await pathExists(setupExecutable))) {
+            throw new InstallerError('PAYLOAD_MISSING', '安装包内缺少应用文件，请重新下载安装包。');
+        }
+
+        const extractionRoot = path.join(tempDirectory, `wordtts-payload-${randomSuffix()}`);
+        const archivePath = path.join(extractionRoot, PAYLOAD_ARCHIVE_NAME);
+        try {
+            await fsp.mkdir(extractionRoot, { recursive: true });
+            await execFilePromise(
+                execFileImpl,
+                setupExecutable,
+                [`${PAYLOAD_EXTRACTION_ARGUMENT}${extractionRoot}`],
+                {
+                    cwd: tempDirectory,
+                    env: setupProcessEnvironment(),
+                    windowsHide: true,
+                    maxBuffer: 256 * 1024,
+                },
+            );
+            if (!(await pathExists(archivePath))) {
+                throw new InstallerError('PAYLOAD_MISSING', '安装包内缺少应用文件，请重新下载安装包。');
+            }
+            return { extractionRoot, archivePath };
+        } catch (error) {
+            await removePath(extractionRoot).catch(() => {});
+            if (error instanceof InstallerError) throw error;
+            throw new InstallerError('PAYLOAD_MISSING', '无法读取安装包内的应用文件，请重新下载安装包。', error);
+        }
+    }
+
+    async function extractPayloadTo(destination, onProgress, isCancelled) {
+        // Keep the directory form as a compatibility path for source previews,
+        // older Setup builds, and the existing service tests. New installers
+        // contain only the archive and extractor, so they take the fast path
+        // below without copying the payload through a second temporary tree.
+        if (await pathExists(payloadPath)) {
+            await copyTree(payloadPath, destination, onProgress, isCancelled);
+            return;
+        }
+        if (typeof isCancelled === 'function' && isCancelled()) {
+            throw new InstallerError('CANCELLED', '操作已取消。');
+        }
+        const materialized = await pathExists(payloadArchivePath)
+            ? { extractionRoot: null, archivePath: payloadArchivePath }
+            : await materializePayloadArchive();
+        try {
+            // The normal product path uses os.tmpdir(), but tests and embedded
+            // callers may provide a fresh temp root.  Ensure the extractor's
+            // cwd exists before spawning 7za so a valid payload is not reported
+            // as missing merely because that directory has not been created.
+            await fsp.mkdir(tempDirectory, { recursive: true });
+            if (!(await pathExists(payloadExtractorPath))) {
+                throw new InstallerError('PAYLOAD_MISSING', '安装包内缺少解压工具，请重新下载安装包。');
+            }
+            await fsp.mkdir(toLongPath(destination, platform), { recursive: true });
+            formatProgress(onProgress, {
+                percent: 12,
+                phase: 'write',
+                stage: '正在解压应用文件',
+                file: '正在展开小猪wordTTS.exe…',
+                count: '正在准备解压',
+            });
+            await execFilePromise(
+                execFileImpl,
+                payloadExtractorPath,
+                [
+                    'x',
+                    '-bd',
+                    '-bso0',
+                    '-bsp0',
+                    '-y',
+                    materialized.archivePath,
+                    `-o${destination}`,
+                ],
+                {
+                    cwd: tempDirectory,
+                    windowsHide: true,
+                    maxBuffer: 1024 * 1024,
+                },
+            );
+            if (typeof isCancelled === 'function' && isCancelled()) {
+                throw new InstallerError('CANCELLED', '操作已取消。');
+            }
+            if (!(await pathExists(path.join(destination, APP_EXECUTABLE)))) {
+                throw new InstallerError('PAYLOAD_INCOMPLETE', `安装包中未找到 ${APP_EXECUTABLE}。`);
+            }
+            formatProgress(onProgress, {
+                percent: 70,
+                phase: 'write',
+                stage: '正在写入应用文件',
+                file: '应用文件已经解压完成…',
+                count: '正在准备最后一步',
+            });
+        } catch (error) {
+            if (error instanceof InstallerError) throw error;
+            throw new InstallerError('PAYLOAD_INVALID', '应用文件解压失败，请重试或重新下载安装包。', error);
+        } finally {
+            if (materialized.extractionRoot) {
+                await removePath(materialized.extractionRoot).catch(() => {});
+            }
+        }
     }
 
     async function replaceApplication({ targetPath, mode, scope, version, desktopShortcut, startMenuShortcut, refreshShortcuts = true, onProgress, isCancelled }) {
@@ -1333,7 +1544,7 @@ function createInstallerService(options = {}) {
             }
             await fsp.mkdir(path.dirname(normalizedTarget), { recursive: true });
             await removePath(stagingPath);
-            await copyTree(payloadPath, stagingPath, onProgress, isCancelled);
+            await extractPayloadTo(stagingPath, onProgress, isCancelled);
             if (!(await pathExists(path.join(stagingPath, APP_EXECUTABLE)))) {
                 throw new InstallerError('PAYLOAD_INVALID', `安装包中未找到 ${APP_EXECUTABLE}。`);
             }
@@ -1442,16 +1653,32 @@ function createInstallerService(options = {}) {
     }
 
     async function syncShortcuts(state, { desktopShortcut, startMenuShortcut }) {
-        const links = shortcutPaths(environment, state.scope);
+        const links = shortcutPaths(environment, state.scope, knownFolders);
         if (desktopShortcut) {
             await runPowerShell(createShortcutScript(links.desktop, state.executable, state.installPath));
+            if (!(await pathExists(links.desktop))) {
+                throw new InstallerError('SHORTCUT_CREATE_FAILED', '桌面快捷方式创建失败，请重试。');
+            }
+            for (const stalePath of links.desktopCandidates || []) {
+                if (!pathEquals(stalePath, links.desktop, 'win32')) await removePath(stalePath);
+            }
         } else {
-            await removePath(links.desktop);
+            for (const shortcutPath of links.desktopCandidates || [links.desktop]) {
+                await removePath(shortcutPath);
+            }
         }
         if (startMenuShortcut) {
             await runPowerShell(createShortcutScript(links.startMenu, state.executable, state.installPath));
+            if (!(await pathExists(links.startMenu))) {
+                throw new InstallerError('SHORTCUT_CREATE_FAILED', '开始菜单快捷方式创建失败，请重试。');
+            }
+            for (const stalePath of links.startMenuCandidates || []) {
+                if (!pathEquals(stalePath, links.startMenu, 'win32')) await removePath(stalePath);
+            }
         } else {
-            await removePath(links.startMenu);
+            for (const shortcutPath of links.startMenuCandidates || [links.startMenu]) {
+                await removePath(shortcutPath);
+            }
         }
     }
 
@@ -1592,9 +1819,13 @@ function createInstallerService(options = {}) {
             throw new InstallerError('CANCELLED', '操作已取消。');
         }
         if (platform === 'win32') {
-            const links = shortcutPaths(environment, effectiveState.scope || scope);
-            await removePath(links.desktop);
-            await removePath(links.startMenu);
+            const links = shortcutPaths(environment, effectiveState.scope || scope, knownFolders);
+            for (const shortcutPath of links.desktopCandidates || [links.desktop]) {
+                await removePath(shortcutPath);
+            }
+            for (const shortcutPath of links.startMenuCandidates || [links.startMenu]) {
+                await removePath(shortcutPath);
+            }
             await runPowerShell(removeRegistryScript(effectiveState.scope || scope));
         }
         formatProgress(onProgress, { percent: 45, phase: 'write', stage: '正在移除应用文件', file: '正在清理应用目录…', count: '正在移除' });
@@ -1697,7 +1928,13 @@ function createInstallerService(options = {}) {
         if (!existsSyncSafe(executable)) throw new InstallerError('APP_MISSING', '未找到已安装的应用程序。');
         let child;
         try {
-            child = spawnImpl(executable, [], { cwd: normalizedTarget, detached: true, stdio: 'ignore', windowsHide: true });
+            child = spawnImpl(executable, [], {
+                cwd: normalizedTarget,
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true,
+                env: launchEnvironment(environment),
+            });
             if (!child || typeof child !== 'object') {
                 throw new Error('应用进程没有成功创建。');
             }
@@ -1719,10 +1956,14 @@ function createInstallerService(options = {}) {
         readState,
         setSetupExecutable,
         payloadPath,
+        payloadArchivePath,
+        payloadExtractorPath,
         constants: {
             PRODUCT_NAME,
             APP_EXECUTABLE,
             UNINSTALLER_EXECUTABLE,
+            PAYLOAD_ARCHIVE_NAME,
+            PAYLOAD_EXTRACTOR_NAME,
             INSTALL_STATE_FILE,
             INSTALL_LOCATION_FILE,
         },
@@ -1735,17 +1976,21 @@ module.exports = {
     INSTALL_LOCATION_FILE,
     INSTALL_STATE_FILE,
     InstallerError,
+    PAYLOAD_ARCHIVE_NAME,
+    PAYLOAD_EXTRACTOR_NAME,
     PRODUCT_NAME,
     UNINSTALLER_EXECUTABLE,
     createInstallerService,
     decodeArgumentValue,
     encodePowerShellCommand,
     isPathInside,
+    launchEnvironment,
     readRegistryInstallLocations,
     relocatedExecutableCleanupBatch,
     resolveCleanupLauncherPath,
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,
+    shortcutPaths,
     validateInstallTargetPath,
     waitForCleanupReady,
     normalizeTargetPath,

@@ -674,6 +674,12 @@ async function bootstrap() {
         version: app.getVersion(),
         environment: process.env,
         tempDirectory: os.tmpdir(),
+        knownFolders: process.platform === 'win32'
+            ? {
+                desktop: app.getPath('desktop'),
+                startMenu: path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+            }
+            : undefined,
     });
     if (pendingRequest?.sourceExecutable) {
         installerService.setSetupExecutable?.(pendingRequest.sourceExecutable);

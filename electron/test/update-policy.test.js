@@ -102,6 +102,7 @@ test('发布元数据从实际 Windows 安装包计算大小和 SHA-512', () => 
     try {
         fs.mkdirSync(releaseDir);
         fs.writeFileSync(path.join(releaseDir, artifactName), artifactBytes);
+        fs.writeFileSync(path.join(releaseDir, `${artifactName}.blockmap`), Buffer.from('blockmap fixture', 'utf8'));
         fs.writeFileSync(policyPath, JSON.stringify({
             mode: 'optional',
             minimumSupportedVersion: null,
@@ -128,6 +129,10 @@ test('发布元数据从实际 Windows 安装包计算大小和 SHA-512', () => 
         assert.equal(metadata.artifact.url, 'wordTTS-Setup-2.7.45-x64.exe');
         assert.equal(metadata.artifact.size, artifactBytes.length);
         assert.equal(metadata.artifact.sha512, result.checksum);
+        assert.equal(metadata.artifact.blockmap, 'wordTTS-Setup-2.7.45-x64.exe.blockmap');
+        assert.equal(metadata.blockmap.url, 'wordTTS-Setup-2.7.45-x64.exe.blockmap');
+        assert.equal(metadata.blockmap.size, Buffer.byteLength('blockmap fixture'));
+        assert.ok(metadata.blockmap.sha512);
         assert.equal(metadata.files[0].url, metadata.artifact.url);
         assert.equal(metadata.updateMode, 'optional');
         assert.match(metadata.releaseNotes, /修复更新流程/);

@@ -132,6 +132,14 @@ function customWindowsMetadataForArtifact({ version, tag, policy, notes, artifac
         releaseDate,
     });
     const file = metadata.files[0];
+    const blockmapName = `${artifact.name}.blockmap`;
+    const blockmapPath = path.join(releaseDir, blockmapName);
+    const blockmap = fs.existsSync(blockmapPath)
+        ? {
+            url: githubAssetName(blockmapName),
+            ...checksum(blockmapPath),
+        }
+        : null;
     return {
         schemaVersion: 1,
         platform: 'win32',
@@ -141,7 +149,9 @@ function customWindowsMetadataForArtifact({ version, tag, policy, notes, artifac
             url: file.url,
             sha512: file.sha512,
             size: file.size,
+            ...(blockmap ? { blockmap: blockmap.url } : {}),
         },
+        ...(blockmap ? { blockmap } : {}),
         ...metadata,
     };
 }

@@ -9,6 +9,9 @@ const {
     PORTABLE_UNINSTALL_RELOCATION_BLOCK,
     PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK,
     DEFAULT_7Z_COMPRESSION_LEVEL,
+    PAYLOAD_ARCHIVE_NAME,
+    PAYLOAD_EXTRACTOR_NAME,
+    PAYLOAD_EXTRACTION_MARKER,
     createBuildProject,
     describeBuildProgress,
     patchPortableTemplate,
@@ -65,7 +68,7 @@ test('Windows portable 外壳在 Electron 退出后启动自身清理批处理',
     assert.doesNotMatch(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /powershell/i);
 });
 
-test('自绘 portable 直接读取已完成 payload，并使用可重复启动的 7z 路径', () => {
+test('自绘 portable 延迟解压 payload，并把 7z 解压工具放进安装器资源', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-project-'));
     const payloadDir = path.join(root, 'win-unpacked');
     const workDir = path.join(root, 'build-project');
@@ -73,21 +76,66 @@ test('自绘 portable 直接读取已完成 payload，并使用可重复启动�
     try {
         fs.mkdirSync(payloadDir, { recursive: true });
         fs.writeFileSync(path.join(payloadDir, '小猪wordTTS.exe'), 'fixture');
+        const extractorPath = path.join(root, PAYLOAD_EXTRACTOR_NAME);
+        fs.writeFileSync(extractorPath, '7za fixture');
         const { packageJson } = createBuildProject({
             payloadDir,
             outputDir,
             workDir,
+            extractorPath,
         });
         assert.equal(packageJson.build.compression, 'normal');
         assert.deepEqual(packageJson.build.extraResources, [
-            { from: payloadDir, to: 'payload' },
+            { from: path.resolve(extractorPath), to: PAYLOAD_EXTRACTOR_NAME },
         ]);
         assert.equal(packageJson.build.portable.useZip, undefined);
         assert.equal(packageJson.build.portable.unpackDirName, false);
         assert.equal(packageJson.build.win.signExts, undefined);
         assert.equal(DEFAULT_7Z_COMPRESSION_LEVEL, '5');
+        assert.equal(PAYLOAD_ARCHIVE_NAME, 'wordtts-payload.7z');
+        assert.equal(PAYLOAD_EXTRACTOR_NAME, 'wordtts-7za.exe');
         assert.equal(fs.existsSync(path.join(workDir, 'payload')), false);
     } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('自绘 portable 模板把 payload 导出入口写进 NSIS Section，并可完整恢复', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-payload-template-'));
+    const templatePath = path.join(root, 'portable.nsi');
+    const payloadArchivePath = path.join(root, 'wordtts-payload.7z');
+    const original = [
+        '!include "common.nsh"',
+        '!include "extractAppPackage.nsh"',
+        'Section',
+        '  StrCpy $INSTDIR "$PLUGINSDIR\\app"',
+        '  !ifdef UNPACK_DIR_NAME',
+        '    StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
+        '  !endif',
+        '  SetOutPath $EXEDIR',
+        '\tRMDir /r $INSTDIR',
+        'SectionEnd',
+        '',
+    ].join('\n');
+    let restore = null;
+    try {
+        fs.writeFileSync(templatePath, original, 'utf8');
+        fs.writeFileSync(payloadArchivePath, 'payload archive fixture', 'utf8');
+        restore = patchPortableTemplate(templatePath, { payloadArchivePath });
+        const patched = fs.readFileSync(templatePath, 'utf8');
+        const normalizedArchivePath = path.win32.normalize(path.resolve(payloadArchivePath));
+        assert.match(patched, /!include "FileFunc\.nsh"/);
+        assert.match(patched, new RegExp(`${PAYLOAD_EXTRACTION_MARKER}`));
+        assert.match(patched, /\$\{GetOptions\} \$R0 "--wordtts-extract-payload=" \$R1/);
+        assert.match(patched, /SetCompress off[\s\S]*File \/oname=wordtts-payload\.7z[\s\S]*SetCompress auto/);
+        assert.match(patched, /File \/oname=wordtts-payload\.7z/);
+        assert.ok(patched.includes(`"${normalizedArchivePath}"`));
+        assert.ok(patched.indexOf(`; ${PAYLOAD_EXTRACTION_MARKER}`) < patched.indexOf('StrCpy $INSTDIR'));
+        restore();
+        restore = null;
+        assert.equal(fs.readFileSync(templatePath, 'utf8'), original);
+    } finally {
+        restore?.();
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
@@ -183,6 +231,43 @@ test('Windows portable 模板即使上次构建中断也能恢复为原始内容
     }
 });
 
+test('Windows portable 模板补丁校验失败时也会回滚，不留下半补丁文件', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-portable-template-transaction-'));
+    const templatePath = path.join(root, 'portable.nsi');
+    const original = [
+        'Section',
+        '  StrCpy $INSTDIR "$PLUGINSDIR\\app"',
+        '  !ifdef UNPACK_DIR_NAME',
+        '    StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
+        '  !endif',
+        '  SetOutPath $EXEDIR',
+        '\tRMDir /r $INSTDIR',
+        'SectionEnd',
+        '',
+    ].join('\n');
+    const originalReadFileSync = fs.readFileSync;
+    let templateReadCount = 0;
+    try {
+        fs.writeFileSync(templatePath, original, 'utf8');
+        fs.readFileSync = function patchedReadFileSync(target, ...args) {
+            const value = originalReadFileSync.call(fs, target, ...args);
+            if (target === templatePath && ++templateReadCount === 2) {
+                return value.replace(/WORDTTS_RELOCATED_UNINSTALLER/g, 'BROKEN_RELOCATED_UNINSTALLER');
+            }
+            return value;
+        };
+        assert.throws(
+            () => patchPortableTemplate(templatePath),
+            /自绘安装程序模板补丁未生效/,
+        );
+        fs.readFileSync = originalReadFileSync;
+        assert.equal(fs.readFileSync(templatePath, 'utf8'), original);
+    } finally {
+        fs.readFileSync = originalReadFileSync;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('build.files 覆盖 main/preload 直接依赖的每一个本地模块', () => {
     assert.ok(Array.isArray(buildFiles) && buildFiles.length > 0, 'build.files must be an explicit list');
 
@@ -269,6 +354,13 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         path.join(APP_DIR, '..', 'scripts', 'build_windows_installer.js'),
         'utf8',
     );
+    const windowsUpdateAuditScriptPath = path.join(
+        APP_DIR,
+        '..',
+        'scripts',
+        'verify_windows_installer_update.js',
+    );
+    const windowsUpdateAuditScript = fs.readFileSync(windowsUpdateAuditScriptPath, 'utf8');
     const installerMain = fs.readFileSync(
         path.join(installerSourceDir, 'installer-main.js'),
         'utf8',
@@ -281,6 +373,10 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(packageJson.scripts['build:win'], /build_windows_installer\.js --payload/);
     assert.match(windowsWorkflow, /electron-builder --win dir --publish never/);
     assert.match(windowsWorkflow, /build_windows_installer\.js --payload release\/win-unpacked/);
+    assert.match(windowsWorkflow, /verify_windows_installer_update\.js/);
+    assert.match(windowsUpdateAuditScript, /createWindowsUpdateClient/);
+    assert.match(windowsUpdateAuditScript, /Range differential|Range/);
+    assert.match(windowsUpdateAuditScript, /fullArtifactRequests/);
     assert.match(windowsWorkflow, /name: Cache electron-builder toolchains/);
     assert.match(windowsWorkflow, /path: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
     assert.match(windowsWorkflow, /ELECTRON_BUILDER_CACHE: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
@@ -291,13 +387,19 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         windowsWorkflow,
         /- name: Upload artifact[\s\S]*?name: 小猪wordTTS-Windows[\s\S]*?compression-level: 0/,
     );
-    assert.match(windowsInstallerBuildScript, /patchPortableTemplate\(portableTemplatePath\)/);
+    assert.match(windowsInstallerBuildScript, /patchPortableTemplate\(portableTemplatePath,/);
     assert.match(windowsInstallerBuildScript, /'--win', 'portable', '--x64'/);
     assert.match(windowsInstallerBuildScript, /ELECTRON_BUILDER_7Z_FILTER: 'BCJ'/);
     assert.match(windowsInstallerBuildScript, /DEFAULT_7Z_COMPRESSION_LEVEL = '5'/);
     assert.match(windowsInstallerBuildScript, /每 .* 秒报告 7z\/NSIS 输出体积/);
     assert.match(windowsInstallerBuildScript, /unpackDirName: false/);
     assert.match(windowsInstallerBuildScript, /WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR/);
+    assert.match(windowsInstallerBuildScript, /createPayloadArchive/);
+    assert.match(windowsInstallerBuildScript, /wordtts-payload\.7z/);
+    assert.match(windowsInstallerBuildScript, /wordtts-7za\.exe/);
+    assert.match(windowsInstallerBuildScript, /WORDTTS_PAYLOAD_EXTRACTION/);
+    assert.match(windowsInstallerBuildScript, /buildBlockMap/);
+    assert.match(windowsInstallerBuildScript, /solid: false/);
     assert.doesNotMatch(windowsInstallerBuildScript, /useZip:\s*true/);
     assert.match(windowsWorkflow, /--headless", "--mode=install"/);
     assert.match(windowsWorkflow, /--headless", "--mode=update"/);
@@ -330,7 +432,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         (windowsWorkflow.match(/\$installerName = "小猪wordTTS-Setup-\$env:UPDATE_VERSION-x64\.exe"/g) || []).length >= 2,
         'installer smoke and artifact validation steps must bind to the current x64 setup executable',
     );
-    assert.doesNotMatch(windowsWorkflow, /blockmap|latest\.yml/);
+    assert.match(windowsWorkflow, /wordtts-.*\.exe\.blockmap|差分索引/);
     assert.doesNotMatch(windowsWorkflow, /-Filter "\*-Setup-\*\.exe"/);
     assert.doesNotMatch(windowsWorkflow, /Get-ChildItem -Path "electron\/release" -Filter "\*\.exe"/);
     assert.match(windowsBuildScript, /electron-builder --win dir --publish never/);
@@ -361,7 +463,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*mv.*github_installer[\s\S]*wordTTS-Setup-/);
     assert.match(releaseWorkflow, /files:[\s\S]*electron\/release\/wordTTS-Setup-\$\{\{ needs\.windows\.outputs\.version \}\}-x64\.exe/);
     assert.match(releaseWorkflow, /electron\/release\/latest-win\.json/);
-    assert.doesNotMatch(releaseWorkflow, /latest\.yml|blockmap/);
+    assert.match(releaseWorkflow, /wordTTS-Setup-\$\{\{ needs\.windows\.outputs\.version \}\}-x64\.exe\.blockmap/);
     assert.match(releaseWorkflow, /Publish release after all assets upload[\s\S]*RELEASE_ID: \$\{\{ steps\.release\.outputs\.id \}\}[\s\S]*releases\/\$\{RELEASE_ID\}[\s\S]*draft=false/);
     assert.doesNotMatch(releaseWorkflow, /--paginate --slurp|sleep [0-9]/);
     assert.doesNotMatch(releaseWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);

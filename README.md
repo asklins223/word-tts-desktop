@@ -17,6 +17,7 @@
 - macOS 与 Windows 桌面安装包均由 GitHub Actions 自动构建。
 - 桌面端内置版本中心：启动后自动检查 GitHub Releases，支持可选/强制更新、下载、重启安装和更新日志展示。
 - Windows 使用独立的 HTML 自绘 Setup.exe，安装、更新、卸载共用同一套可高度定制的界面，并支持选择安装目录、安装范围和数据保留策略；macOS 保持打开即用或拖入 Applications 的原生流程。
+- Windows 自绘 Setup 启动时先显示界面，再按需解压应用 payload；安装器支持无边框窗口拖动、完成后可靠启动应用和桌面/开始菜单快捷方式清理，更新优先使用 `.blockmap` 差分下载，条件不满足时自动回退全量下载。
 - 正式桌面 App 默认开启真实讯飞调用，双击安装包即可使用；`--smoke-test` 始终只走逻辑离线流程，不打开真实页面。直接诊断后端时可用 `--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 显式离线。
 - Renderer 只保留新的工作台单一入口；workflow 数据与任务记录由现有服务端目录独立持久化，界面更新不会创建第二套 Shell。
 
