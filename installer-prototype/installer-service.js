@@ -632,6 +632,13 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         `$launcherPath = ${powershellLiteral(launcherPath || '')}`,
         '$targetRoot = ([IO.Path]::GetFullPath($target)).TrimEnd(\'\\\') + \'\\\'',
         '$missingAttempts = 0',
+        // Give the portable wrapper a fixed handoff window even when Windows
+        // cannot report its parent PID/image path reliably. The wrapper may
+        // perform its final output-directory operation just after the child
+        // Electron process exits; deleting during that window can make the
+        // helper observe a temporary absence and then lose to the wrapper's
+        // directory recreation.
+        '$launcherGraceDeadline = (Get-Date).AddSeconds(15)',
         'function Write-CleanupLog([string]$message) {',
         '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -ErrorAction SilentlyContinue } catch {}',
         '}',
@@ -688,6 +695,11 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         '  if ($launcherRunning) {',
         '    $missingAttempts = 0',
         '    if (($attempt % 10) -eq 0) { Write-CleanupLog ("waiting for portable launcher attempt=" + $attempt) }',
+        '    continue',
+        '  }',
+        '  if ((Get-Date) -lt $launcherGraceDeadline) {',
+        '    $missingAttempts = 0',
+        '    if (($attempt % 10) -eq 0) { Write-CleanupLog ("waiting for portable launcher grace period attempt=" + $attempt) }',
         '    continue',
         '  }',
         '  # rmdir is less prone than the PowerShell provider to leaving a',

@@ -54,6 +54,8 @@ test('Windows 延迟卸载脚本会等待 portable 外壳退出后再删除目�
     assert.ok(launcherGuard >= 0 && launcherGuard < processKill);
     assert.ok(launcherWait >= 0 && launcherWait < directoryDelete);
     assert.match(script, /Get-Process -Id \$launcherProcessId/);
+    assert.match(script, /\$launcherGraceDeadline = \(Get-Date\)\.AddSeconds\(15\)/);
+    assert.ok(script.indexOf('if ((Get-Date) -lt $launcherGraceDeadline)') < directoryDelete);
 });
 
 test('自绘安装器参数解析支持普通、更新、卸载和无窗口冒烟参数', () => {
