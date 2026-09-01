@@ -57,6 +57,14 @@ test('Windows portable 卸载外壳在解压 Electron 前先迁移到 TEMP', () 
         PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('SetOutPath $TEMP')
             < PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('Exec'),
     );
+    assert.ok(
+        PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('Exec')
+            < PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('SetErrorLevel 0'),
+    );
+    assert.ok(
+        PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('SetErrorLevel 0')
+            < PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('Quit'),
+    );
 });
 
 test('Windows portable 模板即使上次构建中断也能恢复为原始内容', () => {

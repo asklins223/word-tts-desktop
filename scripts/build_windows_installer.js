@@ -38,6 +38,7 @@ const PORTABLE_UNINSTALL_RELOCATION_BLOCK = [
     '  ClearErrors',
     '  Exec \'"$R2" $R0 --mode=uninstall --target="$EXEDIR" --uninstall-relocated\'',
     '  IfErrors wordtts_relocation_failed',
+    '  SetErrorLevel 0',
     '  Quit',
     'wordtts_relocation_failed:',
     '  Delete "$R2"',
