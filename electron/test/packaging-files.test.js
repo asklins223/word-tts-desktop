@@ -8,7 +8,9 @@ const path = require('path');
 const {
     PORTABLE_UNINSTALL_RELOCATION_BLOCK,
     PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK,
+    DEFAULT_7Z_COMPRESSION_LEVEL,
     createBuildProject,
+    describeBuildProgress,
     patchPortableTemplate,
 } = require('../../scripts/build_windows_installer');
 
@@ -83,7 +85,29 @@ test('自绘 portable 直接读取已完成 payload，并使用可重复启动�
         assert.equal(packageJson.build.portable.useZip, undefined);
         assert.equal(packageJson.build.portable.unpackDirName, false);
         assert.equal(packageJson.build.win.signExts, undefined);
+        assert.equal(DEFAULT_7Z_COMPRESSION_LEVEL, '5');
         assert.equal(fs.existsSync(path.join(workDir, 'payload')), false);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('Windows portable 长压缩阶段报告真实归档体积和增长量', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-progress-'));
+    try {
+        const waiting = describeBuildProgress(root, 15_000);
+        assert.equal(waiting.bytes, null);
+        assert.match(waiting.message, /已运行 15秒/);
+        assert.match(waiting.message, /正在准备 7z 归档/);
+
+        const archivePath = path.join(root, 'word-tts-3.0.4-x64.nsis.7z');
+        fs.writeFileSync(archivePath, Buffer.alloc(2 * 1024 * 1024));
+        const compressing = describeBuildProgress(root, 65_000, 1024 * 1024);
+        assert.equal(compressing.bytes, 2 * 1024 * 1024);
+        assert.match(compressing.message, /7z 压缩中/);
+        assert.match(compressing.message, /1分05秒/);
+        assert.match(compressing.message, /已写入 2\.0 MiB/);
+        assert.match(compressing.message, /本周期 \+1\.0 MiB/);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
@@ -255,15 +279,26 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsWorkflow, /path: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
     assert.match(windowsWorkflow, /ELECTRON_BUILDER_CACHE: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
     assert.match(windowsWorkflow, /ELECTRON_BUILDER_7Z_FILTER: BCJ/);
+    assert.match(windowsWorkflow, /ELECTRON_BUILDER_COMPRESSION_LEVEL: '5'/);
+    assert.match(windowsWorkflow, /npm ci --prefer-offline --no-audit --fund=false/);
+    assert.match(
+        windowsWorkflow,
+        /- name: Upload artifact[\s\S]*?name: 小猪wordTTS-Windows[\s\S]*?compression-level: 0/,
+    );
     assert.match(windowsInstallerBuildScript, /patchPortableTemplate\(portableTemplatePath\)/);
     assert.match(windowsInstallerBuildScript, /'--win', 'portable', '--x64'/);
     assert.match(windowsInstallerBuildScript, /ELECTRON_BUILDER_7Z_FILTER: 'BCJ'/);
+    assert.match(windowsInstallerBuildScript, /DEFAULT_7Z_COMPRESSION_LEVEL = '5'/);
+    assert.match(windowsInstallerBuildScript, /每 .* 秒报告 7z\/NSIS 输出体积/);
     assert.match(windowsInstallerBuildScript, /unpackDirName: false/);
     assert.match(windowsInstallerBuildScript, /WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR/);
     assert.doesNotMatch(windowsInstallerBuildScript, /useZip:\s*true/);
     assert.match(windowsWorkflow, /--headless", "--mode=install"/);
     assert.match(windowsWorkflow, /--headless", "--mode=update"/);
     assert.match(windowsWorkflow, /--headless", "--mode=uninstall"/);
+    assert.match(windowsWorkflow, /Remove-Item Env:ELECTRON_RUN_AS_NODE/);
+    assert.match(windowsWorkflow, /Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH/);
+    assert.match(windowsWorkflow, /Remove-Item Env:PLAYWRIGHT_NODEJS_PATH/);
     assert.match(windowsWorkflow, /小猪wordTTS-uninstaller\.exe/);
     assert.match(installerMain, /relocateInstalledUninstaller/);
     assert.match(installerMain, /WORDTTS_RELOCATED_UNINSTALLER/);
@@ -307,6 +342,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         'Unified release job must download and verify the exact Windows installer before publishing',
     );
     assert.match(releaseWorkflow, /needs: \[macos, windows\]/);
+    assert.match(releaseWorkflow, /concurrency:[\s\S]*cancel-in-progress: true/);
     assert.equal(
         (releaseWorkflow.match(/version: \$\{\{ github\.event\.inputs\.version \|\| '' \}\}/g) || []).length,
         2,
@@ -316,7 +352,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(releaseWorkflow, /draft: true/);
     assert.match(releaseWorkflow, /id: release[\s\S]*uses: softprops\/action-gh-release@v2/);
     assert.match(releaseWorkflow, /fail_on_unmatched_files: true/);
-    assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_installer[\s\S]*wordTTS-Setup-/);
+    assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*mv.*github_installer[\s\S]*wordTTS-Setup-/);
     assert.match(releaseWorkflow, /files:[\s\S]*electron\/release\/wordTTS-Setup-\$\{\{ needs\.windows\.outputs\.version \}\}-x64\.exe/);
     assert.match(releaseWorkflow, /electron\/release\/latest-win\.json/);
     assert.doesNotMatch(releaseWorkflow, /latest\.yml|blockmap/);
@@ -330,6 +366,11 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     const macBuildScript = fs.readFileSync(
         path.join(APP_DIR, '..', 'build_electron.sh'),
         'utf8',
+    );
+    assert.match(macWorkflow, /npm ci --prefer-offline --no-audit --fund=false/);
+    assert.match(
+        macWorkflow,
+        /- name: Upload artifact[\s\S]*?name: 小猪wordTTS-macOS[\s\S]*?compression-level: 0/,
     );
     assert.match(
         macWorkflow,
@@ -356,7 +397,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         'Unified release job must download and verify the packaged macOS artifacts before publishing',
     );
     assert.match(releaseWorkflow, /draft: true/);
-    assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*cp.*github_zip[\s\S]*cp.*github_dmg/);
+    assert.match(releaseWorkflow, /Prepare canonical GitHub asset names[\s\S]*mv.*github_zip[\s\S]*mv.*github_dmg/);
     assert.match(releaseWorkflow, /files:[\s\S]*electron\/release\/wordTTS-\$\{\{ needs\.macos\.outputs\.version \}\}-\$\{\{ needs\.macos\.outputs\.architecture \}\}\.dmg/);
     assert.match(releaseWorkflow, /Publish release after all assets upload[\s\S]*RELEASE_ID: \$\{\{ steps\.release\.outputs\.id \}\}[\s\S]*releases\/\$\{RELEASE_ID\}[\s\S]*draft=false/);
     assert.doesNotMatch(releaseWorkflow, /releases\/tags\/\$\{GITHUB_REF_NAME\}/);

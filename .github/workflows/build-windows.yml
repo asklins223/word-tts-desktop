@@ -133,7 +133,9 @@ jobs:
       # ======================================================================
       - name: Install Electron dependencies
         working-directory: electron
-        run: npm ci
+        # A dedicated audit step runs below; avoid npm ci doing the same
+        # registry audit a second time while installing from the cache.
+        run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Test Electron native file dialogs
         working-directory: electron
@@ -218,20 +220,32 @@ jobs:
       # ======================================================================
       # 7. electron-builder 打包 Windows 应用
       # ======================================================================
-      - name: Build Electron app
+      - name: Build app icons
         working-directory: electron
-        run: |
-          npm run build:icons
-          npx electron-builder --win dir --publish never
-          node ../scripts/build_windows_installer.js --payload release/win-unpacked --output-dir release
+        run: npm run build:icons
+
+      - name: Package Electron app directory
+        working-directory: electron
+        run: npx electron-builder --win dir --publish never
         env:
           # 未配置密钥时生成未签名测试包；配置后自动生成 Authenticode 签名包。
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+
+      - name: Build Windows portable installer
+        working-directory: electron
+        run: node ../scripts/build_windows_installer.js --payload release/win-unpacked --output-dir release
+        env:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
           # Keep the portable payload in 7z, but avoid BCJ2: the bundled
           # NSIS 7z extractor must also unpack it during install/update.
           ELECTRON_BUILDER_7Z_FILTER: BCJ
+          # electron-builder 26.15.x otherwise maps 7z "normal" to -mx=9.
+          # Level 5 is substantially faster for the bundled Chromium payload.
+          ELECTRON_BUILDER_COMPRESSION_LEVEL: '5'
 
       - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
@@ -469,6 +483,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "已安装后端的持久化 Chromium 冒烟失败" }
             Write-Host "已安装后端的持久化 Chromium 冒烟通过"
 
+            # The installed-backend check runs Electron in Node mode. Do not
+            # leak that mode or its paths into the next Setup.exe invocation:
+            # otherwise the updater itself is started as a Node process and
+            # exits before installer-main.js can write a diagnostic.
+            Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+            Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
+            Remove-Item Env:PLAYWRIGHT_NODEJS_PATH -ErrorAction SilentlyContinue
+
             # The installer intentionally rejects same-version updates. Mark
             # this disposable smoke-test installation as an older release so
             # the next invocation exercises the real upgrade path instead of
@@ -644,4 +666,6 @@ jobs:
           path: |
             ${{ steps.find-installer.outputs.installer_path }}
           retention-days: 30
+          # Setup.exe already contains a compressed 7z payload.
+          compression-level: 0
           if-no-files-found: error
