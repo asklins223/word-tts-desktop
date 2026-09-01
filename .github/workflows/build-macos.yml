@@ -236,7 +236,7 @@ jobs:
             'tmp = tempfile.mkdtemp(prefix="pw-macos-smoke-")' \
             'p = sync_playwright().start()' \
             'try:' \
-            '    ctx = p.chromium.launch_persistent_context(tmp, headless=True, args=["--no-first-run"])' \
+            '    ctx = p.chromium.launch_persistent_context(tmp, channel="chromium", headless=True, args=["--no-first-run"])' \
             '    page = ctx.new_page()' \
             '    page.goto("about:blank")' \
             '    print("macos persistent ok")' \

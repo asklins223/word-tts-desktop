@@ -336,3 +336,34 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(releaseWorkflow, /local_dmg="electron\/release\/小猪wordTTS-/);
     assert.match(macBuildScript, /builder_zip_path[\s\S]*rm -f \"\$builder_zip_path\"[\s\S]*latest-mac\.yml/);
 });
+
+test('打包冒烟使用完整 Chromium，并固定 Windows Python 输出为 UTF-8', () => {
+    const macosWorkflow = fs.readFileSync(
+        path.join(APP_DIR, '..', '.github', 'workflows', 'build-macos.yml'),
+        'utf8',
+    );
+    const windowsWorkflow = fs.readFileSync(
+        path.join(APP_DIR, '..', '.github', 'workflows', 'build-windows.yml'),
+        'utf8',
+    );
+
+    assert.match(
+        macosWorkflow,
+        /launch_persistent_context\(tmp, channel="chromium", headless=True/,
+    );
+    assert.doesNotMatch(macosWorkflow, /launch_persistent_context\(tmp, headless=True/);
+    assert.equal(
+        (windowsWorkflow.match(/channel='chromium'/g) || []).length,
+        2,
+        'Windows 两个持久化 Chromium 冒烟都必须显式使用完整 Chromium',
+    );
+    assert.doesNotMatch(windowsWorkflow, /launch_persistent_context\(tmp, headless=True/);
+    assert.match(
+        windowsWorkflow,
+        /name: Smoke test persistent Chromium \(Windows\)[\s\S]*?PYTHONUTF8: '1'[\s\S]*?PYTHONIOENCODING: 'utf-8'/,
+    );
+    assert.match(
+        windowsWorkflow,
+        /name: Smoke test custom install, update and uninstall[\s\S]*?PYTHONUTF8: '1'[\s\S]*?PYTHONIOENCODING: 'utf-8'/,
+    );
+});
