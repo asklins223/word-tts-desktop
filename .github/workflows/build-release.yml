@@ -23,6 +23,12 @@ on:
 permissions:
   contents: read
 
+# A moved/re-pushed tag supersedes its older build. Cancel the stale run so it
+# cannot spend another 8-12 minutes packaging artifacts that will not ship.
+concurrency:
+  group: wordtts-build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   macos:
     name: Build macOS
@@ -64,7 +70,7 @@ jobs:
 
       - name: Install release script dependencies
         working-directory: electron
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --fund=false
 
       - name: Download macOS build artifact
         uses: actions/download-artifact@v4
@@ -146,9 +152,11 @@ jobs:
           github_zip="electron/release/wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.zip"
           github_dmg="electron/release/wordTTS-${RELEASE_VERSION}-${MAC_ARCH}.dmg"
 
-          cp "$local_installer" "$github_installer"
-          cp "$local_zip" "$github_zip"
-          cp "$local_dmg" "$github_dmg"
+          # These are same-directory renames after metadata generation; moving
+          # avoids copying roughly 1 GB of already-verified release payloads.
+          mv "$local_installer" "$github_installer"
+          mv "$local_zip" "$github_zip"
+          mv "$local_dmg" "$github_dmg"
 
           test -s "$github_installer"
           test -s "$github_zip"

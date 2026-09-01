@@ -108,6 +108,12 @@ test('Windows portable 长压缩阶段报告真实归档体积和增长量', () 
         assert.match(compressing.message, /1分05秒/);
         assert.match(compressing.message, /已写入 2\.0 MiB/);
         assert.match(compressing.message, /本周期 \+1\.0 MiB/);
+
+        const installerPath = path.join(root, '小猪wordTTS-Setup-3.0.4-x64.exe');
+        fs.writeFileSync(installerPath, Buffer.alloc(3 * 1024 * 1024));
+        const assembling = describeBuildProgress(root, 80_000, compressing.bytes);
+        assert.equal(assembling.bytes, 3 * 1024 * 1024);
+        assert.match(assembling.message, /NSIS 封装中/);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

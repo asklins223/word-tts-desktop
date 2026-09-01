@@ -96,7 +96,7 @@ jobs:
 
       - name: Install Electron dependencies
         working-directory: electron
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --fund=false
 
       - name: Test Electron native file dialogs
         working-directory: electron
@@ -264,4 +264,6 @@ jobs:
             ${{ steps.mac-artifacts.outputs.dmg }}
             ${{ steps.mac-artifacts.outputs.zip }}
           retention-days: 30
+          # Both files are already compressed release formats.
+          compression-level: 0
           if-no-files-found: error

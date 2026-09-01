@@ -13,12 +13,14 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const { normalizeProjectVersion, readProjectVersion } = require('./project_version');
 
 const rootDir = path.resolve(__dirname, '..');
 const installerSourceDir = path.join(rootDir, 'installer-prototype');
 const electronDir = path.join(rootDir, 'electron');
+const DEFAULT_7Z_COMPRESSION_LEVEL = '5';
+const BUILD_PROGRESS_INTERVAL_MS = 15_000;
 const PORTABLE_UNINSTALL_RELOCATION_LABEL = 'wordtts_continue_portable';
 const PORTABLE_UNINSTALL_RELOCATION_BLOCK = [
     '  # An installed portable executable cannot remove its own directory.',
@@ -196,7 +198,101 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
     return { packageJson, resolvedVersion };
 }
 
-function runBuilder(projectDir, electronDir, env = process.env) {
+function formatDuration(milliseconds) {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}分${String(seconds).padStart(2, '0')}秒` : `${seconds}秒`;
+}
+
+function formatMiB(bytes) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function findPortableBuildOutput(outputDir) {
+    let entries;
+    try {
+        entries = fs.readdirSync(outputDir, { withFileTypes: true });
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    }
+
+    const files = [];
+    for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const type = entry.name.endsWith('.nsis.7z')
+            ? 'archive'
+            : entry.name.endsWith('.exe')
+                ? 'installer'
+                : null;
+        if (!type) continue;
+        const filePath = path.join(outputDir, entry.name);
+        try {
+            files.push({
+                type,
+                name: entry.name,
+                size: fs.statSync(filePath).size,
+            });
+        } catch (error) {
+            // The archive can be renamed or removed between readdir and stat
+            // when electron-builder moves from 7z creation to NSIS assembly.
+            if (error.code !== 'ENOENT') throw error;
+        }
+    }
+
+    files.sort((left, right) => {
+        // Once the final executable appears, NSIS assembly is the newest stage
+        // even if electron-builder has not removed its intermediate archive yet.
+        const typeOrder = { archive: 1, installer: 2 };
+        return typeOrder[right.type] - typeOrder[left.type] || right.size - left.size;
+    });
+    return files[0] || null;
+}
+
+function describeBuildProgress(outputDir, elapsedMs, previousBytes = null) {
+    const output = findPortableBuildOutput(outputDir);
+    const elapsed = formatDuration(elapsedMs);
+    if (!output) {
+        return {
+            bytes: null,
+            message: `[打包进度] 已运行 ${elapsed}；正在准备 7z 归档，请稍候…`,
+        };
+    }
+
+    const growth = previousBytes != null && output.size > previousBytes
+        ? `，本周期 +${formatMiB(output.size - previousBytes)}`
+        : '';
+    const stage = output.type === 'archive' ? '7z 压缩中' : 'NSIS 封装中';
+    return {
+        bytes: output.size,
+        message: `[打包进度] ${stage}：已运行 ${elapsed}，${output.name} 已写入 ${formatMiB(output.size)}${growth}`,
+    };
+}
+
+function startBuildProgressReporter(outputDir, intervalMs = BUILD_PROGRESS_INTERVAL_MS) {
+    const startedAt = Date.now();
+    let previousBytes = null;
+    console.log(`[打包进度] electron-builder 已启动；每 ${Math.round(intervalMs / 1000)} 秒报告 7z/NSIS 输出体积。`);
+    const timer = setInterval(() => {
+        try {
+            const progress = describeBuildProgress(outputDir, Date.now() - startedAt, previousBytes);
+            previousBytes = progress.bytes;
+            console.log(progress.message);
+        } catch (error) {
+            // Progress reporting is observability only and must never turn a
+            // successful package build into a failure.
+            console.warn(`[打包进度] 暂时无法读取输出目录：${error.message}`);
+        }
+    }, intervalMs);
+    timer.unref?.();
+    return (result) => {
+        clearInterval(timer);
+        console.log(`[打包进度] electron-builder ${result}，总耗时 ${formatDuration(Date.now() - startedAt)}。`);
+    };
+}
+
+function runBuilder(projectDir, electronDir, outputDir, env = process.env) {
     const executable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
     // electron-builder 26.15.x can emit BCJ2-filtered 7z archives. The
     // NSIS runtime extractor bundled with portable installers does not
@@ -205,22 +301,55 @@ function runBuilder(projectDir, electronDir, env = process.env) {
     const builderEnv = {
         ...env,
         ELECTRON_BUILDER_7Z_FILTER: 'BCJ',
+        // electron-builder 26.15.x maps every non-store 7z build to -mx=9,
+        // even when build.compression is "normal". Level 5 cut a representative
+        // 347 MiB payload from 248s at level 7 to 71s for only 2.6% more bytes.
+        ELECTRON_BUILDER_COMPRESSION_LEVEL:
+            env.ELECTRON_BUILDER_COMPRESSION_LEVEL || DEFAULT_7Z_COMPRESSION_LEVEL,
     };
-    const result = spawnSync(
-        executable,
-        ['electron-builder', '--projectDir', projectDir, '--win', 'portable', '--x64', '--publish', 'never'],
-        {
-            cwd: electronDir,
-            env: builderEnv,
-            stdio: 'inherit',
-            // .cmd shims are not directly executable by Node on every
-            // supported Windows runtime. Let cmd.exe dispatch npx.cmd while
-            // keeping the POSIX path free of an unnecessary shell.
-            shell: process.platform === 'win32',
-        },
+    console.log(
+        `[打包配置] 7z 压缩等级=${builderEnv.ELECTRON_BUILDER_COMPRESSION_LEVEL}，过滤器=${builderEnv.ELECTRON_BUILDER_7Z_FILTER}`,
     );
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`自绘 Windows 安装程序构建失败，退出码: ${result.status}`);
+    return new Promise((resolve, reject) => {
+        let child;
+        try {
+            child = spawn(
+                executable,
+                ['electron-builder', '--projectDir', projectDir, '--win', 'portable', '--x64', '--publish', 'never'],
+                {
+                    cwd: electronDir,
+                    env: builderEnv,
+                    stdio: 'inherit',
+                    // .cmd shims are not directly executable by Node on every
+                    // supported Windows runtime. Let cmd.exe dispatch npx.cmd while
+                    // keeping the POSIX path free of an unnecessary shell.
+                    shell: process.platform === 'win32',
+                },
+            );
+        } catch (error) {
+            reject(error);
+            return;
+        }
+
+        const stopProgress = startBuildProgressReporter(outputDir);
+        let settled = false;
+        const finish = (error = null) => {
+            if (settled) return;
+            settled = true;
+            stopProgress(error ? '失败' : '完成');
+            if (error) reject(error);
+            else resolve();
+        };
+        child.once('error', finish);
+        child.once('close', (code, signal) => {
+            if (code === 0) {
+                finish();
+                return;
+            }
+            const detail = signal ? `信号: ${signal}` : `退出码: ${code}`;
+            finish(new Error(`自绘 Windows 安装程序构建失败，${detail}`));
+        });
+    });
 }
 
 function patchPortableTemplate(templatePath) {
@@ -319,7 +448,7 @@ function patchPortableTemplate(templatePath) {
     return () => fs.writeFileSync(templatePath, restoreContent, 'utf8');
 }
 
-function main() {
+async function main() {
     const args = parseArguments();
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-build-'));
     // electron-builder cleans its output directory before packaging. Keep
@@ -355,7 +484,7 @@ function main() {
             );
             const restorePortableTemplate = patchPortableTemplate(portableTemplatePath);
             try {
-                runBuilder(workDir, electronDir, process.env);
+                await runBuilder(workDir, electronDir, builderOutputDir, process.env);
             } finally {
                 restorePortableTemplate();
             }
@@ -382,18 +511,18 @@ function main() {
 }
 
 if (require.main === module) {
-    try {
-        main();
-    } catch (error) {
+    main().catch((error) => {
         console.error(`[错误] ${error.message}`);
         process.exitCode = 1;
-    }
+    });
 }
 
 module.exports = {
     PORTABLE_UNINSTALL_RELOCATION_BLOCK,
     PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK,
+    DEFAULT_7Z_COMPRESSION_LEVEL,
     createBuildProject,
+    describeBuildProgress,
     patchPortableTemplate,
     parseArguments,
 };
