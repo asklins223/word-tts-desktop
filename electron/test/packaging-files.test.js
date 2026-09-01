@@ -53,7 +53,7 @@ test('Windows portable 外壳在 Electron 退出后启动自身清理批处理',
     assert.doesNotMatch(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /powershell/i);
 });
 
-test('自绘 portable 直接读取已完成 payload，并跳过 elevate helper 签名和 maximum 压缩', () => {
+test('自绘 portable 直接读取已完成 payload，并使用直传压缩路径', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-project-'));
     const payloadDir = path.join(root, 'win-unpacked');
     const workDir = path.join(root, 'build-project');
@@ -70,8 +70,8 @@ test('自绘 portable 直接读取已完成 payload，并跳过 elevate helper �
         assert.deepEqual(packageJson.build.extraResources, [
             { from: payloadDir, to: 'payload' },
         ]);
-        assert.deepEqual(packageJson.build.win.signExts, ['!elevate.exe']);
-        assert.equal(packageJson.build.portable.packElevateHelper, undefined);
+        assert.equal(packageJson.build.portable.useZip, true);
+        assert.equal(packageJson.build.win.signExts, undefined);
         assert.equal(fs.existsSync(path.join(workDir, 'payload')), false);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });

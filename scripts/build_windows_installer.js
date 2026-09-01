@@ -181,14 +181,14 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
                 target: [{ target: 'portable', arch: ['x64'] }],
                 icon: 'build/icon.ico',
                 signAndEditExecutable: true,
-                // electron-builder's portable target does not expose the
-                // `packElevateHelper` option. The helper is unused by this
-                // custom installer, so keep the default copy but exclude
-                // only elevate.exe from the slow timestamped signing path.
-                signExts: ['!elevate.exe'],
             },
             portable: {
                 artifactName: '小猪wordTTS-Setup-${version}-${arch}.${ext}',
+                // `useZip` makes electron-builder feed the completed portable
+                // app directory directly to the NSIS template. This avoids a
+                // separate 7z app archive and also bypasses the unused
+                // CopyElevateHelper path for this custom installer.
+                useZip: true,
             },
         },
     };
