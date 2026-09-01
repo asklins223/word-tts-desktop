@@ -263,6 +263,11 @@ jobs:
         shell: pwsh
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.version }}
+          # Keep deferred-uninstall diagnostics in the same runner temp
+          # directory that the upload step collects. This also makes the
+          # portable setup's temporary handoff location deterministic.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           $installerName = "小猪wordTTS-Setup-$env:UPDATE_VERSION-x64.exe"
           $installer = Get-Item -LiteralPath (Join-Path "electron/release" $installerName) -ErrorAction SilentlyContinue
