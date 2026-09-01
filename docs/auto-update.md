@@ -23,7 +23,7 @@ scripts/build_windows_installer.js   把应用目录嵌入独立的 Setup.exe
 小猪wordTTS-Setup-<version>-x64.exe  用户分发包
 ```
 
-Windows Setup 是一个短生命周期的 Electron 包，运行时把 `payload` 写入用户选择的目录，并保存 `install-state.json`。已安装目录中会留下同一套自绘程序作为 `小猪wordTTS-uninstaller.exe`，因此卸载也不会回到原生页面。卸载启动后会先把该可执行文件迁移到系统临时目录，再由临时副本删除安装目录，避免 Windows 对正在运行的卸载器和工作目录持有锁定。
+Windows Setup 是一个短生命周期的 Electron 包，运行时把 `payload` 写入用户选择的目录，并保存 `install-state.json`。已安装目录中会留下同一套自绘程序作为 `小猪wordTTS-uninstaller.exe`，因此卸载也不会回到原生页面。卸载启动后会先把该可执行文件迁移到系统临时目录；经过标记校验的临时副本同步删除并确认安装目录消失，再由一个独立短进程等待 Electron 与 portable 外壳退出后删除临时副本。只有旧版或未迁移的 portable 外壳才使用延迟目录收尾脚本，避免新路径重新引入安装目录锁定。
 
 关键文件：
 
@@ -127,6 +127,7 @@ node scripts/validate_update_policy.js --tag v3.0.2
 - Setup.exe、安装目录中的 uninstaller 和更新客户端都能在无 Node/Python 环境下运行。
 - Windows 更新包下载后校验大小和 SHA-512，再启动 `--mode=update`。
 - 安装、更新、卸载都使用同一套自绘 HTML 页面；卸载不会误删用户数据。
+- Windows 生命周期冒烟除了检查安装目录消失，还必须看到迁移卸载器的成功日志和临时外壳自清理完成日志；异步 `[error]` 不能被绿色步骤掩盖。
 - Release 不是 Draft，tag、`version.json`、构建包版本和更新元数据版本一致。
 - macOS Release 同时存在 `latest-mac.yml` 和 ZIP，不能只上传 DMG。
 

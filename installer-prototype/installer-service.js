@@ -860,6 +860,40 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath, s
     ].join('\n');
 }
 
+function relocatedExecutableCleanupScript(stagedExecutable, readyPath, logPath, pid, launcherPid) {
+    return [
+        `$stagedExecutable = ${powershellLiteral(stagedExecutable)}`,
+        `$ready = ${powershellLiteral(readyPath)}`,
+        `$log = ${powershellLiteral(logPath)}`,
+        `$processId = ${Number(pid) || 0}`,
+        `$launcherProcessId = ${Number(launcherPid) || 0}`,
+        'function Write-CleanupLog([string]$message) {',
+        '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -ErrorAction SilentlyContinue } catch {}',
+        '}',
+        // This helper is intentionally tiny. The authenticated relocated
+        // uninstaller has already removed and verified the application target
+        // synchronously, so the helper only waits for Electron and its TEMP
+        // portable wrapper before deleting that staged wrapper.
+        'Set-Content -LiteralPath $ready -Value $PID -Encoding ascii -Force',
+        'Write-CleanupLog ("staged cleanup started electronPid=" + $processId + " launcherPid=" + $launcherProcessId + " path=" + $stagedExecutable)',
+        'if ($processId -gt 0) { Wait-Process -Id $processId -ErrorAction SilentlyContinue }',
+        'if ($launcherProcessId -gt 0) { Wait-Process -Id $launcherProcessId -ErrorAction SilentlyContinue }',
+        'Start-Sleep -Milliseconds 250',
+        '$removed = $false',
+        'for ($attempt = 0; $attempt -lt 120; $attempt++) {',
+        '  Remove-Item -LiteralPath $stagedExecutable -Force -ErrorAction SilentlyContinue',
+        '  if (-not (Test-Path -LiteralPath $stagedExecutable)) { $removed = $true; break }',
+        '  Start-Sleep -Milliseconds 250',
+        '}',
+        'if ($removed) {',
+        '  Write-CleanupLog "staged cleanup complete"',
+        '} else {',
+        '  Write-CleanupLog "staged cleanup failed: executable still exists"',
+        '}',
+        'Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue',
+    ].join('\n');
+}
+
 function createInstallerService(options = {}) {
     const platform = options.platform || process.platform;
     const environment = options.environment || process.env;
@@ -1187,6 +1221,60 @@ function createInstallerService(options = {}) {
         }
     }
 
+    async function scheduleRelocatedExecutableCleanup(stagedExecutable) {
+        const cleanupId = randomSuffix();
+        const readyPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.ready`);
+        const logPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.log`);
+        const startupLogPath = `${logPath}.startup.log`;
+        const script = relocatedExecutableCleanupScript(
+            stagedExecutable,
+            readyPath,
+            logPath,
+            process.pid,
+            process.ppid,
+        );
+        let child;
+        try {
+            await fsp.mkdir(tempDirectory, { recursive: true });
+            child = spawnImpl(
+                'powershell.exe',
+                [
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-EncodedCommand',
+                    encodePowerShellCommand(script),
+                ], {
+                    detached: true,
+                    stdio: 'ignore',
+                    windowsHide: true,
+                    cwd: tempDirectory,
+                },
+            );
+            if (!child || typeof child !== 'object') {
+                throw new Error('临时卸载程序清理进程没有成功创建。');
+            }
+            await waitForChildSpawn(child);
+            await waitForCleanupReadyImpl(child, readyPath);
+            child.unref?.();
+            return true;
+        } catch (error) {
+            await fsp.writeFile(
+                startupLogPath,
+                `${new Date().toISOString()} ${String(error?.stack || error)}\n`,
+                'utf8',
+            ).catch(() => {});
+            await fsp.rm(readyPath, { force: true }).catch(() => {});
+            // The application directory was already synchronously removed and
+            // verified. A failure here can at worst leave one authenticated
+            // TEMP executable, so do not turn a completed uninstall into an
+            // error. CI requires the helper's completion log and will reject a
+            // release that cannot clean this residue on a real Windows runner.
+            return false;
+        }
+    }
+
     async function scheduleUninstallCleanup(targetPath) {
         const scriptPath = path.join(tempDirectory, `wordtts-uninstall-${randomSuffix()}.ps1`);
         // On Windows the Electron process is hosted by the portable NSIS
@@ -1308,21 +1396,24 @@ function createInstallerService(options = {}) {
                 setupExecutable,
                 environment,
             );
-            let removalError = null;
-            try {
-                if (stagedExecutable) await removeInstallTarget(normalizedTarget);
-                else await removePath(normalizedTarget);
-            } catch (error) {
-                removalError = error;
-            }
-            await scheduleUninstallCleanup(normalizedTarget);
-            scheduledCleanup = true;
-            if (stagedExecutable && removalError) {
-                throw new InstallerError(
-                    'UNINSTALL_FAILED',
-                    '无法完整移除应用目录，请关闭占用文件的程序后重试。',
-                    removalError,
-                );
+            if (stagedExecutable) {
+                try {
+                    await removeInstallTarget(normalizedTarget);
+                } catch (error) {
+                    throw new InstallerError(
+                        'UNINSTALL_FAILED',
+                        '无法完整移除应用目录，请关闭占用文件的程序后重试。',
+                        error,
+                    );
+                }
+                scheduledCleanup = await scheduleRelocatedExecutableCleanup(stagedExecutable);
+            } else {
+                // A stock/older wrapper still owns a file under the target and
+                // can recreate $EXEDIR after Electron exits. Only that legacy
+                // path needs the full deferred target-directory cleanup.
+                await removePath(normalizedTarget).catch(() => {});
+                await scheduleUninstallCleanup(normalizedTarget);
+                scheduledCleanup = true;
             }
         } else {
             try {
@@ -1415,6 +1506,7 @@ module.exports = {
     encodePowerShellCommand,
     isPathInside,
     readRegistryInstallLocations,
+    relocatedExecutableCleanupScript,
     resolveCleanupLauncherPath,
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,

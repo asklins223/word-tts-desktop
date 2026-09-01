@@ -304,6 +304,7 @@ jobs:
             $stdoutPath = "$logBase.stdout.log"
             $stderrPath = "$logBase.stderr.log"
             $diagnosticPath = "$logBase.log"
+            $script:LastInstallerDiagnosticPath = $diagnosticPath
             $previousDiagnosticPath = $env:WORDTTS_INSTALLER_LOG
             $env:WORDTTS_INSTALLER_LOG = $diagnosticPath
             $process = $null
@@ -390,10 +391,12 @@ jobs:
             if ($updatedState.version -ne $env:UPDATE_VERSION) { throw "更新完成后安装状态版本错误: $($updatedState.version)" }
 
             Write-Host "执行自绘卸载"
+            $uninstallStartedAt = Get-Date
             Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir) -WorkingDirectory $env:RUNNER_TEMP
-            # 卸载程序自身位于目标目录，Windows 需要等短生命周期清理进程
-            # 在 uninstaller 退出后完成最后一次删除。卸载器会先迁移到
-            # TEMP 再运行；这里只观察产品自己的清理结果，不在 CI 中代替它删目录。
+            $uninstallDiagnosticPath = $script:LastInstallerDiagnosticPath
+            # 源 uninstaller 只负责把执行权交给 TEMP 副本，因此它返回时
+            # 真正的卸载仍可能在进行。这里只观察产品自己的同步目录删除
+            # 和 TEMP 外壳自清理结果，不在 CI 中代替产品删除任何文件。
             $uninstallDeadline = (Get-Date).AddSeconds(180)
             $lastPollLog = Get-Date
             while ((Test-Path -LiteralPath $installDir) -and (Get-Date) -lt $uninstallDeadline) {
@@ -433,6 +436,62 @@ jobs:
                 try { Get-Content -LiteralPath $log.FullName -Raw -ErrorAction SilentlyContinue | Write-Host } catch {}
               }
               throw "卸载完成后安装目录仍存在: $installDir"
+            }
+
+            # The source NSIS wrapper returns after handing off to the staged
+            # TEMP wrapper. Directory absence alone is therefore insufficient:
+            # require the staged Electron operation itself to report a clean
+            # handoff and completion, and reject any hidden asynchronous error.
+            $uninstallDiagnosticDeadline = (Get-Date).AddSeconds(60)
+            $uninstallDiagnosticComplete = $false
+            $uninstallDiagnostic = ""
+            while ((Get-Date) -lt $uninstallDiagnosticDeadline) {
+              if ($uninstallDiagnosticPath -and (Test-Path -LiteralPath $uninstallDiagnosticPath)) {
+                $uninstallDiagnostic = [string](Get-Content -LiteralPath $uninstallDiagnosticPath -Raw -ErrorAction SilentlyContinue)
+                if ($uninstallDiagnostic -match '\[error\]') {
+                  throw "迁移后的卸载器内部报错:`n$uninstallDiagnostic"
+                }
+                if ($uninstallDiagnostic.Contains("[handoff] NSIS relocated uninstaller active") -and
+                    $uninstallDiagnostic.Contains("[handoff] source uninstaller wrapper exited") -and
+                    $uninstallDiagnostic.Contains("[complete] installer operation succeeded")) {
+                  $uninstallDiagnosticComplete = $true
+                  break
+                }
+              }
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not $uninstallDiagnosticComplete) {
+              throw "迁移后的卸载器没有报告完整成功状态: $uninstallDiagnosticPath`n$uninstallDiagnostic"
+            }
+
+            # The staged portable wrapper is deliberately outside the install
+            # target. Its dedicated helper must remove that TEMP executable
+            # after Electron and NSIS both exit; otherwise every uninstall
+            # would leak a large setup binary.
+            $stageCleanupDeadline = (Get-Date).AddSeconds(60)
+            $stageCleanupComplete = $false
+            $stageCleanupDiagnostic = ""
+            while ((Get-Date) -lt $stageCleanupDeadline) {
+              $startupFailures = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-stage-*.startup.log" -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -ge $uninstallStartedAt.AddSeconds(-2) }
+              if ($startupFailures) {
+                $startupDiagnostic = ($startupFailures | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
+                throw "TEMP 卸载外壳清理进程启动失败:`n$startupDiagnostic"
+              }
+              $stageLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-stage-*.log" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notlike "*.startup.log" -and $_.LastWriteTime -ge $uninstallStartedAt.AddSeconds(-2) }
+              $stageCleanupDiagnostic = ($stageLogs | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
+              if ($stageCleanupDiagnostic -match "staged cleanup failed") {
+                throw "TEMP 卸载外壳未能自清理:`n$stageCleanupDiagnostic"
+              }
+              if ($stageCleanupDiagnostic -match "staged cleanup complete") {
+                $stageCleanupComplete = $true
+                break
+              }
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not $stageCleanupComplete) {
+              throw "TEMP 卸载外壳没有在限定时间内完成自清理:`n$stageCleanupDiagnostic"
             }
             Write-Host "自绘安装、更新、卸载生命周期测试通过"
           } finally {

@@ -201,13 +201,20 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(installerMain, /relocateInstalledUninstaller/);
     assert.match(installerMain, /WORDTTS_RELOCATED_UNINSTALLER/);
     assert.match(installerMain, /waitForSourceWrapperExit/);
-    assert.match(installerService, /if \(stagedExecutable\) await removeInstallTarget\(normalizedTarget\)/);
+    assert.match(
+        installerService,
+        /if \(stagedExecutable\) \{[\s\S]*await removeInstallTarget\(normalizedTarget\)[\s\S]*scheduleRelocatedExecutableCleanup\(stagedExecutable\)/,
+    );
     assert.match(installerService, /安装目录删除后仍然存在/);
+    assert.match(windowsWorkflow, /\[handoff\] NSIS relocated uninstaller active/);
+    assert.match(windowsWorkflow, /\[complete\] installer operation succeeded/);
+    assert.match(windowsWorkflow, /staged cleanup complete/);
+    assert.match(windowsWorkflow, /TEMP 卸载外壳没有在限定时间内完成自清理/);
     assert.ok(
         (windowsWorkflow.match(/\$installerName = "小猪wordTTS-Setup-\$env:UPDATE_VERSION-x64\.exe"/g) || []).length >= 2,
         'installer smoke and artifact validation steps must bind to the current x64 setup executable',
     );
-    assert.doesNotMatch(windowsWorkflow, /NSIS|blockmap|latest\.yml/);
+    assert.doesNotMatch(windowsWorkflow, /blockmap|latest\.yml/);
     assert.doesNotMatch(windowsWorkflow, /-Filter "\*-Setup-\*\.exe"/);
     assert.doesNotMatch(windowsWorkflow, /Get-ChildItem -Path "electron\/release" -Filter "\*\.exe"/);
     assert.match(windowsBuildScript, /electron-builder --win dir --publish never/);

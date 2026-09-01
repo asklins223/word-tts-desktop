@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { execFile } = require('node:child_process');
 const EventEmitter = require('node:events');
 const fs = require('node:fs');
 const fsp = fs.promises;
@@ -10,15 +11,31 @@ const test = require('node:test');
 const {
     createInstallerService,
     cleanupScript,
+    encodePowerShellCommand,
     InstallerError,
     normalizeTargetPath,
     parseInstallerArguments,
     readRegistryInstallLocations,
+    relocatedExecutableCleanupScript,
     resolveCleanupLauncherPath,
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,
     validateInstallTargetPath,
 } = require('../../installer-prototype/installer-service');
+
+function execFileAsync(executable, args, options = {}) {
+    return new Promise((resolve, reject) => {
+        execFile(executable, args, options, (error, stdout, stderr) => {
+            if (error) {
+                error.stdout = stdout;
+                error.stderr = stderr;
+                reject(error);
+                return;
+            }
+            resolve({ stdout, stderr });
+        });
+    });
+}
 
 test('Windows 卸载清理不会把临时 Electron 子进程误当成 portable 外壳', () => {
     const target = 'C:\\Apps\\小猪wordTTS';
@@ -429,7 +446,7 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
     }
 });
 
-test('Windows portable 卸载即使首次删除成功也会安排退出后的收尾清理', {
+test('Windows 已迁移卸载同步删除目标后只安排 TEMP 外壳自清理', {
     skip: process.platform !== 'win32',
 }, async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-portable-cleanup-'));
@@ -479,23 +496,111 @@ test('Windows portable 卸载即使首次删除成功也会安排退出后的收
 
         assert.equal(result.success, true);
         assert.equal(result.scheduledCleanup, true);
+        assert.equal(fs.existsSync(target), false);
         assert.equal(spawned.length, 1);
         assert.equal(spawned[0].executable, 'powershell.exe');
         assert.equal(spawned[0].options.cwd, tempDirectory);
-        const fileIndex = spawned[0].args.indexOf('-File');
-        assert.notEqual(fileIndex, -1);
-        const cleanupPath = spawned[0].args[fileIndex + 1];
-        const cleanupScript = fs.readFileSync(cleanupPath, 'utf8').replace(/^\uFEFF/, '');
-        assert.equal(cleanupPath.startsWith(tempDirectory), true);
-        assert.match(cleanupScript, /\$missingAttempts = 0/);
-        assert.match(cleanupScript, /\$missingAttempts -ge 10/);
+        const encodedIndex = spawned[0].args.indexOf('-EncodedCommand');
+        assert.notEqual(encodedIndex, -1);
+        assert.equal(spawned[0].args.includes('-File'), false);
+        const cleanupScript = Buffer.from(spawned[0].args[encodedIndex + 1], 'base64').toString('utf16le');
         assert.match(cleanupScript, /\$launcherProcessId = \d+/);
-        assert.match(cleanupScript, /\$launcherPath = '.*wordtts-uninstaller-stage-12-34-a1b2c3\.exe'/);
         assert.match(cleanupScript, /\$stagedExecutable = '.*wordtts-uninstaller-stage-12-34-a1b2c3\.exe'/);
-        assert.match(cleanupScript, /\$launcherRunning = \$false/);
-        assert.match(cleanupScript, /waiting for portable launcher/);
-        assert.match(cleanupScript, /if \(\$launcherRunning\) \{/);
-        assert.match(cleanupScript, /Get-Process -Id \$launcherProcessId/);
+        assert.match(cleanupScript, /Wait-Process -Id \$processId/);
+        assert.match(cleanupScript, /Wait-Process -Id \$launcherProcessId/);
+        assert.match(cleanupScript, /staged cleanup complete/);
+        assert.doesNotMatch(cleanupScript, /Remove-Item -LiteralPath \$target/);
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('Windows TEMP 外壳清理握手失败不会把已完成的目录删除改报为卸载失败', {
+    skip: process.platform !== 'win32',
+}, async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-stage-cleanup-failure-'));
+    const target = path.join(root, 'installed', '小猪wordTTS');
+    const tempDirectory = path.join(root, 'temp');
+    const stagedExecutable = path.join(tempDirectory, 'wordtts-uninstaller-stage-12-34-a1b2c3.exe');
+    const environment = {
+        ...process.env,
+        SystemRoot: process.env.SystemRoot || 'C:\\Windows',
+        USERPROFILE: process.env.USERPROFILE || path.join(root, 'profile'),
+        PUBLIC: process.env.PUBLIC || path.join(root, 'public'),
+        ProgramData: process.env.ProgramData || path.join(root, 'program-data'),
+        ProgramFiles: process.env.ProgramFiles || path.join(root, 'program-files'),
+        PORTABLE_EXECUTABLE_FILE: stagedExecutable,
+        WORDTTS_RELOCATED_UNINSTALLER: stagedExecutable,
+    };
+
+    try {
+        await fsp.mkdir(target, { recursive: true });
+        await fsp.writeFile(path.join(target, '小猪wordTTS.exe'), 'installed application');
+        const service = createInstallerService({
+            platform: 'win32',
+            dataPath: path.join(root, 'user-data'),
+            tempDirectory,
+            setupExecutable: stagedExecutable,
+            environment,
+            runPowerShell: async () => {},
+            waitForCleanupReady: async () => { throw new Error('simulated ready failure'); },
+            spawn: () => {
+                const child = new EventEmitter();
+                child.unref = () => {};
+                process.nextTick(() => child.emit('spawn'));
+                return child;
+            },
+        });
+
+        const result = await service.run({
+            mode: 'uninstall',
+            targetPath: target,
+            scope: 'per-user',
+        });
+
+        assert.equal(result.success, true);
+        assert.equal(result.scheduledCleanup, false);
+        assert.equal(fs.existsSync(target), false);
+        const startupLogs = fs.readdirSync(tempDirectory)
+            .filter(name => /^wordtts-uninstall-stage-.*\.startup\.log$/.test(name));
+        assert.equal(startupLogs.length, 1);
+        assert.match(
+            fs.readFileSync(path.join(tempDirectory, startupLogs[0]), 'utf8'),
+            /simulated ready failure/,
+        );
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('Windows PowerShell 真实执行 TEMP 外壳自清理脚本', {
+    skip: process.platform !== 'win32',
+}, async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-stage-script-'));
+    const stagedExecutable = path.join(root, 'wordtts-uninstaller-stage-12-34-a1b2c3.exe');
+    const readyPath = path.join(root, 'cleanup.ready');
+    const logPath = path.join(root, 'cleanup.log');
+    try {
+        await fsp.writeFile(stagedExecutable, 'temporary wrapper');
+        const script = relocatedExecutableCleanupScript(
+            stagedExecutable,
+            readyPath,
+            logPath,
+            0,
+            0,
+        );
+        await execFileAsync('powershell.exe', [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-EncodedCommand',
+            encodePowerShellCommand(script),
+        ], { windowsHide: true });
+
+        assert.equal(fs.existsSync(stagedExecutable), false);
+        assert.equal(fs.existsSync(readyPath), false);
+        assert.match(fs.readFileSync(logPath, 'utf8'), /staged cleanup complete/);
     } finally {
         await fsp.rm(root, { recursive: true, force: true });
     }
