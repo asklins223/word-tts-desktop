@@ -9,12 +9,52 @@ const path = require('node:path');
 const test = require('node:test');
 const {
     createInstallerService,
+    cleanupScript,
     InstallerError,
     normalizeTargetPath,
     parseInstallerArguments,
     readRegistryInstallLocations,
+    resolveCleanupLauncherPath,
     validateInstallTargetPath,
 } = require('../../installer-prototype/installer-service');
+
+test('Windows 卸载清理不会把临时 Electron 子进程误当成 portable 外壳', () => {
+    const target = 'C:\\Apps\\小猪wordTTS';
+    assert.equal(
+        resolveCleanupLauncherPath(target, 'C:\\Temp\\小猪wordTTS-Setup.exe', {}),
+        'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe',
+    );
+    assert.equal(
+        resolveCleanupLauncherPath(target, 'C:\\Temp\\小猪wordTTS-Setup.exe', {
+            PORTABLE_EXECUTABLE_FILE: 'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe',
+        }),
+        'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe',
+    );
+    assert.equal(
+        resolveCleanupLauncherPath(target, 'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe', {}),
+        'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe',
+    );
+});
+
+test('Windows 延迟卸载脚本会等待 portable 外壳退出后再删除目标目录', () => {
+    const script = cleanupScript(
+        'C:\\Apps\\小猪wordTTS',
+        'C:\\Temp\\wordtts-uninstall.ps1',
+        101,
+        202,
+        'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe',
+    );
+    const launcherGuard = script.indexOf('if ($isLauncher) {');
+    const processKill = script.indexOf('Stop-Process -Id $childProcessId');
+    const launcherWait = script.indexOf('if ($launcherRunning) {');
+    const directoryDelete = script.indexOf('rmdir /s /q');
+
+    assert.match(script, /\$launcherProcessId = 202/);
+    assert.match(script, /\$launcherPath = 'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller\.exe'/);
+    assert.ok(launcherGuard >= 0 && launcherGuard < processKill);
+    assert.ok(launcherWait >= 0 && launcherWait < directoryDelete);
+    assert.match(script, /Get-Process -Id \$launcherProcessId/);
+});
 
 test('自绘安装器参数解析支持普通、更新、卸载和无窗口冒烟参数', () => {
     assert.deepEqual(parseInstallerArguments([
@@ -387,6 +427,12 @@ test('Windows portable 卸载即使首次删除成功也会安排退出后的收
         const cleanupScript = Buffer.from(spawned[0].args[encodedIndex + 1], 'base64').toString('utf16le');
         assert.match(cleanupScript, /\$missingAttempts = 0/);
         assert.match(cleanupScript, /\$missingAttempts -ge 10/);
+        assert.match(cleanupScript, /\$launcherProcessId = \d+/);
+        assert.match(cleanupScript, /\$launcherPath = '.*小猪wordTTS-uninstaller\.exe'/);
+        assert.match(cleanupScript, /\$launcherRunning = \$false/);
+        assert.match(cleanupScript, /waiting for portable launcher/);
+        assert.match(cleanupScript, /if \(\$launcherRunning\) \{/);
+        assert.match(cleanupScript, /Get-Process -Id \$launcherProcessId/);
     } finally {
         await fsp.rm(root, { recursive: true, force: true });
     }
