@@ -11,7 +11,6 @@ const test = require('node:test');
 const {
     createInstallerService,
     cleanupScript,
-    encodePowerShellCommand,
     InstallerError,
     normalizeTargetPath,
     parseInstallerArguments,
@@ -21,6 +20,7 @@ const {
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,
     validateInstallTargetPath,
+    waitForCleanupReady,
 } = require('../../installer-prototype/installer-service');
 
 function execFileAsync(executable, args, options = {}) {
@@ -53,6 +53,24 @@ test('Windows 卸载清理不会把临时 Electron 子进程误当成 portable �
         resolveCleanupLauncherPath(target, 'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe', {}),
         'C:\\Apps\\小猪wordTTS\\小猪wordTTS-uninstaller.exe',
     );
+});
+
+test('TEMP 清理子进程快速退出时会最后复查持久就绪标记', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-cleanup-ready-race-'));
+    const readyPath = path.join(root, 'cleanup.ready');
+    const child = { exitCode: 0 };
+    try {
+        const published = new Promise((resolve, reject) => {
+            setTimeout(() => {
+                fsp.writeFile(readyPath, 'ready', 'utf8').then(resolve, reject);
+            }, 20);
+        });
+        await waitForCleanupReady(child, readyPath, 500);
+        await published;
+        assert.equal(fs.existsSync(readyPath), true);
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
 });
 
 test('Windows 延迟卸载脚本会等待 portable 外壳退出后再删除目标目录', () => {
@@ -500,15 +518,17 @@ test('Windows 已迁移卸载同步删除目标后只安排 TEMP 外壳自清理
         assert.equal(spawned.length, 1);
         assert.equal(spawned[0].executable, 'powershell.exe');
         assert.equal(spawned[0].options.cwd, tempDirectory);
-        const encodedIndex = spawned[0].args.indexOf('-EncodedCommand');
-        assert.notEqual(encodedIndex, -1);
-        assert.equal(spawned[0].args.includes('-File'), false);
-        const cleanupScript = Buffer.from(spawned[0].args[encodedIndex + 1], 'base64').toString('utf16le');
+        const fileIndex = spawned[0].args.indexOf('-File');
+        assert.notEqual(fileIndex, -1);
+        assert.equal(spawned[0].args.includes('-EncodedCommand'), false);
+        const cleanupScriptPath = spawned[0].args[fileIndex + 1];
+        const cleanupScript = fs.readFileSync(cleanupScriptPath, 'utf8').replace(/^\uFEFF/, '');
         assert.match(cleanupScript, /\$launcherProcessId = \d+/);
         assert.match(cleanupScript, /\$stagedExecutable = '.*wordtts-uninstaller-stage-12-34-a1b2c3\.exe'/);
-        assert.match(cleanupScript, /Wait-Process -Id \$processId/);
-        assert.match(cleanupScript, /Wait-Process -Id \$launcherProcessId/);
+        assert.match(cleanupScript, /Wait-ForCleanupProcess \$processId "electron"/);
+        assert.match(cleanupScript, /Wait-ForCleanupProcess \$launcherProcessId "launcher"/);
         assert.match(cleanupScript, /staged cleanup complete/);
+        assert.doesNotMatch(cleanupScript, /Remove-Item -LiteralPath \$ready/);
         assert.doesNotMatch(cleanupScript, /Remove-Item -LiteralPath \$target/);
     } finally {
         await fsp.rm(root, { recursive: true, force: true });
@@ -580,6 +600,7 @@ test('Windows PowerShell 真实执行 TEMP 外壳自清理脚本', {
     const stagedExecutable = path.join(root, 'wordtts-uninstaller-stage-12-34-a1b2c3.exe');
     const readyPath = path.join(root, 'cleanup.ready');
     const logPath = path.join(root, 'cleanup.log');
+    const scriptPath = path.join(root, 'cleanup.ps1');
     try {
         await fsp.writeFile(stagedExecutable, 'temporary wrapper');
         const script = relocatedExecutableCleanupScript(
@@ -589,17 +610,21 @@ test('Windows PowerShell 真实执行 TEMP 外壳自清理脚本', {
             0,
             0,
         );
+        await fsp.writeFile(scriptPath, `\uFEFF${script}`, 'utf8');
         await execFileAsync('powershell.exe', [
             '-NoProfile',
             '-NonInteractive',
             '-ExecutionPolicy',
             'Bypass',
-            '-EncodedCommand',
-            encodePowerShellCommand(script),
+            '-File',
+            scriptPath,
         ], { windowsHide: true });
 
         assert.equal(fs.existsSync(stagedExecutable), false);
-        assert.equal(fs.existsSync(readyPath), false);
+        // The child must not erase this marker: the Electron parent owns it
+        // after observing readiness, even when cleanup exits immediately.
+        assert.equal(fs.existsSync(readyPath), true);
+        assert.equal(fs.existsSync(scriptPath), false);
         assert.match(fs.readFileSync(logPath, 'utf8'), /staged cleanup complete/);
     } finally {
         await fsp.rm(root, { recursive: true, force: true });

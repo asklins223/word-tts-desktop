@@ -468,7 +468,7 @@ jobs:
             # target. Its dedicated helper must remove that TEMP executable
             # after Electron and NSIS both exit; otherwise every uninstall
             # would leak a large setup binary.
-            $stageCleanupDeadline = (Get-Date).AddSeconds(60)
+            $stageCleanupDeadline = (Get-Date).AddSeconds(120)
             $stageCleanupComplete = $false
             $stageCleanupDiagnostic = ""
             while ((Get-Date) -lt $stageCleanupDeadline) {
@@ -481,7 +481,7 @@ jobs:
               $stageLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-stage-*.log" -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -notlike "*.startup.log" -and $_.LastWriteTime -ge $uninstallStartedAt.AddSeconds(-2) }
               $stageCleanupDiagnostic = ($stageLogs | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
-              if ($stageCleanupDiagnostic -match "staged cleanup failed") {
+              if ($stageCleanupDiagnostic -match "staged cleanup (failed|crashed)") {
                 throw "TEMP 卸载外壳未能自清理:`n$stageCleanupDiagnostic"
               }
               if ($stageCleanupDiagnostic -match "staged cleanup complete") {

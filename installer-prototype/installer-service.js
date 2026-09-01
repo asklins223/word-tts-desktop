@@ -540,6 +540,14 @@ async function waitForCleanupReady(child, readyPath, timeoutMs = 15000) {
             return;
         } catch (_) { /* the helper has not initialized yet */ }
         if (child && child.exitCode !== undefined && child.exitCode !== null) {
+            // A very short helper can publish readiness and exit between the
+            // access check and exitCode observation. Give the filesystem one
+            // final visibility window before classifying that as a failure.
+            await new Promise(resolve => setTimeout(resolve, 100));
+            try {
+                await fsp.access(readyPath);
+                return;
+            } catch (_) { /* no durable handshake was published */ }
             throw new Error(`卸载清理进程过早退出，代码 ${child.exitCode}。`);
         }
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -867,30 +875,50 @@ function relocatedExecutableCleanupScript(stagedExecutable, readyPath, logPath, 
         `$log = ${powershellLiteral(logPath)}`,
         `$processId = ${Number(pid) || 0}`,
         `$launcherProcessId = ${Number(launcherPid) || 0}`,
+        '$ErrorActionPreference = "Stop"',
         'function Write-CleanupLog([string]$message) {',
-        '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -ErrorAction SilentlyContinue } catch {}',
+        '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -Encoding utf8 -ErrorAction Stop } catch {}',
+        '}',
+        'function Wait-ForCleanupProcess([int]$targetProcessId, [string]$label) {',
+        '  if ($targetProcessId -le 0 -or $targetProcessId -eq $PID) { return }',
+        '  for ($attempt = 0; $attempt -lt 300; $attempt++) {',
+        '    if (-not (Get-Process -Id $targetProcessId -ErrorAction SilentlyContinue)) {',
+        '      Write-CleanupLog ($label + " exited pid=" + $targetProcessId)',
+        '      return',
+        '    }',
+        '    Start-Sleep -Milliseconds 100',
+        '  }',
+        '  Write-CleanupLog ($label + " wait timed out pid=" + $targetProcessId)',
         '}',
         // This helper is intentionally tiny. The authenticated relocated
         // uninstaller has already removed and verified the application target
         // synchronously, so the helper only waits for Electron and its TEMP
         // portable wrapper before deleting that staged wrapper.
-        'Set-Content -LiteralPath $ready -Value $PID -Encoding ascii -Force',
-        'Write-CleanupLog ("staged cleanup started electronPid=" + $processId + " launcherPid=" + $launcherProcessId + " path=" + $stagedExecutable)',
-        'if ($processId -gt 0) { Wait-Process -Id $processId -ErrorAction SilentlyContinue }',
-        'if ($launcherProcessId -gt 0) { Wait-Process -Id $launcherProcessId -ErrorAction SilentlyContinue }',
-        'Start-Sleep -Milliseconds 250',
-        '$removed = $false',
-        'for ($attempt = 0; $attempt -lt 120; $attempt++) {',
-        '  Remove-Item -LiteralPath $stagedExecutable -Force -ErrorAction SilentlyContinue',
-        '  if (-not (Test-Path -LiteralPath $stagedExecutable)) { $removed = $true; break }',
+        'try {',
+        '  # Keep this marker until the Electron parent observes it. Removing it',
+        '  # in this helper creates a race when cleanup finishes very quickly.',
+        '  Set-Content -LiteralPath $ready -Value $PID -Encoding ascii -Force -ErrorAction Stop',
+        '  Write-CleanupLog ("staged cleanup started electronPid=" + $processId + " launcherPid=" + $launcherProcessId + " path=" + $stagedExecutable)',
+        '  Wait-ForCleanupProcess $processId "electron"',
+        '  Wait-ForCleanupProcess $launcherProcessId "launcher"',
         '  Start-Sleep -Milliseconds 250',
-        '}',
-        'if ($removed) {',
-        '  Write-CleanupLog "staged cleanup complete"',
-        '} else {',
+        '  $removed = $false',
+        '  for ($attempt = 0; $attempt -lt 120; $attempt++) {',
+        '    Remove-Item -LiteralPath $stagedExecutable -Force -ErrorAction SilentlyContinue',
+        '    if (-not (Test-Path -LiteralPath $stagedExecutable -ErrorAction SilentlyContinue)) { $removed = $true; break }',
+        '    Start-Sleep -Milliseconds 250',
+        '  }',
+        '  if ($removed) {',
+        '    Write-CleanupLog "staged cleanup complete"',
+        '    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue',
+        '    exit 0',
+        '  }',
         '  Write-CleanupLog "staged cleanup failed: executable still exists"',
+        '  exit 2',
+        '} catch {',
+        '  Write-CleanupLog ("staged cleanup crashed: " + $_.Exception.Message)',
+        '  exit 1',
         '}',
-        'Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue',
     ].join('\n');
 }
 
@@ -1225,6 +1253,9 @@ function createInstallerService(options = {}) {
         const cleanupId = randomSuffix();
         const readyPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.ready`);
         const logPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.log`);
+        const scriptPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.ps1`);
+        const stdoutPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.stdout.txt`);
+        const stderrPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.stderr.txt`);
         const startupLogPath = `${logPath}.startup.log`;
         const script = relocatedExecutableCleanupScript(
             stagedExecutable,
@@ -1234,8 +1265,16 @@ function createInstallerService(options = {}) {
             process.ppid,
         );
         let child;
+        let stdoutFd;
+        let stderrFd;
         try {
             await fsp.mkdir(tempDirectory, { recursive: true });
+            // Windows PowerShell 5.1 needs a BOM to decode non-ASCII paths in
+            // script files reliably. A real file also survives long enough to
+            // diagnose parser/startup failures that -EncodedCommand can hide.
+            await fsp.writeFile(scriptPath, `\uFEFF${script}`, 'utf8');
+            stdoutFd = fs.openSync(stdoutPath, 'a');
+            stderrFd = fs.openSync(stderrPath, 'a');
             child = spawnImpl(
                 'powershell.exe',
                 [
@@ -1243,11 +1282,11 @@ function createInstallerService(options = {}) {
                     '-NonInteractive',
                     '-ExecutionPolicy',
                     'Bypass',
-                    '-EncodedCommand',
-                    encodePowerShellCommand(script),
+                    '-File',
+                    scriptPath,
                 ], {
                     detached: true,
-                    stdio: 'ignore',
+                    stdio: ['ignore', stdoutFd, stderrFd],
                     windowsHide: true,
                     cwd: tempDirectory,
                 },
@@ -1257,6 +1296,10 @@ function createInstallerService(options = {}) {
             }
             await waitForChildSpawn(child);
             await waitForCleanupReadyImpl(child, readyPath);
+            // The child deliberately leaves the marker in place so even a
+            // sub-50 ms run cannot outrun the polling loop. Once observed, the
+            // parent owns marker removal.
+            await fsp.rm(readyPath, { force: true }).catch(() => {});
             child.unref?.();
             return true;
         } catch (error) {
@@ -1272,6 +1315,13 @@ function createInstallerService(options = {}) {
             // error. CI requires the helper's completion log and will reject a
             // release that cannot clean this residue on a real Windows runner.
             return false;
+        } finally {
+            if (stdoutFd !== undefined) {
+                try { fs.closeSync(stdoutFd); } catch (_) { /* child owns its duplicate */ }
+            }
+            if (stderrFd !== undefined) {
+                try { fs.closeSync(stderrFd); } catch (_) { /* child owns its duplicate */ }
+            }
         }
     }
 
@@ -1511,6 +1561,7 @@ module.exports = {
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,
     validateInstallTargetPath,
+    waitForCleanupReady,
     normalizeTargetPath,
     parseInstallerArguments,
     compareVersions,
