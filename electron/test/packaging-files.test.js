@@ -254,8 +254,10 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsWorkflow, /name: Cache electron-builder toolchains/);
     assert.match(windowsWorkflow, /path: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
     assert.match(windowsWorkflow, /ELECTRON_BUILDER_CACHE: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
+    assert.match(windowsWorkflow, /ELECTRON_BUILDER_7Z_FILTER: BCJ/);
     assert.match(windowsInstallerBuildScript, /patchPortableTemplate\(portableTemplatePath\)/);
     assert.match(windowsInstallerBuildScript, /'--win', 'portable', '--x64'/);
+    assert.match(windowsInstallerBuildScript, /ELECTRON_BUILDER_7Z_FILTER: 'BCJ'/);
     assert.match(windowsInstallerBuildScript, /unpackDirName: false/);
     assert.match(windowsInstallerBuildScript, /WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR/);
     assert.doesNotMatch(windowsInstallerBuildScript, /useZip:\s*true/);

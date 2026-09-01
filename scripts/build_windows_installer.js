@@ -198,12 +198,20 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
 
 function runBuilder(projectDir, electronDir, env = process.env) {
     const executable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    // electron-builder 26.15.x can emit BCJ2-filtered 7z archives. The
+    // NSIS runtime extractor bundled with portable installers does not
+    // understand BCJ2 reliably, so keep the archive in 7z format but use the
+    // single-stream BCJ filter that Nsis7z can extract during install/update.
+    const builderEnv = {
+        ...env,
+        ELECTRON_BUILDER_7Z_FILTER: 'BCJ',
+    };
     const result = spawnSync(
         executable,
         ['electron-builder', '--projectDir', projectDir, '--win', 'portable', '--x64', '--publish', 'never'],
         {
             cwd: electronDir,
-            env,
+            env: builderEnv,
             stdio: 'inherit',
             // .cmd shims are not directly executable by Node on every
             // supported Windows runtime. Let cmd.exe dispatch npx.cmd while

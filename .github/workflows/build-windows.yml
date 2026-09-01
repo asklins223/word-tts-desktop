@@ -229,6 +229,9 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+          # Keep the portable payload in 7z, but avoid BCJ2: the bundled
+          # NSIS 7z extractor must also unpack it during install/update.
+          ELECTRON_BUILDER_7Z_FILTER: BCJ
 
       - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
