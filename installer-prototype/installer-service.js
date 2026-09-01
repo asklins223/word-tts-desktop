@@ -988,13 +988,18 @@ function createInstallerService(options = {}) {
 
     async function scheduleUninstallCleanup(targetPath) {
         const scriptPath = path.join(tempDirectory, `wordtts-uninstall-${randomSuffix()}.ps1`);
-        await fsp.writeFile(scriptPath, cleanupScript(targetPath, scriptPath, process.pid), 'utf8');
+        const script = cleanupScript(targetPath, scriptPath, process.pid);
+        await fsp.writeFile(scriptPath, script, 'utf8');
         let child;
         try {
             child = spawnImpl(
                 platform === 'win32' ? 'powershell.exe' : process.execPath,
                 platform === 'win32'
-                    ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]
+                    // Windows PowerShell can interpret a UTF-8 script without
+                    // a BOM using the active ANSI code page. Encode the
+                    // command as UTF-16LE so Chinese install paths survive
+                    // the handoff regardless of the system locale.
+                    ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePowerShellCommand(script)]
                     : ['-e', ''],
                 {
                     detached: true,
