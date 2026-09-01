@@ -10,6 +10,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const PRODUCT_NAME = '小猪wordTTS';
 const APP_EXECUTABLE = '小猪wordTTS.exe';
 const UNINSTALLER_EXECUTABLE = '小猪wordTTS-uninstaller.exe';
+const RELOCATED_UNINSTALLER_PATTERN = /^wordtts-uninstaller-stage-\d+-\d+-[0-9a-f]+\.exe$/i;
 const INSTALL_STATE_FILE = 'install-state.json';
 const INSTALL_STATE_VERSION = 1;
 const REGISTRY_SUBKEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WordTTS';
@@ -52,6 +53,7 @@ function parseInstallerArguments(argv = []) {
         elevated: false,
         autoStart: false,
         headless: false,
+        relocatedUninstall: false,
     };
     const values = Array.isArray(argv) ? argv.map(decodeArgumentValue) : [];
     const nextArgument = (index, option) => {
@@ -66,6 +68,7 @@ function parseInstallerArguments(argv = []) {
         if (value === '--elevated') result.elevated = true;
         else if (value === '--auto-start') result.autoStart = true;
         else if (value === '--headless') result.headless = true;
+        else if (value === '--uninstall-relocated') result.relocatedUninstall = true;
         else if (value === '--mode') result.mode = nextArgument(index++, value);
         else if (value === '--target') result.targetPath = nextArgument(index++, value);
         else if (value === '--target-version') result.targetVersion = nextArgument(index++, value);
@@ -249,6 +252,56 @@ function isPathInside(candidate, parent, platform = process.platform) {
     return relative === '' || (relative !== '..' && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative));
 }
 
+function resolveUninstallRelocation({
+    platform = process.platform,
+    mode = null,
+    targetPath = null,
+    executablePath = null,
+    relocatedUninstall = false,
+    tempDirectory = os.tmpdir(),
+    environment = process.env,
+} = {}) {
+    if (platform !== 'win32' || !executablePath) {
+        return { required: false, targetPath: targetPath || null, staged: false };
+    }
+    const executable = path.win32.normalize(String(executablePath));
+    const isInstalledUninstaller = path.win32.basename(executable).toLowerCase()
+        === UNINSTALLER_EXECUTABLE.toLowerCase();
+    if ((mode && mode !== 'uninstall') || (!mode && !isInstalledUninstaller)) {
+        return { required: false, targetPath: targetPath || null, staged: false };
+    }
+    const resolvedTarget = targetPath
+        ? path.win32.normalize(String(targetPath))
+        : (isInstalledUninstaller ? path.win32.dirname(executable) : null);
+    if (!resolvedTarget) return { required: false, targetPath: null, staged: false };
+
+    const relocationMarker = String(environment.WORDTTS_RELOCATED_UNINSTALLER || '').trim();
+    const markerMatchesExecutable = Boolean(
+        relocatedUninstall
+        && relocationMarker
+        && pathEquals(relocationMarker, executable, 'win32')
+        && isPathInside(executable, tempDirectory, 'win32')
+        && RELOCATED_UNINSTALLER_PATTERN.test(path.win32.basename(executable)),
+    );
+    return {
+        required: isInstalledUninstaller
+            && isPathInside(executable, resolvedTarget, 'win32')
+            && !markerMatchesExecutable,
+        targetPath: resolvedTarget,
+        staged: markerMatchesExecutable,
+    };
+}
+
+function resolveRelocatedCleanupExecutable(tempDirectory, setupExecutable, environment = process.env) {
+    const marker = String(environment.WORDTTS_RELOCATED_UNINSTALLER || '').trim();
+    if (!marker || !setupExecutable) return '';
+    const normalized = path.win32.normalize(marker);
+    if (!pathEquals(normalized, setupExecutable, 'win32')) return '';
+    if (!isPathInside(normalized, tempDirectory, 'win32')) return '';
+    if (!RELOCATED_UNINSTALLER_PATTERN.test(path.win32.basename(normalized))) return '';
+    return normalized;
+}
+
 function parseJsonFile(filePath) {
     try {
         return withNativeFileSystemSync(() => JSON.parse(fs.readFileSync(filePath, 'utf8')));
@@ -366,6 +419,24 @@ async function removePath(filePath) {
     await withNativeFileSystem(() => fsp.rm(filePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 120 }));
 }
 
+async function removeInstallTarget(filePath) {
+    if (!filePath || !(await pathExists(filePath))) return;
+    // Once the uninstaller is running from TEMP there is no legitimate lock
+    // below the installation target. Give antivirus/indexing filters a bounded
+    // retry window, then require the directory to be absent before reporting
+    // success. This prevents another false-positive "operation succeeded"
+    // followed by a leftover install directory.
+    await withNativeFileSystem(() => fsp.rm(filePath, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 200,
+    }));
+    if (await pathExists(filePath)) {
+        throw new Error(`安装目录删除后仍然存在: ${filePath}`);
+    }
+}
+
 async function listFiles(root) {
     return withNativeFileSystem(async () => {
         const files = [];
@@ -459,6 +530,21 @@ function waitForChildSpawn(child) {
         child.once('spawn', onSpawn);
         child.once('error', onError);
     });
+}
+
+async function waitForCleanupReady(child, readyPath, timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            await fsp.access(readyPath);
+            return;
+        } catch (_) { /* the helper has not initialized yet */ }
+        if (child && child.exitCode !== undefined && child.exitCode !== null) {
+            throw new Error(`卸载清理进程过早退出，代码 ${child.exitCode}。`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('卸载清理进程未在限定时间内完成启动交接。');
 }
 
 function runPowerShellDefault(script, execFileImpl) {
@@ -621,15 +707,18 @@ function removeRegistryScript(scope) {
         .join('\n');
 }
 
-function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
+function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath, stagedExecutable = '') {
     const logPath = `${scriptPath}.log`;
+    const readyPath = `${scriptPath}.ready`;
     return [
         `$target = ${powershellLiteral(targetPath)}`,
         `$script = ${powershellLiteral(scriptPath)}`,
         `$log = ${powershellLiteral(logPath)}`,
+        `$ready = ${powershellLiteral(readyPath)}`,
         `$processId = ${Number(pid) || 0}`,
         `$launcherProcessId = ${Number(launcherPid) || 0}`,
         `$launcherPath = ${powershellLiteral(launcherPath || '')}`,
+        `$stagedExecutable = ${powershellLiteral(stagedExecutable || '')}`,
         '$targetRoot = ([IO.Path]::GetFullPath($target)).TrimEnd(\'\\\') + \'\\\'',
         '$targetLong = "\\\\?\\" + [IO.Path]::GetFullPath($target)',
         '$missingAttempts = 0',
@@ -643,6 +732,7 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         'function Write-CleanupLog([string]$message) {',
         '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -ErrorAction SilentlyContinue } catch {}',
         '}',
+        'Set-Content -LiteralPath $ready -Value $PID -Encoding ascii -Force',
         'Write-CleanupLog ("cleanup started target=" + $target + " pid=" + $processId + " launcherPid=" + $launcherProcessId + " launcherPath=" + $launcherPath)',
         // Extend to 360 attempts (180s) to cover WMI latency and large
         // Chromium/Python tree deletion on slower runners. The workflow waits
@@ -651,9 +741,11 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         'for ($attempt = 0; $attempt -lt 360; $attempt++) {',
         '  Start-Sleep -Milliseconds 500',
         '  if ($processId -gt 0) {',
-        '    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue',
-        '    # Do not use taskkill /T here: the cleanup process is spawned by',
-        '    # the uninstaller and would be killed together with its parent.',
+        '    $uninstallerRunning = $null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)',
+        '    if ($uninstallerRunning) {',
+        '      if (($attempt % 10) -eq 0) { Write-CleanupLog ("waiting for installer process attempt=" + $attempt) }',
+        '      continue',
+        '    }',
         '  }',
         '  # The stock/older portable NSIS wrapper is the process that owns the',
         '  # copy of the uninstaller in $EXEDIR. It can run SetOutPath $EXEDIR',
@@ -754,7 +846,14 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         '  }',
         '}',
         'if (-not (Test-Path -LiteralPath $target)) {',
-        '  Start-Process -FilePath "cmd.exe" -ArgumentList @("/d", "/c", "del /f /q `"$script`" `"$log`"") -WindowStyle Hidden -Wait',
+        '  if ($stagedExecutable) {',
+        '    for ($stageAttempt = 0; $stageAttempt -lt 20; $stageAttempt++) {',
+        '      Remove-Item -LiteralPath $stagedExecutable -Force -ErrorAction SilentlyContinue',
+        '      if (-not (Test-Path -LiteralPath $stagedExecutable)) { break }',
+        '      Start-Sleep -Milliseconds 250',
+        '    }',
+        '  }',
+        '  Start-Process -FilePath "cmd.exe" -ArgumentList @("/d", "/c", "del /f /q `"$script`" `"$log`" `"$ready`"") -WindowStyle Hidden -Wait',
         '} else {',
         '  Write-CleanupLog ("cleanup failed target still exists after all attempts")',
         '}',
@@ -772,6 +871,7 @@ function createInstallerService(options = {}) {
     const execFileSyncImpl = options.execFileSync || execFileSync;
     const runPowerShell = options.runPowerShell || (script => runPowerShellDefault(script, execFileImpl));
     const spawnImpl = options.spawn || spawn;
+    const waitForCleanupReadyImpl = options.waitForCleanupReady || waitForCleanupReady;
     const payloadPath = options.payloadPath || path.join(resourcesPath, 'payload');
     let lastPlan = null;
 
@@ -1098,25 +1198,35 @@ function createInstallerService(options = {}) {
         // installer-main's process.execPath can otherwise point at the
         // temporary extracted Electron child rather than the portable wrapper.
         const launcherPath = resolveCleanupLauncherPath(targetPath, setupExecutable, environment);
-        const script = cleanupScript(targetPath, scriptPath, process.pid, process.ppid, launcherPath);
+        const stagedExecutable = resolveRelocatedCleanupExecutable(
+            tempDirectory,
+            setupExecutable,
+            environment,
+        );
+        const script = cleanupScript(
+            targetPath,
+            scriptPath,
+            process.pid,
+            process.ppid,
+            launcherPath,
+            stagedExecutable,
+        );
         let child;
         try {
             await fsp.mkdir(tempDirectory, { recursive: true });
-            await fsp.writeFile(scriptPath, script, 'utf8');
+            // Windows PowerShell 5.1 only detects UTF-8 reliably when a BOM is
+            // present. Passing a short -File command also avoids cmd.exe's
+            // 8191-character limit, which an encoded cleanup script can exceed.
+            await fsp.writeFile(scriptPath, `\ufeff${script}`, 'utf8');
             if (platform === 'win32') {
-                // Windows PowerShell can interpret a UTF-8 script without
-                // a BOM using the active ANSI code page. Encode the
-                // command as UTF-16LE so Chinese install paths survive
-                // the handoff regardless of the system locale.
-                // Use cmd /c start /b to break away from Electron's job object.
-                // A plain detached PowerShell child would still be in the same
-                // job and would be terminated together with the uninstaller when
-                // the job closes (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE). The
-                // intermediate cmd+start creates a new process that outlives the
-                // uninstaller even when the parent job is killed.
-                const psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePowerShellCommand(script)];
-                const cmdArgs = ['/d', '/c', 'start', '""', '/b', 'powershell.exe'].concat(psArgs);
-                child = spawnImpl('cmd.exe', cmdArgs, {
+                child = spawnImpl('powershell.exe', [
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-File',
+                    scriptPath,
+                ], {
                     detached: true,
                     stdio: 'ignore',
                     windowsHide: true,
@@ -1140,9 +1250,16 @@ function createInstallerService(options = {}) {
                 throw new Error('卸载清理进程没有成功创建。');
             }
             await waitForChildSpawn(child);
+            await waitForCleanupReadyImpl(child, `${scriptPath}.ready`);
             child.unref?.();
         } catch (error) {
+            await fsp.writeFile(
+                `${scriptPath}.startup.log`,
+                `${new Date().toISOString()} ${String(error?.stack || error)}\n`,
+                'utf8',
+            ).catch(() => {});
             await fsp.rm(scriptPath, { force: true }).catch(() => {});
+            await fsp.rm(`${scriptPath}.ready`, { force: true }).catch(() => {});
             throw new InstallerError('UNINSTALL_CLEANUP_FAILED', '无法启动卸载清理进程，请重试。', error);
         }
         return scriptPath;
@@ -1186,9 +1303,27 @@ function createInstallerService(options = {}) {
             // after the embedded app exits. That can recreate the install
             // directory even when this process removes it successfully, so
             // Windows always keeps a post-exit cleanup as a compatibility net.
-            try { await removePath(normalizedTarget); } catch (_) { /* defer to the cleanup process */ }
+            const stagedExecutable = resolveRelocatedCleanupExecutable(
+                tempDirectory,
+                setupExecutable,
+                environment,
+            );
+            let removalError = null;
+            try {
+                if (stagedExecutable) await removeInstallTarget(normalizedTarget);
+                else await removePath(normalizedTarget);
+            } catch (error) {
+                removalError = error;
+            }
             await scheduleUninstallCleanup(normalizedTarget);
             scheduledCleanup = true;
+            if (stagedExecutable && removalError) {
+                throw new InstallerError(
+                    'UNINSTALL_FAILED',
+                    '无法完整移除应用目录，请关闭占用文件的程序后重试。',
+                    removalError,
+                );
+            }
         } else {
             try {
                 await removePath(normalizedTarget);
@@ -1281,6 +1416,8 @@ module.exports = {
     isPathInside,
     readRegistryInstallLocations,
     resolveCleanupLauncherPath,
+    resolveRelocatedCleanupExecutable,
+    resolveUninstallRelocation,
     validateInstallTargetPath,
     normalizeTargetPath,
     parseInstallerArguments,

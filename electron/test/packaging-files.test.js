@@ -5,7 +5,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { patchPortableTemplate } = require('../../scripts/build_windows_installer');
+const {
+    PORTABLE_UNINSTALL_RELOCATION_BLOCK,
+    patchPortableTemplate,
+} = require('../../scripts/build_windows_installer');
 
 const APP_DIR = path.join(__dirname, '..');
 const packageJson = JSON.parse(
@@ -28,6 +31,51 @@ test('Windows 自绘 portable 模板收尾时切换到 TEMP，不重建安装目
         const restore = patchPortableTemplate(templatePath);
         assert.match(fs.readFileSync(templatePath, 'utf8'), /SetOutPath \$TEMP/);
         assert.doesNotMatch(fs.readFileSync(templatePath, 'utf8'), /SetOutPath \$EXEDIR/);
+        assert.match(fs.readFileSync(templatePath, 'utf8'), /WORDTTS_RELOCATED_UNINSTALLER/);
+        assert.match(fs.readFileSync(templatePath, 'utf8'), /wordtts_continue_portable:/);
+        restore();
+        assert.equal(fs.readFileSync(templatePath, 'utf8'), original);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('Windows portable 卸载外壳在解压 Electron 前先迁移到 TEMP', () => {
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /StrCmp \$EXEFILE "小猪wordTTS-uninstaller\.exe"/);
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /GetCurrentProcessId\(\)i\.R1/);
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /stage-\$R1-0-0\.exe/);
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /Kernel32::CopyFile/);
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /WORDTTS_RELOCATION_SOURCE_PID/);
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /--mode=uninstall/);
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /--target="\$EXEDIR"/);
+    assert.match(PORTABLE_UNINSTALL_RELOCATION_BLOCK, /--uninstall-relocated/);
+    assert.ok(
+        PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('CopyFile')
+            < PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('Exec'),
+    );
+    assert.ok(
+        PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('SetOutPath $TEMP')
+            < PORTABLE_UNINSTALL_RELOCATION_BLOCK.indexOf('Exec'),
+    );
+});
+
+test('Windows portable 模板即使上次构建中断也能恢复为原始内容', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-portable-template-recovery-'));
+    const templatePath = path.join(root, 'portable.nsi');
+    const original = [
+        'Section',
+        '  SetOutPath $EXEDIR',
+        '\tRMDir /r $INSTDIR',
+        'SectionEnd',
+        '',
+    ].join('\n');
+    const interrupted = original
+        .replace('Section\n', `Section\n${PORTABLE_UNINSTALL_RELOCATION_BLOCK}`)
+        .replace('SetOutPath $EXEDIR', 'SetOutPath $TEMP');
+    try {
+        fs.writeFileSync(templatePath, interrupted, 'utf8');
+        const restore = patchPortableTemplate(templatePath);
+        assert.equal(fs.readFileSync(templatePath, 'utf8'), interrupted);
         restore();
         assert.equal(fs.readFileSync(templatePath, 'utf8'), original);
     } finally {
@@ -121,6 +169,14 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         path.join(APP_DIR, '..', 'scripts', 'build_windows_installer.js'),
         'utf8',
     );
+    const installerMain = fs.readFileSync(
+        path.join(installerSourceDir, 'installer-main.js'),
+        'utf8',
+    );
+    const installerService = fs.readFileSync(
+        path.join(installerSourceDir, 'installer-service.js'),
+        'utf8',
+    );
     assert.match(packageJson.scripts['build:win'], /electron-builder --win dir --publish never/);
     assert.match(packageJson.scripts['build:win'], /build_windows_installer\.js --payload/);
     assert.match(windowsWorkflow, /electron-builder --win dir --publish never/);
@@ -129,10 +185,16 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsWorkflow, /path: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
     assert.match(windowsWorkflow, /ELECTRON_BUILDER_CACHE: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
     assert.match(windowsInstallerBuildScript, /patchPortableTemplate\(portableTemplatePath\)/);
+    assert.match(windowsInstallerBuildScript, /'--win', 'portable', '--x64'/);
     assert.match(windowsWorkflow, /--headless", "--mode=install"/);
     assert.match(windowsWorkflow, /--headless", "--mode=update"/);
     assert.match(windowsWorkflow, /--headless", "--mode=uninstall"/);
     assert.match(windowsWorkflow, /小猪wordTTS-uninstaller\.exe/);
+    assert.match(installerMain, /relocateInstalledUninstaller/);
+    assert.match(installerMain, /WORDTTS_RELOCATED_UNINSTALLER/);
+    assert.match(installerMain, /waitForSourceWrapperExit/);
+    assert.match(installerService, /if \(stagedExecutable\) await removeInstallTarget\(normalizedTarget\)/);
+    assert.match(installerService, /安装目录删除后仍然存在/);
     assert.ok(
         (windowsWorkflow.match(/\$installerName = "小猪wordTTS-Setup-\$env:UPDATE_VERSION-x64\.exe"/g) || []).length >= 2,
         'installer smoke and artifact validation steps must bind to the current x64 setup executable',

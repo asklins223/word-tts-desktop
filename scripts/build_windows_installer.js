@@ -19,6 +19,31 @@ const { normalizeProjectVersion, readProjectVersion } = require('./project_versi
 const rootDir = path.resolve(__dirname, '..');
 const installerSourceDir = path.join(rootDir, 'installer-prototype');
 const electronDir = path.join(rootDir, 'electron');
+const PORTABLE_UNINSTALL_RELOCATION_LABEL = 'wordtts_continue_portable';
+const PORTABLE_UNINSTALL_RELOCATION_BLOCK = [
+    '  # An installed portable executable cannot remove its own directory.',
+    '  # Relocate the uninstaller before extracting Electron so the staged',
+    '  # wrapper owns no file or current-directory handle below $EXEDIR.',
+    '  StrCmp $EXEFILE "小猪wordTTS-uninstaller.exe" 0 wordtts_continue_portable',
+    "  System::Call 'Kernel32::GetCurrentProcessId()i.R1'",
+    '  StrCpy $R2 "$TEMP\\wordtts-uninstaller-stage-$R1-0-0.exe"',
+    "  System::Call 'Kernel32::CopyFile(t, t, i)i (\"$EXEPATH\", \"$R2\", 0).R0'",
+    '  StrCmp $R0 0 wordtts_continue_portable',
+    "  System::Call 'Kernel32::SetEnvironmentVariable(t, t)i (\"WORDTTS_RELOCATED_UNINSTALLER\", \"$R2\").R0'",
+    '  StrCmp $R0 0 wordtts_relocation_failed',
+    "  System::Call 'Kernel32::SetEnvironmentVariable(t, t)i (\"WORDTTS_RELOCATION_SOURCE_PID\", \"$R1\").R0'",
+    '  StrCmp $R0 0 wordtts_relocation_failed',
+    '  ${StdUtils.GetAllParameters} $R0 0',
+    '  SetOutPath $TEMP',
+    '  ClearErrors',
+    '  Exec \'"$R2" $R0 --mode=uninstall --target="$EXEDIR" --uninstall-relocated\'',
+    '  IfErrors wordtts_relocation_failed',
+    '  Quit',
+    'wordtts_relocation_failed:',
+    '  Delete "$R2"',
+    'wordtts_continue_portable:',
+    '',
+].join('\n');
 
 function argumentValue(argv, name, fallback = null) {
     const index = argv.indexOf(name);
@@ -131,7 +156,7 @@ function runBuilder(projectDir, electronDir, env = process.env) {
     const executable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
     const result = spawnSync(
         executable,
-        ['electron-builder', '--projectDir', projectDir, '--win', 'portable', '--publish', 'never'],
+        ['electron-builder', '--projectDir', projectDir, '--win', 'portable', '--x64', '--publish', 'never'],
         {
             cwd: electronDir,
             env,
@@ -150,32 +175,47 @@ function patchPortableTemplate(templatePath) {
     const original = fs.readFileSync(templatePath, 'utf8');
     const exedirMarker = /^[ \t]+SetOutPath \$EXEDIR\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
     const tempMarker = /^[ \t]+SetOutPath \$TEMP\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
-    let patched = null;
+    const countMatches = (value, pattern) => (
+        value.match(new RegExp(pattern.source, `${pattern.flags}g`)) || []
+    ).length;
+    let patched = original;
     let restoreContent = original;
     if (exedirMarker.test(original)) {
-        if ((original.match(/SetOutPath \$EXEDIR/g) || []).length !== 1) {
+        if (countMatches(original, exedirMarker) !== 1) {
             throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
         }
-        patched = original.replace(exedirMarker, value => value.replace('$EXEDIR', '$TEMP'));
+        patched = patched.replace(exedirMarker, value => value.replace('$EXEDIR', '$TEMP'));
         restoreContent = original;
     } else if (tempMarker.test(original)) {
         // Already patched (e.g. previous run left the file patched). Keep the
         // patched content for this build but restore to the unpatched state
         // afterwards so the working tree stays clean.
-        if ((original.match(/SetOutPath \$TEMP/g) || []).length !== 1) {
+        if (countMatches(original, tempMarker) !== 1) {
             throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
         }
-        patched = original;
         restoreContent = original.replace(tempMarker, value => value.replace('$TEMP', '$EXEDIR'));
     } else {
         throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
+    }
+    const relocationPattern = new RegExp(`^[ \\t]*${PORTABLE_UNINSTALL_RELOCATION_LABEL}:\\r?\\n`, 'm');
+    if (!relocationPattern.test(patched)) {
+        if (!/^Section\r?\n/m.test(patched)) {
+            throw new Error(`无法确认 electron-builder portable 模板的 Section: ${templatePath}`);
+        }
+        patched = patched.replace(/^Section\r?\n/m, value => `${value}${PORTABLE_UNINSTALL_RELOCATION_BLOCK}`);
+    }
+    if (relocationPattern.test(restoreContent)) {
+        restoreContent = restoreContent.replace(PORTABLE_UNINSTALL_RELOCATION_BLOCK, '');
     }
     if (patched !== original) {
         fs.writeFileSync(templatePath, patched, 'utf8');
     }
     // Verify the patch is active before letting the builder run.
     const active = fs.readFileSync(templatePath, 'utf8');
-    if (!tempMarker.test(active) || exedirMarker.test(active)) {
+    if (!tempMarker.test(active)
+        || exedirMarker.test(active)
+        || !relocationPattern.test(active)
+        || !active.includes('WORDTTS_RELOCATED_UNINSTALLER')) {
         throw new Error(`自绘安装程序模板补丁未生效: ${templatePath}`);
     }
     return () => fs.writeFileSync(templatePath, restoreContent, 'utf8');
@@ -253,6 +293,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    PORTABLE_UNINSTALL_RELOCATION_BLOCK,
     createBuildProject,
     patchPortableTemplate,
     parseArguments,

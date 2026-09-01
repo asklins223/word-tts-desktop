@@ -15,6 +15,8 @@ const {
     parseInstallerArguments,
     readRegistryInstallLocations,
     resolveCleanupLauncherPath,
+    resolveRelocatedCleanupExecutable,
+    resolveUninstallRelocation,
     validateInstallTargetPath,
 } = require('../../installer-prototype/installer-service');
 
@@ -56,6 +58,53 @@ test('Windows 延迟卸载脚本会等待 portable 外壳退出后再删除目�
     assert.match(script, /Get-Process -Id \$launcherProcessId/);
     assert.match(script, /\$launcherGraceDeadline = \(Get-Date\)\.AddSeconds\(15\)/);
     assert.ok(script.indexOf('if ((Get-Date) -lt $launcherGraceDeadline)') < directoryDelete);
+    assert.doesNotMatch(script, /Stop-Process -Id \$processId/);
+    assert.match(script, /waiting for installer process/);
+});
+
+test('Windows 安装目录内的卸载器必须先迁移到 TEMP', () => {
+    const target = 'C:\\Apps\\小猪wordTTS';
+    const installed = `${target}\\小猪wordTTS-uninstaller.exe`;
+    const tempDirectory = 'C:\\Users\\Alice\\AppData\\Local\\Temp';
+    const staged = `${tempDirectory}\\wordtts-uninstaller-stage-12-34-a1b2c3.exe`;
+
+    assert.deepEqual(resolveUninstallRelocation({
+        platform: 'win32',
+        mode: 'uninstall',
+        targetPath: target,
+        executablePath: installed,
+        tempDirectory,
+        environment: {},
+    }), { required: true, targetPath: target, staged: false });
+
+    assert.deepEqual(resolveUninstallRelocation({
+        platform: 'win32',
+        mode: 'uninstall',
+        targetPath: target,
+        executablePath: staged,
+        relocatedUninstall: true,
+        tempDirectory,
+        environment: { WORDTTS_RELOCATED_UNINSTALLER: staged },
+    }), { required: false, targetPath: target, staged: true });
+
+    assert.equal(resolveUninstallRelocation({
+        platform: 'win32',
+        mode: 'uninstall',
+        targetPath: target,
+        executablePath: installed,
+        relocatedUninstall: true,
+        tempDirectory,
+        environment: {},
+    }).required, true, '仅伪造内部参数不得跳过迁移');
+
+    assert.equal(
+        resolveRelocatedCleanupExecutable(
+            tempDirectory,
+            staged,
+            { WORDTTS_RELOCATED_UNINSTALLER: staged },
+        ),
+        staged,
+    );
 });
 
 test('自绘安装器参数解析支持普通、更新、卸载和无窗口冒烟参数', () => {
@@ -73,8 +122,10 @@ test('自绘安装器参数解析支持普通、更新、卸载和无窗口冒�
         elevated: false,
         autoStart: true,
         headless: true,
+        relocatedUninstall: false,
     });
     assert.equal(parseInstallerArguments(['--mode=uninstall']).mode, 'uninstall');
+    assert.equal(parseInstallerArguments(['--uninstall-relocated']).relocatedUninstall, true);
     assert.throws(
         () => parseInstallerArguments(['--target']),
         error => error instanceof InstallerError && error.code === 'INVALID_ARGUMENT',
@@ -384,6 +435,7 @@ test('Windows portable 卸载即使首次删除成功也会安排退出后的收
     const target = path.join(root, 'installed', '小猪wordTTS');
     const dataPath = path.join(root, 'user-data');
     const tempDirectory = path.join(root, 'temp');
+    const stagedExecutable = path.join(tempDirectory, 'wordtts-uninstaller-stage-12-34-a1b2c3.exe');
     const spawned = [];
     const environment = {
         ...process.env,
@@ -392,6 +444,8 @@ test('Windows portable 卸载即使首次删除成功也会安排退出后的收
         PUBLIC: process.env.PUBLIC || path.join(root, 'public'),
         ProgramData: process.env.ProgramData || path.join(root, 'program-data'),
         ProgramFiles: process.env.ProgramFiles || path.join(root, 'program-files'),
+        PORTABLE_EXECUTABLE_FILE: stagedExecutable,
+        WORDTTS_RELOCATED_UNINSTALLER: stagedExecutable,
     };
 
     try {
@@ -401,10 +455,12 @@ test('Windows portable 卸载即使首次删除成功也会安排退出后的收
             platform: 'win32',
             dataPath,
             tempDirectory,
+            setupExecutable: stagedExecutable,
             environment,
             // The test is about the portable wrapper handoff, not shell
             // integration. Avoid requiring a real registry or shortcut host.
             runPowerShell: async () => {},
+            waitForCleanupReady: async () => {},
             spawn: (executable, args, options) => {
                 const child = new EventEmitter();
                 child.unref = () => {};
@@ -423,14 +479,18 @@ test('Windows portable 卸载即使首次删除成功也会安排退出后的收
         assert.equal(result.success, true);
         assert.equal(result.scheduledCleanup, true);
         assert.equal(spawned.length, 1);
+        assert.equal(spawned[0].executable, 'powershell.exe');
         assert.equal(spawned[0].options.cwd, tempDirectory);
-        const encodedIndex = spawned[0].args.indexOf('-EncodedCommand');
-        assert.notEqual(encodedIndex, -1);
-        const cleanupScript = Buffer.from(spawned[0].args[encodedIndex + 1], 'base64').toString('utf16le');
+        const fileIndex = spawned[0].args.indexOf('-File');
+        assert.notEqual(fileIndex, -1);
+        const cleanupPath = spawned[0].args[fileIndex + 1];
+        const cleanupScript = fs.readFileSync(cleanupPath, 'utf8').replace(/^\uFEFF/, '');
+        assert.equal(cleanupPath.startsWith(tempDirectory), true);
         assert.match(cleanupScript, /\$missingAttempts = 0/);
         assert.match(cleanupScript, /\$missingAttempts -ge 10/);
         assert.match(cleanupScript, /\$launcherProcessId = \d+/);
-        assert.match(cleanupScript, /\$launcherPath = '.*小猪wordTTS-uninstaller\.exe'/);
+        assert.match(cleanupScript, /\$launcherPath = '.*wordtts-uninstaller-stage-12-34-a1b2c3\.exe'/);
+        assert.match(cleanupScript, /\$stagedExecutable = '.*wordtts-uninstaller-stage-12-34-a1b2c3\.exe'/);
         assert.match(cleanupScript, /\$launcherRunning = \$false/);
         assert.match(cleanupScript, /waiting for portable launcher/);
         assert.match(cleanupScript, /if \(\$launcherRunning\) \{/);

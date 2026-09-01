@@ -392,31 +392,36 @@ jobs:
             Write-Host "执行自绘卸载"
             Invoke-CheckedProcess -FilePath $uninstaller -Arguments @("--headless", "--mode=uninstall", "--target", $installDir) -WorkingDirectory $env:RUNNER_TEMP
             # 卸载程序自身位于目标目录，Windows 需要等短生命周期清理进程
-            # 在 uninstaller 退出后完成最后一次删除。安装包包含 Python 和
-            # Chromium，清理大目录可能超过进程退出时间。清理脚本会在
-            # 180 秒内持续终止残留子进程并重试（每 500ms 一次，共 360 次，
-            # 含 15s 的 portable wrapper 交接宽限期），这里多留出文件系统缓冲时间。
+            # 在 uninstaller 退出后完成最后一次删除。卸载器会先迁移到
+            # TEMP 再运行；这里只观察产品自己的清理结果，不在 CI 中代替它删目录。
             $uninstallDeadline = (Get-Date).AddSeconds(180)
             $lastPollLog = Get-Date
             while ((Test-Path -LiteralPath $installDir) -and (Get-Date) -lt $uninstallDeadline) {
               Start-Sleep -Milliseconds 500
-              # 双保险：即使 detached 的 PowerShell 清理因 Job 终止而被回收，
-              # 调用方也持续尝试删除，避免把一次成功的卸载误判为残留。
-              # 轻量重试（仅 rmdir/Remove-Item），重量级的 attrib 归一由
-              # detached 清理脚本每 10 轮处理，避免在轮询中反复遍历大目录。
-              try { & cmd.exe /d /c "rmdir /s /q `"$installDir`"" 2>$null | Out-Null } catch {}
-              try { Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
               if ((Get-Date) -gt $lastPollLog.AddSeconds(10)) {
                 $lastPollLog = Get-Date
                 try {
                   $remaining = (Get-ChildItem -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count
-                  Write-Host "卸载轮询中：目标仍存在，已尝试主动清理，剩余文件数约 $remaining"
+                  Write-Host "卸载轮询中：目标仍存在，剩余文件数约 $remaining"
                 } catch { Write-Host "卸载轮询中：目标仍存在" }
               }
             }
             if (Test-Path -LiteralPath $installDir) {
               Write-Host "卸载后目录仍存在，输出诊断信息"
-              try { Get-ChildItem -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, Length, Attributes | Format-Table -AutoSize | Out-String | Write-Host } catch { Write-Host "无法列出剩余文件: $_" }
+              $residualLog = Join-Path $env:RUNNER_TEMP ("wordtts-installer-residual-" + [guid]::NewGuid().ToString("N") + ".log")
+              try {
+                "installDir=$installDir" | Set-Content -LiteralPath $residualLog -Encoding utf8
+                "--- remaining files ---" | Add-Content -LiteralPath $residualLog -Encoding utf8
+                Get-ChildItem -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue |
+                  Select-Object FullName, Length, Attributes, LastWriteTimeUtc |
+                  Format-List | Out-String | Add-Content -LiteralPath $residualLog -Encoding utf8
+                "--- related processes ---" | Add-Content -LiteralPath $residualLog -Encoding utf8
+                Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                  Where-Object { ([string]$_.ExecutablePath).StartsWith($installDir, [System.StringComparison]::OrdinalIgnoreCase) -or ([string]$_.CommandLine).Contains($installDir) } |
+                  Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine |
+                  Format-List | Out-String | Add-Content -LiteralPath $residualLog -Encoding utf8
+                Get-Content -LiteralPath $residualLog -Raw | Write-Host
+              } catch { Write-Host "无法生成残留诊断: $_" }
               $diagLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-*.log" -ErrorAction SilentlyContinue
               foreach ($log in $diagLogs) {
                 Write-Host "卸载清理日志: $($log.FullName)"
@@ -427,8 +432,6 @@ jobs:
                 Write-Host "安装器日志: $($log.FullName)"
                 try { Get-Content -LiteralPath $log.FullName -Raw -ErrorAction SilentlyContinue | Write-Host } catch {}
               }
-              # 最后一次强制尝试，收集错误供上传的日志使用
-              try { & handle.exe -accepteula -nobanner "$installDir" 2>$null | Out-String | Write-Host } catch {}
               throw "卸载完成后安装目录仍存在: $installDir"
             }
             Write-Host "自绘安装、更新、卸载生命周期测试通过"
@@ -445,8 +448,18 @@ jobs:
           name: 小猪wordTTS-Windows-installer-smoke
           path: |
             ${{ runner.temp }}/wordtts-installer-*.log
-            ${{ runner.temp }}/wordtts-uninstall-*.log
+            ${{ runner.temp }}/wordtts-uninstall-*
           retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload failed installer for forensic inspection
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 小猪wordTTS-Windows-failed-installer
+          path: electron/release/小猪wordTTS-Setup-*-x64.exe
+          retention-days: 3
+          compression-level: 0
           if-no-files-found: warn
 
       # ======================================================================

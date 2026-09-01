@@ -16,6 +16,7 @@ const {
     decodeArgumentValue,
     encodePowerShellCommand,
     parseInstallerArguments,
+    resolveUninstallRelocation,
 } = require('./installer-service');
 
 const PRODUCT_NAME = '小猪wordTTS';
@@ -64,6 +65,131 @@ try {
 function portableExecutablePath() {
     return process.env.PORTABLE_EXECUTABLE_FILE
         || process.execPath;
+}
+
+async function waitForRelocatedReady(child, readyPath, timeoutMs = 90000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            await fs.promises.access(readyPath);
+            return;
+        } catch (_) { /* the staged portable app is still extracting */ }
+        if (child && child.exitCode !== undefined && child.exitCode !== null) {
+            throw new Error(`临时卸载程序过早退出，代码 ${child.exitCode}。`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('临时卸载程序启动超时。');
+}
+
+async function waitForSourceWrapperExit(pid, timeoutMs = 60000) {
+    const processId = Number(pid) || 0;
+    if (processId <= 0 || processId === process.pid) return;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        let running = true;
+        try {
+            process.kill(processId, 0);
+        } catch (error) {
+            if (error?.code === 'ESRCH') running = false;
+            else if (error?.code !== 'EPERM') running = false;
+        }
+        if (!running) return;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('安装目录内的原卸载外壳未在限定时间内退出。');
+}
+
+async function completeRelocatedUninstallHandoff() {
+    const executable = portableExecutablePath();
+    const relocation = resolveUninstallRelocation({
+        platform: process.platform,
+        mode: parsedArguments.mode,
+        targetPath: parsedArguments.targetPath,
+        executablePath: executable,
+        relocatedUninstall: parsedArguments.relocatedUninstall,
+        tempDirectory: os.tmpdir(),
+        environment: process.env,
+    });
+    if (!relocation.staged) return;
+    const expectedReadyPath = `${executable}.ready`;
+    const readyPath = String(process.env.WORDTTS_RELOCATED_READY || '');
+    // The patched NSIS wrapper performs the relocation before Electron is
+    // extracted and exits immediately, so it needs no JavaScript handshake.
+    // WORDTTS_RELOCATED_READY is present only in the fallback used by older
+    // wrappers that reached this Electron process while still inside target.
+    if (readyPath) {
+        if (path.win32.normalize(readyPath).toLowerCase()
+            !== path.win32.normalize(expectedReadyPath).toLowerCase()) {
+            throw new Error('临时卸载程序的启动交接标记无效。');
+        }
+        await fs.promises.writeFile(readyPath, String(process.pid), 'utf8');
+        writeHeadlessDiagnostic(`[handoff] staged uninstaller ready pid=${process.pid}`);
+    } else {
+        writeHeadlessDiagnostic('[handoff] NSIS relocated uninstaller active');
+    }
+    await waitForSourceWrapperExit(process.env.WORDTTS_RELOCATION_SOURCE_PID);
+    writeHeadlessDiagnostic('[handoff] source uninstaller wrapper exited');
+}
+
+async function relocateInstalledUninstaller() {
+    const executable = portableExecutablePath();
+    const relocation = resolveUninstallRelocation({
+        platform: process.platform,
+        mode: parsedArguments.mode,
+        targetPath: parsedArguments.targetPath,
+        executablePath: executable,
+        relocatedUninstall: parsedArguments.relocatedUninstall,
+        tempDirectory: os.tmpdir(),
+        environment: process.env,
+    });
+    if (!relocation.required) return false;
+
+    const stagedExecutable = path.join(
+        os.tmpdir(),
+        `wordtts-uninstaller-stage-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.exe`,
+    );
+    const readyPath = `${stagedExecutable}.ready`;
+    const forwardedArguments = process.argv.slice(1)
+        .filter(value => value !== '--uninstall-relocated');
+    if (!forwardedArguments.some(value => value === '--mode' || value.startsWith('--mode='))) {
+        forwardedArguments.push('--mode=uninstall');
+    }
+    if (!forwardedArguments.some(value => value === '--target' || value.startsWith('--target='))) {
+        forwardedArguments.push('--target', relocation.targetPath);
+    }
+    forwardedArguments.push('--uninstall-relocated');
+    writeHeadlessDiagnostic(`[handoff] relocating installed uninstaller to ${stagedExecutable}`);
+    let child;
+    try {
+        await fs.promises.copyFile(executable, stagedExecutable);
+        child = spawn(stagedExecutable, forwardedArguments, {
+            cwd: os.tmpdir(),
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+            env: {
+                ...process.env,
+                WORDTTS_RELOCATED_UNINSTALLER: stagedExecutable,
+                WORDTTS_RELOCATED_READY: readyPath,
+                WORDTTS_RELOCATION_SOURCE_PID: String(process.ppid || 0),
+            },
+        });
+        if (!child || typeof child !== 'object') {
+            throw new Error('临时卸载程序没有成功创建。');
+        }
+        await waitForChildSpawn(child);
+        await waitForRelocatedReady(child, readyPath);
+        await fs.promises.rm(readyPath, { force: true });
+        child.unref?.();
+    } catch (error) {
+        try { child?.kill?.(); } catch (_) { /* best effort */ }
+        try { fs.rmSync(readyPath, { force: true }); } catch (_) { /* best effort */ }
+        try { fs.rmSync(stagedExecutable, { force: true }); } catch (_) { /* best effort */ }
+        throw error;
+    }
+    writeHeadlessDiagnostic(`[handoff] relocated uninstaller started pid=${child.pid || 0}`);
+    return true;
 }
 
 function isTrustedSender(event) {
@@ -369,6 +495,14 @@ function registerIpc() {
 async function bootstrap() {
     if (argumentError) throw argumentError;
     writeHeadlessDiagnostic(`[bootstrap] argv=${JSON.stringify(process.argv.slice(1))}`);
+    // An executable cannot reliably remove the directory it is running from
+    // on Windows. Hand the uninstall to an authenticated copy in TEMP first;
+    // the staged process then owns no handle below the installation target.
+    if (await relocateInstalledUninstaller()) {
+        app.exit(0);
+        return;
+    }
+    await completeRelocatedUninstallHandoff();
     if (process.platform !== 'win32' && !isSmokeTest) {
         // The source preview remains usable in a browser. The packaged custom
         // setup is intentionally Windows-only until a platform-specific file
