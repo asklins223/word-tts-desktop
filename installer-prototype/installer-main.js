@@ -21,12 +21,18 @@ const {
 
 const PRODUCT_NAME = '小猪wordTTS';
 const ELEVATION_PLAN_NAME = /^wordtts-installer-plan-\d+-\d+-[0-9a-f]+\.json$/i;
-// Leave a slim canvas margin around the 1120 x 680 artwork. These dimensions
-// are the content size of the frameless window, so the UI never gets clipped
-// by the browser-like preview canvas.
-const WINDOW_WIDTH = 1200;
-const WINDOW_HEIGHT = 780;
+// The installer artwork is rendered edge-to-edge inside the frameless window.
+// Keeping the native window the same size as the artwork avoids exposing the
+// dark preview canvas as a black border around the actual installer surface.
+const WINDOW_WIDTH = 1120;
+const WINDOW_HEIGHT = 680;
 const isSmokeTest = process.argv.includes('--smoke-test');
+const isElevatedInstance = process.argv.includes('--elevated');
+// Setup.exe can be started both by the updater and by a user double-click.
+// Keep one visible installer process and forward the newer command line to it
+// instead of letting the two processes disagree about install vs. update.
+const hasSingleInstanceLock = isElevatedInstance || app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 
 let mainWindow = null;
 let installerService = null;
@@ -34,6 +40,9 @@ let installerConfig = null;
 let activeOperation = null;
 let cancellationRequested = false;
 let operationPlan = null;
+let pendingInstanceRequest = null;
+let windowReadyToShow = false;
+let rendererReady = false;
 
 let parsedArguments = null;
 let argumentError = null;
@@ -205,6 +214,37 @@ function post(channel, payload) {
     mainWindow.webContents.send(channel, payload);
 }
 
+function maybeShowMainWindow() {
+    if (!mainWindow || mainWindow.isDestroyed() || !windowReadyToShow || !rendererReady) return false;
+    mainWindow.show();
+    return true;
+}
+
+function focusMainWindow() {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    maybeShowMainWindow();
+    if (!mainWindow.isVisible()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+}
+
+function hasOperationArguments(args) {
+    return Boolean(
+        args?.mode
+        || args?.targetPath
+        || args?.targetVersion
+        || args?.planPath
+        || args?.autoStart
+        || args?.elevated,
+    );
+}
+
+function executableFromCommandLine(commandLine) {
+    const raw = Array.isArray(commandLine) ? commandLine[0] : '';
+    const candidate = decodeArgumentValue(raw).trim();
+    return /\.exe$/i.test(candidate) ? candidate : null;
+}
+
 function psQuote(value) {
     return `'${String(value).replace(/'/g, "''")}'`;
 }
@@ -278,12 +318,13 @@ function waitForChildExit(child) {
     });
 }
 
-async function startElevatedInstaller(planPath) {
-    const executable = portableExecutablePath();
+async function startElevatedInstaller(planPath, installerPath = portableExecutablePath()) {
+    const executable = String(installerPath || portableExecutablePath());
     const script = [
         '$ErrorActionPreference = \'Stop\'',
         `$installer = ${psQuote(executable)}`,
         `$plan = ${psQuote(planPath)}`,
+        '$env:PORTABLE_EXECUTABLE_FILE = $installer',
         'try {',
         "  $child = Start-Process -FilePath $installer -ArgumentList @('--elevated', ('--plan=' + $plan)) -Verb RunAs -PassThru",
         '  if (-not $child) { throw \'管理员安装程序没有返回进程。\' }',
@@ -304,14 +345,14 @@ async function startElevatedInstaller(planPath) {
     await waitForChildExit(child);
 }
 
-async function delegateToElevatedInstance(plan) {
+async function delegateToElevatedInstance(plan, installerPath = portableExecutablePath()) {
     const planPath = writeElevationPlan({
         ...plan,
         autoStart: true,
         planPath: null,
     });
     try {
-        await startElevatedInstaller(planPath);
+        await startElevatedInstaller(planPath, installerPath);
         return { delegated: true };
     } catch (error) {
         try { fs.rmSync(planPath, { force: true }); } catch (_) { /* best effort */ }
@@ -341,7 +382,83 @@ function readOperationPlan() {
     }
 }
 
+function applyForwardedArguments(incomingArguments, sourceExecutable = null) {
+    if (!installerService || activeOperation) return false;
+    const previousArguments = parsedArguments;
+    const previousPlan = operationPlan;
+    parsedArguments = { ...parsedArguments, ...incomingArguments };
+    try {
+        operationPlan = readOperationPlan();
+        const nextConfig = installerService.getConfig({
+            appVersion: app.getVersion(),
+            arguments: parsedArguments,
+            operationPlan,
+        });
+        if (sourceExecutable) {
+            installerService.setSetupExecutable?.(sourceExecutable);
+            installerConfig = { ...nextConfig, setupExecutable: sourceExecutable };
+        } else {
+            installerConfig = nextConfig;
+        }
+    } catch (error) {
+        parsedArguments = previousArguments;
+        operationPlan = previousPlan;
+        throw error;
+    }
+    writeHeadlessDiagnostic(`[forwarded-config] ${JSON.stringify({
+        mode: installerConfig.mode,
+        targetPath: installerConfig.targetPath,
+        targetVersion: installerConfig.targetVersion,
+        autoStart: installerConfig.autoStart,
+    })}`);
+    post('installer-config', installerConfig);
+    focusMainWindow();
+    return true;
+}
+
+function handleSecondInstance(commandLine) {
+    if (parsedArguments?.headless || isSmokeTest) return;
+    let incomingArguments;
+    try {
+        const values = Array.isArray(commandLine) ? commandLine.slice(1) : [];
+        incomingArguments = parseInstallerArguments(values);
+    } catch (error) {
+        writeHeadlessDiagnostic(`[second-instance-error] ${error.stack || error}`);
+        focusMainWindow();
+        return;
+    }
+    if (!hasOperationArguments(incomingArguments)) {
+        focusMainWindow();
+        return;
+    }
+    if (activeOperation) {
+        writeHeadlessDiagnostic('[second-instance] ignored operation arguments while another operation is running');
+        focusMainWindow();
+        return;
+    }
+    if (!installerService) {
+        pendingInstanceRequest = {
+            arguments: incomingArguments,
+            sourceExecutable: executableFromCommandLine(commandLine),
+        };
+        focusMainWindow();
+        return;
+    }
+    try {
+        applyForwardedArguments(incomingArguments, executableFromCommandLine(commandLine));
+    } catch (error) {
+        writeHeadlessDiagnostic(`[second-instance-error] ${error.stack || error}`);
+        focusMainWindow();
+    }
+}
+
+if (hasSingleInstanceLock && !isElevatedInstance) {
+    app.on('second-instance', (_event, commandLine) => handleSecondInstance(commandLine));
+}
+
 function createWindow() {
+    windowReadyToShow = false;
+    rendererReady = false;
     mainWindow = new BrowserWindow({
         width: WINDOW_WIDTH,
         height: WINDOW_HEIGHT,
@@ -352,7 +469,7 @@ function createWindow() {
         frame: false,
         resizable: false,
         show: false,
-        backgroundColor: '#151a22',
+        backgroundColor: '#f8fbff',
         title: `${PRODUCT_NAME} 安装程序`,
         webPreferences: {
             preload: path.join(__dirname, 'installer-preload.js'),
@@ -371,7 +488,19 @@ function createWindow() {
     });
     mainWindow.on('closed', () => { mainWindow = null; });
     mainWindow.loadFile(path.join(__dirname, 'index.html'));
-    mainWindow.once('ready-to-show', () => mainWindow?.show());
+    mainWindow.once('ready-to-show', () => {
+        windowReadyToShow = true;
+        maybeShowMainWindow();
+        // A broken renderer should produce a visible diagnostic instead of
+        // leaving the process alive with no window at all.
+        setTimeout(() => {
+            if (!rendererReady && mainWindow && !mainWindow.isDestroyed()) {
+                rendererReady = true;
+                writeHeadlessDiagnostic('[renderer] ready signal timeout; showing fallback window');
+                maybeShowMainWindow();
+            }
+        }, 1500);
+    });
     return mainWindow;
 }
 
@@ -396,6 +525,12 @@ function normalizedPlan(input) {
 }
 
 function registerIpc() {
+    ipcMain.on('installer-renderer-ready', event => {
+        if (!isTrustedSender(event)) return;
+        rendererReady = true;
+        maybeShowMainWindow();
+    });
+
     ipcMain.handle('installer-config', (event) => {
         if (!isTrustedSender(event)) return installerConfig;
         return installerConfig;
@@ -424,10 +559,19 @@ function registerIpc() {
         if (process.platform === 'win32'
             && plan.scope === 'per-machine'
             && !parsedArguments.elevated) {
-            const delegated = await delegateToElevatedInstance(plan);
-            post('installer-complete', delegated);
-            setTimeout(() => app.quit(), 120);
-            return delegated;
+            mainWindow?.hide();
+            try {
+                const delegated = await delegateToElevatedInstance(
+                    plan,
+                    installerConfig?.setupExecutable || portableExecutablePath(),
+                );
+                post('installer-complete', delegated);
+                setTimeout(() => app.quit(), 120);
+                return delegated;
+            } catch (error) {
+                mainWindow?.show();
+                throw error;
+            }
         }
 
         cancellationRequested = false;
@@ -509,6 +653,11 @@ async function bootstrap() {
         // operation backend is added.
         console.warn('[installer] custom setup is intended for Windows');
     }
+    const pendingRequest = pendingInstanceRequest;
+    if (pendingRequest) {
+        parsedArguments = { ...parsedArguments, ...pendingRequest.arguments };
+        pendingInstanceRequest = null;
+    }
     operationPlan = readOperationPlan();
     installerService = createInstallerService({
         platform: process.platform,
@@ -518,6 +667,9 @@ async function bootstrap() {
         environment: process.env,
         tempDirectory: os.tmpdir(),
     });
+    if (pendingRequest?.sourceExecutable) {
+        installerService.setSetupExecutable?.(pendingRequest.sourceExecutable);
+    }
     installerConfig = installerService.getConfig({
         appVersion: app.getVersion(),
         arguments: parsedArguments,
@@ -553,7 +705,10 @@ async function bootstrap() {
     createWindow();
 }
 
-app.whenReady().then(bootstrap).catch(error => {
+app.whenReady().then(() => {
+    if (!hasSingleInstanceLock) return null;
+    return bootstrap();
+}).catch(error => {
     console.error(`[installer] 启动失败: ${error.stack || error}`);
     writeHeadlessDiagnostic(`[error] ${error.stack || error}`);
     if (!parsedArguments?.headless) {

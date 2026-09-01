@@ -163,6 +163,7 @@ test('Windows 更新客户端下载后校验并启动自绘 Setup.exe', async ()
         assert.equal(spawnCalls[0].args[3], '3.0.2');
         assert.equal(spawnCalls[0].args[4], '--target');
         assert.equal(spawnCalls[0].args[5], path.join(root, 'installed'));
+        assert.equal(spawnCalls[0].options.env.PORTABLE_EXECUTABLE_FILE, downloadedPath);
         assert.equal(quitCalled, true);
         client.dispose();
     } finally {

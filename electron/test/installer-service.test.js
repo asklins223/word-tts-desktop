@@ -11,6 +11,7 @@ const test = require('node:test');
 const {
     createInstallerService,
     cleanupScript,
+    INSTALL_LOCATION_FILE,
     InstallerError,
     normalizeTargetPath,
     parseInstallerArguments,
@@ -269,6 +270,37 @@ test('安装器启动时会根据目标目录自动识别安装或更新', async
     }
 });
 
+test('安装器会用持久化安装位置记录识别自定义目录', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-location-record-'));
+    const target = path.join(root, 'custom', '小猪wordTTS');
+    const dataPath = path.join(root, 'user-data');
+    try {
+        await fsp.mkdir(target, { recursive: true });
+        await fsp.mkdir(dataPath, { recursive: true });
+        await fsp.writeFile(path.join(target, '小猪wordTTS.exe'), 'installed application');
+        await fsp.writeFile(path.join(dataPath, INSTALL_LOCATION_FILE), `${JSON.stringify({
+            format: 1,
+            product: '小猪wordTTS',
+            version: '3.0.1',
+            scope: 'per-user',
+            installPath: target,
+        })}\n`);
+
+        const service = createInstallerService({
+            platform: process.platform,
+            dataPath,
+            execFileSync: () => '',
+        });
+        const config = service.getConfig({ appVersion: '3.0.2', arguments: {} });
+
+        assert.equal(config.mode, 'update');
+        assert.equal(config.installed, true);
+        assert.equal(config.targetPath, path.normalize(target));
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
 test('安装器启动已安装应用失败时不会误报成功', async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-installer-launch-error-'));
     const target = path.join(root, 'installed', '小猪wordTTS');
@@ -337,6 +369,7 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
     const target = path.join(root, 'installed', '小猪wordTTS');
     const dataPath = path.join(root, 'user-data');
     const setup = path.join(root, '小猪wordTTS-Setup.exe');
+    const updateSetup = path.join(root, '小猪wordTTS-Setup-update.exe');
     const progress = [];
     const shellEnvironment = process.platform === 'win32'
         ? {
@@ -404,6 +437,10 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
         }
         assert.equal(fs.readFileSync(path.join(target, '小猪wordTTS-uninstaller.exe'), 'utf8'), 'self-drawing setup');
         assert.equal(service.readState(target).version, '3.0.1');
+        assert.equal(
+            JSON.parse(fs.readFileSync(path.join(dataPath, INSTALL_LOCATION_FILE), 'utf8')).installPath,
+            path.normalize(target),
+        );
         assert.equal(progress.at(-1).percent, 100);
         if (process.platform === 'win32') {
             assert.equal(
@@ -417,6 +454,8 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
         }
 
         await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v2');
+        await fsp.writeFile(updateSetup, 'new self-drawing setup');
+        service.setSetupExecutable(updateSetup);
         const update = await service.run({
             mode: 'update',
             targetPath: target,
@@ -425,6 +464,7 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
         });
         assert.equal(update.previousState.version, '3.0.1');
         assert.equal(fs.readFileSync(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v2');
+        assert.equal(fs.readFileSync(path.join(target, '小猪wordTTS-uninstaller.exe'), 'utf8'), 'new self-drawing setup');
         assert.equal(service.readState(target).version, '3.0.2');
 
         await assert.rejects(
@@ -453,6 +493,7 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
         assert.equal(fs.existsSync(target), false);
         assert.equal(fs.existsSync(path.join(dataPath, 'settings.json')), true);
         assert.equal(fs.existsSync(path.join(dataPath, 'cache')), false);
+        assert.equal(fs.existsSync(path.join(dataPath, INSTALL_LOCATION_FILE)), false);
 
         await fsp.mkdir(path.join(payload, 'resources'), { recursive: true });
         await service.run({

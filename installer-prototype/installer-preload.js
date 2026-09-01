@@ -17,7 +17,9 @@ contextBridge.exposeInMainWorld('installerAPI', {
     launch: () => ipcRenderer.invoke('installer-launch'),
     close: () => ipcRenderer.invoke('installer-close'),
     minimize: () => ipcRenderer.invoke('installer-minimize'),
+    ready: () => ipcRenderer.send('installer-renderer-ready'),
     onProgress: (callback) => subscribe('installer-progress', callback),
+    onConfig: (callback) => subscribe('installer-config', callback),
     onComplete: (callback) => subscribe('installer-complete', callback),
     onError: (callback) => subscribe('installer-error', callback),
 });

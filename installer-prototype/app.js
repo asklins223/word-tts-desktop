@@ -328,6 +328,27 @@
     syncSummary();
   }
 
+  function applyForwardedRuntimeConfig(config) {
+    if (!config || typeof config !== 'object') return;
+    if (state.operationRunning) {
+      showToast('当前操作正在进行，请等待完成后再处理新的安装请求。');
+      return;
+    }
+    stopProgress();
+    state.screen = 'welcome';
+    state.progress = 0;
+    state.operationError = null;
+    state.operationHandled = false;
+    operationError.hidden = true;
+    operationErrorMessage.textContent = '';
+    applyRuntimeConfig(config);
+    setScreen('welcome');
+    showToast(config.mode === 'update'
+      ? '已切换到更新流程，正在继续处理新版本。'
+      : config.mode === 'uninstall' ? '已切换到卸载流程。' : '已切换到安装流程。');
+    autoStartConfiguredFlow();
+  }
+
   function updateStepper(screen) {
     const config = currentConfig();
     const activeIndex = config.screenIndexes[screen] ?? 0;
@@ -624,6 +645,17 @@
     if (nextScreen === 'progress') void beginOperation();
   }
 
+  function autoStartConfiguredFlow() {
+    if (!runtimeConfig.autoStart || !runtimeConfig.fixedMode) return;
+    const confirmScreen = state.mode === 'install'
+      ? 'confirm'
+      : state.mode === 'update' ? 'update-confirm' : 'uninstall-confirm';
+    setScreen(confirmScreen);
+    window.setTimeout(() => {
+      if (state.screen === confirmScreen && !state.operationRunning) goForward();
+    }, 420);
+  }
+
   function goBack() {
     const flow = currentFlow();
     const previousIndex = flow.indexOf(state.screen) - 1;
@@ -731,6 +763,7 @@
   });
 
   if (runtime) {
+    runtime.onConfig(config => applyForwardedRuntimeConfig(config));
     runtime.onProgress(progress => {
       if (state.screen !== 'progress') return;
       updateProgress(progress);
@@ -776,15 +809,8 @@
     syncSummary();
     updateStepper(state.screen);
     updateActions(state.screen);
-    if (runtimeConfig.autoStart && runtimeConfig.fixedMode) {
-      const confirmScreen = state.mode === 'install'
-        ? 'confirm'
-        : state.mode === 'update' ? 'update-confirm' : 'uninstall-confirm';
-      setScreen(confirmScreen);
-      window.setTimeout(() => {
-        if (state.screen === confirmScreen) goForward();
-      }, 420);
-    }
+    autoStartConfiguredFlow();
+    runtime?.ready?.();
   }
 
   void boot();

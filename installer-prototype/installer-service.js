@@ -13,6 +13,8 @@ const UNINSTALLER_EXECUTABLE = '小猪wordTTS-uninstaller.exe';
 const RELOCATED_UNINSTALLER_PATTERN = /^wordtts-uninstaller-stage-\d+-\d+-[0-9a-f]+\.exe$/i;
 const INSTALL_STATE_FILE = 'install-state.json';
 const INSTALL_STATE_VERSION = 1;
+const INSTALL_LOCATION_FILE = 'install-location.json';
+const INSTALL_LOCATION_VERSION = 1;
 const REGISTRY_SUBKEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WordTTS';
 const REGISTRY_INSTALL_LOCATION_VALUE = 'InstallLocation';
 const LEGACY_REGISTRY_SUBKEYS = [
@@ -369,6 +371,21 @@ function dataDirectory(environment, platform) {
     return path.join(os.homedir(), '.wordtts');
 }
 
+function installLocationFilePath(dataPath, platform) {
+    const pathApi = platform === 'win32' ? path.win32 : path;
+    return pathApi.join(String(dataPath || ''), INSTALL_LOCATION_FILE);
+}
+
+function readInstallLocationRecord(dataPath, platform) {
+    const record = parseJsonFile(installLocationFilePath(dataPath, platform));
+    if (!record || record.format !== INSTALL_LOCATION_VERSION || record.product !== PRODUCT_NAME) return null;
+    try {
+        return normalizeTargetPath(record.installPath, platform);
+    } catch (_) {
+        return null;
+    }
+}
+
 function findInstalledPath(candidates, platform) {
     return candidates.find(candidate => existsSyncSafe(path.join(candidate, APP_EXECUTABLE)))
         || candidates.find(candidate => existsSyncSafe(path.join(candidate, 'resources', 'app.asar')))
@@ -437,12 +454,24 @@ async function removeInstallTarget(filePath) {
     }
 }
 
+function toLongPath(filePath, platform = process.platform) {
+    if (platform !== 'win32') return filePath;
+    const abs = path.win32.isAbsolute(filePath) ? path.win32.resolve(filePath) : filePath;
+    // Windows MAX_PATH is 260; use \\?\ prefix for long or unicode-heavy paths
+    if (abs.startsWith('\\\\?\\')) return abs;
+    if (abs.length >= 240 || /[^\x00-\x7F]/.test(abs)) {
+        // \\?\ requires absolute + backslash normalized
+        return '\\\\?\\' + path.win32.resolve(abs);
+    }
+    return abs;
+}
+
 async function listFiles(root) {
     return withNativeFileSystem(async () => {
         const files = [];
         const directories = [];
         async function visit(current) {
-            const entries = await fsp.readdir(current, { withFileTypes: true });
+            const entries = await fsp.readdir(toLongPath(current), { withFileTypes: true });
             for (const entry of entries) {
                 const absolute = path.join(current, entry.name);
                 if (entry.isDirectory()) {
@@ -461,10 +490,10 @@ async function listFiles(root) {
 async function copyTree(source, destination, onProgress, isCancelled) {
     if (!(await pathExists(source))) throw new InstallerError('PAYLOAD_MISSING', '安装包内缺少应用文件。');
     const inventory = await listFiles(source);
-    await fsp.mkdir(destination, { recursive: true });
+    await fsp.mkdir(toLongPath(destination), { recursive: true });
     for (const directory of inventory.directories) {
         const relative = path.relative(source, directory);
-        await fsp.mkdir(path.join(destination, relative), { recursive: true });
+        await fsp.mkdir(toLongPath(path.join(destination, relative)), { recursive: true });
     }
     let copied = 0;
     const total = Math.max(1, inventory.files.length);
@@ -473,15 +502,27 @@ async function copyTree(source, destination, onProgress, isCancelled) {
             throw new InstallerError('CANCELLED', '操作已取消。');
         }
         const destinationFile = path.join(destination, file.relative);
-        await fsp.mkdir(path.dirname(destinationFile), { recursive: true });
+        await fsp.mkdir(toLongPath(path.dirname(destinationFile)), { recursive: true });
         if (file.symbolicLink) {
-            const link = await fsp.readlink(file.absolute);
-            await fsp.symlink(link, destinationFile);
+            const link = await fsp.readlink(toLongPath(file.absolute));
+            await fsp.symlink(link, toLongPath(destinationFile));
         } else {
             // Electron treats a path ending in app.asar as an archive unless
             // ASAR routing is disabled. The payload intentionally contains a
             // real app.asar file, so copy it through the native filesystem.
-            await withNativeFileSystem(() => fsp.copyFile(file.absolute, destinationFile));
+            // Retry once for antivirus/indexing transient locks, and use long-path prefix on Windows.
+            let lastError = null;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    await withNativeFileSystem(() => fsp.copyFile(toLongPath(file.absolute), toLongPath(destinationFile)));
+                    lastError = null;
+                    break;
+                } catch (error) {
+                    lastError = error;
+                    if (attempt === 0) await new Promise(r => setTimeout(r, 200));
+                }
+            }
+            if (lastError) throw lastError;
         }
         copied += 1;
         const percent = 12 + Math.round((copied / total) * 58);
@@ -492,6 +533,60 @@ async function copyTree(source, destination, onProgress, isCancelled) {
             file: `正在复制 ${path.basename(file.absolute)}…`,
             count: `${copied} / ${inventory.files.length || 1} 个文件`,
         });
+    }
+    // 防御性校验：仅当源 payload 包含关键文件时才校验目标完整性
+    // 这样测试用的最小 payload（仅含 runtime.txt）不会误判为缺件
+    const sourceRelatives = new Set(inventory.files.map(f => f.relative.split(path.sep).join('/')));
+    const hasAppExe = sourceRelatives.has('小猪wordTTS.exe');
+    const hasAppAsar = sourceRelatives.has('resources/app.asar') || sourceRelatives.has('resources\\app.asar');
+    const hasBackend = [...sourceRelatives].some(p => p.endsWith('server_backend.exe') || p.endsWith('server_backend/server_backend'));
+    const criticalChecks = [];
+    if (hasAppExe) criticalChecks.push(path.join(destination, '小猪wordTTS.exe'));
+    if (hasAppAsar) criticalChecks.push(path.join(destination, 'resources', 'app.asar'));
+    if (hasBackend) {
+        const backendCandidates = [
+            path.join(destination, 'resources', 'server_backend', 'server_backend.exe'),
+            path.join(destination, 'resources', 'server_backend', '_internal', 'server_backend.exe'),
+        ];
+        // 至少一个后端可执行文件存在即视为通过
+        const backendFound = await (async () => {
+            for (const cand of backendCandidates) if (await pathExists(cand)) return true;
+            return false;
+        })();
+        if (!backendFound) {
+            throw new InstallerError('PAYLOAD_INCOMPLETE', `关键文件未正确写入: server_backend`);
+        }
+    }
+    for (const checkPath of criticalChecks) {
+        if (!(await pathExists(checkPath))) {
+            throw new InstallerError('PAYLOAD_INCOMPLETE', `关键文件未正确写入: ${path.basename(checkPath)}`);
+        }
+    }
+    // Chromium 仅当源包含 playwright_browsers 时校验
+    const hasBrowsers = [...sourceRelatives].some(p => p.includes('playwright_browsers'));
+    if (hasBrowsers) {
+        const chromiumRoots = [
+            path.join(destination, 'resources', 'server_backend', '_internal', 'playwright_browsers'),
+            path.join(destination, 'resources', 'server_backend', 'playwright_browsers'),
+        ];
+        let chromiumFound = false;
+        for (const root of chromiumRoots) {
+            if (!(await pathExists(root))) continue;
+            try {
+                const entries = await withNativeFileSystem(() => fsp.readdir(toLongPath(root), { withFileTypes: true }));
+                for (const e of entries) {
+                    if (e.isDirectory() && e.name.startsWith('chromium-')) {
+                        const exeWin = path.join(root, e.name, 'chrome-win', 'chrome.exe');
+                        const exeMac = path.join(root, e.name, 'chrome-mac', 'Chromium.app');
+                        if ((await pathExists(exeWin)) || (await pathExists(exeMac))) { chromiumFound = true; break; }
+                    }
+                }
+            } catch (_) {}
+            if (chromiumFound) break;
+        }
+        if (!chromiumFound) {
+            throw new InstallerError('PAYLOAD_INCOMPLETE', '内置 Chromium 浏览器未正确写入，请检查杀毒软件是否拦截或磁盘空间是否不足');
+        }
     }
 }
 
@@ -896,7 +991,7 @@ function createInstallerService(options = {}) {
     const platform = options.platform || process.platform;
     const environment = options.environment || process.env;
     const resourcesPath = options.resourcesPath || process.resourcesPath || __dirname;
-    const setupExecutable = options.setupExecutable || null;
+    let setupExecutable = options.setupExecutable || null;
     const tempDirectory = options.tempDirectory || os.tmpdir();
     const userDataPath = options.dataPath || dataDirectory(environment, platform);
     const execFileImpl = options.execFile || require('node:child_process').execFile;
@@ -930,6 +1025,7 @@ function createInstallerService(options = {}) {
         };
         add(options.targetPath);
         if (lastPlan?.targetPath) add(lastPlan.targetPath);
+        add(readInstallLocationRecord(userDataPath, platform));
         if (platform === 'win32') {
             for (const candidate of readRegistryInstallLocations(environment, execFileSyncImpl)) add(candidate);
         }
@@ -972,6 +1068,30 @@ function createInstallerService(options = {}) {
                 startMenu: storedShortcuts.startMenu !== false,
             },
         };
+    }
+
+    async function persistInstallLocation(state) {
+        const locationPath = installLocationFilePath(userDataPath, platform);
+        await fsp.mkdir(userDataPath, { recursive: true });
+        await fsp.writeFile(locationPath, `${JSON.stringify({
+            format: INSTALL_LOCATION_VERSION,
+            product: PRODUCT_NAME,
+            version: state.version,
+            scope: state.scope,
+            installPath: state.installPath,
+            updatedAt: new Date().toISOString(),
+        }, null, 2)}\n`, 'utf8');
+    }
+
+    async function clearInstallLocation(targetPath) {
+        const recordedPath = readInstallLocationRecord(userDataPath, platform);
+        if (!recordedPath || !pathEquals(recordedPath, targetPath, platform)) return;
+        await removePath(installLocationFilePath(userDataPath, platform));
+    }
+
+    function setSetupExecutable(executable) {
+        const candidate = String(executable || '').trim();
+        if (candidate) setupExecutable = candidate;
     }
 
     function getConfig({ appVersion, arguments: args = {}, operationPlan = null } = {}) {
@@ -1162,6 +1282,11 @@ function createInstallerService(options = {}) {
                 } else if (platform === 'win32') {
                     await runPowerShell(registryScript(scope, state));
                 }
+                // The state file and Windows uninstall entry are the primary
+                // records. This extra pointer improves custom-path detection
+                // but must not turn a successful application replacement into
+                // a failed install when the user-data directory is read-only.
+                await persistInstallLocation(state).catch(() => {});
                 if (backupMoved) {
                     await removePath(backupPath);
                     backupMoved = false;
@@ -1193,6 +1318,11 @@ function createInstallerService(options = {}) {
                             await syncShortcuts(oldState, oldState.shortcuts || { desktop: true, startMenu: true });
                             await runPowerShell(registryScript(oldState.scope, oldState));
                         } catch (_) { /* best-effort rollback of shell integration */ }
+                    }
+                    if (oldState && await pathExists(normalizedTarget)) {
+                        await persistInstallLocation(oldState).catch(() => {});
+                    } else {
+                        await clearInstallLocation(normalizedTarget).catch(() => {});
                     }
                 }
                 throw error;
@@ -1418,6 +1548,11 @@ function createInstallerService(options = {}) {
         } catch (error) {
             throw new InstallerError('USER_DATA_CLEANUP_FAILED', '程序已经移除，但个人数据清理没有完成，请检查文件权限。', error);
         }
+        // The pointer is only a detection aid. If it cannot be removed, a
+        // future scan still verifies the application marker before selecting
+        // update mode, so an uninstall should not be reported as failed after
+        // the application files are already gone.
+        await clearInstallLocation(normalizedTarget).catch(() => {});
         formatProgress(onProgress, { percent: 96, phase: 'finish', stage: '正在完成卸载', file: '正在清理安装信息…', count: '即将完成' });
         return { success: true, scheduledCleanup, keptUserData: keepUserData, deletedCache: deleteCache };
     }
@@ -1467,14 +1602,22 @@ function createInstallerService(options = {}) {
         normalizeTargetPath: target => normalizeTargetPath(target, platform),
         detectInstalledPath,
         readState,
+        setSetupExecutable,
         payloadPath,
-        constants: { PRODUCT_NAME, APP_EXECUTABLE, UNINSTALLER_EXECUTABLE, INSTALL_STATE_FILE },
+        constants: {
+            PRODUCT_NAME,
+            APP_EXECUTABLE,
+            UNINSTALLER_EXECUTABLE,
+            INSTALL_STATE_FILE,
+            INSTALL_LOCATION_FILE,
+        },
     };
 }
 
 module.exports = {
     APP_EXECUTABLE,
     cleanupScript,
+    INSTALL_LOCATION_FILE,
     INSTALL_STATE_FILE,
     InstallerError,
     PRODUCT_NAME,

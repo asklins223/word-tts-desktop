@@ -339,6 +339,7 @@ function createWindowsUpdateClient(options = {}) {
     const tempDirectory = options.tempDirectory || os.tmpdir();
     const spawnImpl = options.spawn || spawn;
     const app = options.app || null;
+    const environment = options.environment || process.env;
     const metadataTimeoutMs = options.metadataTimeoutMs;
     let latestInfo = null;
     let downloadedPath = null;
@@ -461,6 +462,15 @@ function createWindowsUpdateClient(options = {}) {
                 detached: true,
                 stdio: 'ignore',
                 windowsHide: true,
+                // The portable wrapper normally sets this itself, but an
+                // updater can inherit the current app's value. Point the
+                // child at the downloaded Setup explicitly so its installer
+                // service derives paths from the new executable, not stale
+                // environment state.
+                env: {
+                    ...environment,
+                    PORTABLE_EXECUTABLE_FILE: installerPath,
+                },
             });
             if (!child || typeof child !== 'object') {
                 throw Object.assign(new Error('无法启动更新安装程序。'), { code: 'UPDATE_INSTALLER_START_FAILED' });

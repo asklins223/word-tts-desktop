@@ -240,6 +240,12 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(installerMain, /relocateInstalledUninstaller/);
     assert.match(installerMain, /WORDTTS_RELOCATED_UNINSTALLER/);
     assert.match(installerMain, /waitForSourceWrapperExit/);
+    assert.match(installerMain, /requestSingleInstanceLock/);
+    assert.match(installerMain, /second-instance/);
+    assert.match(installerMain, /applyForwardedArguments/);
+    assert.match(installerMain, /PORTABLE_EXECUTABLE_FILE = \$installer/);
+    assert.match(installerMain, /delegateToElevatedInstance\(\s*plan,\s*installerConfig/);
+    assert.match(installerService, /install-location\.json/);
     assert.match(
         installerService,
         /if \(stagedExecutable\) \{[\s\S]*await removeInstallTarget\(normalizedTarget\)[\s\S]*prepareRelocatedExecutableCleanup\(stagedExecutable\)/,
