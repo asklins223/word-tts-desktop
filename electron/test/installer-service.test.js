@@ -59,16 +59,27 @@ test('TEMP 清理子进程快速退出时会最后复查持久就绪标记', asy
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'wordtts-cleanup-ready-race-'));
     const readyPath = path.join(root, 'cleanup.ready');
     const child = { exitCode: 0 };
+    let publishTimer;
     try {
         const published = new Promise((resolve, reject) => {
-            setTimeout(() => {
-                fsp.writeFile(readyPath, 'ready', 'utf8').then(resolve, reject);
+            publishTimer = setTimeout(() => {
+                try {
+                    // Keep the race focused on readiness publication. An
+                    // async write can outlive the test's temp-directory
+                    // cleanup on a busy Windows runner and mask the result
+                    // with an unrelated ENOENT/EBUSY rejection.
+                    fs.writeFileSync(readyPath, 'ready', 'utf8');
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
             }, 20);
         });
         await waitForCleanupReady(child, readyPath, 500);
         await published;
         assert.equal(fs.existsSync(readyPath), true);
     } finally {
+        clearTimeout(publishTimer);
         await fsp.rm(root, { recursive: true, force: true });
     }
 });
