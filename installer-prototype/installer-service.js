@@ -25,6 +25,7 @@ const NUMERIC_IDENTIFIER = '(?:0|[1-9]\\d*)';
 const NON_NUMERIC_IDENTIFIER = '(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)';
 const PRERELEASE_IDENTIFIER = `(?:${NUMERIC_IDENTIFIER}|${NON_NUMERIC_IDENTIFIER})`;
 const BUILD_IDENTIFIER = '[0-9A-Za-z-]+';
+const WRITE_PERMISSION_ERROR_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
 const VERSION_PATTERN = new RegExp(
     `^${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}`
     + `(?:-${PRERELEASE_IDENTIFIER}(?:\\.${PRERELEASE_IDENTIFIER})*)?`
@@ -254,6 +255,63 @@ function isPathInside(candidate, parent, platform = process.platform) {
     return relative === '' || (relative !== '..' && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative));
 }
 
+function isWritePermissionError(error) {
+    return WRITE_PERMISSION_ERROR_CODES.has(String(error?.code || '').toUpperCase());
+}
+
+async function findExistingDirectory(startPath, platform) {
+    const pathApi = platform === 'win32' ? path.win32 : path;
+    let current = pathApi.normalize(startPath);
+    while (true) {
+        try {
+            const stat = await withNativeFileSystem(() => fsp.stat(toLongPath(current, platform)));
+            return stat.isDirectory() ? current : null;
+        } catch (error) {
+            if (isWritePermissionError(error)) return { path: current, inaccessible: true };
+            if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+            const parent = pathApi.dirname(current);
+            if (pathEquals(parent, current, platform)) return null;
+            current = parent;
+        }
+    }
+}
+
+async function probeDirectoryWrite(directoryPath, platform) {
+    const pathApi = platform === 'win32' ? path.win32 : path;
+    const probePath = pathApi.join(directoryPath, `.wordtts-permission-check-${randomSuffix()}`);
+    try {
+        await withNativeFileSystem(() => fsp.mkdir(toLongPath(probePath, platform)));
+        return true;
+    } catch (error) {
+        if (isWritePermissionError(error)) return false;
+        throw error;
+    } finally {
+        // The probe is deliberately a directory rather than a file: creating
+        // the install staging sibling needs directory-create permission. A
+        // cleanup failure must not turn a successful write probe into a false
+        // install failure.
+        await withNativeFileSystem(() => fsp.rm(toLongPath(probePath, platform), {
+            recursive: true,
+            force: true,
+        })).catch(() => {});
+    }
+}
+
+async function requiresTargetElevation(targetPath, platform, validateTarget) {
+    if (platform !== 'win32') return false;
+    const normalized = validateTarget(targetPath);
+    const parent = path.win32.dirname(normalized);
+    const existingParent = await findExistingDirectory(parent, platform);
+    if (!existingParent) {
+        throw new InstallerError(
+            'TARGET_UNAVAILABLE',
+            `无法找到安装位置的上级文件夹：${parent}`,
+        );
+    }
+    if (existingParent.inaccessible) return true;
+    return !(await probeDirectoryWrite(existingParent, platform));
+}
+
 function resolveUninstallRelocation({
     platform = process.platform,
     mode = null,
@@ -427,7 +485,11 @@ async function directoryHasEntries(directoryPath) {
         return (await withNativeFileSystem(() => fsp.readdir(directoryPath))).length > 0;
     } catch (error) {
         if (error.code === 'ENOENT') return false;
-        throw new InstallerError('TARGET_UNAVAILABLE', '无法检查安装位置，请检查文件夹权限。', error);
+        throw new InstallerError(
+            'TARGET_UNAVAILABLE',
+            `无法检查安装位置，请检查文件夹权限：${directoryPath}`,
+            error,
+        );
     }
 }
 
@@ -488,8 +550,31 @@ async function listFiles(root) {
 }
 
 async function copyTree(source, destination, onProgress, isCancelled) {
-    if (!(await pathExists(source))) throw new InstallerError('PAYLOAD_MISSING', '安装包内缺少应用文件。');
-    const inventory = await listFiles(source);
+    // 偶发 PAYLOAD_MISSING：杀毒软件/索引服务可能在 payload 刚解压后短暂锁定目录
+    // 重试 3 次、间隔 300ms，避免一次 ENOENT 就直接失败，重试后仍缺失再报错
+    let sourceExists = await pathExists(source);
+    for (let attempt = 0; !sourceExists && attempt < 3; attempt++) {
+        await new Promise(r => setTimeout(r, 300));
+        sourceExists = await pathExists(source);
+    }
+    if (!sourceExists) throw new InstallerError('PAYLOAD_MISSING', '安装包内缺少应用文件。');
+    let inventory;
+    let lastListError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            inventory = await listFiles(source);
+            lastListError = null;
+            break;
+        } catch (error) {
+            lastListError = error;
+            if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+                await new Promise(r => setTimeout(r, 300));
+                continue;
+            }
+            throw error;
+        }
+    }
+    if (lastListError) throw lastListError;
     await fsp.mkdir(toLongPath(destination), { recursive: true });
     for (const directory of inventory.directories) {
         const relative = path.relative(source, directory);
@@ -1011,6 +1096,23 @@ function createInstallerService(options = {}) {
         return normalized;
     }
 
+    async function targetNeedsElevation(targetPath) {
+        try {
+            return await requiresTargetElevation(
+                targetPath,
+                platform,
+                validateServiceTargetPath,
+            );
+        } catch (error) {
+            if (error instanceof InstallerError) throw error;
+            throw new InstallerError(
+                'TARGET_UNAVAILABLE',
+                `无法检查安装位置，请检查文件夹权限：${String(targetPath || '')}`,
+                error,
+            );
+        }
+    }
+
     function targetCandidates() {
         const candidates = [];
         const add = value => {
@@ -1196,7 +1298,11 @@ function createInstallerService(options = {}) {
             targetStat = await fsp.stat(normalizedTarget);
         } catch (error) {
             if (error.code !== 'ENOENT') {
-                throw new InstallerError('TARGET_UNAVAILABLE', '无法访问安装位置，请检查文件夹权限。', error);
+                throw new InstallerError(
+                    'TARGET_UNAVAILABLE',
+                    `无法访问安装位置，请检查文件夹权限：${normalizedTarget}`,
+                    error,
+                );
             }
         }
         if (targetStat && !targetStat.isDirectory()) {
@@ -1527,7 +1633,11 @@ function createInstallerService(options = {}) {
             try {
                 await removePath(normalizedTarget);
             } catch (error) {
-                throw new InstallerError('UNINSTALL_FAILED', '无法移除应用目录，请检查文件权限。', error);
+                throw new InstallerError(
+                    'UNINSTALL_FAILED',
+                    `无法移除应用目录，请检查文件权限：${normalizedTarget}`,
+                    error,
+                );
             }
         }
         // Never trust an install-state file to redirect uninstall into an
@@ -1546,7 +1656,11 @@ function createInstallerService(options = {}) {
                 }
             }
         } catch (error) {
-            throw new InstallerError('USER_DATA_CLEANUP_FAILED', '程序已经移除，但个人数据清理没有完成，请检查文件权限。', error);
+            throw new InstallerError(
+                'USER_DATA_CLEANUP_FAILED',
+                `程序已经移除，但个人数据清理没有完成，请检查文件权限：${dataPath}`,
+                error,
+            );
         }
         // The pointer is only a detection aid. If it cannot be removed, a
         // future scan still verifies the application marker before selecting
@@ -1599,6 +1713,7 @@ function createInstallerService(options = {}) {
         getConfig,
         run,
         launchInstalledApp,
+        targetNeedsElevation,
         normalizeTargetPath: target => normalizeTargetPath(target, platform),
         detectInstalledPath,
         readState,

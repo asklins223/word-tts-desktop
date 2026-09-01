@@ -19,7 +19,7 @@ from workflow.providers import (
     _normalize_legacy_error,
 )
 from workflow.repositories import WorkflowRepository
-from xunfei.errors import XunfeiCancelled
+from xunfei.errors import XunfeiBrowserLaunchError, XunfeiCancelled
 
 
 class _Backend:
@@ -114,6 +114,21 @@ class ProviderTests(unittest.TestCase):
         )
         self.assertNotIn("secret-value", str(error))
         self.assertEqual(error.details["cookie"], "[REDACTED]")
+        api_key_error = ProviderError("provider failed api-key=another-secret")
+        self.assertNotIn("another-secret", str(api_key_error))
+
+    def test_browser_launch_failure_is_retryable_and_keeps_safe_diagnostics(self) -> None:
+        normalized = _normalize_legacy_error(
+            XunfeiBrowserLaunchError(
+                "讯飞浏览器窗口未能打开，请重试",
+                phase="context_launch",
+                details={"bundled_chromium_found": False, "driver_node_exists": False},
+            ),
+        )
+        self.assertEqual(normalized.code, "TRANSIENT_PROVIDER_ERROR")
+        self.assertFalse(normalized.ambiguous)
+        self.assertEqual(normalized.details["browser_launch_phase"], "context_launch")
+        self.assertFalse(normalized.details["browser_launch"]["driver_node_exists"])
 
     def test_legacy_work_name_is_deterministic_for_submission(self) -> None:
         provider = XunfeiTTSAdapter(account_scope="test-account", allow_real=True)

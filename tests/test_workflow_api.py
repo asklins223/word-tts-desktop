@@ -18,6 +18,7 @@ from api.workflow_routes import (
     WorkflowRuntime,
     _artifact_row_is_readable,
     _command_response,
+    _force_local_cancel,
     _release_failed_idempotency,
     install_workflow_api,
 )
@@ -1236,17 +1237,28 @@ class WorkflowApiTests(unittest.TestCase):
 
             def __init__(self) -> None:
                 self.started = threading.Event()
+                self.events = []
+                self._events_lock = threading.Lock()
+
+            def _record(self, value):
+                with self._events_lock:
+                    self.events.append(value)
 
             def submit(self, submission_key, payload):
+                self._record("generation-started")
                 self.started.set()
                 cancel_check = payload.get("_cancel_check")
                 while not callable(cancel_check) or not cancel_check():
                     time.sleep(0.01)
+                self._record("generation-stopped")
                 raise ProviderError(
                     "讯飞浏览器任务已取消；为避免重复扣费，提交结果需要核验",
                     code="SUBMISSION_AMBIGUOUS",
                     ambiguous=True,
                 )
+
+            def close(self):
+                self._record("browser-closed")
 
             def query(self, submission_key):
                 return None
@@ -1325,6 +1337,7 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(snapshot["control_state"], "TERMINATED")
         self.assertEqual(snapshot["execution_state"], "TERMINAL")
         self.assertEqual(snapshot["result_status"], "CANCELLED")
+        self.assertEqual(provider.events[-2:], ["generation-stopped", "browser-closed"])
 
     def test_force_cancel_releases_slot_for_new_workflow_while_old_provider_is_stuck(self) -> None:
         """中止后旧 Provider 卡住时，新任务仍能进入浏览器启动阶段。"""
@@ -1460,6 +1473,53 @@ class WorkflowApiTests(unittest.TestCase):
         while self.runtime.generation_tasks and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertFalse(self.runtime.generation_tasks)
+
+    def test_force_cancel_holds_slot_for_real_xunfei_until_browser_cleanup(self) -> None:
+        """真实讯飞的进程级 Chrome 会话不能与旧任务并行复用。"""
+        workflow = self._create_workflow()
+        workflow_id = workflow["workflow_id"]
+        self.runtime.repository.command(
+            workflow_id,
+            "generate",
+            workflow["state_version"],
+            reason="test-real-xunfei-cancel",
+        )
+
+        async def exercise_cancel() -> None:
+            async def wait_forever() -> None:
+                await asyncio.Event().wait()
+
+            active_task = asyncio.create_task(wait_forever())
+            cancel_event = threading.Event()
+            await self.runtime.generation_slots.acquire()
+            self.runtime.generation_tasks.add(active_task)
+            self.runtime.generation_tasks_by_workflow[workflow_id] = active_task
+            self.runtime.generation_slot_owners[workflow_id] = active_task
+            self.runtime.generation_cancel_events[workflow_id] = cancel_event
+            try:
+                snapshot = _force_local_cancel(
+                    self.runtime,
+                    workflow_id,
+                    reason="test-real-xunfei-cancel",
+                )
+                self.assertTrue(cancel_event.is_set())
+                self.assertEqual(snapshot.execution_state, "TERMINAL")
+                # The real adapter still owns the session until its worker's
+                # finally block closes the exact browser it acquired.
+                self.assertEqual(self.runtime.generation_slots._value, 0)
+            finally:
+                active_task.cancel()
+                try:
+                    await active_task
+                except asyncio.CancelledError:
+                    pass
+                self.runtime.generation_tasks.discard(active_task)
+                self.runtime.generation_tasks_by_workflow.pop(workflow_id, None)
+                self.runtime.generation_slot_owners.pop(workflow_id, None)
+                self.runtime.generation_cancel_events.pop(workflow_id, None)
+                self.runtime.generation_slots.release()
+
+        asyncio.run(exercise_cancel())
 
     def test_external_runtime_requires_full_profile_and_route_lifecycle_is_fenced(self) -> None:
         workflow = self._create_workflow()

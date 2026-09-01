@@ -212,6 +212,42 @@ jobs:
           backend_pid=""
           test "$ready" -eq 1
 
+          echo "验证持久化 Chromium..."
+          # 真正的讯飞流程使用持久化上下文，此前仅测 health，导致缺件仍能通过
+          if [ "$(uname -m)" = "arm64" ]; then
+            output_dir="mac-arm64"
+          else
+            output_dir="mac"
+          fi
+          app_path="electron/release/$output_dir/小猪wordTTS.app"
+          browsers_candidates=(
+            "$app_path/Contents/Resources/server_backend/_internal/playwright_browsers"
+            "$app_path/Contents/Resources/server_backend/playwright_browsers"
+          )
+          browsers=""
+          for cand in "${browsers_candidates[@]}"; do
+            if [ -d "$cand" ]; then browsers="$cand"; break; fi
+          done
+          test -n "$browsers"
+          echo "使用 Chromium 目录: $browsers"
+          printf '%s\n' \
+            'from playwright.sync_api import sync_playwright' \
+            'import tempfile, shutil' \
+            'tmp = tempfile.mkdtemp(prefix="pw-macos-smoke-")' \
+            'p = sync_playwright().start()' \
+            'try:' \
+            '    ctx = p.chromium.launch_persistent_context(tmp, headless=True, args=["--no-first-run"])' \
+            '    page = ctx.new_page()' \
+            '    page.goto("about:blank")' \
+            '    print("macos persistent ok")' \
+            '    ctx.close()' \
+            'finally:' \
+            '    p.stop()' \
+            '    shutil.rmtree(tmp, ignore_errors=True)' \
+            > /tmp/pw-macos-smoke.py
+          PLAYWRIGHT_BROWSERS_PATH="$browsers" PLAYWRIGHT_NODEJS_PATH="$app_path/Contents/MacOS/小猪wordTTS" ELECTRON_RUN_AS_NODE=1 python /tmp/pw-macos-smoke.py
+          echo "macOS 持久化 Chromium 冒烟通过"
+
       - name: Upload macOS smoke diagnostics
         if: always()
         uses: actions/upload-artifact@v4

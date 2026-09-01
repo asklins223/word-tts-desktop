@@ -51,13 +51,42 @@ if RESOURCE_DIR not in sys.path:
 # 在导入讯飞客户端之前显式指向这个可读资源目录，避免 Windows 或没有系统
 # Chrome 的环境启动讯飞浏览器时找不到 Chromium。
 if getattr(sys, "frozen", False):
-    _bundled_playwright_browsers = os.path.join(
-        RESOURCE_DIR, "playwright_browsers"
-    )
-    if os.path.isdir(_bundled_playwright_browsers):
-        os.environ.setdefault(
-            "PLAYWRIGHT_BROWSERS_PATH", _bundled_playwright_browsers
-        )
+    # v3.0.1 之前未打包 version.json，_MEIPASS 在 Windows 上可能指向
+    # 外层 server_backend 而非 _internal，导致单路径探测失败。遍历
+    # 多个候选位置，确保 NSIS/自绘安装、win-unpacked 直接运行以及
+    # 开发者手动启动都能命中真实的 playwright_browsers。
+    _playwright_browsers_candidates = []
+    # 1. RESOURCE_DIR 直属（正常 _MEIPASS == _internal 情况）
+    _playwright_browsers_candidates.append(os.path.join(RESOURCE_DIR, "playwright_browsers"))
+    # 2. sys._MEIPASS 直属（兼容 _MEIPASS 指向外层的情况）
+    _meipass = getattr(sys, "_MEIPASS", None)
+    if _meipass and os.path.abspath(_meipass) != os.path.abspath(RESOURCE_DIR):
+        _playwright_browsers_candidates.append(os.path.join(os.path.abspath(_meipass), "playwright_browsers"))
+    # 3. 可执行文件同级 _internal/playwright_browsers（win-unpacked 直接运行）
+    _exe_dir = os.path.dirname(os.path.realpath(sys.executable))
+    _playwright_browsers_candidates.append(os.path.join(_exe_dir, "_internal", "playwright_browsers"))
+    _playwright_browsers_candidates.append(os.path.join(_exe_dir, "playwright_browsers"))
+    # 4. 上两级 resources/server_backend/_internal（安装后 Electron 布局）
+    for _candidate in list(_playwright_browsers_candidates):
+        _parent = os.path.dirname(os.path.dirname(_candidate))
+        if _parent and os.path.isdir(_parent):
+            _playwright_browsers_candidates.append(os.path.join(_parent, "playwright_browsers"))
+
+    _bundled_playwright_browsers = None
+    for _candidate in _playwright_browsers_candidates:
+        if _candidate and os.path.isdir(_candidate):
+            # 必须至少包含一个 chromium-* 目录才算有效
+            try:
+                if any(name.startswith("chromium-") for name in os.listdir(_candidate)):
+                    _bundled_playwright_browsers = _candidate
+                    break
+            except OSError:
+                continue
+    if _bundled_playwright_browsers:
+        # The installed app owns this browser directory.  Do not let a stale
+        # developer/CI PLAYWRIGHT_BROWSERS_PATH (including the special value
+        # "0") redirect the packaged backend to a missing cache.
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _bundled_playwright_browsers
 
     # The packaged backend intentionally does not carry a second ~106MB Node
     # binary.  Electron normally supplies its own executable through the
@@ -65,24 +94,44 @@ if getattr(sys, "frozen", False):
     # packaging smoke (and manually launched paired backend) equally
     # deterministic by deriving that sibling executable when the environment
     # was not inherited from Electron.
+    _configured_playwright_node = os.environ.get("PLAYWRIGHT_NODEJS_PATH", "")
+    if _configured_playwright_node and not os.path.isfile(_configured_playwright_node):
+        os.environ.pop("PLAYWRIGHT_NODEJS_PATH", None)
     if not os.environ.get("PLAYWRIGHT_NODEJS_PATH"):
         _backend_executable = os.path.realpath(sys.executable)
-        _electron_executable = None
+        _electron_candidates = []
         if sys.platform == "darwin":
             _contents_dir = os.path.dirname(
                 os.path.dirname(os.path.dirname(_backend_executable))
             )
-            _electron_executable = os.path.join(
-                _contents_dir, "MacOS", "小猪wordTTS"
-            )
+            _electron_candidates.append(os.path.join(_contents_dir, "MacOS", "小猪wordTTS"))
+            # 兼容部分开发环境直接运行 win-unpacked 的情况
+            _electron_candidates.append(os.path.join(os.path.dirname(_backend_executable), "小猪wordTTS"))
         elif sys.platform == "win32":
             _app_dir = os.path.dirname(
                 os.path.dirname(os.path.dirname(_backend_executable))
             )
-            _electron_executable = os.path.join(_app_dir, "小猪wordTTS.exe")
-        if _electron_executable and os.path.isfile(_electron_executable):
+            _electron_candidates.append(os.path.join(_app_dir, "小猪wordTTS.exe"))
+            # 兼容 _MEIPASS 指向 _internal 时多一级
+            _electron_candidates.append(os.path.join(os.path.dirname(_app_dir), "小猪wordTTS.exe"))
+            _electron_candidates.append(os.path.join(_exe_dir, "..", "..", "小猪wordTTS.exe"))
+            _electron_candidates.append(os.path.join(_exe_dir, "小猪wordTTS.exe"))
+        # 去重并归一化
+        _seen = set()
+        _electron_executable = None
+        for _cand in _electron_candidates:
+            _norm = os.path.normpath(os.path.abspath(_cand)) if _cand else None
+            if not _norm or _norm in _seen:
+                continue
+            _seen.add(_norm)
+            if os.path.isfile(_norm):
+                _electron_executable = _norm
+                break
+        if _electron_executable:
             os.environ["PLAYWRIGHT_NODEJS_PATH"] = _electron_executable
-            os.environ.setdefault("ELECTRON_RUN_AS_NODE", "1")
+            # A stale inherited value of 0 would launch Electron's desktop
+            # entrypoint instead of making the paired binary act as Node.
+            os.environ["ELECTRON_RUN_AS_NODE"] = "1"
 
 # ============================================================================
 # 导入核心模块

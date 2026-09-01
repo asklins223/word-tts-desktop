@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
+from .data_safety import is_sensitive_key
 from .domain import DomainError, content_hash
 
 
@@ -40,21 +41,20 @@ class ProviderCapabilityError(ProviderError):
     code = "EXTERNAL_CAPABILITY_REQUIRED"
 
 
-_SENSITIVE_DETAIL_KEYS = {
-    "authorization", "cookie", "password", "secret", "token", "api_key", "apikey",
-}
+_SENSITIVE_MESSAGE = re.compile(
+    r"(?ix)"
+    r"(?P<prefix>\b(?:bearer|basic)\s+|"
+    r"\b(?:authorization|cookie|password|passwd|pwd|token|secret|"
+    r"api[-_ ]?key|access[-_ ]?key|client[-_ ]?secret)\s*[:=]\s*)"
+    r"\S+"
+)
 
 
 def _safe_provider_message(message: Any, fallback: str = "provider call failed") -> str:
     """Keep provider diagnostics useful without leaking browser credentials."""
 
     text = " ".join(str(message or "").split())
-    for label in _SENSITIVE_DETAIL_KEYS:
-        text = re.sub(
-            rf"(?i)({re.escape(label)}\s*[:=]\s*)\S+",
-            r"\1[REDACTED]",
-            text,
-        )
+    text = _SENSITIVE_MESSAGE.sub(r"\g<prefix>[REDACTED]", text)
     return (text or fallback)[:2000]
 
 
@@ -63,7 +63,7 @@ def _safe_provider_details(value: Any) -> dict[str, Any]:
         return {}
 
     def clean(item: Any, *, key: str = "") -> Any:
-        if key.lower() in _SENSITIVE_DETAIL_KEYS:
+        if key and is_sensitive_key(key):
             return "[REDACTED]"
         if isinstance(item, Mapping):
             return {str(k)[:128]: clean(v, key=str(k)) for k, v in list(item.items())[:32]}
@@ -98,6 +98,20 @@ def _normalize_legacy_error(error: Exception, *, works_name: str | None = None) 
     error_works_name = getattr(error, "works_name", None) or works_name
     if error_works_name:
         details["works_name"] = _safe_provider_message(error_works_name)
+
+    if class_name == "XunfeiBrowserLaunchError":
+        launch_details = getattr(error, "details", {})
+        if isinstance(launch_details, Mapping):
+            details["browser_launch"] = dict(launch_details)
+        details["browser_launch_phase"] = str(
+            getattr(error, "phase", "context_launch") or "context_launch"
+        )[:64]
+        return ProviderError(
+            raw_message,
+            code="TRANSIENT_PROVIDER_ERROR",
+            details=details,
+            ambiguous=False,
+        )
 
     if class_name == "XunfeiQuotaExceeded" or any(token in lowered for token in ("额度不足", "quota exceeded", "quota")):
         return ProviderError(
@@ -479,6 +493,13 @@ class XunfeiTTSAdapter:
         return self.downloader.download(receipt)
 
     def close(self) -> None:
+        # The legacy runtime owns a process-global session. Its generation
+        # functions close only the exact session they acquired, which is
+        # important after cancellation releases the slot and a newer task can
+        # already have opened another browser. Calling the global
+        # close_session() here would allow the old task's API cleanup to close
+        # that newer session accidentally. Injectable BrowserRuntime objects
+        # remain closed for test/custom backends.
         self.browser_runtime.close()
 
     def _normalize_backend_receipt(self, submission_key: str, raw: Any) -> ProviderReceipt:

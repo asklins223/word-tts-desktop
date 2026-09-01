@@ -29,6 +29,10 @@ _session_lock = threading.Lock()
 _playwright_executor = None
 _playwright_executor_lock = threading.Lock()
 _executor_rotated_session = None
+_close_timer = None
+_close_timer_lock = threading.Lock()
+_close_timer_generation = 0
+_AUTO_CLOSE_DELAY_SECONDS = 10.0
 
 
 class _DaemonSingleThreadExecutor:
@@ -246,6 +250,7 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
     如果会话不存在或已损坏，则创建并打开浏览器等待用户登录。
     """
     global _session
+    _cancel_auto_close()
 
     if not is_available():
         raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
@@ -393,50 +398,55 @@ async def synth_xunfei(
 
     import uuid
     output_name = f".xunfei_{uuid.uuid4().hex[:8]}.mp3"
+    result_path = None
 
     synth_kwargs = {}
     if callable(cancel_check):
         synth_kwargs["cancel_check"] = cancel_check
     if callable(progress_callback):
         synth_kwargs["progress_callback"] = progress_callback
-    result_path = await _run_playwright_sync(
-        session.synth_one,
-        text,
-        output_name,
-        4,          # max_retries
-        voice_key,
-        clamp_param(speed),
-        clamp_param(pitch),
-        clamp_param(volume),
-        **synth_kwargs,
-    )
-
-    _check_cancel_requested(cancel_check)
-
-    if not result_path or not os.path.exists(result_path):
-        raise XunfeiError(f"讯飞配音未生成音频文件: {result_path}")
-
-    fsize = os.path.getsize(result_path)
-    _log(f"[xunfei] 生成完成: {result_path} ({fsize} bytes)")
-    if fsize < 100:
-        raise XunfeiError(f"讯飞配音返回的音频过小 ({fsize} bytes)")
-
-    from pydub import AudioSegment
-    seg = AudioSegment.from_file(result_path, format="mp3", codec="mp3")
-    _check_cancel_requested(cancel_check)
-    dur_ms = len(seg)
-    _log(f"[xunfei] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}")
-    if dur_ms < 50:
-        raise XunfeiError(f"解码后音频时长过短 ({dur_ms}ms)")
-    if seg.channels == 0 or seg.frame_rate == 0:
-        raise XunfeiError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
-
-    # 清理临时文件
     try:
-        os.remove(result_path)
-    except OSError:
-        pass
-    return seg
+        result_path = await _run_playwright_sync(
+            session.synth_one,
+            text,
+            output_name,
+            4,          # max_retries
+            voice_key,
+            clamp_param(speed),
+            clamp_param(pitch),
+            clamp_param(volume),
+            **synth_kwargs,
+        )
+
+        _check_cancel_requested(cancel_check)
+
+        if not result_path or not os.path.exists(result_path):
+            raise XunfeiError(f"讯飞配音未生成音频文件: {result_path}")
+
+        fsize = os.path.getsize(result_path)
+        _log(f"[xunfei] 生成完成: {result_path} ({fsize} bytes)")
+        if fsize < 100:
+            raise XunfeiError(f"讯飞配音返回的音频过小 ({fsize} bytes)")
+
+        from pydub import AudioSegment
+        seg = AudioSegment.from_file(result_path, format="mp3", codec="mp3")
+        _check_cancel_requested(cancel_check)
+        dur_ms = len(seg)
+        _log(f"[xunfei] pydub 解码完成: duration={dur_ms}ms channels={seg.channels} sample_rate={seg.frame_rate}")
+        if dur_ms < 50:
+            raise XunfeiError(f"解码后音频时长过短 ({dur_ms}ms)")
+        if seg.channels == 0 or seg.frame_rate == 0:
+            raise XunfeiError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
+
+        return seg
+    finally:
+        # 生成成功、解码失败或用户取消都不能把临时 MP3 留在数据目录。
+        if result_path:
+            try:
+                os.remove(result_path)
+            except OSError:
+                pass
+        await _finish_generation_session(session, cancel_check)
 
 
 async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
@@ -460,92 +470,95 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
         cancel_check=cancel_check,
         progress_callback=progress_callback,
     )
-    normalized_jobs = []
-    for index, job in enumerate(jobs):
-        item = dict(job)
-        item.setdefault("job_id", f"batch-{index}")
-        item.setdefault("output_name", f".xunfei_{uuid.uuid4().hex}.mp3")
-        # 讯飞下载页文件名不带 worksId；为本批次每段设置短且唯一的作品名，
-        # 既便于页面核对，也避免同名作品的浏览器下载事件无法区分。
-        item.setdefault("works_name", f"wordtts_{index + 1:04d}_{uuid.uuid4().hex[:8]}")
-        normalized_jobs.append(item)
+    try:
+        normalized_jobs = []
+        for index, job in enumerate(jobs):
+            item = dict(job)
+            item.setdefault("job_id", f"batch-{index}")
+            item.setdefault("output_name", f".xunfei_{uuid.uuid4().hex}.mp3")
+            # 讯飞下载页文件名不带 worksId；为本批次每段设置短且唯一的作品名，
+            # 既便于页面核对，也避免同名作品的浏览器下载事件无法区分。
+            item.setdefault("works_name", f"wordtts_{index + 1:04d}_{uuid.uuid4().hex[:8]}")
+            normalized_jobs.append(item)
 
-    batch_kwargs = {"progress_callback": progress_callback}
-    if cancel_check is not None:
-        batch_kwargs["cancel_check"] = cancel_check
-    raw_results = await _run_playwright_sync(
-        session.synth_batch,
-        normalized_jobs,
-        4,
-        **batch_kwargs,
-    )
-    decoded = {}
-    from pydub import AudioSegment
+        batch_kwargs = {"progress_callback": progress_callback}
+        if cancel_check is not None:
+            batch_kwargs["cancel_check"] = cancel_check
+        raw_results = await _run_playwright_sync(
+            session.synth_batch,
+            normalized_jobs,
+            4,
+            **batch_kwargs,
+        )
+        decoded = {}
+        from pydub import AudioSegment
 
-    for job in normalized_jobs:
-        _check_cancel_requested(cancel_check)
-        job_id = str(job["job_id"])
-        result = raw_results.get(job_id) if isinstance(raw_results, dict) else None
-        if not isinstance(result, dict) or not result.get("downloaded"):
-            decoded[job_id] = {
-                "segment": None,
-                "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
-                "works_id_invalid": (
-                    bool(result.get("works_id_invalid"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "ambiguous_works_id": (
-                    bool(result.get("ambiguous_works_id"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "works_name": (
-                    result.get("works_name")
-                    if isinstance(result, dict)
-                    else None
-                ),
-                "error": (result or {}).get("error", "讯飞批量下载失败")
-                if isinstance(result, dict) else "讯飞批量生成无结果",
-            }
-            continue
-
-        path = result.get("output_path")
-        try:
+        for job in normalized_jobs:
             _check_cancel_requested(cancel_check)
-            if not path or not os.path.exists(path):
-                raise XunfeiError(f"讯飞批量音频文件不存在: {path}")
-            size = os.path.getsize(path)
-            if size < 100:
-                raise XunfeiError(f"讯飞批量音频文件过小: {size} bytes")
+            job_id = str(job["job_id"])
+            result = raw_results.get(job_id) if isinstance(raw_results, dict) else None
+            if not isinstance(result, dict) or not result.get("downloaded"):
+                decoded[job_id] = {
+                    "segment": None,
+                    "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
+                    "works_id_invalid": (
+                        bool(result.get("works_id_invalid"))
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    "ambiguous_works_id": (
+                        bool(result.get("ambiguous_works_id"))
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    "works_name": (
+                        result.get("works_name")
+                        if isinstance(result, dict)
+                        else None
+                    ),
+                    "error": (result or {}).get("error", "讯飞批量下载失败")
+                    if isinstance(result, dict) else "讯飞批量生成无结果",
+                }
+                continue
 
-            def decode_file(source_path=path):
-                return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
+            path = result.get("output_path")
+            try:
+                _check_cancel_requested(cancel_check)
+                if not path or not os.path.exists(path):
+                    raise XunfeiError(f"讯飞批量音频文件不存在: {path}")
+                size = os.path.getsize(path)
+                if size < 100:
+                    raise XunfeiError(f"讯飞批量音频文件过小: {size} bytes")
 
-            seg = await asyncio.to_thread(decode_file)
-            _check_cancel_requested(cancel_check)
-            if len(seg) < 50:
-                raise XunfeiError(f"解码后音频时长过短 ({len(seg)}ms)")
-            if seg.channels == 0 or seg.frame_rate == 0:
-                raise XunfeiError(
-                    f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})"
+                def decode_file(source_path=path):
+                    return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
+
+                seg = await asyncio.to_thread(decode_file)
+                _check_cancel_requested(cancel_check)
+                if len(seg) < 50:
+                    raise XunfeiError(f"解码后音频时长过短 ({len(seg)}ms)")
+                if seg.channels == 0 or seg.frame_rate == 0:
+                    raise XunfeiError(
+                        f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})"
+                    )
+                _log(
+                    f"[xunfei] 批量音频解码完成 job={job_id}: "
+                    f"duration={len(seg)}ms size={size:,} bytes"
                 )
-            _log(
-                f"[xunfei] 批量音频解码完成 job={job_id}: "
-                f"duration={len(seg)}ms size={size:,} bytes"
-            )
-            decoded[job_id] = {"segment": seg, "error": None}
-        except XunfeiCancelled:
-            raise
-        except Exception as error:
-            decoded[job_id] = {"segment": None, "error": str(error)}
-        finally:
-            if path:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-    return decoded
+                decoded[job_id] = {"segment": seg, "error": None}
+            except XunfeiCancelled:
+                raise
+            except Exception as error:
+                decoded[job_id] = {"segment": None, "error": str(error)}
+            finally:
+                if path:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+        return decoded
+    finally:
+        await _finish_generation_session(session, cancel_check)
 
 
 async def synth_xunfei_composite(
@@ -574,117 +587,224 @@ async def synth_xunfei_composite(
         cancel_check=cancel_check,
         progress_callback=progress_callback,
     )
-    normalized_works = []
-    for index, work in enumerate(works, start=1):
-        item = dict(work)
-        item.setdefault("work_id", f"composite:{index}")
-        item.setdefault("job_id", item["work_id"])
-        item.setdefault("output_name", f".xunfei_composite_{uuid.uuid4().hex}.mp3")
-        item.setdefault(
-            "works_name",
-            f"wordtts_composite_{index:04d}_{uuid.uuid4().hex[:8]}",
-        )
-        normalized_works.append(item)
-
-    composite_kwargs = {
-        "progress_callback": progress_callback,
-        "resume": resume,
-    }
-    if cancel_check is not None:
-        composite_kwargs["cancel_check"] = cancel_check
-    raw_results = await _run_playwright_sync(
-        session.synth_composite,
-        normalized_works,
-        4,
-        **composite_kwargs,
-    )
-    decoded = {}
-    from pydub import AudioSegment
-
-    for work in normalized_works:
-        _check_cancel_requested(cancel_check)
-        work_id = str(work["work_id"])
-        result = raw_results.get(work_id) if isinstance(raw_results, dict) else None
-        if not isinstance(result, dict) or not result.get("downloaded"):
-            decoded[work_id] = {
-                "audio": None,
-                "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
-                "ambiguous_works_id": (
-                    bool(result.get("ambiguous_works_id"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "works_name": (
-                    result.get("works_name")
-                    if isinstance(result, dict)
-                    else None
-                ),
-                "works_id_invalid": (
-                    bool(result.get("works_id_invalid"))
-                    if isinstance(result, dict)
-                    else False
-                ),
-                "error": (result or {}).get("error", "讯飞多人配音下载失败")
-                if isinstance(result, dict) else "讯飞多人配音生成无结果",
-            }
-            continue
-
-        path = result.get("output_path")
-        try:
-            _check_cancel_requested(cancel_check)
-            if not path or not os.path.exists(path):
-                raise XunfeiError(f"讯飞多人配音音频文件不存在: {path}")
-            size = os.path.getsize(path)
-            if size < 100:
-                raise XunfeiError(f"讯飞多人配音音频文件过小: {size} bytes")
-
-            def decode_file(source_path=path):
-                return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
-
-            audio = await asyncio.to_thread(decode_file)
-            _check_cancel_requested(cancel_check)
-            if len(audio) < 50:
-                raise XunfeiError(f"多人配音解码后音频过短 ({len(audio)}ms)")
-            if audio.channels == 0 or audio.frame_rate == 0:
-                raise XunfeiError(
-                    f"多人配音解码后音频参数异常 (channels={audio.channels}, frame_rate={audio.frame_rate})"
-                )
-            decoded[work_id] = {
-                "audio": audio,
-                "works_id": result.get("works_id"),
-                "error": None,
-            }
-            _log(
-                f"[xunfei] 多人配音完整作品解码完成 work={work_id}: "
-                f"duration={len(audio)}ms size={size:,} bytes"
+    try:
+        normalized_works = []
+        for index, work in enumerate(works, start=1):
+            item = dict(work)
+            item.setdefault("work_id", f"composite:{index}")
+            item.setdefault("job_id", item["work_id"])
+            item.setdefault("output_name", f".xunfei_composite_{uuid.uuid4().hex}.mp3")
+            item.setdefault(
+                "works_name",
+                f"wordtts_composite_{index:04d}_{uuid.uuid4().hex[:8]}",
             )
-        except XunfeiCancelled:
-            raise
-        except Exception as error:
-            decoded[work_id] = {
-                "audio": None,
-                "works_id": result.get("works_id"),
-                "works_id_invalid": bool(result.get("works_id_invalid")),
-                "ambiguous_works_id": bool(result.get("ambiguous_works_id")),
-                "works_name": result.get("works_name"),
-                "error": str(error),
-            }
-        finally:
-            if path:
+            normalized_works.append(item)
+
+        composite_kwargs = {
+            "progress_callback": progress_callback,
+            "resume": resume,
+        }
+        if cancel_check is not None:
+            composite_kwargs["cancel_check"] = cancel_check
+        raw_results = await _run_playwright_sync(
+            session.synth_composite,
+            normalized_works,
+            4,
+            **composite_kwargs,
+        )
+        decoded = {}
+        from pydub import AudioSegment
+
+        for work in normalized_works:
+            _check_cancel_requested(cancel_check)
+            work_id = str(work["work_id"])
+            result = raw_results.get(work_id) if isinstance(raw_results, dict) else None
+            if not isinstance(result, dict) or not result.get("downloaded"):
+                decoded[work_id] = {
+                    "audio": None,
+                    "works_id": (result or {}).get("works_id") if isinstance(result, dict) else None,
+                    "ambiguous_works_id": (
+                        bool(result.get("ambiguous_works_id"))
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    "works_name": (
+                        result.get("works_name")
+                        if isinstance(result, dict)
+                        else None
+                    ),
+                    "works_id_invalid": (
+                        bool(result.get("works_id_invalid"))
+                        if isinstance(result, dict)
+                        else False
+                    ),
+                    "error": (result or {}).get("error", "讯飞多人配音下载失败")
+                    if isinstance(result, dict) else "讯飞多人配音生成无结果",
+                }
+                continue
+
+            path = result.get("output_path")
+            try:
+                _check_cancel_requested(cancel_check)
+                if not path or not os.path.exists(path):
+                    raise XunfeiError(f"讯飞多人配音音频文件不存在: {path}")
+                size = os.path.getsize(path)
+                if size < 100:
+                    raise XunfeiError(f"讯飞多人配音音频文件过小: {size} bytes")
+
+                def decode_file(source_path=path):
+                    return AudioSegment.from_file(source_path, format="mp3", codec="mp3")
+
+                audio = await asyncio.to_thread(decode_file)
+                _check_cancel_requested(cancel_check)
+                if len(audio) < 50:
+                    raise XunfeiError(f"多人配音解码后音频过短 ({len(audio)}ms)")
+                if audio.channels == 0 or audio.frame_rate == 0:
+                    raise XunfeiError(
+                        f"多人配音解码后音频参数异常 (channels={audio.channels}, frame_rate={audio.frame_rate})"
+                    )
+                decoded[work_id] = {
+                    "audio": audio,
+                    "works_id": result.get("works_id"),
+                    "error": None,
+                }
+                _log(
+                    f"[xunfei] 多人配音完整作品解码完成 work={work_id}: "
+                    f"duration={len(audio)}ms size={size:,} bytes"
+                )
+            except XunfeiCancelled:
+                raise
+            except Exception as error:
+                decoded[work_id] = {
+                    "audio": None,
+                    "works_id": result.get("works_id"),
+                    "works_id_invalid": bool(result.get("works_id_invalid")),
+                    "ambiguous_works_id": bool(result.get("ambiguous_works_id")),
+                    "works_name": result.get("works_name"),
+                    "error": str(error),
+                }
+            finally:
+                if path:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+        return decoded
+    finally:
+        await _finish_generation_session(session, cancel_check)
+
+
+def _cancel_auto_close():
+    global _close_timer, _close_timer_generation
+    with _close_timer_lock:
+        _close_timer_generation += 1
+        if _close_timer is not None:
+            try:
+                _close_timer.cancel()
+            except Exception:
+                pass
+            _close_timer = None
+
+def _schedule_auto_close(expected_session=None):
+    global _close_timer, _close_timer_generation
+    with _close_timer_lock:
+        # A completion callback from an older session must never replace the
+        # close timer belonging to a newer session.
+        with _session_lock:
+            current_session = _session
+        if expected_session is None:
+            expected_session = current_session
+        elif current_session is not expected_session:
+            return
+        if _close_timer is not None:
+            try:
+                _close_timer.cancel()
+            except Exception:
+                pass
+        _close_timer_generation += 1
+        timer_generation = _close_timer_generation
+        # 捕获调度时的主事件循环，定时器线程通过 call_soon_threadsafe 调度关闭
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        # 10 秒无新任务则自动关闭浏览器，登录态持久化在 PROFILE_DIR
+        import threading as _threading
+        def _do_close():
+            import asyncio as _asyncio
+            with _close_timer_lock:
+                if timer_generation != _close_timer_generation:
+                    return
+            # 定时器在独立线程触发，需将协程调度回主循环
+            if loop is not None:
                 try:
-                    os.remove(path)
-                except OSError:
-                    pass
-    return decoded
+                    if not loop.is_closed():
+                        _asyncio.run_coroutine_threadsafe(
+                            close_session(
+                                expected_session=expected_session,
+                                expected_generation=timer_generation,
+                            ),
+                            loop,
+                        )
+                        return
+                except Exception as e:
+                    _log(f"[xunfei] 自动关闭调度异常: {e}")
+            # 无主循环或调度失败时直接新建循环执行
+            try:
+                _asyncio.run(
+                    close_session(
+                        expected_session=expected_session,
+                        expected_generation=timer_generation,
+                    )
+                )
+            except Exception as e:
+                _log(f"[xunfei] 自动关闭浏览器异常: {e}")
+
+        _close_timer = _threading.Timer(_AUTO_CLOSE_DELAY_SECONDS, _do_close)
+        _close_timer.daemon = True
+        _close_timer.start()
+
+async def _finish_generation_session(session, cancel_check=None):
+    """Close immediately after cancellation, otherwise keep the idle timer."""
+
+    cancelled = False
+    if callable(cancel_check):
+        try:
+            cancelled = bool(cancel_check())
+        except Exception:
+            # A diagnostic/control callback must not turn a successful
+            # generation into a failed cleanup path.
+            cancelled = False
+    if cancelled:
+        await close_session(expected_session=session)
+    else:
+        _schedule_auto_close(expected_session=session)
 
 
-async def close_session():
+async def close_session(*, expected_session=None, expected_generation=None):
     """关闭讯飞配音浏览器会话。"""
-    global _session
+    global _session, _close_timer, _close_timer_generation
 
-    with _session_lock:
-        old = _session
-        _session = None
+    with _close_timer_lock:
+        if (
+            expected_generation is not None
+            and expected_generation != _close_timer_generation
+        ):
+            return
+        with _session_lock:
+            if expected_session is not None and _session is not expected_session:
+                return
+            old = _session
+            _session = None
+        _close_timer_generation += 1
+        timer = _close_timer
+        _close_timer = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
     try:
         if old is not None:
             await _run_playwright_sync(old.close)

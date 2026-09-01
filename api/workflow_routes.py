@@ -693,7 +693,30 @@ def _force_local_cancel(
     cancel_event = runtime.generation_cancel_events.get(workflow_id)
     if cancel_event is not None:
         cancel_event.set()
-    _release_generation_slot_for_cancel(runtime, workflow_id)
+    # The legacy Xunfei adapter owns one process-global, persistent Chrome
+    # session.  Do not let a force-cancel hand its slot to another real
+    # Xunfei task while the old task is still unwinding: the new task could
+    # reuse that same session and the old task's exact-session cleanup would
+    # then close the new task's browser.  Backend/custom providers do not own
+    # that global browser and can still use the fast slot release path.
+    hold_global_xunfei_slot = False
+    try:
+        configuration = runtime.application._configuration(workflow_id)
+        provider_name = str(configuration.get("provider") or "xunfei")
+        account_scope = str(configuration.get("account_scope") or "xunfei-default")
+        adapter = runtime.application.provider(provider_name, account_scope)
+        hold_global_xunfei_slot = (
+            isinstance(adapter, XunfeiTTSAdapter)
+            and adapter.backend is None
+            and adapter.allow_real
+        )
+    except Exception:
+        # A generation that cannot be resolved to its provider is safest to
+        # leave under the normal lease; its worker will finish the durable
+        # cleanup and release the slot through the lease owner check.
+        hold_global_xunfei_slot = True
+    if not hold_global_xunfei_slot:
+        _release_generation_slot_for_cancel(runtime, workflow_id)
 
     supplied_version = expected_state_version
     for attempt in range(3):
@@ -721,6 +744,42 @@ def _force_local_cancel(
         reason=reason,
         force_cancel=True,
     )
+
+
+async def _close_provider_after_cancel(
+    runtime: WorkflowRuntime,
+    provider: str | None,
+    account_scope: str | None,
+) -> None:
+    """Close a provider-owned browser after its generation call has unwound."""
+
+    provider_name = str(provider or "xunfei")
+    scope = str(account_scope or "xunfei-default")
+    try:
+        adapter = runtime.application.provider(provider_name, scope)
+    except Exception:
+        # The durable cancel already succeeded. A missing/rotated provider
+        # must not turn that terminal command into an unhandled task error.
+        return
+    close = getattr(adapter, "close", None)
+    if not callable(close):
+        return
+    if isinstance(adapter, XunfeiTTSAdapter) and adapter.backend is None and adapter.allow_real:
+        # The production adapter's browser is process-global and is already
+        # closed by runtime.synth_* with an expected_session fence.  The
+        # canceled task may have released the generation slot and a newer
+        # task may have opened another session by now, so a second unscoped
+        # adapter.close() here could close the newer browser.
+        return
+    try:
+        # Provider calls run in a worker thread. Keep the browser close out of
+        # the event loop too; the real Xunfei adapter then hands Playwright's
+        # thread-affine close back to its dedicated executor.
+        result = await asyncio.to_thread(close)
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception:
+        logger.warning("取消生成后的 Provider 会话关闭失败", exc_info=True)
 
 
 def _recover_workflow_command(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any], action: str):
@@ -1457,6 +1516,7 @@ def _schedule_generation_task(
     runtime.generation_cancel_events[workflow_id] = cancel_event
 
     async def run_task() -> None:
+        provider_started = False
         try:
             async with _GenerationSlotLease(runtime, workflow_id):
                 if cancel_event.is_set():
@@ -1497,6 +1557,7 @@ def _schedule_generation_task(
                         progress=progress,
                     )
 
+                provider_started = True
                 provider_task = asyncio.create_task(asyncio.to_thread(
                     runtime.application.run_generation,
                     workflow_id,
@@ -1555,6 +1616,12 @@ def _schedule_generation_task(
             except Exception:
                 pass
         finally:
+            if cancel_event.is_set() and provider_started:
+                # Wait until the provider worker has returned (including its
+                # own cancellation safe point) before closing Chrome. Closing
+                # Playwright concurrently with an active page operation can
+                # leave the session thread stuck and can corrupt the next run.
+                await _close_provider_after_cancel(runtime, provider, account_scope)
             try:
                 runtime.repository.finalize_generation_cleanup(
                     workflow_id,

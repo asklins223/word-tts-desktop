@@ -23,6 +23,7 @@ from .config import (
     clamp_param,
 )
 from .errors import (
+    XunfeiBrowserLaunchError,
     XunfeiCancelled,
     XunfeiError,
     XunfeiLoginRequired,
@@ -71,6 +72,7 @@ __all__ = [
     "STEALTH_SCRIPT",
     "VOICES",
     "XunfeiCancelled",
+    "XunfeiBrowserLaunchError",
     "XunfeiError",
     "XunfeiLoginRequired",
     "XunfeiQuotaExceeded",

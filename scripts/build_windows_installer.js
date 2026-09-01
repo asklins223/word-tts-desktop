@@ -184,11 +184,6 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
             },
             portable: {
                 artifactName: '小猪wordTTS-Setup-${version}-${arch}.${ext}',
-                // `useZip` makes electron-builder feed the completed portable
-                // app directory directly to the NSIS template. This avoids a
-                // separate 7z app archive and also bypasses the unused
-                // CopyElevateHelper path for this custom installer.
-                useZip: true,
             },
         },
     };

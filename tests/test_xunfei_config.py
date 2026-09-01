@@ -3,11 +3,57 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import wordtts as core
+import xunfei.config as xunfei_config
 
 
 class XunfeiConfigTests(unittest.TestCase):
+    def test_windows_chrome_install_locations_are_checked_without_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            chrome = Path(temp_dir) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            chrome.parent.mkdir(parents=True)
+            chrome.write_bytes(b"fixture")
+            with mock.patch.object(xunfei_config.sys, "platform", "win32"), \
+                    mock.patch.object(xunfei_config, "_CHROME_CANDIDATES", []), \
+                    mock.patch.dict(
+                        xunfei_config.os.environ,
+                        {
+                            "PROGRAMFILES": temp_dir,
+                            "PROGRAMFILES(X86)": "",
+                            "LOCALAPPDATA": "",
+                            "USERPROFILE": "",
+                        },
+                        clear=False,
+                    ), mock.patch.object(xunfei_config.shutil, "which", return_value=None):
+                self.assertEqual(xunfei_config._find_chrome(), str(chrome))
+
+    def test_staged_chromium_is_resolved_for_windows_packages(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = (
+                Path(temp_dir)
+                / "chromium-1194"
+                / "chrome-win"
+                / "chrome.exe"
+            )
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture")
+            with mock.patch.object(xunfei_config.sys, "platform", "win32"), \
+                    mock.patch.dict(
+                        xunfei_config.os.environ,
+                        {"PLAYWRIGHT_BROWSERS_PATH": temp_dir},
+                        clear=False,
+                    ):
+                self.assertEqual(
+                    xunfei_config._find_bundled_chromium(),
+                    str(executable),
+                )
+
+    def test_fallback_user_agent_matches_the_runtime_platform(self):
+        with mock.patch.object(xunfei_config.sys, "platform", "win32"):
+            self.assertIn("Windows NT 10.0", xunfei_config._platform_user_agent())
+
     def test_former_word_tts_facade_exports_remain_available_from_package(self):
         for name in (
             "_audio_dbfs",

@@ -554,11 +554,19 @@ function registerIpc() {
         if (activeOperation) return { running: true };
         const plan = normalizedPlan(input);
 
-        // Per-machine work needs a UAC token. The elevated instance reuses the
-        // same HTML UI and receives the exact plan through a short-lived file.
+        // Per-machine work needs a UAC token. A custom per-user directory may
+        // need one too (for example a protected root on D:). Probe the parent
+        // before copying the payload so the user does not receive a generic
+        // EACCES/EPERM failure halfway through the operation. The elevated
+        // instance reuses the same HTML UI and receives the exact plan through
+        // a short-lived file.
+        const targetNeedsElevation = process.platform === 'win32'
+            && !parsedArguments.elevated
+            ? await installerService.targetNeedsElevation(plan.targetPath)
+            : false;
         if (process.platform === 'win32'
-            && plan.scope === 'per-machine'
-            && !parsedArguments.elevated) {
+            && !parsedArguments.elevated
+            && (plan.scope === 'per-machine' || targetNeedsElevation)) {
             mainWindow?.hide();
             try {
                 const delegated = await delegateToElevatedInstance(

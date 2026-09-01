@@ -58,6 +58,14 @@ _SENSITIVE_TEXT = re.compile(
     r"api[-_ ]?key|access[-_ ]?key|client[-_ ]?secret)\s*[:=]\s*\S+)"
 )
 
+_SENSITIVE_TEXT_REDACTOR = re.compile(
+    r"(?ix)"
+    r"(?P<prefix>\b(?:bearer|basic)\s+|"
+    r"\b(?:token|secret|password|passwd|pwd|cookie|authorization|"
+    r"api[-_ ]?key|access[-_ ]?key|client[-_ ]?secret)\s*[:=]\s*)"
+    r"\S+"
+)
+
 
 def _normalized_key(key: Any) -> str:
     text = str(key).casefold()
@@ -99,9 +107,22 @@ def _clean(value: Any, *, reject_sensitive: bool, key: str = "") -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
+        # 浏览器启动类错误（playwright/chromium/executable）即使包含 token 等
+        # 敏感词也必须保留原文，否则 CI/用户无法定位缺件或路径问题。
+        lower = value.lower()
+        is_browser_diagnostic = any(
+            kw in lower for kw in ("playwright", "chromium", "chrome", "executable", "browser", "launch")
+        )
         if _SENSITIVE_TEXT.search(value):
             if reject_sensitive:
                 raise DataSafetyError("credential-like text is not allowed")
+            if is_browser_diagnostic:
+                # 浏览器诊断中的路径和错误上下文有助于定位缺件，但其中
+                # 仍可能夹带 token=...；只保留上下文，逐段替换敏感值。
+                return _SENSITIVE_TEXT_REDACTOR.sub(
+                    r"\g<prefix>[REDACTED]",
+                    value,
+                )
             return "[REDACTED]"
         return value
     if reject_sensitive:
@@ -126,4 +147,3 @@ def redact_public_json(value: Any) -> Any:
     """Copy JSON-like data while replacing sensitive or unsupported values."""
 
     return _clean(value, reject_sensitive=False)
-

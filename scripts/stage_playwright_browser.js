@@ -181,6 +181,34 @@ function prunePlaywrightUnusedPayload(driverPackageRoot) {
     return removed;
 }
 
+function stagedChromiumExecutable(root) {
+    const candidates = process.platform === 'win32'
+        ? [
+            ['chrome-win', 'chrome.exe'],
+            ['chrome-win32', 'chrome.exe'],
+            ['chrome.exe'],
+        ]
+        : process.platform === 'darwin'
+            ? [
+                ['chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'],
+                ['chrome-mac', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
+            ]
+            : [
+                ['chrome-linux', 'chrome'],
+                ['chrome-linux64', 'chrome'],
+            ];
+    for (const revision of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!revision.isDirectory() || !/^chromium-\d+$/.test(revision.name)) continue;
+        for (const relative of candidates) {
+            const executable = path.join(root, revision.name, ...relative);
+            if (fs.existsSync(executable) && fs.statSync(executable).isFile()) {
+                return executable;
+            }
+        }
+    }
+    return null;
+}
+
 const browserRoot = path.join(internalDir, 'playwright_browsers');
 const browserDestination = path.join(browserRoot, expectedChromiumDir);
 if (path.resolve(browserSource) === path.resolve(browserDestination)) {
@@ -209,9 +237,18 @@ const removedChromiumPayload = pruneChromiumOptionalPayload(browserDestination);
 const removedPlaywrightPayload = prunePlaywrightUnusedPayload(
     path.join(internalDir, 'playwright', 'driver', 'package')
 );
+const stagedExecutable = stagedChromiumExecutable(browserRoot);
+if (!stagedExecutable) {
+    console.error(
+        `内置 Playwright Chromium 不完整：未找到 ${process.platform} 平台可执行文件。`
+        + `\n目标目录: ${browserDestination}`,
+    );
+    process.exit(1);
+}
 
 console.log(`[browser] 已复制 Chromium revision ${chromiumRevision}: ${browserSource}`);
 console.log(`[browser] 目标: ${browserDestination}`);
+console.log(`[browser] 可执行文件: ${stagedExecutable}`);
 console.log(`[browser] 已移除 ${removedLocales} 个非中文简体/英文语言资源`);
 console.log(`[browser] 已移除 ${removedChromiumPayload} 个 Chromium 可选目录`);
 console.log(`[browser] 已移除 ${removedPlaywrightPayload} 个 Playwright 非运行时目录/文件`);

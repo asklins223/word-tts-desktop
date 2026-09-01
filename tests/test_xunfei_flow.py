@@ -1675,6 +1675,26 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertIs(seen_threads[0], seen_threads[1])
         self.assertIsNot(seen_threads[0], threading.current_thread())
 
+    def test_cancelled_generation_closes_session_without_idle_delay(self):
+        session = object()
+        with mock.patch.object(
+            xunfei_runtime,
+            "close_session",
+            new_callable=mock.AsyncMock,
+        ) as close_session, mock.patch.object(
+            xunfei_runtime,
+            "_schedule_auto_close",
+        ) as schedule_auto_close:
+            asyncio.run(
+                xunfei_runtime._finish_generation_session(
+                    session,
+                    cancel_check=lambda: True,
+                )
+            )
+
+        close_session.assert_awaited_once_with(expected_session=session)
+        schedule_auto_close.assert_not_called()
+
     def test_ai_modal_has_priority_over_rate_limit_status(self):
         session = XunFeiSession()
         page = _PostConfirmPage(ai_modal=True, rate_limited=True)
@@ -1854,6 +1874,19 @@ class XunfeiFlowTests(unittest.TestCase):
                 )
 
             kill.assert_not_called()
+
+    def test_windows_profile_owner_probe_reads_command_line(self):
+        result = mock.Mock(returncode=0, stdout="chrome.exe --user-data-dir=C:\\WordTTS")
+        with mock.patch("xunfei.session.os.name", "nt"), mock.patch(
+            "xunfei.session.subprocess.run",
+            return_value=result,
+        ) as run:
+            command = XunFeiSession._profile_lock_owner_command(24680)
+
+        self.assertIn("--user-data-dir=C:\\WordTTS", command)
+        args = run.call_args.args[0]
+        self.assertEqual(args[0], "powershell.exe")
+        self.assertIn("24680", args[-1])
 
     def test_order_modal_does_not_wait_for_missing_ai_switch_again(self):
         """订单支付弹窗出现后，不应再次等待不存在的作品设置开关。"""

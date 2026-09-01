@@ -4906,6 +4906,13 @@ function resultZipState(context, resultCount) {
     };
 }
 
+function setGenerationControlLabel(button, text) {
+    if (!button) return;
+    const label = button.querySelector('.generation-control-label');
+    if (label) label.textContent = text;
+    else button.textContent = text;
+}
+
 function updateGenerationCancelUI() {
     const button = $('cancel-generation-btn');
     if (!button) return;
@@ -4924,11 +4931,13 @@ function updateGenerationCancelUI() {
     button.hidden = !sessionActive;
     button.disabled = Boolean(cancelWorkflowPromise) || isRestarting
         || (!projectionAllowsCancel && !isGenerating && !generationStartInFlight);
-    button.textContent = cancelWorkflowPromise ? '正在停止…' : '停止生成';
+    const cancelLabel = cancelWorkflowPromise ? '正在停止…' : '停止生成';
+    setGenerationControlLabel(button, cancelLabel);
+    button.setAttribute('aria-label', cancelWorkflowPromise ? '正在停止生成' : '停止生成并结束本次任务');
     if (cancelWorkflowPromise) button.setAttribute('aria-busy', 'true');
     else button.removeAttribute('aria-busy');
     if (cancelAction?.reason && !cancelAction.enabled) button.title = cancelAction.reason;
-    else button.removeAttribute('title');
+    else button.title = cancelWorkflowPromise ? '正在等待任务停止' : '停止生成并结束本次任务';
     updateGenerationControlUI(currentWorkspace);
 }
 
@@ -4990,14 +4999,33 @@ function updateGenerationControlUI(workspace = currentWorkspace) {
         button.hidden = !visible;
         button.disabled = !visible || Boolean(pending[commandKey]) || isRestarting;
         button.setAttribute('aria-busy', pending[commandKey] ? 'true' : 'false');
-        if (type === 'PAUSE') button.textContent = pending[commandKey] ? '正在暂停…' : '暂停任务';
-        if (type === 'RESUME') button.textContent = pending[commandKey] ? '正在恢复…' : '恢复任务';
+        const label = type === 'PAUSE'
+            ? (pending[commandKey] ? '正在暂停…' : '暂停生成')
+            : (pending[commandKey] ? '正在恢复…' : '恢复生成');
+        setGenerationControlLabel(button, label);
+        button.setAttribute('aria-label', pending[commandKey]
+            ? (type === 'PAUSE' ? '正在暂停生成' : '正在恢复生成')
+            : (type === 'PAUSE' ? '暂停生成并保留当前进度' : '恢复生成并继续当前任务'));
         if (visible) button.title = pending[commandKey]
             ? (type === 'PAUSE' ? '正在等待任务进入暂停状态' : '正在等待任务恢复')
-            : (action.reason || '');
+            : (action.reason || (type === 'PAUSE' ? '暂停生成并保留当前进度' : '恢复生成并继续当前任务'));
     };
     setActionButton('pause-generation-btn', 'PAUSE', presentation.key === 'PREPARING' || presentation.key === 'RUNNING' || presentation.key === 'RECOVERING');
     setActionButton('resume-generation-btn', 'RESUME', presentation.key === 'PAUSED' || presentation.key === 'PAUSE_REQUESTED');
+    const controlBar = $('generation-task-controls');
+    if (controlBar) {
+        const cancelButton = $('cancel-generation-btn');
+        const cancelAction = workspaceAction('CANCEL', current);
+        const hasVisibleControl = ['pause-generation-btn', 'resume-generation-btn']
+            .some(id => $(id) && !$(id).hidden)
+            || Boolean(
+                sessionId
+                && cancelButton
+                && !cancelButton.hidden
+                && (cancelAction?.enabled === true || isGenerating || generationStartInFlight || cancelWorkflowPromise),
+            );
+        controlBar.hidden = !hasVisibleControl;
+    }
     updateConfigActionState(current);
 }
 
@@ -5633,6 +5661,8 @@ function setRestartingUI(restarting) {
         'retry-service-btn',
         'retry-generation-btn',
         'return-config-btn',
+        'pause-generation-btn',
+        'resume-generation-btn',
         'cancel-generation-btn',
         'cancel-import-btn',
         'history-nav-btn',

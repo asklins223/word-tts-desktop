@@ -79,10 +79,34 @@
                                     </div>
                                     <p id="generation-file-name">小猪wordTTS 正在准备当前文档，请保持应用开启。</p>
                                 </div>
-                                <div class="generation-v2-run-marker" aria-label="生成状态">
-                                    <span class="generation-v2-run-marker-label">VOICE RUN</span>
-                                    <strong>让每一段文字，都有自己的声音</strong>
-                                    <span class="generation-v2-run-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                                <div class="generation-task-controls" id="generation-task-controls" role="group" aria-label="生成任务控制" hidden>
+                                    <span class="generation-task-controls-label">任务控制</span>
+                                    <div class="generation-control-actions" role="group" aria-label="生成任务控制操作">
+                                        <button type="button" class="generation-control-btn generation-control-btn-pause" id="pause-generation-btn" aria-label="暂停生成并保留当前进度" title="暂停生成并保留当前进度" hidden>
+                                            <span class="generation-control-btn-icon" aria-hidden="true">
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                                                    <path d="M8 5v14M16 5v14"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="generation-control-label">暂停生成</span>
+                                        </button>
+                                        <button type="button" class="generation-control-btn generation-control-btn-resume" id="resume-generation-btn" aria-label="恢复生成并继续当前任务" title="恢复生成并继续当前任务" hidden>
+                                            <span class="generation-control-btn-icon" aria-hidden="true">
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                                    <path d="M8 5v14l11-7z"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="generation-control-label">恢复生成</span>
+                                        </button>
+                                        <button type="button" class="generation-control-btn generation-control-btn-stop generation-cancel-btn" id="cancel-generation-btn" aria-label="停止生成并结束本次任务" title="停止生成并结束本次任务" hidden>
+                                            <span class="generation-control-btn-icon" aria-hidden="true">
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+                                                    <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                                                </svg>
+                                            </span>
+                                            <span class="generation-control-label">停止生成</span>
+                                        </button>
+                                    </div>
                                 </div>
                             </header>
 
@@ -191,7 +215,6 @@
                                     <footer class="generation-console-footer generation-v2-footer">
                                         <div class="generation-type-summary"><span>内容分类</span><div class="type-stats" id="type-stats"></div></div>
                                         <div class="generation-v2-footer-copy"><span>安全交付</span><strong>只保存已验证的音频产物</strong></div>
-                                        <div class="generation-control-actions" role="group" aria-label="生成任务控制"><button type="button" class="btn-text btn-sm generation-control-btn" id="pause-generation-btn" hidden>暂停任务</button><button type="button" class="btn-secondary btn-sm generation-control-btn" id="resume-generation-btn" hidden>恢复任务</button><button type="button" class="btn-text btn-sm generation-cancel-btn" id="cancel-generation-btn" hidden>停止生成</button></div>
                                         <div class="processing-tip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><path d="m9 12 2 2 4-4"></path></svg>完成后可进入下一步试听并统一保存</div>
                                     </footer>
 

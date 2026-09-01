@@ -22,8 +22,13 @@ from .config import (
     PROFILE_DIR,
     STEALTH_SCRIPT,
     _find_chrome,
+    _find_bundled_chromium,
+    _platform_user_agent,
+    configure_playwright_runtime,
+    playwright_runtime_diagnostics,
 )
 from .errors import (
+    XunfeiBrowserLaunchError,
     XunfeiError,
     XunfeiLoginRequired,
     _check_cancel_requested,
@@ -68,13 +73,27 @@ class SessionLifecycleMixin:
 
         try:
             if os.name == "nt":
+                # ``tasklist`` only reports the image name, not the command
+                # line.  It therefore cannot prove that a live chrome.exe
+                # owns this dedicated profile.  Query the command line with
+                # the built-in CIM provider instead; a probe failure is
+                # treated as unknown by the caller and keeps the lock intact.
                 result = subprocess.run(
-                    ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+                    [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}' "
+                        "| Select-Object -ExpandProperty CommandLine)",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=2,
                     check=False,
                 )
+                if result.returncode not in (0, None) or not str(result.stdout or "").strip():
+                    return None
             else:
                 result = subprocess.run(
                     ["ps", "-ww", "-p", str(int(pid)), "-o", "command="],
@@ -85,7 +104,12 @@ class SessionLifecycleMixin:
                 )
         except (OSError, TypeError, ValueError, subprocess.SubprocessError):
             return None
-        return str(result.stdout or "").strip()
+        command = str(result.stdout or "").strip()
+        # On POSIX an empty ``ps`` result means the process disappeared in
+        # the small probe window, so retain the existing stale-lock cleanup
+        # behavior. Windows returns None above for an unknown CIM probe and
+        # therefore fails closed in _profile_lock_owner_alive().
+        return command if os.name != "nt" else (command or None)
 
     @staticmethod
     def _profile_lock_owner_alive(pid):
@@ -313,9 +337,30 @@ class SessionLifecycleMixin:
             stage="browser_starting",
             message="正在启动讯飞浏览器会话",
         )
-        self._playwright = sync_playwright().start()
+        # The release backend does not carry a second copy of Node.  Repair
+        # stale inherited paths and point Playwright at the paired Electron
+        # executable before starting the sync driver; otherwise the failure
+        # happens before Chromium can create even one visible window.
+        configure_playwright_runtime()
+        try:
+            self._playwright = sync_playwright().start()
+        except Exception as start_error:
+            diagnostics = playwright_runtime_diagnostics()
+            diagnostics["launch_phase"] = "driver_start"
+            _log(f"[xunfei] Playwright 驱动启动失败: {start_error}")
+            _notify_runtime_progress(
+                progress_callback,
+                stage="browser_launch_failed",
+                message="讯飞浏览器驱动启动失败，请检查安装完整性后重试",
+            )
+            raise XunfeiBrowserLaunchError(
+                "讯飞浏览器驱动未能启动，请重启应用；若仍失败请重新安装完整版本",
+                phase="driver_start",
+                details=diagnostics,
+            ) from start_error
 
         chrome_path = _find_chrome()
+        bundled_chromium = _find_bundled_chromium()
         launch_args = [
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
@@ -367,52 +412,66 @@ class SessionLifecycleMixin:
             self._clear_stale_profile_lock(PROFILE_DIR)
         _log(f"[xunfei] 浏览器配置目录: {PROFILE_DIR}")
 
-        # 优先使用系统 Chrome（真实 UA / 真实指纹），仅 Chromium 降级时补 UA
+        # 优先使用系统 Chrome（真实 UA / 真实指纹）。如果系统 Chrome 不在
+        # PATH 或启动失败，直接使用打包的 Chromium 路径；这一步不再依赖
+        # Playwright registry 能否正确解析 PyInstaller 的资源目录。
+        browser_candidates = []
         if chrome_path:
-            launch_kwargs["executable_path"] = chrome_path
-            _log(f"[xunfei] 使用 Chrome: {chrome_path}")
-        else:
-            launch_kwargs["user_agent"] = (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            )
-            _log("[xunfei] 未找到系统 Chrome，使用 Playwright Chromium", )
+            browser_candidates.append(("系统 Chrome", chrome_path, False))
+        if bundled_chromium and bundled_chromium != chrome_path:
+            browser_candidates.append(("内置 Chromium", bundled_chromium, True))
+        # Keep the registry lookup as a final source-install compatibility
+        # path.  Packaged builds normally use the explicit staged path above.
+        browser_candidates.append(("Playwright Chromium", None, True))
 
-        try:
-            self._ctx = self._playwright.chromium.launch_persistent_context(
-                **launch_kwargs
-            )
-        except Exception as first_error:
-            # The browser can exit between the preflight check and the
-            # launch call. Retry the preferred executable once if that race
-            # left a now-dead SingletonLock behind.
-            lock_recovered = self._clear_stale_profile_lock(PROFILE_DIR)
-            if lock_recovered:
+        launch_error = None
+        for browser_label, executable_path, is_fallback in browser_candidates:
+            candidate_kwargs = dict(launch_kwargs)
+            if executable_path:
+                candidate_kwargs["executable_path"] = executable_path
+            if is_fallback:
+                candidate_kwargs["user_agent"] = _platform_user_agent()
+
+            # The browser can exit between the preflight check and launch. A
+            # single retry after removing an ownerless profile lock handles
+            # that race without deleting a lock held by a live process.
+            for launch_attempt in range(2):
                 try:
                     self._ctx = self._playwright.chromium.launch_persistent_context(
-                        **launch_kwargs
+                        **candidate_kwargs
                     )
-                except Exception as retry_error:
-                    first_error = retry_error
+                    _log(f"[xunfei] 已启动{browser_label}: {executable_path or 'registry'}")
+                    break
+                except Exception as error:
+                    launch_error = error
+                    recovered = (
+                        launch_attempt == 0
+                        and self._clear_stale_profile_lock(PROFILE_DIR)
+                    )
+                    if recovered:
+                        continue
+                    _log(f"[xunfei] {browser_label} 启动失败: {error}")
+                    break
+            if self._ctx is not None:
+                break
 
-            if self._ctx is None and "executable_path" in launch_kwargs:
-                _log(f"[xunfei] Chrome 启动失败，改用 Playwright Chromium: {first_error}")
-                launch_kwargs.pop("executable_path", None)
-                launch_kwargs.setdefault(
-                    "user_agent",
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36",
-                )
-                # A failed Chrome launch may have created its own dead lock;
-                # perform the same narrow check before the fallback engine.
-                self._clear_stale_profile_lock(PROFILE_DIR)
-                self._ctx = self._playwright.chromium.launch_persistent_context(
-                    **launch_kwargs
-                )
-            elif self._ctx is None:
-                raise first_error
+        if self._ctx is None:
+            diagnostics = playwright_runtime_diagnostics()
+            diagnostics.update({
+                "launch_phase": "context_launch",
+                "system_chrome_candidate_found": bool(chrome_path),
+                "bundled_chromium_candidate_found": bool(bundled_chromium),
+            })
+            _notify_runtime_progress(
+                progress_callback,
+                stage="browser_launch_failed",
+                message="讯飞浏览器窗口未能打开，请关闭残留浏览器后重试",
+            )
+            raise XunfeiBrowserLaunchError(
+                "讯飞浏览器窗口未能打开，请关闭残留浏览器后重试；若仍失败请重新安装完整版本",
+                phase="context_launch",
+                details=diagnostics,
+            ) from launch_error
 
         self._profile_owner_pid = self._profile_lock_owner_pid(PROFILE_DIR)
 

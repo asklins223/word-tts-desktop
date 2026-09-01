@@ -29,6 +29,15 @@ class XunfeiLoginRequired(XunfeiError):
     """会话失效：需要人工重新扫码登录。"""
 
 
+class XunfeiBrowserLaunchError(XunfeiError):
+    """Playwright driver or the visible Chromium context could not start."""
+
+    def __init__(self, message, *, phase="context_launch", details=None):
+        super().__init__(message)
+        self.phase = str(phase or "context_launch")[:64]
+        self.details = dict(details) if isinstance(details, dict) else {}
+
+
 class XunfeiSubmissionAmbiguous(XunfeiError):
     """页面提交后未拿到本地 worksId，调用方应重新生成。"""
 
