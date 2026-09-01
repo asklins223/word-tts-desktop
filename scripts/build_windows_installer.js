@@ -117,16 +117,16 @@ function copySourceTree(sourceDir, targetDir) {
 }
 
 function createBuildProject({ payloadDir, outputDir, version, workDir }) {
-    if (!fs.existsSync(payloadDir)) {
-        throw new Error(`Windows 应用 payload 不存在: ${payloadDir}`);
+    const resolvedPayloadDir = path.resolve(payloadDir);
+    if (!fs.existsSync(resolvedPayloadDir)) {
+        throw new Error(`Windows 应用 payload 不存在: ${resolvedPayloadDir}`);
     }
-    const appExecutable = path.join(payloadDir, '小猪wordTTS.exe');
+    const appExecutable = path.join(resolvedPayloadDir, '小猪wordTTS.exe');
     if (!fs.existsSync(appExecutable)) {
         throw new Error(`payload 中缺少小猪wordTTS.exe: ${appExecutable}`);
     }
     copySourceTree(installerSourceDir, workDir);
     fs.copyFileSync(path.join(rootDir, 'version.json'), path.join(workDir, 'version.json'));
-    fs.cpSync(payloadDir, path.join(workDir, 'payload'), { recursive: true });
     fs.mkdirSync(path.join(workDir, 'build'), { recursive: true });
     fs.copyFileSync(path.join(electronDir, 'build', 'icon.ico'), path.join(workDir, 'build', 'icon.ico'));
 
@@ -152,7 +152,11 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
             executableName: '小猪wordTTS-Setup',
             electronVersion: appPackage.devDependencies.electron,
             asar: true,
-            compression: 'maximum',
+            // The payload contains already-compressed Chromium and media
+            // assets. `maximum` adds a more expensive 7z pass without
+            // materially shrinking the portable setup; normal keeps release
+            // size reasonable while avoiding that build-time penalty.
+            compression: 'normal',
             directories: {
                 output: outputDir,
                 buildResources: 'build',
@@ -168,7 +172,10 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
                 'assets/**/*',
             ],
             extraResources: [
-                { from: 'payload', to: 'payload' },
+                // Read directly from the completed dir build. Staging this
+                // tree under workDir first creates a second ~1 GB copy before
+                // electron-builder copies it into its own output.
+                { from: resolvedPayloadDir, to: 'payload' },
             ],
             win: {
                 target: [{ target: 'portable', arch: ['x64'] }],
@@ -177,6 +184,11 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
             },
             portable: {
                 artifactName: '小猪wordTTS-Setup-${version}-${arch}.${ext}',
+                // This installer performs its own UAC handoff with
+                // Start-Process -Verb RunAs. electron-builder's helper is
+                // unused here, and signing it can block for several minutes
+                // on the runner's timestamp service.
+                packElevateHelper: false,
             },
         },
     };

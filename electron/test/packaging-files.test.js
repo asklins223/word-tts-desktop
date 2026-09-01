@@ -8,6 +8,7 @@ const path = require('path');
 const {
     PORTABLE_UNINSTALL_RELOCATION_BLOCK,
     PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK,
+    createBuildProject,
     patchPortableTemplate,
 } = require('../../scripts/build_windows_installer');
 
@@ -50,6 +51,30 @@ test('Windows portable 外壳在 Electron 退出后启动自身清理批处理',
     assert.match(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /\$SYSDIR\\cmd\.exe/);
     assert.match(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /staged cleanup failed: cmd launch error/);
     assert.doesNotMatch(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /powershell/i);
+});
+
+test('自绘 portable 直接读取已完成 payload，不重复打包 elevate helper 和 maximum 压缩', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-project-'));
+    const payloadDir = path.join(root, 'win-unpacked');
+    const workDir = path.join(root, 'build-project');
+    const outputDir = path.join(root, 'release');
+    try {
+        fs.mkdirSync(payloadDir, { recursive: true });
+        fs.writeFileSync(path.join(payloadDir, '小猪wordTTS.exe'), 'fixture');
+        const { packageJson } = createBuildProject({
+            payloadDir,
+            outputDir,
+            workDir,
+        });
+        assert.equal(packageJson.build.compression, 'normal');
+        assert.deepEqual(packageJson.build.extraResources, [
+            { from: payloadDir, to: 'payload' },
+        ]);
+        assert.equal(packageJson.build.portable.packElevateHelper, false);
+        assert.equal(fs.existsSync(path.join(workDir, 'payload')), false);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 test('Windows portable 卸载外壳在解压 Electron 前先迁移到 TEMP', () => {
