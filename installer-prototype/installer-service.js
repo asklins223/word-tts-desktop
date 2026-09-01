@@ -868,58 +868,27 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath, s
     ].join('\n');
 }
 
-function relocatedExecutableCleanupScript(stagedExecutable, readyPath, logPath, pid, launcherPid) {
+function relocatedExecutableCleanupBatch() {
     return [
-        `$stagedExecutable = ${powershellLiteral(stagedExecutable)}`,
-        `$ready = ${powershellLiteral(readyPath)}`,
-        `$log = ${powershellLiteral(logPath)}`,
-        `$processId = ${Number(pid) || 0}`,
-        `$launcherProcessId = ${Number(launcherPid) || 0}`,
-        '$ErrorActionPreference = "Stop"',
-        'function Write-CleanupLog([string]$message) {',
-        '  try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + " " + $message) -Encoding utf8 -ErrorAction Stop } catch {}',
-        '}',
-        'function Wait-ForCleanupProcess([int]$targetProcessId, [string]$label) {',
-        '  if ($targetProcessId -le 0 -or $targetProcessId -eq $PID) { return }',
-        '  for ($attempt = 0; $attempt -lt 300; $attempt++) {',
-        '    if (-not (Get-Process -Id $targetProcessId -ErrorAction SilentlyContinue)) {',
-        '      Write-CleanupLog ($label + " exited pid=" + $targetProcessId)',
-        '      return',
-        '    }',
-        '    Start-Sleep -Milliseconds 100',
-        '  }',
-        '  Write-CleanupLog ($label + " wait timed out pid=" + $targetProcessId)',
-        '}',
-        // This helper is intentionally tiny. The authenticated relocated
-        // uninstaller has already removed and verified the application target
-        // synchronously, so the helper only waits for Electron and its TEMP
-        // portable wrapper before deleting that staged wrapper.
-        'try {',
-        '  # Keep this marker until the Electron parent observes it. Removing it',
-        '  # in this helper creates a race when cleanup finishes very quickly.',
-        '  Set-Content -LiteralPath $ready -Value $PID -Encoding ascii -Force -ErrorAction Stop',
-        '  Write-CleanupLog ("staged cleanup started electronPid=" + $processId + " launcherPid=" + $launcherProcessId + " path=" + $stagedExecutable)',
-        '  Wait-ForCleanupProcess $processId "electron"',
-        '  Wait-ForCleanupProcess $launcherProcessId "launcher"',
-        '  Start-Sleep -Milliseconds 250',
-        '  $removed = $false',
-        '  for ($attempt = 0; $attempt -lt 120; $attempt++) {',
-        '    Remove-Item -LiteralPath $stagedExecutable -Force -ErrorAction SilentlyContinue',
-        '    if (-not (Test-Path -LiteralPath $stagedExecutable -ErrorAction SilentlyContinue)) { $removed = $true; break }',
-        '    Start-Sleep -Milliseconds 250',
-        '  }',
-        '  if ($removed) {',
-        '    Write-CleanupLog "staged cleanup complete"',
-        '    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue',
-        '    exit 0',
-        '  }',
-        '  Write-CleanupLog "staged cleanup failed: executable still exists"',
-        '  exit 2',
-        '} catch {',
-        '  Write-CleanupLog ("staged cleanup crashed: " + $_.Exception.Message)',
-        '  exit 1',
-        '}',
-    ].join('\n');
+        '@echo off',
+        'setlocal',
+        'set "target=%~1"',
+        'set "log=%~2"',
+        '>>"%log%" echo %date% %time% staged cleanup started path=%target%',
+        'for /l %%I in (1,1,90) do (',
+        '  del /f /q "%target%" >nul 2>&1',
+        '  if not exist "%target%" goto wordtts_cleanup_complete',
+        '  >nul 2>&1 ping.exe 127.0.0.1 -n 2',
+        ')',
+        '>>"%log%" echo %date% %time% staged cleanup failed: executable still exists',
+        'exit /b 2',
+        ':wordtts_cleanup_complete',
+        '>>"%log%" echo %date% %time% staged cleanup complete',
+        // cmd.exe parses this entire line before executing it, so the batch
+        // can remove itself and still return a deterministic success code.
+        'del /f /q "%~f0" >nul 2>&1 & exit /b 0',
+        '',
+    ].join('\r\n');
 }
 
 function createInstallerService(options = {}) {
@@ -1249,58 +1218,25 @@ function createInstallerService(options = {}) {
         }
     }
 
-    async function scheduleRelocatedExecutableCleanup(stagedExecutable) {
-        const cleanupId = randomSuffix();
-        const readyPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.ready`);
-        const logPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.log`);
-        const scriptPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.ps1`);
-        const stdoutPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.stdout.txt`);
-        const stderrPath = path.join(tempDirectory, `wordtts-uninstall-stage-${cleanupId}.stderr.txt`);
-        const startupLogPath = `${logPath}.startup.log`;
-        const script = relocatedExecutableCleanupScript(
-            stagedExecutable,
-            readyPath,
-            logPath,
-            process.pid,
-            process.ppid,
-        );
-        let child;
-        let stdoutFd;
-        let stderrFd;
+    async function prepareRelocatedExecutableCleanup(stagedExecutable) {
+        const scriptPath = `${stagedExecutable}.cleanup.cmd`;
+        const logPath = `${scriptPath}.log`;
+        const startupLogPath = `${scriptPath}.startup.log`;
         try {
             await fsp.mkdir(tempDirectory, { recursive: true });
-            // Windows PowerShell 5.1 needs a BOM to decode non-ASCII paths in
-            // script files reliably. A real file also survives long enough to
-            // diagnose parser/startup failures that -EncodedCommand can hide.
-            await fsp.writeFile(scriptPath, `\uFEFF${script}`, 'utf8');
-            stdoutFd = fs.openSync(stdoutPath, 'a');
-            stderrFd = fs.openSync(stderrPath, 'a');
-            child = spawnImpl(
-                'powershell.exe',
-                [
-                    '-NoProfile',
-                    '-NonInteractive',
-                    '-ExecutionPolicy',
-                    'Bypass',
-                    '-File',
-                    scriptPath,
-                ], {
-                    detached: true,
-                    stdio: ['ignore', stdoutFd, stderrFd],
-                    windowsHide: true,
-                    cwd: tempDirectory,
-                },
+            // Do not spawn another helper from Electron. The surrounding NSIS
+            // portable wrapper is still alive and owns stagedExecutable; once
+            // Electron exits, that wrapper launches this prepared batch and
+            // then releases the final executable handle.
+            await fsp.writeFile(scriptPath, relocatedExecutableCleanupBatch(), {
+                encoding: 'ascii',
+                mode: 0o600,
+            });
+            await fsp.writeFile(
+                logPath,
+                `${new Date().toISOString()} staged cleanup prepared path=${stagedExecutable}\n`,
+                'utf8',
             );
-            if (!child || typeof child !== 'object') {
-                throw new Error('临时卸载程序清理进程没有成功创建。');
-            }
-            await waitForChildSpawn(child);
-            await waitForCleanupReadyImpl(child, readyPath);
-            // The child deliberately leaves the marker in place so even a
-            // sub-50 ms run cannot outrun the polling loop. Once observed, the
-            // parent owns marker removal.
-            await fsp.rm(readyPath, { force: true }).catch(() => {});
-            child.unref?.();
             return true;
         } catch (error) {
             await fsp.writeFile(
@@ -1308,20 +1244,11 @@ function createInstallerService(options = {}) {
                 `${new Date().toISOString()} ${String(error?.stack || error)}\n`,
                 'utf8',
             ).catch(() => {});
-            await fsp.rm(readyPath, { force: true }).catch(() => {});
             // The application directory was already synchronously removed and
-            // verified. A failure here can at worst leave one authenticated
-            // TEMP executable, so do not turn a completed uninstall into an
-            // error. CI requires the helper's completion log and will reject a
-            // release that cannot clean this residue on a real Windows runner.
+            // verified. A preparation failure can at worst leave one
+            // authenticated TEMP executable. CI requires the wrapper-owned
+            // completion log and rejects a release with that residue.
             return false;
-        } finally {
-            if (stdoutFd !== undefined) {
-                try { fs.closeSync(stdoutFd); } catch (_) { /* child owns its duplicate */ }
-            }
-            if (stderrFd !== undefined) {
-                try { fs.closeSync(stderrFd); } catch (_) { /* child owns its duplicate */ }
-            }
         }
     }
 
@@ -1456,7 +1383,7 @@ function createInstallerService(options = {}) {
                         error,
                     );
                 }
-                scheduledCleanup = await scheduleRelocatedExecutableCleanup(stagedExecutable);
+                scheduledCleanup = await prepareRelocatedExecutableCleanup(stagedExecutable);
             } else {
                 // A stock/older wrapper still owns a file under the target and
                 // can recreate $EXEDIR after Electron exits. Only that legacy
@@ -1556,7 +1483,7 @@ module.exports = {
     encodePowerShellCommand,
     isPathInside,
     readRegistryInstallLocations,
-    relocatedExecutableCleanupScript,
+    relocatedExecutableCleanupBatch,
     resolveCleanupLauncherPath,
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,

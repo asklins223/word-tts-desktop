@@ -46,6 +46,37 @@ const PORTABLE_UNINSTALL_RELOCATION_BLOCK = [
     '',
 ].join('\n');
 
+const PORTABLE_UNINSTALL_SELF_CLEANUP_LABEL = 'wordtts_stage_cleanup_done';
+const PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK = [
+    '  # Electron has finished and the staged portable wrapper is about to',
+    '  # release its own executable. Launch the batch prepared by Electron',
+    '  # from this wrapper so there is no child-to-parent cleanup handshake.',
+    '  ReadEnvStr $R0 "WORDTTS_RELOCATED_UNINSTALLER"',
+    '  StrCmp $R0 "$EXEPATH" 0 wordtts_stage_cleanup_done',
+    '  StrCpy $R1 "$EXEPATH.cleanup.cmd"',
+    '  StrCpy $R2 "$R1.log"',
+    '  IfFileExists "$R1" 0 wordtts_stage_cleanup_missing',
+    '  SetOutPath $TEMP',
+    '  ClearErrors',
+    '  Exec \'"$SYSDIR\\cmd.exe" /d /q /c ""$R1" "$EXEPATH" "$R2""\'',
+    '  IfErrors wordtts_stage_cleanup_launch_failed wordtts_stage_cleanup_done',
+    'wordtts_stage_cleanup_missing:',
+    '  ClearErrors',
+    '  FileOpen $R3 "$R1.startup.log" a',
+    '  IfErrors wordtts_stage_cleanup_done',
+    '  FileWrite $R3 "staged cleanup failed: cleanup script missing$\\r$\\n"',
+    '  FileClose $R3',
+    '  Goto wordtts_stage_cleanup_done',
+    'wordtts_stage_cleanup_launch_failed:',
+    '  ClearErrors',
+    '  FileOpen $R3 "$R1.startup.log" a',
+    '  IfErrors wordtts_stage_cleanup_done',
+    '  FileWrite $R3 "staged cleanup failed: cmd launch error$\\r$\\n"',
+    '  FileClose $R3',
+    'wordtts_stage_cleanup_done:',
+    '',
+].join('\n');
+
 function argumentValue(argv, name, fallback = null) {
     const index = argv.indexOf(name);
     if (index >= 0) {
@@ -205,8 +236,22 @@ function patchPortableTemplate(templatePath) {
         }
         patched = patched.replace(/^Section\r?\n/m, value => `${value}${PORTABLE_UNINSTALL_RELOCATION_BLOCK}`);
     }
+    const selfCleanupPattern = new RegExp(`^[ \\t]*${PORTABLE_UNINSTALL_SELF_CLEANUP_LABEL}:\\r?\\n`, 'm');
+    if (!selfCleanupPattern.test(patched)) {
+        const finalCleanupMarker = /^[ \t]+RMDir \/r \$INSTDIR\r?\n(?=SectionEnd)/m;
+        if (countMatches(patched, finalCleanupMarker) !== 1) {
+            throw new Error(`无法确认 electron-builder portable 模板的最终清理位置: ${templatePath}`);
+        }
+        patched = patched.replace(
+            finalCleanupMarker,
+            value => `${value}${PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK}`,
+        );
+    }
     if (relocationPattern.test(restoreContent)) {
         restoreContent = restoreContent.replace(PORTABLE_UNINSTALL_RELOCATION_BLOCK, '');
+    }
+    if (selfCleanupPattern.test(restoreContent)) {
+        restoreContent = restoreContent.replace(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, '');
     }
     if (patched !== original) {
         fs.writeFileSync(templatePath, patched, 'utf8');
@@ -216,6 +261,9 @@ function patchPortableTemplate(templatePath) {
     if (!tempMarker.test(active)
         || exedirMarker.test(active)
         || !relocationPattern.test(active)
+        || !selfCleanupPattern.test(active)
+        || !active.includes('$EXEPATH.cleanup.cmd')
+        || !active.includes('$SYSDIR\\cmd.exe')
         || !active.includes('WORDTTS_RELOCATED_UNINSTALLER')) {
         throw new Error(`自绘安装程序模板补丁未生效: ${templatePath}`);
     }
@@ -295,6 +343,7 @@ if (require.main === module) {
 
 module.exports = {
     PORTABLE_UNINSTALL_RELOCATION_BLOCK,
+    PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK,
     createBuildProject,
     patchPortableTemplate,
     parseArguments,

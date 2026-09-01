@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const {
     PORTABLE_UNINSTALL_RELOCATION_BLOCK,
+    PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK,
     patchPortableTemplate,
 } = require('../../scripts/build_windows_installer');
 
@@ -33,11 +34,22 @@ test('Windows 自绘 portable 模板收尾时切换到 TEMP，不重建安装目
         assert.doesNotMatch(fs.readFileSync(templatePath, 'utf8'), /SetOutPath \$EXEDIR/);
         assert.match(fs.readFileSync(templatePath, 'utf8'), /WORDTTS_RELOCATED_UNINSTALLER/);
         assert.match(fs.readFileSync(templatePath, 'utf8'), /wordtts_continue_portable:/);
+        assert.match(fs.readFileSync(templatePath, 'utf8'), /\$EXEPATH\.cleanup\.cmd/);
+        assert.match(fs.readFileSync(templatePath, 'utf8'), /wordtts_stage_cleanup_done:/);
         restore();
         assert.equal(fs.readFileSync(templatePath, 'utf8'), original);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
+});
+
+test('Windows portable 外壳在 Electron 退出后启动自身清理批处理', () => {
+    assert.match(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /ReadEnvStr \$R0 "WORDTTS_RELOCATED_UNINSTALLER"/);
+    assert.match(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /StrCmp \$R0 "\$EXEPATH"/);
+    assert.match(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /\$EXEPATH\.cleanup\.cmd/);
+    assert.match(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /\$SYSDIR\\cmd\.exe/);
+    assert.match(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /staged cleanup failed: cmd launch error/);
+    assert.doesNotMatch(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /powershell/i);
 });
 
 test('Windows portable 卸载外壳在解压 Electron 前先迁移到 TEMP', () => {
@@ -79,6 +91,7 @@ test('Windows portable 模板即使上次构建中断也能恢复为原始内容
     ].join('\n');
     const interrupted = original
         .replace('Section\n', `Section\n${PORTABLE_UNINSTALL_RELOCATION_BLOCK}`)
+        .replace('\tRMDir /r $INSTDIR\n', `\tRMDir /r $INSTDIR\n${PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK}`)
         .replace('SetOutPath $EXEDIR', 'SetOutPath $TEMP');
     try {
         fs.writeFileSync(templatePath, interrupted, 'utf8');
@@ -203,8 +216,10 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(installerMain, /waitForSourceWrapperExit/);
     assert.match(
         installerService,
-        /if \(stagedExecutable\) \{[\s\S]*await removeInstallTarget\(normalizedTarget\)[\s\S]*scheduleRelocatedExecutableCleanup\(stagedExecutable\)/,
+        /if \(stagedExecutable\) \{[\s\S]*await removeInstallTarget\(normalizedTarget\)[\s\S]*prepareRelocatedExecutableCleanup\(stagedExecutable\)/,
     );
+    assert.match(windowsInstallerBuildScript, /PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK/);
+    assert.match(windowsInstallerBuildScript, /\$EXEPATH\.cleanup\.cmd/);
     assert.match(installerService, /安装目录删除后仍然存在/);
     assert.match(windowsWorkflow, /\[handoff\] NSIS relocated uninstaller active/);
     assert.match(windowsWorkflow, /\[complete\] installer operation succeeded/);

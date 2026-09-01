@@ -425,7 +425,7 @@ jobs:
                   Format-List | Out-String | Add-Content -LiteralPath $residualLog -Encoding utf8
                 Get-Content -LiteralPath $residualLog -Raw | Write-Host
               } catch { Write-Host "无法生成残留诊断: $_" }
-              $diagLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-*.log" -ErrorAction SilentlyContinue
+              $diagLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall*.log" -ErrorAction SilentlyContinue
               foreach ($log in $diagLogs) {
                 Write-Host "卸载清理日志: $($log.FullName)"
                 try { Get-Content -LiteralPath $log.FullName -Raw -ErrorAction SilentlyContinue | Write-Host } catch {}
@@ -472,13 +472,13 @@ jobs:
             $stageCleanupComplete = $false
             $stageCleanupDiagnostic = ""
             while ((Get-Date) -lt $stageCleanupDeadline) {
-              $startupFailures = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-stage-*.startup.log" -ErrorAction SilentlyContinue |
+              $startupFailures = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstaller-stage-*.cleanup.cmd.startup.log" -ErrorAction SilentlyContinue |
                 Where-Object { $_.LastWriteTime -ge $uninstallStartedAt.AddSeconds(-2) }
               if ($startupFailures) {
                 $startupDiagnostic = ($startupFailures | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
                 throw "TEMP 卸载外壳清理进程启动失败:`n$startupDiagnostic"
               }
-              $stageLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstall-stage-*.log" -ErrorAction SilentlyContinue |
+              $stageLogs = Get-ChildItem -Path $env:RUNNER_TEMP -Filter "wordtts-uninstaller-stage-*.cleanup.cmd.log" -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -notlike "*.startup.log" -and $_.LastWriteTime -ge $uninstallStartedAt.AddSeconds(-2) }
               $stageCleanupDiagnostic = ($stageLogs | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }) -join "`n"
               if ($stageCleanupDiagnostic -match "staged cleanup (failed|crashed)") {
@@ -507,7 +507,7 @@ jobs:
           name: 小猪wordTTS-Windows-installer-smoke
           path: |
             ${{ runner.temp }}/wordtts-installer-*.log
-            ${{ runner.temp }}/wordtts-uninstall-*
+            ${{ runner.temp }}/wordtts-uninstall*
           retention-days: 7
           if-no-files-found: warn
 
