@@ -331,6 +331,7 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
             dataPath,
             environment: shellEnvironment,
             spawn: spawnForTest,
+            waitForCleanupReady: process.platform === 'win32' ? async () => {} : undefined,
         });
         const install = await service.run({
             mode: 'install',
