@@ -146,6 +146,17 @@ function runBuilder(projectDir, electronDir, env = process.env) {
     if (result.status !== 0) throw new Error(`自绘 Windows 安装程序构建失败，退出码: ${result.status}`);
 }
 
+function patchPortableTemplate(templatePath) {
+    const original = fs.readFileSync(templatePath, 'utf8');
+    const marker = /^[ \t]+SetOutPath \$EXEDIR\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
+    if (!marker.test(original) || (original.match(/SetOutPath \$EXEDIR/g) || []).length !== 1) {
+        throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
+    }
+    const patched = original.replace(marker, value => value.replace('$EXEDIR', '$TEMP'));
+    fs.writeFileSync(templatePath, patched, 'utf8');
+    return () => fs.writeFileSync(templatePath, original, 'utf8');
+}
+
 function main() {
     const args = parseArguments();
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-build-'));
@@ -167,7 +178,25 @@ function main() {
         // left an installer with the same version in the output directory.
         fs.rmSync(outputPath, { force: true });
         try {
-            runBuilder(workDir, electronDir, process.env);
+            // electron-builder's stock portable template switches the output
+            // directory to $EXEDIR after the embedded app exits. When the
+            // executable is an installed uninstaller, that creates the just-
+            // removed install directory again. Keep the working directory
+            // outside the target while retaining the final extraction cleanup.
+            const portableTemplatePath = path.join(
+                electronDir,
+                'node_modules',
+                'app-builder-lib',
+                'templates',
+                'nsis',
+                'portable.nsi',
+            );
+            const restorePortableTemplate = patchPortableTemplate(portableTemplatePath);
+            try {
+                runBuilder(workDir, electronDir, process.env);
+            } finally {
+                restorePortableTemplate();
+            }
             const builtPath = path.join(builderOutputDir, outputName);
             if (!fs.existsSync(builtPath) || fs.statSync(builtPath).size <= 0) {
                 throw new Error(`electron-builder 未生成有效的自绘安装程序: ${builtPath}`);
@@ -201,5 +230,6 @@ if (require.main === module) {
 
 module.exports = {
     createBuildProject,
+    patchPortableTemplate,
     parseArguments,
 };

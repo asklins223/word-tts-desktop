@@ -643,9 +643,9 @@ function cleanupScript(targetPath, scriptPath, pid, launcherPid, launcherPath) {
         '    # Do not use taskkill /T here: the cleanup process is spawned by',
         '    # the uninstaller and would be killed together with its parent.',
         '  }',
-        '  # The portable NSIS wrapper is the process that owns the copy of',
-        '  # the uninstaller in $EXEDIR. It runs SetOutPath $EXEDIR after the',
-        '  # embedded Electron process exits, which can recreate $target.',
+        '  # The stock/older portable NSIS wrapper is the process that owns the',
+        '  # copy of the uninstaller in $EXEDIR. It can run SetOutPath $EXEDIR',
+        '  # after the embedded Electron process exits, which can recreate $target.',
         '  # Wait for that exact parent/path before deleting anything, rather',
         '  # than relying on a short "missing" window.',
         '  $launcherRunning = $false',
@@ -1125,10 +1125,10 @@ function createInstallerService(options = {}) {
         formatProgress(onProgress, { percent: 78, phase: 'shortcut', stage: '正在清理快捷方式', file: '正在移除开始菜单和桌面快捷方式…', count: '最后一步' });
         let scheduledCleanup = false;
         if (platform === 'win32') {
-            // A portable electron-builder wrapper executes SetOutPath
-            // $EXEDIR after the embedded app exits. That can recreate the
-            // install directory even when this process removes it
-            // successfully, so Windows always needs a post-exit cleanup.
+            // Stock/older portable wrappers can execute SetOutPath $EXEDIR
+            // after the embedded app exits. That can recreate the install
+            // directory even when this process removes it successfully, so
+            // Windows always keeps a post-exit cleanup as a compatibility net.
             try { await removePath(normalizedTarget); } catch (_) { /* defer to the cleanup process */ }
             await scheduleUninstallCleanup(normalizedTarget);
             scheduledCleanup = true;

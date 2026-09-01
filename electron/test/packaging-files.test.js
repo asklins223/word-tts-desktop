@@ -3,13 +3,37 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { patchPortableTemplate } = require('../../scripts/build_windows_installer');
 
 const APP_DIR = path.join(__dirname, '..');
 const packageJson = JSON.parse(
     fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8'),
 );
 const buildFiles = packageJson.build?.files;
+
+test('Windows 自绘 portable 模板收尾时切换到 TEMP，不重建安装目录', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-portable-template-'));
+    const templatePath = path.join(root, 'portable.nsi');
+    const original = [
+        'Section',
+        '  SetOutPath $EXEDIR',
+        '\tRMDir /r $INSTDIR',
+        'SectionEnd',
+        '',
+    ].join('\n');
+    try {
+        fs.writeFileSync(templatePath, original, 'utf8');
+        const restore = patchPortableTemplate(templatePath);
+        assert.match(fs.readFileSync(templatePath, 'utf8'), /SetOutPath \$TEMP/);
+        assert.doesNotMatch(fs.readFileSync(templatePath, 'utf8'), /SetOutPath \$EXEDIR/);
+        restore();
+        assert.equal(fs.readFileSync(templatePath, 'utf8'), original);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
 
 test('build.files 覆盖 main/preload 直接依赖的每一个本地模块', () => {
     assert.ok(Array.isArray(buildFiles) && buildFiles.length > 0, 'build.files must be an explicit list');
@@ -93,10 +117,18 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         path.join(APP_DIR, '..', 'build_electron_windows.bat'),
         'utf8',
     );
+    const windowsInstallerBuildScript = fs.readFileSync(
+        path.join(APP_DIR, '..', 'scripts', 'build_windows_installer.js'),
+        'utf8',
+    );
     assert.match(packageJson.scripts['build:win'], /electron-builder --win dir --publish never/);
     assert.match(packageJson.scripts['build:win'], /build_windows_installer\.js --payload/);
     assert.match(windowsWorkflow, /electron-builder --win dir --publish never/);
     assert.match(windowsWorkflow, /build_windows_installer\.js --payload release\/win-unpacked/);
+    assert.match(windowsWorkflow, /name: Cache electron-builder toolchains/);
+    assert.match(windowsWorkflow, /path: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
+    assert.match(windowsWorkflow, /ELECTRON_BUILDER_CACHE: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
+    assert.match(windowsInstallerBuildScript, /patchPortableTemplate\(portableTemplatePath\)/);
     assert.match(windowsWorkflow, /--headless", "--mode=install"/);
     assert.match(windowsWorkflow, /--headless", "--mode=update"/);
     assert.match(windowsWorkflow, /--headless", "--mode=uninstall"/);

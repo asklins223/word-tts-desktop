@@ -77,6 +77,17 @@ jobs:
           cache: 'npm'
           cache-dependency-path: electron/package-lock.json
 
+      - name: Cache electron-builder toolchains
+        uses: actions/cache@v4
+        with:
+          # electron-builder downloads its installer toolchain and 7zip into
+          # this cache. Keep the path explicit so both builder invocations in
+          # the Windows build share the same cache on the ephemeral runner.
+          path: ${{ runner.temp }}/electron-builder-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-electron-builder-${{ hashFiles('electron/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-electron-builder-
+
       - name: Resolve package version
         id: version
         shell: pwsh
@@ -217,6 +228,7 @@ jobs:
           # 未配置密钥时生成未签名测试包；配置后自动生成 Authenticode 签名包。
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
 
       - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
