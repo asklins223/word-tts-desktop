@@ -184,11 +184,11 @@ function createBuildProject({ payloadDir, outputDir, version, workDir }) {
             },
             portable: {
                 artifactName: '小猪wordTTS-Setup-${version}-${arch}.${ext}',
-                // `useZip` makes electron-builder feed the completed portable
-                // app directory directly to the NSIS template. This avoids a
-                // separate 7z app archive and keeps repeated install/update
-                // launches from depending on the portable 7z staging path.
-                useZip: true,
+                // Keep the portable payload in electron-builder's normal 7z
+                // archive. Each invocation must unpack into its own NSIS
+                // plugin directory so a second update cannot collide with a
+                // stale build-wide TEMP directory.
+                unpackDirName: false,
             },
         },
     };
@@ -219,6 +219,15 @@ function patchPortableTemplate(templatePath) {
     const original = fs.readFileSync(templatePath, 'utf8');
     const exedirMarker = /^[ \t]+SetOutPath \$EXEDIR\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
     const tempMarker = /^[ \t]+SetOutPath \$TEMP\r?\n(?=[ \t]*RMDir \/r \$INSTDIR)/m;
+    const portableUnpackPattern = /^[ \t]*!ifdef UNPACK_DIR_NAME\r?\n[ \t]*StrCpy \$INSTDIR "\$TEMP\\\$\{UNPACK_DIR_NAME\}"\r?\n[ \t]*!endif\r?\n/m;
+    const portableUnpackMarker = /^[ \t]*; WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR\r?\n/m;
+    const portableUnpackReplacement = '  ; WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR\n';
+    const portableUnpackRestoreBlock = [
+        '  !ifdef UNPACK_DIR_NAME',
+        '    StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
+        '  !endif',
+        '',
+    ].join('\n');
     const countMatches = (value, pattern) => (
         value.match(new RegExp(pattern.source, `${pattern.flags}g`)) || []
     ).length;
@@ -240,6 +249,24 @@ function patchPortableTemplate(templatePath) {
         restoreContent = original.replace(tempMarker, value => value.replace('$TEMP', '$EXEDIR'));
     } else {
         throw new Error(`无法确认 electron-builder portable 模板的收尾路径: ${templatePath}`);
+    }
+    const unpackBlockCount = countMatches(original, portableUnpackPattern);
+    const unpackMarkerCount = countMatches(original, portableUnpackMarker);
+    if (unpackBlockCount > 1 || unpackMarkerCount > 1
+        || (unpackBlockCount === 0 && unpackMarkerCount === 0)
+        || (unpackBlockCount > 0 && unpackMarkerCount > 0)) {
+        throw new Error(`无法确认 electron-builder portable 模板的解压目录: ${templatePath}`);
+    }
+    if (unpackBlockCount === 1) {
+        // electron-builder 26.15.x still defines UNPACK_DIR_NAME when the
+        // documented `unpackDirName: false` option is used. Remove the
+        // template branch so $PLUGINSDIR remains the per-launch directory.
+        patched = patched.replace(portableUnpackPattern, portableUnpackReplacement);
+    } else if (!portableUnpackMarker.test(patched)) {
+        throw new Error(`无法启用 electron-builder portable 的独立解压目录: ${templatePath}`);
+    }
+    if (portableUnpackMarker.test(restoreContent)) {
+        restoreContent = restoreContent.replace(portableUnpackMarker, portableUnpackRestoreBlock);
     }
     const relocationPattern = new RegExp(`^[ \\t]*${PORTABLE_UNINSTALL_RELOCATION_LABEL}:\\r?\\n`, 'm');
     if (!relocationPattern.test(patched)) {
@@ -272,6 +299,8 @@ function patchPortableTemplate(templatePath) {
     const active = fs.readFileSync(templatePath, 'utf8');
     if (!tempMarker.test(active)
         || exedirMarker.test(active)
+        || !portableUnpackMarker.test(active)
+        || portableUnpackPattern.test(active)
         || !relocationPattern.test(active)
         || !selfCleanupPattern.test(active)
         || !active.includes('$EXEPATH.cleanup.cmd')

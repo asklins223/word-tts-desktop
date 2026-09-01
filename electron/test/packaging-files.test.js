@@ -23,6 +23,10 @@ test('Windows 自绘 portable 模板收尾时切换到 TEMP，不重建安装目
     const templatePath = path.join(root, 'portable.nsi');
     const original = [
         'Section',
+        '  StrCpy $INSTDIR "$PLUGINSDIR\\app"',
+        '  !ifdef UNPACK_DIR_NAME',
+        '    StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
+        '  !endif',
         '  SetOutPath $EXEDIR',
         '\tRMDir /r $INSTDIR',
         'SectionEnd',
@@ -33,6 +37,12 @@ test('Windows 自绘 portable 模板收尾时切换到 TEMP，不重建安装目
         const restore = patchPortableTemplate(templatePath);
         assert.match(fs.readFileSync(templatePath, 'utf8'), /SetOutPath \$TEMP/);
         assert.doesNotMatch(fs.readFileSync(templatePath, 'utf8'), /SetOutPath \$EXEDIR/);
+        assert.match(fs.readFileSync(templatePath, 'utf8'), /StrCpy \$INSTDIR "\$PLUGINSDIR\\app"/);
+        assert.match(fs.readFileSync(templatePath, 'utf8'), /WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR/);
+        assert.doesNotMatch(
+            fs.readFileSync(templatePath, 'utf8'),
+            /\$TEMP\\\$\{UNPACK_DIR_NAME\}/,
+        );
         assert.match(fs.readFileSync(templatePath, 'utf8'), /WORDTTS_RELOCATED_UNINSTALLER/);
         assert.match(fs.readFileSync(templatePath, 'utf8'), /wordtts_continue_portable:/);
         assert.match(fs.readFileSync(templatePath, 'utf8'), /\$EXEPATH\.cleanup\.cmd/);
@@ -53,7 +63,7 @@ test('Windows portable 外壳在 Electron 退出后启动自身清理批处理',
     assert.doesNotMatch(PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK, /powershell/i);
 });
 
-test('自绘 portable 直接读取已完成 payload，并使用可重复启动的 ZIP 路径', () => {
+test('自绘 portable 直接读取已完成 payload，并使用可重复启动的 7z 路径', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-installer-project-'));
     const payloadDir = path.join(root, 'win-unpacked');
     const workDir = path.join(root, 'build-project');
@@ -70,7 +80,8 @@ test('自绘 portable 直接读取已完成 payload，并使用可重复启动�
         assert.deepEqual(packageJson.build.extraResources, [
             { from: payloadDir, to: 'payload' },
         ]);
-        assert.equal(packageJson.build.portable.useZip, true);
+        assert.equal(packageJson.build.portable.useZip, undefined);
+        assert.equal(packageJson.build.portable.unpackDirName, false);
         assert.equal(packageJson.build.win.signExts, undefined);
         assert.equal(fs.existsSync(path.join(workDir, 'payload')), false);
     } finally {
@@ -110,12 +121,24 @@ test('Windows portable 模板即使上次构建中断也能恢复为原始内容
     const templatePath = path.join(root, 'portable.nsi');
     const original = [
         'Section',
+        '  StrCpy $INSTDIR "$PLUGINSDIR\\app"',
+        '  !ifdef UNPACK_DIR_NAME',
+        '    StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
+        '  !endif',
         '  SetOutPath $EXEDIR',
         '\tRMDir /r $INSTDIR',
         'SectionEnd',
         '',
     ].join('\n');
     const interrupted = original
+        .replace(
+            [
+                '  !ifdef UNPACK_DIR_NAME',
+                '    StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
+                '  !endif',
+            ].join('\n'),
+            '  ; WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR',
+        )
         .replace('Section\n', `Section\n${PORTABLE_UNINSTALL_RELOCATION_BLOCK}`)
         .replace('\tRMDir /r $INSTDIR\n', `\tRMDir /r $INSTDIR\n${PORTABLE_UNINSTALL_SELF_CLEANUP_BLOCK}`)
         .replace('SetOutPath $EXEDIR', 'SetOutPath $TEMP');
@@ -233,6 +256,9 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsWorkflow, /ELECTRON_BUILDER_CACHE: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);
     assert.match(windowsInstallerBuildScript, /patchPortableTemplate\(portableTemplatePath\)/);
     assert.match(windowsInstallerBuildScript, /'--win', 'portable', '--x64'/);
+    assert.match(windowsInstallerBuildScript, /unpackDirName: false/);
+    assert.match(windowsInstallerBuildScript, /WORDTTS_PORTABLE_UNIQUE_PLUGIN_DIR/);
+    assert.doesNotMatch(windowsInstallerBuildScript, /useZip:\s*true/);
     assert.match(windowsWorkflow, /--headless", "--mode=install"/);
     assert.match(windowsWorkflow, /--headless", "--mode=update"/);
     assert.match(windowsWorkflow, /--headless", "--mode=uninstall"/);
