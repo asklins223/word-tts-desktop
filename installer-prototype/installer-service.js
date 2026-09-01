@@ -1000,9 +1000,10 @@ function createInstallerService(options = {}) {
     async function scheduleUninstallCleanup(targetPath) {
         const scriptPath = path.join(tempDirectory, `wordtts-uninstall-${randomSuffix()}.ps1`);
         const script = cleanupScript(targetPath, scriptPath, process.pid);
-        await fsp.writeFile(scriptPath, script, 'utf8');
         let child;
         try {
+            await fsp.mkdir(tempDirectory, { recursive: true });
+            await fsp.writeFile(scriptPath, script, 'utf8');
             child = spawnImpl(
                 platform === 'win32' ? 'powershell.exe' : process.execPath,
                 platform === 'win32'

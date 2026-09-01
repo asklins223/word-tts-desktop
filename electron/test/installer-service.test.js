@@ -208,6 +208,14 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
             ProgramFiles: path.join(root, 'program-files'),
         }
         : undefined;
+    const spawnForTest = process.platform === 'win32'
+        ? () => {
+            const child = new EventEmitter();
+            child.unref = () => {};
+            process.nextTick(() => child.emit('spawn'));
+            return child;
+        }
+        : undefined;
 
     try {
         await fsp.mkdir(path.join(payload, 'resources'), { recursive: true });
@@ -229,6 +237,7 @@ test('安装器服务可以真实完成安装、更新、保留缓存卸载和�
             tempDirectory: path.join(root, 'temp'),
             dataPath,
             environment: shellEnvironment,
+            spawn: spawnForTest,
         });
         const install = await service.run({
             mode: 'install',
