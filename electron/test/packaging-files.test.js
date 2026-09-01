@@ -375,7 +375,9 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsWorkflow, /build_windows_installer\.js --payload release\/win-unpacked/);
     assert.match(windowsWorkflow, /verify_windows_installer_update\.js/);
     assert.match(windowsUpdateAuditScript, /createWindowsUpdateClient/);
-    assert.match(windowsUpdateAuditScript, /Range differential|Range/);
+    assert.match(windowsWorkflow, /Audit Setup blockmap and real Range differential update/);
+    assert.match(windowsUpdateAuditScript, /blockMapExpectedSize/);
+    assert.match(windowsUpdateAuditScript, /Range/);
     assert.match(windowsUpdateAuditScript, /fullArtifactRequests/);
     assert.match(windowsWorkflow, /name: Cache electron-builder toolchains/);
     assert.match(windowsWorkflow, /path: \$\{\{ runner\.temp \}\}\/electron-builder-cache/);

@@ -260,7 +260,7 @@ jobs:
           # Level 5 is substantially faster for the bundled Chromium payload.
           ELECTRON_BUILDER_COMPRESSION_LEVEL: '5'
 
-      - name: Audit Setup payload and real Range differential update
+      - name: Audit Setup blockmap and real Range differential update
         shell: pwsh
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.version }}

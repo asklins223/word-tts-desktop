@@ -4,6 +4,9 @@
 // It deliberately exercises the same updater client used by the desktop app:
 // the old local uninstaller is copied to a temporary install and the new
 // artifact is served by a local HTTP server with real 206 Range responses.
+// The following Windows lifecycle smoke owns payload extraction validation;
+// NSIS resources are compressed and are not reliably discoverable by scanning
+// the outer Setup.exe for a plain filename.
 
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -93,18 +96,6 @@ async function fileDigest(filePath) {
     return { size, sha512: hash.digest('base64') };
 }
 
-async function containsBytes(filePath, needle) {
-    const wanted = Buffer.from(needle);
-    const stream = fs.createReadStream(filePath, { highWaterMark: 256 * 1024 });
-    let carry = Buffer.alloc(0);
-    for await (const chunk of stream) {
-        const data = Buffer.concat([carry, chunk]);
-        if (data.includes(wanted)) return true;
-        carry = data.subarray(Math.max(0, data.length - wanted.length + 1));
-    }
-    return false;
-}
-
 function blockMapExpectedSize(blockMap) {
     return blockMap.files[0].sizes.reduce((sum, size) => sum + Number(size), 0);
 }
@@ -190,8 +181,6 @@ async function main(argv = process.argv.slice(2)) {
 
     const installerDigest = await fileDigest(installerPath);
     assert.ok(installerDigest.size > 0, '安装包不能为空');
-    assert.ok(await containsBytes(installerPath, 'wordtts-payload.7z'), 'Setup.exe 未嵌入 lazy payload');
-    assert.ok(await containsBytes(installerPath, 'wordtts-7za.exe'), 'Setup.exe 未嵌入 payload 解压器');
 
     const newBlockMapBytes = await fsp.readFile(blockmapPath);
     const newBlockMap = decodeBlockMap(newBlockMapBytes, '新版本 blockmap', installerDigest.size);
