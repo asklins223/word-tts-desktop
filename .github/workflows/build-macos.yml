@@ -144,6 +144,17 @@ jobs:
           echo "最终 macOS 自动更新 ZIP: $zip_path"
           echo "最终 macOS 首次安装 DMG: $dmg_path"
 
+      - name: Verify ShipIt signature from final update ZIP
+        env:
+          MAC_UPDATE_ZIP: ${{ steps.mac-artifacts.outputs.zip }}
+        run: |
+          set -euo pipefail
+          verify_dir="$(mktemp -d "$RUNNER_TEMP/wordtts-shipit-signature.XXXXXX")"
+          ditto -x -k "$MAC_UPDATE_ZIP" "$verify_dir"
+          extracted_app="$verify_dir/小猪wordTTS.app"
+          test -d "$extracted_app"
+          bash scripts/verify_macos_update_signature.sh "$extracted_app"
+
       - name: Verify packaged macOS backend (local-only)
         env:
           # Electron 的 os.tmpdir() 在 macOS 上遵循 TMPDIR；固定到 runner

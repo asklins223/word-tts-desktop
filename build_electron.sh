@@ -237,6 +237,9 @@ build_electron_app() {
 
     local package_version
     package_version="$(node "$SCRIPT_DIR/scripts/project_version.js")"
+    local app_identifier
+    app_identifier="$(node -p "require('$ELECTRON_DIR/package.json').build.appId")"
+    local adhoc_designated_requirement="=designated => identifier \"$app_identifier\""
     local expected_zip_path="$ELECTRON_DIR/release/$PRODUCT_NAME-${package_version}-${BUILD_ARCH}.zip"
 
     log "生成 macOS / Windows 应用图标..."
@@ -348,8 +351,11 @@ build_electron_app() {
         exit 1
     fi
 
-    # ---- ad-hoc 签名（从内到外）----
+    # ---- 签名（从内到外）----
     # electron-builder 已使用 Developer ID 时必须保留其签名，不能再被 ad-hoc 覆盖。
+    # 没有 Developer ID 时，主应用必须使用显式且跨版本稳定的 designated
+    # requirement。codesign 默认生成的 ad-hoc requirement 会绑定本次构建的
+    # CDHash，下一版内容一变就会被 Squirrel.Mac/ShipIt 拒绝。
     if codesign -dv --verbose=4 "$app_path" 2>&1 | grep -q "Authority=Developer ID Application"; then
         log "检测到 Developer ID 签名，保留现有签名"
     else
@@ -390,18 +396,23 @@ build_electron_app() {
             -exec codesign --force --sign - {} \; 2>/dev/null || true
     fi
 
-    # 5. 签主应用
-    codesign --force --sign - "$app_path" 2>/dev/null || true
+    # 5. 签主应用。只有主 bundle 的 designated requirement 会被 ShipIt
+    # 用来验证下一版；嵌套代码仍由 codesign 的 deep 校验保证完整性。
+    if ! codesign --force --sign - \
+        --identifier "$app_identifier" \
+        --requirements "$adhoc_designated_requirement" \
+        "$app_path"; then
+        err "主应用 ad-hoc 签名失败"
+        exit 1
+    fi
     xattr -cr "$app_path" 2>/dev/null || true
         echo "  ad-hoc 签名完成 ✓"
     fi
 
-    # 验证签名
-    if codesign --verify --deep --strict "$app_path" 2>/dev/null; then
-        echo "  签名验证通过 ✓"
-    else
-        warn "签名验证未通过（ad-hoc 签名可能被 Gatekeeper 拦截）"
-    fi
+    # 同时验证包体完整性与 ShipIt 真正使用的跨版本指定要求。不能再把
+    # 仅通过 codesign 包体校验的一次性 CDHash 签名当成可更新产物。
+    WORDTTS_MAC_BUNDLE_ID="$app_identifier" \
+        bash "$SCRIPT_DIR/scripts/verify_macos_update_signature.sh" "$app_path"
 
     # 在创建 DMG 前验证最终 .app 内的 Playwright driver、Chromium 和
     # Electron Node 回退路径，避免只验证源码或 PyInstaller 目录而漏掉

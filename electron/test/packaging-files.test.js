@@ -410,6 +410,21 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(releaseWorkflow, /local_zip="electron\/release\/小猪wordTTS-/);
     assert.match(releaseWorkflow, /local_dmg="electron\/release\/小猪wordTTS-/);
     assert.match(macBuildScript, /builder_zip_path[\s\S]*rm -f \"\$builder_zip_path\"[\s\S]*latest-mac\.yml/);
+    assert.match(
+        macBuildScript,
+        /adhoc_designated_requirement="=designated => identifier \\"\$app_identifier\\""/,
+        'ad-hoc macOS builds must use a stable explicit designated requirement',
+    );
+    assert.match(
+        macBuildScript,
+        /--requirements "\$adhoc_designated_requirement"[\s\S]*verify_macos_update_signature\.sh/,
+        'the packaged app must be signed and checked against the ShipIt requirement',
+    );
+    assert.match(
+        macWorkflow,
+        /Verify ShipIt signature from final update ZIP[\s\S]*ditto -x -k "\$MAC_UPDATE_ZIP"[\s\S]*verify_macos_update_signature\.sh "\$extracted_app"/,
+        'the ZIP consumed by ShipIt must be extracted and signature-checked in CI',
+    );
 });
 
 test('打包冒烟使用完整 Chromium，并固定 Windows Python 输出为 UTF-8', () => {
