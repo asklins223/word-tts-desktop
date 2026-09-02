@@ -15,7 +15,7 @@ import xunfei
 import xunfei.config as xunfei_config
 import xunfei.downloads as xunfei_downloads
 import xunfei.runtime as xunfei_runtime
-from xunfei import XunFeiSession, XunfeiError
+from xunfei import XunFeiSession, XunfeiError, XunfeiLoginRequired
 
 
 class _FakeKeyboard:
@@ -1594,6 +1594,105 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(len(seen_threads), 1)
         self.assertIsNot(seen_threads[0], threading.current_thread())
 
+    def test_retry_rebuilds_session_when_close_callback_has_not_arrived(self):
+        """A protocol probe must catch a dead page before retry reuses it."""
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_session_class = xunfei_runtime.XunFeiSession
+        original_executor = xunfei_runtime._playwright_executor
+        original_rotated_session = xunfei_runtime._executor_rotated_session
+        executor = mock.Mock()
+        replacement_executor = mock.Mock()
+        created = []
+
+        class LaggingClosedPage:
+            def __init__(self):
+                self.locator_selectors = []
+                self.probe_timeouts = []
+
+            def is_closed(self):
+                # This models the race: the local lifecycle flag has not
+                # caught up with the browser process closing yet.
+                return False
+
+            def locator(self, selector):
+                self.locator_selectors.append(selector)
+                return self
+
+            def evaluate(self, expression, arg=None, timeout=None):
+                self.probe_timeouts.append(timeout)
+                raise RuntimeError("Target page, context or browser has been closed")
+
+        class StaleSession:
+            _logged_in = True
+            _browser_disconnected = False
+            _ctx = object()
+            _profile_owner_pid = 24680
+
+            def __init__(self):
+                self._page = LaggingClosedPage()
+                self.close_calls = 0
+
+            def runtime_status_snapshot(self):
+                return {"logged_in": True, "browser_disconnected": False}
+
+            def close(self):
+                self.close_calls += 1
+                raise AssertionError(
+                    "a transport-stale session must be retired without waiting on close()"
+                )
+
+        class FreshSession:
+            def __init__(self, voice_key="amanda"):
+                self.voice_key = voice_key
+                self.login_calls = []
+                created.append(self)
+
+            def login(self, **kwargs):
+                self.login_calls.append(kwargs)
+
+        def submit(function, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(function(*args, **kwargs))
+            except BaseException as error:
+                future.set_exception(error)
+            return future
+
+        stale = StaleSession()
+        executor.submit.side_effect = submit
+        replacement_executor.submit.side_effect = submit
+        xunfei_runtime._session = stale
+        xunfei_runtime._playwright_executor = executor
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime.XunFeiSession = FreshSession
+        try:
+            with mock.patch.object(
+                xunfei_runtime,
+                "_get_playwright_executor",
+                side_effect=[executor, replacement_executor],
+            ):
+                result = asyncio.run(xunfei.ensure_session())
+        finally:
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime.XunFeiSession = original_session_class
+            xunfei_runtime._playwright_executor = original_executor
+            xunfei_runtime._executor_rotated_session = original_rotated_session
+
+        self.assertIs(result, created[0])
+        self.assertEqual(stale.close_calls, 0)
+        self.assertEqual(executor.shutdown.call_args.kwargs, {
+            "wait": False,
+            "cancel_futures": True,
+        })
+        self.assertEqual(stale._page.locator_selectors, ["html"])
+        self.assertEqual(
+            stale._page.probe_timeouts,
+            [xunfei_runtime._SESSION_TRANSPORT_PROBE_TIMEOUT_MS],
+        )
+        self.assertEqual(len(result.login_calls), 1)
+
     def test_disconnected_session_retires_stuck_executor_before_rebuild(self):
         """浏览器断开后，重建不能排在旧 Playwright 调用后面。"""
         original_session = xunfei_runtime._session
@@ -1659,6 +1758,230 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertTrue(result._reclaim_profile_owner)
         self.assertEqual(result._reclaim_profile_owner_pid, 24680)
 
+    def test_retry_waits_for_close_and_keeps_its_playwright_thread(self):
+        """A normal close fences retry before it can queue a new browser call."""
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_session_class = xunfei_runtime.XunFeiSession
+        original_executor = xunfei_runtime._playwright_executor
+        original_timer = xunfei_runtime._close_timer
+        original_timer_generation = xunfei_runtime._close_timer_generation
+        original_closing = xunfei_runtime._closing_session
+        original_orphaned = xunfei_runtime._orphaned_close_session
+        original_orphaned_pid = xunfei_runtime._orphaned_close_profile_owner_pid
+        executor = xunfei_runtime._DaemonSingleThreadExecutor(
+            thread_name="xunfei-close-race-test",
+        )
+        close_started = threading.Event()
+        release_close = threading.Event()
+        created = []
+
+        class ClosingSession:
+            def close(self):
+                close_started.set()
+                if not release_close.wait(timeout=2):
+                    raise AssertionError("test cleanup was never released")
+
+        class FreshSession:
+            def __init__(self, voice_key="amanda"):
+                self.voice_key = voice_key
+                self.login_thread = None
+                created.append(self)
+
+            def login(self, **_kwargs):
+                self.login_thread = threading.current_thread()
+
+            @staticmethod
+            def verify_thread():
+                return threading.current_thread()
+
+        old = ClosingSession()
+        xunfei_runtime._session = old
+        xunfei_runtime._playwright_executor = executor
+        xunfei_runtime._close_timer = None
+        xunfei_runtime._close_timer_generation = 0
+        xunfei_runtime._closing_session = None
+        xunfei_runtime._orphaned_close_session = None
+        xunfei_runtime._orphaned_close_profile_owner_pid = None
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime.XunFeiSession = FreshSession
+
+        async def scenario():
+            close_task = asyncio.create_task(
+                xunfei_runtime.close_session(expected_session=old)
+            )
+            await asyncio.wait_for(asyncio.to_thread(close_started.wait), timeout=2)
+            retry_task = asyncio.create_task(xunfei_runtime.ensure_session())
+            await asyncio.sleep(xunfei_runtime._GENERATION_SLOT_POLL_SECONDS * 2)
+            self.assertFalse(retry_task.done())
+            self.assertEqual(executor._tasks.qsize(), 0)
+            release_close.set()
+            await asyncio.wait_for(close_task, timeout=2)
+            fresh = await asyncio.wait_for(retry_task, timeout=2)
+            verified_thread = await asyncio.wait_for(
+                xunfei_runtime._run_playwright_sync(fresh.verify_thread),
+                timeout=2,
+            )
+            return fresh, verified_thread
+
+        try:
+            with mock.patch.object(xunfei_runtime, "_cancel_auto_close"):
+                result, verified_thread = asyncio.run(scenario())
+        finally:
+            release_close.set()
+            active_executor = xunfei_runtime._playwright_executor
+            xunfei_runtime._playwright_executor = None
+            for candidate in {executor, active_executor}:
+                if candidate is not None and candidate is not original_executor:
+                    candidate.shutdown(wait=True, cancel_futures=True)
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime.XunFeiSession = original_session_class
+            xunfei_runtime._playwright_executor = original_executor
+            xunfei_runtime._close_timer = original_timer
+            xunfei_runtime._close_timer_generation = original_timer_generation
+            xunfei_runtime._closing_session = original_closing
+            xunfei_runtime._orphaned_close_session = original_orphaned
+            xunfei_runtime._orphaned_close_profile_owner_pid = original_orphaned_pid
+
+        self.assertIs(result, created[0])
+        self.assertIs(result.login_thread, verified_thread)
+
+    def test_stuck_close_retires_worker_and_allows_retry(self):
+        """A hung close must not leave the next browser launch queued forever."""
+        original_session = xunfei_runtime._session
+        original_available = xunfei_runtime.is_available
+        original_session_class = xunfei_runtime.XunFeiSession
+        original_executor = xunfei_runtime._playwright_executor
+        original_timer = xunfei_runtime._close_timer
+        original_timer_generation = xunfei_runtime._close_timer_generation
+        original_closing = xunfei_runtime._closing_session
+        original_orphaned = xunfei_runtime._orphaned_close_session
+        original_orphaned_pid = xunfei_runtime._orphaned_close_profile_owner_pid
+        original_rotated_session = xunfei_runtime._executor_rotated_session
+        old_executor = xunfei_runtime._DaemonSingleThreadExecutor(
+            thread_name="xunfei-stuck-close-test",
+        )
+        close_started = threading.Event()
+        release_close = threading.Event()
+        close_finished = threading.Event()
+        created = []
+
+        class StuckClosingSession:
+            _profile_owner_pid = 24680
+
+            def close(self):
+                close_started.set()
+                if not release_close.wait(timeout=2):
+                    raise AssertionError("test cleanup was never released")
+                # The real close path clears its owner PID after cleanup. The
+                # retry must use the immutable PID captured before timeout.
+                self._profile_owner_pid = None
+                close_finished.set()
+
+        class FreshSession:
+            def __init__(self, voice_key="amanda"):
+                self.voice_key = voice_key
+                self._reclaim_profile_owner = False
+                self._reclaim_profile_owner_pid = None
+                self.login_thread = None
+                created.append(self)
+
+            def login(self, **_kwargs):
+                self.login_thread = threading.current_thread()
+
+        old = StuckClosingSession()
+        xunfei_runtime._session = old
+        xunfei_runtime._playwright_executor = old_executor
+        xunfei_runtime._close_timer = None
+        xunfei_runtime._close_timer_generation = 0
+        xunfei_runtime._closing_session = None
+        xunfei_runtime._orphaned_close_session = None
+        xunfei_runtime._orphaned_close_profile_owner_pid = None
+        xunfei_runtime._executor_rotated_session = None
+        xunfei_runtime.is_available = lambda: True
+        xunfei_runtime.XunFeiSession = FreshSession
+
+        async def scenario():
+            close_task = asyncio.create_task(
+                xunfei_runtime.close_session(expected_session=old)
+            )
+            await asyncio.wait_for(asyncio.to_thread(close_started.wait), timeout=1)
+            await asyncio.wait_for(close_task, timeout=2)
+            release_close.set()
+            await asyncio.wait_for(asyncio.to_thread(close_finished.wait), timeout=1)
+            retry_task = asyncio.create_task(xunfei_runtime.ensure_session())
+            fresh = await asyncio.wait_for(retry_task, timeout=2)
+            return fresh, xunfei_runtime._playwright_executor
+
+        try:
+            with mock.patch.object(
+                xunfei_runtime,
+                "_SESSION_CLOSE_TIMEOUT_SECONDS",
+                0.05,
+            ), mock.patch.object(
+                xunfei_runtime,
+                "_settle_session_close",
+            ):
+                fresh, replacement_executor = asyncio.run(scenario())
+        finally:
+            release_close.set()
+            active_executor = xunfei_runtime._playwright_executor
+            xunfei_runtime._playwright_executor = None
+            for candidate in {old_executor, active_executor}:
+                if candidate is not None and candidate is not original_executor:
+                    candidate.shutdown(wait=True, cancel_futures=True)
+            xunfei_runtime._session = original_session
+            xunfei_runtime.is_available = original_available
+            xunfei_runtime.XunFeiSession = original_session_class
+            xunfei_runtime._playwright_executor = original_executor
+            xunfei_runtime._close_timer = original_timer
+            xunfei_runtime._close_timer_generation = original_timer_generation
+            xunfei_runtime._closing_session = original_closing
+            xunfei_runtime._orphaned_close_session = original_orphaned
+            xunfei_runtime._orphaned_close_profile_owner_pid = original_orphaned_pid
+            xunfei_runtime._executor_rotated_session = original_rotated_session
+
+        self.assertIs(fresh, created[0])
+        self.assertTrue(old_executor._shutdown)
+        self.assertIsNot(replacement_executor, old_executor)
+        self.assertIsNot(fresh.login_thread, old_executor._thread)
+        self.assertTrue(fresh._reclaim_profile_owner)
+        self.assertEqual(fresh._reclaim_profile_owner_pid, 24680)
+
+    def test_generation_slot_keeps_retry_outside_older_cleanup(self):
+        """A retry cannot acquire the global browser during another run."""
+        async def scenario():
+            first_entered = asyncio.Event()
+            release_first = asyncio.Event()
+            order = []
+
+            async def first_generation():
+                async with xunfei_runtime._generation_slot():
+                    order.append("first")
+                    first_entered.set()
+                    await release_first.wait()
+                    order.append("first-cleaned")
+
+            async def retry_generation():
+                async with xunfei_runtime._generation_slot():
+                    order.append("retry")
+
+            first_task = asyncio.create_task(first_generation())
+            await asyncio.wait_for(first_entered.wait(), timeout=1)
+            retry_task = asyncio.create_task(retry_generation())
+            await asyncio.sleep(xunfei_runtime._GENERATION_SLOT_POLL_SECONDS * 2)
+            self.assertEqual(order, ["first"])
+            release_first.set()
+            await asyncio.wait_for(first_task, timeout=1)
+            await asyncio.wait_for(retry_task, timeout=1)
+            return order
+
+        self.assertEqual(
+            asyncio.run(scenario()),
+            ["first", "first-cleaned", "retry"],
+        )
+
     def test_all_playwright_sync_calls_share_one_dedicated_thread(self):
         seen_threads = []
 
@@ -1694,6 +2017,103 @@ class XunfeiFlowTests(unittest.TestCase):
 
         close_session.assert_awaited_once_with(expected_session=session)
         schedule_auto_close.assert_not_called()
+
+    def test_finished_generation_closes_successful_delivery_immediately(self):
+        session = object()
+        with mock.patch.object(
+            xunfei_runtime,
+            "close_session",
+            new_callable=mock.AsyncMock,
+        ) as close_session, mock.patch.object(
+            xunfei_runtime,
+            "_schedule_auto_close",
+        ) as schedule_auto_close:
+            asyncio.run(xunfei_runtime._finish_generation_session(session))
+
+        close_session.assert_awaited_once_with(expected_session=session)
+        schedule_auto_close.assert_not_called()
+
+    def test_login_recovery_uses_a_three_minute_idle_close(self):
+        session = object()
+        with mock.patch.object(xunfei_runtime, "_schedule_auto_close") as schedule:
+            asyncio.run(
+                xunfei_runtime._finish_generation_session(
+                    session,
+                    login_recovery=True,
+                )
+            )
+
+        schedule.assert_called_once_with(
+            expected_session=session,
+            delay_seconds=180.0,
+        )
+
+    def test_all_generation_entrypoints_keep_browser_for_login_recovery(self):
+        """每个公开生成入口都必须把登录失效交给 180 秒恢复窗口。"""
+        class Session:
+            def synth_one(self, *_args, **_kwargs):
+                pass
+
+            def synth_batch(self, *_args, **_kwargs):
+                pass
+
+            def synth_composite(self, *_args, **_kwargs):
+                pass
+
+        session = Session()
+        original_session = xunfei_runtime._session
+        xunfei_runtime._session = session
+        cases = (
+            (
+                xunfei_runtime.synth_xunfei,
+                ("hello",),
+                {},
+            ),
+            (
+                xunfei_runtime.synth_xunfei_batch,
+                ([{
+                    "job_id": "job-1",
+                    "text": "hello",
+                    "voice_key": "amanda",
+                    "speed": 50,
+                    "pitch": 50,
+                    "volume": 50,
+                }],),
+                {},
+            ),
+            (
+                xunfei_runtime.synth_xunfei_composite,
+                ([{"work_id": "work-1", "items": []}],),
+                {},
+            ),
+        )
+        try:
+            with mock.patch.object(xunfei_runtime, "is_available", return_value=True), \
+                mock.patch.object(
+                    xunfei_runtime,
+                    "ensure_session",
+                    new=mock.AsyncMock(return_value=session),
+                ), \
+                mock.patch.object(
+                    xunfei_runtime,
+                    "_run_playwright_sync",
+                    new=mock.AsyncMock(
+                        side_effect=XunfeiLoginRequired("登录已失效")
+                    ),
+                ), \
+                mock.patch.object(xunfei_runtime, "_cancel_auto_close"), \
+                mock.patch.object(xunfei_runtime, "_schedule_auto_close") as schedule:
+                for function, args, kwargs in cases:
+                    with self.subTest(function=function.__name__):
+                        with self.assertRaises(XunfeiLoginRequired):
+                            asyncio.run(function(*args, **kwargs))
+                        schedule.assert_called_once_with(
+                            expected_session=session,
+                            delay_seconds=180.0,
+                        )
+                        schedule.reset_mock()
+        finally:
+            xunfei_runtime._session = original_session
 
     def test_ai_modal_has_priority_over_rate_limit_status(self):
         session = XunFeiSession()
@@ -2209,6 +2629,173 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(request_param, param)
         self.assertEqual(headers["authorization"], "session-1")
         self.assertEqual(headers["sign"], xunfei._build_api_sign(param, base))
+
+    def test_signed_api_post_propagates_explicit_login_failures(self):
+        param = {"needCount": 1, "pageIndex": 1, "pageSize": 50, "worksName": ""}
+        cases = (
+            (
+                [{},],
+                "missing credentials",
+            ),
+            (
+                [
+                    {"userId": "user-1", "sessid": "session-1"},
+                    {"httpStatus": 401, "data": {}},
+                ],
+                "HTTP 401",
+            ),
+            (
+                [
+                    {"userId": "user-1", "sessid": "session-1"},
+                    {"data": {"code": 401, "message": "未授权"}},
+                ],
+                "API code 401",
+            ),
+            (
+                [
+                    {"userId": "user-1", "sessid": "session-1"},
+                    {"httpStatus": 200, "data": {"code": 1001, "message": "请先登录"}},
+                ],
+                "login message",
+            ),
+        )
+
+        for side_effect, label in cases:
+            with self.subTest(label=label):
+                session = XunFeiSession()
+                with mock.patch.object(
+                    xunfei_downloads,
+                    "_safe_eval",
+                    side_effect=side_effect,
+                ):
+                    with self.assertRaises(XunfeiLoginRequired):
+                        session._signed_api_post(
+                            object(), xunfei.API_WORKS_LIST_URL, param
+                        )
+
+    def test_signed_api_post_keeps_unknown_api_failures_as_normal_failures(self):
+        session = XunFeiSession()
+        param = {"needCount": 1, "pageIndex": 1, "pageSize": 50, "worksName": ""}
+        response = {
+            "httpStatus": 500,
+            "data": {"code": 1002, "message": "服务暂时不可用"},
+        }
+
+        with mock.patch.object(
+            xunfei_downloads,
+            "_safe_eval",
+            side_effect=[
+                {"userId": "user-1", "sessid": "session-1"},
+                response,
+            ],
+        ):
+            self.assertIsNone(
+                session._signed_api_post(object(), xunfei.API_WORKS_LIST_URL, param)
+            )
+
+    def test_signed_api_post_detects_plain_text_login_failure(self):
+        session = XunFeiSession()
+        param = {"needCount": 1, "pageIndex": 1, "pageSize": 50, "worksName": ""}
+        with mock.patch.object(
+            xunfei_downloads,
+            "_safe_eval",
+            side_effect=[
+                {"userId": "user-1", "sessid": "session-1"},
+                {"httpStatus": 200, "data": "请先登录"},
+            ],
+        ):
+            with self.assertRaises(XunfeiLoginRequired):
+                session._signed_api_post(object(), xunfei.API_WORKS_LIST_URL, param)
+
+    def test_post_api_script_preserves_plain_text_response_bodies(self):
+        script = xunfei.JS.POST_API_JSON
+        self.assertIn("const body = await response.text();", script)
+        self.assertIn("data = JSON.parse(body);", script)
+        self.assertIn("data = body;", script)
+        self.assertNotIn("await response.json()", script)
+
+    def test_signed_url_http_auth_failure_keeps_login_recovery_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = str(Path(temp_dir, "audio.mp3"))
+            for status in (401, 403):
+                with self.subTest(status=status), mock.patch.object(
+                    xunfei_downloads.urllib.request,
+                    "urlopen",
+                    side_effect=xunfei_downloads.urllib.error.HTTPError(
+                        "https://example.test/signed.mp3",
+                        status,
+                        "auth expired",
+                        {},
+                        None,
+                    ),
+                ):
+                    with self.assertRaises(XunfeiLoginRequired):
+                        XunFeiSession._download_signed_url(
+                            "https://example.test/signed.mp3",
+                            output_path,
+                        )
+                self.assertFalse(Path(output_path).exists())
+
+    def test_download_page_login_surface_keeps_login_recovery_path(self):
+        session = XunFeiSession()
+        session._page = mock.Mock()
+        pending = [{
+            "job_id": "job-login-page",
+            "works_id": "works-login-page",
+            "works_name": "login-page",
+            "output_path": "/tmp/login-page.mp3",
+        }]
+
+        def run_probe(check, **_kwargs):
+            return check()
+
+        with mock.patch.object(
+            xunfei_downloads,
+            "_safe_eval",
+            side_effect=[False, True],
+        ), mock.patch.object(xunfei_downloads, "_poll", side_effect=run_probe):
+            with self.assertRaises(XunfeiLoginRequired):
+                session._download_pending_batch(pending)
+
+    def test_batch_and_composite_rethrow_login_failure_from_unified_download(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        session._generate_pending_one = mock.Mock(
+            return_value={
+                "works_id": "batch-works",
+                "output_path": "/tmp/batch-works.mp3",
+            }
+        )
+        session._generate_pending_composite = mock.Mock(
+            return_value={
+                "works_id": "composite-works",
+                "output_path": "/tmp/composite-works.mp3",
+            }
+        )
+        login_error = XunfeiLoginRequired("登录已失效")
+
+        with mock.patch.object(
+            session,
+            "_download_pending_batch",
+            side_effect=login_error,
+        ):
+            with self.assertRaises(XunfeiLoginRequired):
+                session.synth_batch([{
+                    "job_id": "batch-job",
+                    "text": "hello",
+                    "voice_key": "amanda",
+                }])
+
+        with mock.patch.object(
+            session,
+            "_download_pending_batch",
+            side_effect=login_error,
+        ):
+            with self.assertRaises(XunfeiLoginRequired):
+                session.synth_composite([{
+                    "work_id": "composite-work",
+                    "items": [],
+                }])
 
     def test_works_id_matching_is_exact(self):
         session = XunFeiSession()

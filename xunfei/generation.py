@@ -657,7 +657,7 @@ class GenerationMixin:
                 pending_for_download,
                 **download_kwargs,
             )
-        except XunfeiCancelled:
+        except (XunfeiCancelled, XunfeiLoginRequired):
             raise
         except Exception as error:
             downloaded = {}
@@ -864,7 +864,7 @@ class GenerationMixin:
                 pending_for_download,
                 **download_kwargs,
             )
-        except XunfeiCancelled:
+        except (XunfeiCancelled, XunfeiLoginRequired):
             raise
         except Exception as error:
             downloaded = {}

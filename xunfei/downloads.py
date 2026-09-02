@@ -24,6 +24,7 @@ from .config import (
 from .errors import (
     XunfeiCancelled,
     XunfeiError,
+    XunfeiLoginRequired,
     _check_cancel_requested,
     _log,
     _wait_with_cancel,
@@ -41,9 +42,71 @@ from .signing import _build_api_sign
 
 class DownloadMixin:
 
+    @staticmethod
+    def _api_response_is_login_failure(result, data=None):
+        """Only classify explicit authentication failures as login expiry.
+
+        Network errors and unknown API failures must remain ordinary failures so
+        they keep the normal immediate-browser-close behavior.
+        """
+        if isinstance(result, dict):
+            try:
+                http_status = int(result.get("httpStatus"))
+            except (TypeError, ValueError, OverflowError):
+                http_status = None
+            if http_status in (401, 403):
+                return True
+
+        values = []
+        for payload in (result, data):
+            if not isinstance(payload, dict):
+                if payload not in (None, ""):
+                    values.append(str(payload).casefold())
+                continue
+            for key in ("code", "retCode", "desc", "message", "msg", "error"):
+                value = payload.get(key)
+                if value not in (None, ""):
+                    try:
+                        if key in {"code", "retCode"} and int(value) in (401, 403):
+                            return True
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                    values.append(str(value).casefold())
+        response_text = " ".join(values)
+        return any(
+            token in response_text
+            for token in (
+                "登录失效",
+                "登录过期",
+                "请先登录",
+                "请登录",
+                "需要登录",
+                "未登录",
+                "会话失效",
+                "会话过期",
+                "未授权",
+                "认证失败",
+                "鉴权失败",
+                "授权失败",
+                "login required",
+                "authentication failed",
+                "authorization failed",
+                "session expired",
+                "session invalid",
+                "token expired",
+                "token invalid",
+                "unauthorized",
+            )
+        )
+
     def _signed_api_post(self, page, url, param):
         """按讯飞网页真实 Axios 规则调用 video-api。"""
-        credentials = _safe_eval(page, JS.GET_API_CREDENTIALS) or {}
+        credentials = _safe_eval(page, JS.GET_API_CREDENTIALS)
+        if not isinstance(credentials, dict):
+            # safe_eval 返回 None 通常意味着页面探针/传输异常；这不是
+            # 登录失效，继续走普通失败路径，避免误留浏览器 3 分钟。
+            _log("[xunfei]   video-api 无法读取认证信息")
+            return None
         with self._works_lock:
             stable_base = dict(self._api_base)
             fallback_authorization = self._api_authorization
@@ -51,8 +114,9 @@ class DownloadMixin:
         user_id = credentials.get("userId") or stable_base.get("userId")
         authorization = credentials.get("sessid") or fallback_authorization
         if not user_id or not authorization:
-            _log("[xunfei]   video-api 认证信息未就绪，无法请求作品数据")
-            return None
+            message = "讯飞配音登录信息已失效，请重新登录"
+            _log(f"[xunfei]   {message}")
+            raise XunfeiLoginRequired(message)
 
         # 网页端 uuid(32, 50) 每个请求生成一个新的 sid；不能复用之前
         # response 里捕获的 sid，否则会被讯飞接口判为要素认证失败。
@@ -75,6 +139,10 @@ class DownloadMixin:
             return None
         data = result.get("data")
         if not isinstance(data, dict):
+            if self._api_response_is_login_failure(result, data):
+                message = "讯飞配音登录信息已失效，请重新登录"
+                _log(f"[xunfei]   {message}")
+                raise XunfeiLoginRequired(message)
             _log(
                 f"[xunfei]   video-api 返回异常: "
                 f"{url.rsplit('/', 1)[-1]} HTTP {result.get('httpStatus')}"
@@ -84,6 +152,10 @@ class DownloadMixin:
         if response_code is None:
             response_code = data.get("retCode")
         if not _provider_success_code(response_code):
+            if self._api_response_is_login_failure(result, data):
+                message = "讯飞配音登录信息已失效，请重新登录"
+                _log(f"[xunfei]   {message}")
+                raise XunfeiLoginRequired(message)
             _log(
                 f"[xunfei]   video-api 失败: "
                 f"{url.rsplit('/', 1)[-1]} code={response_code} "
@@ -133,8 +205,9 @@ class DownloadMixin:
             "worksName": str(works_name or "").strip(),
         }
         data = self._signed_api_post(page, API_WORKS_LIST_URL, param)
-        # _signed_api_post 对成功响应返回 dict，对认证/网络/API 错误返回
-        # None。记录这个区别，断点恢复时不能把一次列表接口故障误判成
+        # _signed_api_post 对成功响应返回 dict，对明确认证失效抛出
+        # XunfeiLoginRequired，对网络/未知 API 错误返回 None。这里记录
+        # 成功与普通失败的区别，断点恢复时不能把一次列表接口故障误判成
         # worksId 已失效，否则下一轮会重复提交并可能重复计费。
         self._last_works_list_fetch_ok = isinstance(data, dict)
         if not data:
@@ -601,6 +674,13 @@ class DownloadMixin:
             return True
         except XunfeiCancelled:
             raise
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                message = "讯飞配音登录信息已失效，请重新登录"
+                _log(f"[xunfei]   {message}")
+                raise XunfeiLoginRequired(message) from error
+            _log(f"[xunfei]   worksId 签名下载失败: {error}")
+            return False
         except (OSError, ValueError, urllib.error.URLError, XunfeiError) as error:
             _log(f"[xunfei]   worksId 签名下载失败: {error}")
             return False
@@ -641,15 +721,31 @@ class DownloadMixin:
                 timeout=60000,
             )
         except Exception as error:
+            if _safe_eval(page, JS.CHECK_LOGIN_SURFACE):
+                message = "讯飞配音登录信息已失效，请重新登录"
+                _log(f"[xunfei]   {message}")
+                raise XunfeiLoginRequired(message) from error
             raise XunfeiError(f"无法打开讯飞作品下载页: {error}")
 
-        if not _poll(
-            lambda: bool(_safe_eval(page, JS.CHECK_DOWNLOAD_PAGE)),
+        def download_page_state():
+            if _safe_eval(page, JS.CHECK_DOWNLOAD_PAGE):
+                return "ready"
+            if _safe_eval(page, JS.CHECK_LOGIN_SURFACE):
+                return "login"
+            return None
+
+        page_state = _poll(
+            download_page_state,
             timeout=30,
             interval=0.5,
             page=page,
             cancel_check=cancel_check,
-        ):
+        )
+        if page_state == "login":
+            message = "讯飞配音登录信息已失效，请重新登录"
+            _log(f"[xunfei]   {message}")
+            raise XunfeiLoginRequired(message)
+        if page_state != "ready":
             raise XunfeiError("讯飞作品下载页未加载完成")
 
         _log(f"[xunfei] 下载页已打开: {page.url}")

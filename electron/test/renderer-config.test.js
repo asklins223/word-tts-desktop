@@ -36,7 +36,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationRecoveryIsSuppressed, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultVoiceKeysForItem, resultVoiceKeysFromAcceptedContent, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, hasInstallableUpdate, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationRecoveryIsSuppressed, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultVoiceKeysForItem, resultVoiceKeysFromAcceptedContent, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, hasInstallableUpdate, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream, sourceFileDisplayName, pendingSourceFilePresentation, globalFileDropPresentation, handleIncomingSourceFile, setUploadParsing, schedulePendingServiceSourceFileImport, pendingServiceSourceFile: () => pendingServiceSourceFile, setSourceImportServiceState: state => { sourceImportServiceState = state; }, setSourceImportBusy: busy => { isParsing = Boolean(busy); sourceImportInFlight = Boolean(busy); } };`, context);
     vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
     return { api: context.__rendererTests, storage, document, mediaState };
 }
@@ -559,6 +559,75 @@ test('解析或取消完成后新建任务按钮不会残留禁用状态', () =>
     assert.ok(buttonReset >= 0);
     assert.ok(finalizer.indexOf('isParsing = false;') < buttonReset);
     assert.ok(finalizer.indexOf('sourceImportInFlight = false;') < buttonReset);
+});
+
+test('服务连接期间拖入的文档会被保留，并在连接恢复后自动进入原导入链路', async () => {
+    const { api } = loadRendererConfigFunctions();
+    const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+
+    assert.equal(api.sourceFileDisplayName({ name: '/tmp/课堂材料.docx' }), '课堂材料.docx');
+    assert.deepEqual(JSON.parse(JSON.stringify(api.pendingSourceFilePresentation('课堂材料.docx', 'connecting'))), {
+        hint: '正在等待生成服务连接，连接后会自动开始导入。',
+        feedback: '已接收 课堂材料.docx，正在等待生成服务连接；连接后会自动导入。',
+        status: '等待服务连接：课堂材料.docx',
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(api.pendingSourceFilePresentation('课堂材料.docx', 'unavailable'))), {
+        hint: '生成服务暂不可用。重试连接成功后会自动开始导入。',
+        feedback: '已保留 课堂材料.docx。生成服务暂不可用；点击“重试连接”后会自动导入。',
+        status: '等待服务重试：课堂材料.docx',
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(api.globalFileDropPresentation('connecting'))), {
+        title: '松开后等待服务连接',
+        hint: '支持 .docx / .xlsx · 服务连接后会自动导入',
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(api.pendingSourceFilePresentation('课堂材料.docx', 'ready', true))), {
+        hint: '服务已连接，当前导入完成后会自动开始。',
+        feedback: '已接收 课堂材料.docx，当前文档导入完成后会自动开始。',
+        status: '等待当前导入：课堂材料.docx',
+    });
+
+    const firstDrop = { name: '/tmp/课堂材料.docx' };
+    const replacementDrop = { name: '/tmp/课堂材料.docx' };
+    api.setSourceImportServiceState('connecting');
+    await api.handleIncomingSourceFile(firstDrop);
+    assert.strictEqual(api.pendingServiceSourceFile(), firstDrop);
+    api.setSourceImportServiceState('unavailable');
+    await api.handleIncomingSourceFile(replacementDrop);
+    assert.strictEqual(api.pendingServiceSourceFile(), replacementDrop);
+
+    // A connection can recover before a previous import's finalizer has
+    // completed. The queued file must remain intact, then start once that
+    // finalizer clears the busy flags.
+    api.setSourceImportServiceState('ready');
+    api.setSourceImportBusy(true);
+    assert.equal(api.schedulePendingServiceSourceFileImport(), false);
+    assert.strictEqual(api.pendingServiceSourceFile(), replacementDrop);
+    api.setSourceImportBusy(false);
+    api.setUploadParsing(false);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.strictEqual(api.pendingServiceSourceFile(), null);
+
+    assert.match(source, /let pendingServiceSourceFile = null;/);
+    assert.match(source, /let serviceConnectionAttemptId = 0;/);
+    assert.match(source, /if \(!sourceImportServiceIsReady\(\)\) \{\s+queueSourceFileUntilServiceReady\(file\);\s+return;/);
+    assert.match(source, /const connectionAttemptId = \+\+serviceConnectionAttemptId;/);
+    assert.match(source, /if \(!isCurrentServiceConnectionAttempt\(connectionAttemptId\)\) return false;/);
+    assert.match(source, /loadConfig\(\{\s+shouldContinue: \(\) => isCurrentServiceConnectionAttempt\(connectionAttemptId\),\s+\}\);/);
+    assert.match(source, /async function loadConfig\(\{ shouldContinue = \(\) => true \} = \{\}\) \{/);
+    assert.match(source, /sourceImportServiceState = 'ready';\s+setServiceState\('ready', '服务已连接'\);\s+setAppInteractive\(true\);\s+schedulePendingServiceSourceFileImport\(\);/);
+    assert.match(source, /function schedulePendingServiceSourceFileImport\(\) \{[\s\S]*?Promise\.resolve\(\)\.then/);
+    assert.match(source, /if \(!active\) schedulePendingServiceSourceFileImport\(\);/);
+    assert.match(source, /async function cancelSourceImport\(\) \{[\s\S]*?if \(!pendingServiceSourceFile\) return;[\s\S]*?已取消等待/);
+    assert.match(html, /id="global-drop-title"/);
+    assert.match(html, /id="global-drop-hint"/);
+
+    const zoneDropStart = source.indexOf("uploadZone.addEventListener('drop'");
+    const globalDropStart = source.indexOf("window.addEventListener('dragenter'", zoneDropStart);
+    assert.ok(zoneDropStart >= 0 && globalDropStart > zoneDropStart);
+    const zoneDropHandler = source.slice(zoneDropStart, globalDropStart);
+    assert.doesNotMatch(zoneDropHandler, /aria-disabled/);
+    assert.match(zoneDropHandler, /void handleIncomingSourceFile\(file\);/);
 });
 
 test('返回配置会为已终止任务创建新的可编辑工作流', () => {

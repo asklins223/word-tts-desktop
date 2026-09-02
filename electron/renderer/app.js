@@ -118,6 +118,12 @@ let sourceImportInFlight = false;
 let sourceFileDialogInFlight = false;
 let globalFileDragActive = false;
 let incomingFileDropInFlight = false;
+// 服务启动时也接收用户拖入的 File；这里只保留浏览器的文件引用，不读取
+// 内容，待服务连接完成后仍复用下面已有的受控流式导入链路。
+let pendingServiceSourceFile = null;
+let sourceImportServiceState = 'connecting'; // connecting | ready | unavailable
+let pendingServiceSourceImportScheduled = false;
+let serviceConnectionAttemptId = 0;
 let sourceStagingUploadId = null;
 let sourceImportId = null;
 let sourceTransportUploadId = null;
@@ -2433,7 +2439,10 @@ async function startProcessing(useDefaults, presetConfig, itemIds = null) {
         $('generation-file-name').textContent = `未能启动「${session.source_filename || '当前文档'}」；设置与解析结果仍会保留。`;
         $('status-text').textContent = failureMessage;
         if (serviceUnavailable) {
+            sourceImportServiceState = 'unavailable';
             setServiceState('error', '服务连接中断');
+            setAppInteractive(false);
+            refreshPendingServiceSourceFilePresentation();
             $('retry-service-btn').hidden = false;
         }
         setGenerationVisualState('error');
@@ -3892,9 +3901,15 @@ function syncRestartButtonState(sourceBusy = null) {
 }
 
 function setUploadParsing(parsing) {
+    const active = Boolean(parsing || isParsing || sourceImportInFlight);
+    // `connectService` may have become ready while an earlier import was
+    // still unwinding. Defer the waiting file until this transition reaches
+    // idle, rather than leaving it permanently in the waiting state.
+    if (!active) schedulePendingServiceSourceFileImport();
+
     const uploadZone = $('upload-zone');
     if (!uploadZone) return;
-    const active = Boolean(parsing || isParsing || sourceImportInFlight);
+    const waitingForService = Boolean(pendingServiceSourceFile) && !active;
     uploadZone.classList.toggle('is-processing', active);
     uploadZone.setAttribute('aria-busy', active ? 'true' : 'false');
     syncRestartButtonState(active);
@@ -3902,10 +3917,12 @@ function setUploadParsing(parsing) {
     if (historyNav) historyNav.disabled = active || isGenerating || isRestarting;
     const cancelButton = $('cancel-import-btn');
     if (cancelButton) {
-        cancelButton.hidden = !active || !sourceImportController;
-        cancelButton.disabled = !active || !sourceImportController;
+        cancelButton.hidden = !active && !waitingForService;
+        cancelButton.disabled = !active && !waitingForService;
         cancelButton.setAttribute('aria-busy', active && sourceImportController ? 'true' : 'false');
-        cancelButton.textContent = sourceImportId ? '停止等待' : '停止导入';
+        cancelButton.textContent = active
+            ? (sourceImportId ? '停止等待' : '停止导入')
+            : '取消等待';
     }
 }
 
@@ -3980,7 +3997,22 @@ async function abortSourceImportIfPossible(importId, reason = 'desktop-user-canc
 
 async function cancelSourceImport() {
     const controller = sourceImportController;
-    if (!controller) return;
+    if (!controller) {
+        if (!pendingServiceSourceFile) return;
+        const filename = sourceFileDisplayName(pendingServiceSourceFile);
+        clearPendingServiceSourceFile();
+        const uploadZone = $('upload-zone');
+        uploadZone?.classList.remove('has-file', 'has-error');
+        const uploadTitle = uploadZone?.querySelector('.upload-text-large');
+        const uploadHint = uploadZone?.querySelector('.upload-hint');
+        if (uploadTitle) uploadTitle.textContent = '拖拽文档到这里，或点击选择';
+        if (uploadHint) uploadHint.textContent = '支持 .docx / .xlsx 文件 · 选择后会自动解析';
+        setUploadFeedback('info', `已取消等待 ${filename}，可在服务连接后重新拖入文档。`);
+        updateSourceImportProgress();
+        setUploadParsing(false);
+        if ($('status-text')) $('status-text').textContent = '已取消等待导入';
+        return;
+    }
     const hadServerImport = Boolean(sourceImportId);
     const cancelButton = $('cancel-import-btn');
     if (cancelButton) {
@@ -5686,10 +5718,13 @@ function setRestartingUI(restarting) {
 }
 
 async function connectService(showToastOnStart = false) {
+    const connectionAttemptId = ++serviceConnectionAttemptId;
     const retryButton = $('retry-service-btn');
     if (retryButton) retryButton.hidden = true;
+    sourceImportServiceState = 'connecting';
     setAppInteractive(false);
     setServiceState('', '正在连接服务');
+    refreshPendingServiceSourceFilePresentation();
     if (showToastOnStart) showToast('正在连接生成服务...');
 
     if (isElectron) {
@@ -5699,33 +5734,49 @@ async function connectService(showToastOnStart = false) {
         } catch (error) {
             console.error('检查生成服务状态失败:', error);
         }
+        if (!isCurrentServiceConnectionAttempt(connectionAttemptId)) return false;
         if (!ready) {
+            sourceImportServiceState = 'unavailable';
             setServiceState('error', '服务连接失败');
+            refreshPendingServiceSourceFilePresentation();
             if (retryButton) retryButton.hidden = false;
             showToast('生成服务启动失败，请重试连接');
             return false;
         }
     }
 
-    const configLoaded = await loadConfig();
+    const configLoaded = await loadConfig({
+        shouldContinue: () => isCurrentServiceConnectionAttempt(connectionAttemptId),
+    });
+    if (!isCurrentServiceConnectionAttempt(connectionAttemptId)) return false;
     if (!configLoaded) {
+        sourceImportServiceState = 'unavailable';
         setServiceState('warning', '服务状态异常');
+        refreshPendingServiceSourceFilePresentation();
         if (retryButton) retryButton.hidden = false;
         showToast('生成服务暂不可用，请重试连接');
         return false;
     }
 
     if (currentConfig?.tts_engine === 'xunfei' && currentConfig.xunfei_available === false) {
+        sourceImportServiceState = 'unavailable';
         setServiceState('error', '讯飞配音依赖未就绪');
+        refreshPendingServiceSourceFilePresentation();
         if (retryButton) retryButton.hidden = false;
         showToast('讯飞配音依赖未就绪，请安装 Playwright 浏览器后重试');
         return false;
     }
 
+    sourceImportServiceState = 'ready';
     setServiceState('ready', '服务已连接');
     setAppInteractive(true);
+    schedulePendingServiceSourceFileImport();
     if (currentSession?.session_id) void hydrateWorkflowWorkspace(currentSession.session_id);
     return true;
+}
+
+function isCurrentServiceConnectionAttempt(attemptId) {
+    return attemptId === serviceConnectionAttemptId;
 }
 
 // ============================================================================
@@ -5918,7 +5969,7 @@ function bindEvents() {
         e.stopPropagation();
         setGlobalFileDropActive(false);
         uploadZone.classList.remove('dragover');
-        if (isRestarting || isForcedUpdateBlocking() || uploadZone.getAttribute('aria-disabled') === 'true') return;
+        if (isRestarting || isForcedUpdateBlocking()) return;
         const file = e.dataTransfer.files[0];
         void handleIncomingSourceFile(file);
     });
@@ -6086,12 +6137,15 @@ function bindEvents() {
 // 配置加载
 // ============================================================================
 
-async function loadConfig() {
+async function loadConfig({ shouldContinue = () => true } = {}) {
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        if (!shouldContinue()) return false;
         try {
             if (!workflowApi) throw new Error('工作流服务未初始化');
-            currentConfig = await workflowApi.getConfig();
+            const loadedConfig = await workflowApi.getConfig();
+            if (!shouldContinue()) return false;
+            currentConfig = loadedConfig;
 
             setVoiceCatalog(
                 currentConfig.voices,
@@ -6118,6 +6172,7 @@ async function loadConfig() {
 
             return true;  // 成功，退出重试
         } catch (err) {
+            if (!shouldContinue()) return false;
             console.error(`加载配置失败 (尝试 ${attempt}/${maxRetries}):`, err);
             if (attempt < maxRetries) {
                 await new Promise(r => setTimeout(r, 1000 * attempt));
@@ -7682,10 +7737,142 @@ function isSupportedSourceFile(file) {
     return ['.docx', '.xlsx'].some(extension => filename.endsWith(extension));
 }
 
+function sourceFileDisplayName(file) {
+    return String(file?.name || '文档').split(/[\\/]/).pop() || '文档';
+}
+
+function sourceImportServiceIsReady() {
+    return sourceImportServiceState === 'ready';
+}
+
+function sourceImportIsBusy() {
+    return Boolean(isParsing || sourceImportInFlight || isRestarting);
+}
+
+function pendingSourceFilePresentation(
+    filename,
+    serviceState = sourceImportServiceState,
+    sourceBusy = sourceImportIsBusy(),
+) {
+    const safeFilename = String(filename || '文档');
+    if (serviceState === 'unavailable') {
+        return {
+            hint: '生成服务暂不可用。重试连接成功后会自动开始导入。',
+            feedback: `已保留 ${safeFilename}。生成服务暂不可用；点击“重试连接”后会自动导入。`,
+            status: `等待服务重试：${safeFilename}`,
+        };
+    }
+    if (serviceState === 'ready') {
+        if (sourceBusy) {
+            return {
+                hint: '服务已连接，当前导入完成后会自动开始。',
+                feedback: `已接收 ${safeFilename}，当前文档导入完成后会自动开始。`,
+                status: `等待当前导入：${safeFilename}`,
+            };
+        }
+        return {
+            hint: '服务已连接，正在开始导入…',
+            feedback: `已接收 ${safeFilename}，正在开始导入。`,
+            status: `准备导入：${safeFilename}`,
+        };
+    }
+    return {
+        hint: '正在等待生成服务连接，连接后会自动开始导入。',
+        feedback: `已接收 ${safeFilename}，正在等待生成服务连接；连接后会自动导入。`,
+        status: `等待服务连接：${safeFilename}`,
+    };
+}
+
+function globalFileDropPresentation(serviceState = sourceImportServiceState) {
+    if (serviceState === 'unavailable') {
+        return {
+            title: '松开后保留文档',
+            hint: '支持 .docx / .xlsx · 重试连接成功后会自动导入',
+        };
+    }
+    if (serviceState !== 'ready') {
+        return {
+            title: '松开后等待服务连接',
+            hint: '支持 .docx / .xlsx · 服务连接后会自动导入',
+        };
+    }
+    return {
+        title: '松开以导入文档',
+        hint: '支持 .docx / .xlsx · 将在当前工作台创建新任务',
+    };
+}
+
+function refreshPendingServiceSourceFilePresentation() {
+    if (!pendingServiceSourceFile) return false;
+    const filename = sourceFileDisplayName(pendingServiceSourceFile);
+    const presentation = pendingSourceFilePresentation(filename);
+    const uploadZone = $('upload-zone');
+    uploadZone?.classList.add('has-file', 'is-queued');
+    uploadZone?.classList.remove('has-error');
+    const uploadTitle = uploadZone?.querySelector('.upload-text-large');
+    const uploadHint = uploadZone?.querySelector('.upload-hint');
+    if (uploadTitle) uploadTitle.textContent = filename;
+    if (uploadHint) uploadHint.textContent = presentation.hint;
+    setUploadFeedback('info', presentation.feedback);
+    updateSourceImportProgress();
+    setUploadParsing(false);
+    if ($('status-text')) $('status-text').textContent = presentation.status;
+    return true;
+}
+
+function clearPendingServiceSourceFile() {
+    pendingServiceSourceFile = null;
+    $('upload-zone')?.classList.remove('is-queued');
+}
+
+function queueSourceFileUntilServiceReady(file) {
+    const previous = pendingServiceSourceFile;
+    pendingServiceSourceFile = file;
+    refreshPendingServiceSourceFilePresentation();
+    if (previous && sourceFileDisplayName(previous) !== sourceFileDisplayName(file)) {
+        showToast(`已将等待导入的文档替换为 ${sourceFileDisplayName(file)}`, 'info');
+    }
+}
+
+function canImportPendingServiceSourceFile() {
+    return Boolean(
+        sourceImportServiceIsReady()
+        && pendingServiceSourceFile
+        && !sourceImportIsBusy()
+        && !incomingFileDropInFlight
+        && !isForcedUpdateBlocking()
+    );
+}
+
+function schedulePendingServiceSourceFileImport() {
+    if (pendingServiceSourceImportScheduled || !canImportPendingServiceSourceFile()) return false;
+    pendingServiceSourceImportScheduled = true;
+    // Let the import that just cleared its busy flags finish all cleanup
+    // first; starting synchronously here would let that older finalizer reset
+    // the new import's progress UI.
+    Promise.resolve().then(() => {
+        pendingServiceSourceImportScheduled = false;
+        void importPendingServiceSourceFile();
+    });
+    return true;
+}
+
+async function importPendingServiceSourceFile() {
+    if (!canImportPendingServiceSourceFile()) return false;
+    const file = pendingServiceSourceFile;
+    clearPendingServiceSourceFile();
+    return handleIncomingSourceFile(file);
+}
+
 function setGlobalFileDropActive(active) {
     globalFileDragActive = Boolean(active) && !isForcedUpdateBlocking();
     const overlay = $('global-drop-overlay');
     if (overlay) {
+        const presentation = globalFileDropPresentation();
+        const title = $('global-drop-title');
+        const hint = $('global-drop-hint');
+        if (title) title.textContent = presentation.title;
+        if (hint) hint.textContent = presentation.hint;
         overlay.hidden = !globalFileDragActive;
         overlay.setAttribute('aria-hidden', globalFileDragActive ? 'false' : 'true');
     }
@@ -7711,6 +7898,10 @@ async function handleIncomingSourceFile(file) {
     }
     if (isParsing || sourceImportInFlight || isRestarting) {
         showToast('当前文档仍在导入，请等待本次操作完成', 'warning');
+        return;
+    }
+    if (!sourceImportServiceIsReady()) {
+        queueSourceFileUntilServiceReady(file);
         return;
     }
     incomingFileDropInFlight = true;
@@ -7745,6 +7936,7 @@ async function handleIncomingSourceFile(file) {
         handleFileSelected(file);
     } finally {
         incomingFileDropInFlight = false;
+        schedulePendingServiceSourceFileImport();
     }
 }
 
@@ -11477,6 +11669,7 @@ async function restart({ notify = true } = {}) {
     sourceImportController?.abort();
     sourceImportController = null;
     sourceImportInFlight = false;
+    clearPendingServiceSourceFile();
     sourceImportId = null;
     sourceStagingUploadId = null;
     sourceTransportUploadId = null;
@@ -11552,7 +11745,7 @@ async function restart({ notify = true } = {}) {
 
     // 重置 Step 1
     const uploadZone = $('upload-zone');
-    uploadZone.classList.remove('has-file', 'has-error', 'is-processing', 'dragover');
+    uploadZone.classList.remove('has-file', 'has-error', 'is-processing', 'is-queued', 'dragover');
     uploadZone.setAttribute('aria-busy', 'false');
     uploadZone.querySelector('.upload-text-large').textContent = '拖拽文档到这里，或点击选择';
     uploadZone.querySelector('.upload-hint').textContent = '支持 .docx / .xlsx 文件 · 选择后会自动解析';

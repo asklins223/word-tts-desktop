@@ -423,10 +423,15 @@ class XunfeiTTSAdapter:
             and logged_in
             and not browser_disconnected
         )
-        if session_healthy:
-            status = "READY"
-        elif self._last_runtime_status in {"EXPIRED", "LOGIN_REQUIRED"}:
+        # A task-time authentication failure deliberately leaves the visible
+        # browser open for manual recovery.  Its page can therefore still look
+        # healthy while the last generation has already proved that the
+        # credentials are unusable; do not mask that explicit runtime signal
+        # with a false READY status.
+        if self._last_runtime_status in {"EXPIRED", "LOGIN_REQUIRED"}:
             status = self._last_runtime_status
+        elif session_healthy:
+            status = "READY"
         elif not session_present:
             status = "LOGIN_REQUIRED"
         elif browser_disconnected or logged_in:
@@ -434,6 +439,14 @@ class XunfeiTTSAdapter:
         else:
             status = "LOGIN_REQUIRED"
         ready = status == "READY"
+        if ready:
+            reason = "讯飞浏览器会话已就绪，可提交生成"
+        elif status == "LOGIN_REQUIRED":
+            reason = "首次生成时将打开讯飞浏览器，请完成登录"
+        elif status == "EXPIRED":
+            reason = "讯飞配音登录状态已失效，请在浏览器中重新登录"
+        else:
+            reason = "讯飞浏览器会话已断开，首次生成时将重新连接"
         snapshot.update({
             "status": status,
             "ready": ready,
@@ -441,13 +454,7 @@ class XunfeiTTSAdapter:
             # Starting a foreground generation is also the user-visible
             # login/reconnect flow for the legacy browser provider.
             "can_start_generation": True,
-            "reason": (
-                "讯飞浏览器会话已就绪，可提交生成"
-                if ready
-                else "首次生成时将打开讯飞浏览器，请完成登录"
-                if status == "LOGIN_REQUIRED"
-                else "讯飞浏览器会话已断开，首次生成时将重新连接"
-            ),
+            "reason": reason,
         })
         return snapshot
 

@@ -11,13 +11,15 @@ import atexit
 import queue
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from concurrent.futures import Future
-from functools import partial
+from functools import partial, wraps
 
 from .config import PARAM_DEFAULT, OUTPUT_DIR, clamp_param
 from .errors import (
     XunfeiCancelled,
     XunfeiError,
+    XunfeiLoginRequired,
     _check_cancel_requested,
     _log,
 )
@@ -29,10 +31,32 @@ _session_lock = threading.Lock()
 _playwright_executor = None
 _playwright_executor_lock = threading.Lock()
 _executor_rotated_session = None
+_generation_slot_lock = threading.Lock()
+_closing_session = None
+_orphaned_close_session = None
+_orphaned_close_profile_owner_pid = None
+# ``Page.is_closed()`` is backed by Playwright's local lifecycle state.  A
+# user closing the browser can reach a retry before that callback is pumped,
+# so reuse also needs one small, bounded protocol round trip.
+_SESSION_TRANSPORT_PROBE_TIMEOUT_MS = 1_500
 _close_timer = None
 _close_timer_lock = threading.Lock()
 _close_timer_generation = 0
-_AUTO_CLOSE_DELAY_SECONDS = 10.0
+_LOGIN_RECOVERY_CLOSE_DELAY_SECONDS = 180.0
+_GENERATION_SLOT_POLL_SECONDS = 0.05
+# A normal persistent-context close can legitimately spend a few seconds
+# releasing Chrome's profile lock.  It must not, however, leave a retry behind
+# an indefinitely blocked Sync API worker after the visible browser vanished.
+_SESSION_CLOSE_TIMEOUT_SECONDS = 5.0
+
+
+class _SessionRebuildRequired(RuntimeError):
+    """Ask the async caller to rotate the worker before rebuilding a session."""
+
+    def __init__(self, session, *, profile_owner_pid=None):
+        super().__init__("the existing Xunfei session is no longer usable")
+        self.session = session
+        self.profile_owner_pid = profile_owner_pid
 
 
 class _DaemonSingleThreadExecutor:
@@ -109,17 +133,21 @@ def _get_playwright_executor():
         return _playwright_executor
 
 
-def _shutdown_playwright_executor(wait=True):
-    """Release the dedicated worker after a browser session is closed."""
+def _shutdown_playwright_executor(wait=True, *, expected_executor=None):
+    """Retire the dedicated worker after disconnect recovery or at exit."""
     global _playwright_executor
     with _playwright_executor_lock:
         executor = _playwright_executor
+        if expected_executor is not None and executor is not expected_executor:
+            return False
         _playwright_executor = None
     if executor is not None:
         executor.shutdown(wait=wait, cancel_futures=True)
+        return True
+    return False
 
 
-def _rotate_playwright_executor(disconnected_session=None):
+def _rotate_playwright_executor(disconnected_session=None, *, expected_executor=None):
     """Detach a stuck browser worker so a replacement session can start.
 
     Playwright's synchronous transport can occasionally remain blocked after
@@ -140,8 +168,10 @@ def _rotate_playwright_executor(disconnected_session=None):
             if _executor_rotated_session is disconnected_session:
                 return False
             _executor_rotated_session = disconnected_session
-    _shutdown_playwright_executor(wait=False)
-    return True
+    return _shutdown_playwright_executor(
+        wait=False,
+        expected_executor=expected_executor,
+    )
 
 
 def _session_browser_disconnected():
@@ -167,6 +197,50 @@ def _disconnected_session():
     return session if isinstance(status, dict) and bool(status.get("browser_disconnected")) else None
 
 
+def _remember_orphaned_close(session, *, profile_owner_pid):
+    """Keep profile-recovery facts when a close call cannot finish in time."""
+
+    global _orphaned_close_session, _orphaned_close_profile_owner_pid
+    with _session_lock:
+        _orphaned_close_session = session
+        _orphaned_close_profile_owner_pid = profile_owner_pid
+
+
+def _release_closing_session(session):
+    """Let a retry proceed once this close no longer owns the session fence."""
+
+    global _closing_session
+    with _session_lock:
+        if _closing_session is session:
+            _closing_session = None
+
+
+def _settle_session_close(session):
+    """Clear close bookkeeping after the original worker eventually returns."""
+
+    global _closing_session, _orphaned_close_session, _orphaned_close_profile_owner_pid
+    with _session_lock:
+        if _closing_session is session:
+            _closing_session = None
+        if _orphaned_close_session is session:
+            _orphaned_close_session = None
+            _orphaned_close_profile_owner_pid = None
+
+
+async def _wait_for_session_close(cancel_check=None):
+    """Keep retries out of a worker that is still closing an older session."""
+
+    import asyncio
+
+    while True:
+        with _session_lock:
+            closing = _closing_session
+        if closing is None:
+            return
+        _check_cancel_requested(cancel_check)
+        await asyncio.sleep(_GENERATION_SLOT_POLL_SECONDS)
+
+
 atexit.register(_shutdown_playwright_executor, False)
 
 
@@ -180,13 +254,68 @@ def _notify_batch_progress(callback, payload):
         _log(f"[xunfei] 批量进度回调异常（已忽略）: {error}")
 
 
-async def _run_playwright_sync(function, *args, **kwargs):
+def _submit_playwright_sync(function, *args, playwright_executor=None, **kwargs):
+    """Submit a thread-affine Sync API call and retain its worker identity."""
+
+    executor = playwright_executor or _get_playwright_executor()
+    call = partial(function, *args, **kwargs)
+    return executor, executor.submit(call)
+
+
+async def _run_playwright_sync(function, *args, playwright_executor=None, **kwargs):
     """把同一讯飞会话的所有 Sync API 调用固定到同一个线程。"""
     import asyncio
 
     loop = asyncio.get_running_loop()
-    call = partial(function, *args, **kwargs)
-    return await loop.run_in_executor(_get_playwright_executor(), call)
+    _executor, future = _submit_playwright_sync(
+        function,
+        *args,
+        playwright_executor=playwright_executor,
+        **kwargs,
+    )
+    return await asyncio.wrap_future(future, loop=loop)
+
+
+@asynccontextmanager
+async def _generation_slot(cancel_check=None):
+    """Serialize complete browser generations across event loops and threads.
+
+    The browser session is process-global.  Without this fence, a retry can
+    reuse the session while an older task is entering cleanup, then have its
+    browser closed by that older task.  Non-blocking polling keeps the fence
+    cross-loop without ever blocking an asyncio event loop, and preserves the
+    caller's normal cancellation behaviour while waiting.
+    """
+    import asyncio
+
+    while not _generation_slot_lock.acquire(blocking=False):
+        _check_cancel_requested(cancel_check)
+        await asyncio.sleep(_GENERATION_SLOT_POLL_SECONDS)
+    try:
+        _check_cancel_requested(cancel_check)
+        yield
+    finally:
+        _generation_slot_lock.release()
+
+
+def _serialize_generation(*, cancel_check_position):
+    """Apply the process-wide browser-generation fence to a public coroutine."""
+
+    def decorator(function):
+        @wraps(function)
+        async def wrapped(*args, **kwargs):
+            if "cancel_check" in kwargs:
+                cancel_check = kwargs["cancel_check"]
+            elif len(args) > cancel_check_position:
+                cancel_check = args[cancel_check_position]
+            else:
+                cancel_check = None
+            async with _generation_slot(cancel_check):
+                return await function(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
 
 
 def is_available():
@@ -220,7 +349,15 @@ def session_status_snapshot():
 
 
 def _session_is_healthy(session):
-    """轻量级健康检查。"""
+    """Return whether a logged-in session can still serve Playwright calls.
+
+    ``page.is_closed()`` alone is not enough here: it can still be ``False``
+    for a short interval after the visible browser window has gone away and
+    before Playwright delivers its close callback.  A retry in that interval
+    previously reused the dead page and never entered the browser-start path.
+    The root-locator evaluation is a no-op page operation, but it forces a
+    bounded transport round trip on the session's owning Playwright thread.
+    """
     if session is None:
         return False
     if not getattr(session, "_logged_in", False):
@@ -233,10 +370,40 @@ def _session_is_healthy(session):
         return False
     try:
         if page.is_closed():
+            _mark_session_disconnected_for_recovery(session)
             return False
-    except Exception:
+        # ``Locator.evaluate`` accepts an operation timeout (unlike
+        # ``Page.evaluate``) and does not alter the page.  It catches both a
+        # delayed browser-close event and a dead Sync API transport.
+        connected = page.locator("html").evaluate(
+            "node => node.isConnected",
+            timeout=_SESSION_TRANSPORT_PROBE_TIMEOUT_MS,
+        )
+        if not connected:
+            _mark_session_disconnected_for_recovery(session)
+            return False
+    except Exception as error:
+        _mark_session_disconnected_for_recovery(session)
+        _log(f"[xunfei] 浏览器会话活动探测失败，将重建: {error}")
         return False
     return True
+
+
+def _mark_session_disconnected_for_recovery(session):
+    """Promote a failed transport probe to the session lifecycle state.
+
+    A failed probe means the old Playwright object is unsafe to close through
+    the same transport.  The real session exposes a locked lifecycle marker;
+    legacy/test doubles without it keep the old best-effort close behavior.
+    """
+
+    marker = getattr(session, "_mark_browser_disconnected", None)
+    if not callable(marker):
+        return
+    try:
+        marker()
+    except Exception:
+        pass
 
 
 def _discard_session_unsafe():
@@ -249,13 +416,15 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
     确保讯飞配音浏览器会话已登录。
     如果会话不存在或已损坏，则创建并打开浏览器等待用户登录。
     """
-    global _session
+    global _session, _orphaned_close_session, _orphaned_close_profile_owner_pid
+    # A close runs on the same serial Sync API worker.  Do not queue a fresh
+    # login behind it: if it reaches the bounded recovery path below, this
+    # caller must instead submit to the replacement worker.
+    await _wait_for_session_close(cancel_check)
     _cancel_auto_close()
 
     if not is_available():
         raise XunfeiError("讯飞配音模块不可用，请安装 playwright")
-
-    import asyncio
 
     # If Chrome already reported a disconnect, the previous sync call may be
     # stuck inside Playwright rather than merely waiting in the queue.  A
@@ -266,10 +435,13 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
         _rotate_playwright_executor(disconnected_session)
 
     def _locked_create():
-        global _session
-        stale_disconnected = False
+        global _session, _orphaned_close_session, _orphaned_close_profile_owner_pid
         stale = None
         with _session_lock:
+            orphaned_close = _orphaned_close_session
+            orphaned_close_pid = _orphaned_close_profile_owner_pid
+            reclaim_owner = orphaned_close
+            reclaim_owner_pid = orphaned_close_pid
             if _session is not None:
                 current_status = None
                 status_getter = getattr(_session, "runtime_status_snapshot", None)
@@ -289,31 +461,66 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
                     disconnected_session is not None
                     and _session is disconnected_session
                 )
-                if not current_disconnected and not replace_current and _session_is_healthy(_session):
+                # A logged-in session with a page/context is expected to be
+                # reusable. If its active transport probe fails, calling
+                # ``stale.close()`` here can block on the same dead Sync API
+                # worker that we need for the retry. Defer that cleanup to the
+                # async side, where it can rotate this exact worker first.
+                transport_probe_candidate = (
+                    bool(getattr(_session, "_logged_in", False))
+                    and getattr(_session, "_page", None) is not None
+                    and getattr(_session, "_ctx", None) is not None
+                )
+                healthy = (
+                    not current_disconnected
+                    and not replace_current
+                    and _session_is_healthy(_session)
+                )
+                current_disconnected = current_disconnected or bool(
+                    getattr(_session, "_browser_disconnected", False)
+                )
+                if healthy and not current_disconnected:
+                    # A healthy, already-published replacement makes an older
+                    # timed-out close irrelevant; do not carry its profile PID
+                    # into a later unrelated launch.
+                    if _orphaned_close_session is orphaned_close:
+                        _orphaned_close_session = None
+                        _orphaned_close_profile_owner_pid = None
                     return _session
                 # A user closing the Playwright window leaves the Python
-                # session object and its profile lock alive.  Drop the global
-                # reference and close that stale object on this same
-                # Playwright executor thread before creating a replacement.
+                # session object and its profile lock alive. Drop the global
+                # reference before creating a replacement. Transport-stale
+                # sessions are handed back to the async side so their worker
+                # can be retired without waiting on a potentially blocked
+                # ``close()`` call.
                 stale = _session
                 _discard_session_unsafe()
-                stale_disconnected = current_disconnected or replace_current
-                if not stale_disconnected:
+                stale_profile_owner_pid = getattr(stale, "_profile_owner_pid", None)
+                if (
+                    current_disconnected
+                    or replace_current
+                    or transport_probe_candidate
+                ):
+                    reclaim_owner = stale
+                    reclaim_owner_pid = stale_profile_owner_pid
+                    raise _SessionRebuildRequired(
+                        stale,
+                        profile_owner_pid=stale_profile_owner_pid,
+                    )
+                else:
                     try:
                         stale.close()
                     except Exception as error:
                         _log(f"[xunfei] 清理失效浏览器会话异常（继续重建）: {error}")
             session = XunFeiSession(voice_key=voice_key)
-            if stale_disconnected:
+            if reclaim_owner is not None and reclaim_owner_pid is not None:
                 # The stale object may still own the profile from a blocked
                 # old worker.  Let the new session reclaim only that known
                 # recovery path; it must never kill an unrelated browser on a
                 # normal first launch.
                 try:
                     session._reclaim_profile_owner = True
-                    session._reclaim_profile_owner_pid = getattr(
-                        stale, "_profile_owner_pid", None
-                    )
+                    session._reclaim_profile_owner_pid = reclaim_owner_pid
                 except Exception:
                     pass
             # Publish the candidate while login is still in progress.  If the
@@ -357,14 +564,38 @@ async def ensure_session(voice_key="amanda", cancel_check=None, progress_callbac
             # 仍为空，再创建第二个 Playwright Sync 会话；这里通常已经
             # 在 login 前发布过同一个对象，赋值仍保留作显式不变量。
             _session = session
+            if _orphaned_close_session is orphaned_close:
+                _orphaned_close_session = None
+                _orphaned_close_profile_owner_pid = None
             return session
 
     # Playwright Sync API 的所有 page/context 操作（包括健康检查）都必须
     # 留在同一个专用线程，不能在 FastAPI/asyncio 事件循环线程或其它
     # 默认线程池线程调用，否则会触发 greenlet 跨线程异常。
-    return await _run_playwright_sync(_locked_create)
+    executor = _get_playwright_executor()
+    try:
+        return await _run_playwright_sync(
+            _locked_create,
+            playwright_executor=executor,
+        )
+    except _SessionRebuildRequired as rebuild:
+        # The stale object is intentionally not closed on the old worker: that
+        # call is exactly what can hang after a visible browser disconnect.
+        # Keep the PID captured before abandoning it, rotate only the worker
+        # that ran the failed probe, and let the fresh session reclaim that
+        # exact profile owner before launch.
+        _remember_orphaned_close(
+            rebuild.session,
+            profile_owner_pid=rebuild.profile_owner_pid,
+        )
+        _rotate_playwright_executor(
+            rebuild.session,
+            expected_executor=executor,
+        )
+        return await _run_playwright_sync(_locked_create)
 
 
+@_serialize_generation(cancel_check_position=5)
 async def synth_xunfei(
     text, voice_key="amanda",
     speed=PARAM_DEFAULT, pitch=PARAM_DEFAULT, volume=PARAM_DEFAULT,
@@ -405,6 +636,7 @@ async def synth_xunfei(
         synth_kwargs["cancel_check"] = cancel_check
     if callable(progress_callback):
         synth_kwargs["progress_callback"] = progress_callback
+    login_recovery = False
     try:
         result_path = await _run_playwright_sync(
             session.synth_one,
@@ -439,6 +671,9 @@ async def synth_xunfei(
             raise XunfeiError(f"解码后音频参数异常 (channels={seg.channels}, frame_rate={seg.frame_rate})")
 
         return seg
+    except XunfeiLoginRequired:
+        login_recovery = True
+        raise
     finally:
         # 生成成功、解码失败或用户取消都不能把临时 MP3 留在数据目录。
         if result_path:
@@ -446,9 +681,14 @@ async def synth_xunfei(
                 os.remove(result_path)
             except OSError:
                 pass
-        await _finish_generation_session(session, cancel_check)
+        await _finish_generation_session(
+            session,
+            cancel_check,
+            login_recovery=login_recovery,
+        )
 
 
+@_serialize_generation(cancel_check_position=2)
 async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
     """批量讯飞合成：按音色/参数分组提交，最后统一下载并解码。
 
@@ -470,6 +710,7 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
         cancel_check=cancel_check,
         progress_callback=progress_callback,
     )
+    login_recovery = False
     try:
         normalized_jobs = []
         for index, job in enumerate(jobs):
@@ -557,10 +798,18 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
                     except OSError:
                         pass
         return decoded
+    except XunfeiLoginRequired:
+        login_recovery = True
+        raise
     finally:
-        await _finish_generation_session(session, cancel_check)
+        await _finish_generation_session(
+            session,
+            cancel_check,
+            login_recovery=login_recovery,
+        )
 
 
+@_serialize_generation(cancel_check_position=3)
 async def synth_xunfei_composite(
     works,
     progress_callback=None,
@@ -587,6 +836,7 @@ async def synth_xunfei_composite(
         cancel_check=cancel_check,
         progress_callback=progress_callback,
     )
+    login_recovery = False
     try:
         normalized_works = []
         for index, work in enumerate(works, start=1):
@@ -690,8 +940,15 @@ async def synth_xunfei_composite(
                     except OSError:
                         pass
         return decoded
+    except XunfeiLoginRequired:
+        login_recovery = True
+        raise
     finally:
-        await _finish_generation_session(session, cancel_check)
+        await _finish_generation_session(
+            session,
+            cancel_check,
+            login_recovery=login_recovery,
+        )
 
 
 def _cancel_auto_close():
@@ -705,8 +962,10 @@ def _cancel_auto_close():
                 pass
             _close_timer = None
 
-def _schedule_auto_close(expected_session=None):
+
+def _schedule_auto_close(expected_session=None, *, delay_seconds):
     global _close_timer, _close_timer_generation
+    delay = float(delay_seconds)
     with _close_timer_lock:
         # A completion callback from an older session must never replace the
         # close timer belonging to a newer session.
@@ -729,7 +988,7 @@ def _schedule_auto_close(expected_session=None):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
-        # 10 秒无新任务则自动关闭浏览器，登录态持久化在 PROFILE_DIR
+
         import threading as _threading
         def _do_close():
             import asyncio as _asyncio
@@ -737,36 +996,41 @@ def _schedule_auto_close(expected_session=None):
                 if timer_generation != _close_timer_generation:
                     return
             # 定时器在独立线程触发，需将协程调度回主循环
-            if loop is not None:
+            close_kwargs = {
+                "expected_session": expected_session,
+                "expected_generation": timer_generation,
+            }
+            if loop is not None and loop.is_running() and not loop.is_closed():
+                close_coro = close_session(**close_kwargs)
                 try:
-                    if not loop.is_closed():
-                        _asyncio.run_coroutine_threadsafe(
-                            close_session(
-                                expected_session=expected_session,
-                                expected_generation=timer_generation,
-                            ),
-                            loop,
-                        )
-                        return
+                    _asyncio.run_coroutine_threadsafe(close_coro, loop)
                 except Exception as e:
+                    # If the loop closes in the small window between the
+                    # checks and submission, close the unscheduled coroutine
+                    # before falling back to a private loop. Otherwise Python
+                    # reports an unawaited-coroutine warning during shutdown.
+                    close_coro.close()
                     _log(f"[xunfei] 自动关闭调度异常: {e}")
+                else:
+                    return
             # 无主循环或调度失败时直接新建循环执行
             try:
-                _asyncio.run(
-                    close_session(
-                        expected_session=expected_session,
-                        expected_generation=timer_generation,
-                    )
-                )
+                _asyncio.run(close_session(**close_kwargs))
             except Exception as e:
                 _log(f"[xunfei] 自动关闭浏览器异常: {e}")
 
-        _close_timer = _threading.Timer(_AUTO_CLOSE_DELAY_SECONDS, _do_close)
+        _close_timer = _threading.Timer(delay, _do_close)
         _close_timer.daemon = True
         _close_timer.start()
 
-async def _finish_generation_session(session, cancel_check=None):
-    """Close immediately after cancellation, otherwise keep the idle timer."""
+
+async def _finish_generation_session(
+    session,
+    cancel_check=None,
+    *,
+    login_recovery=False,
+):
+    """Keep the browser open for recovery only when login actually expired."""
 
     cancelled = False
     if callable(cancel_check):
@@ -776,15 +1040,23 @@ async def _finish_generation_session(session, cancel_check=None):
             # A diagnostic/control callback must not turn a successful
             # generation into a failed cleanup path.
             cancelled = False
-    if cancelled:
+    if cancelled or not login_recovery:
+        # Cancellation, successful delivery, and every non-login failure all
+        # close the browser immediately. Login recovery is the only exception.
         await close_session(expected_session=session)
-    else:
-        _schedule_auto_close(expected_session=session)
+    elif login_recovery:
+        # A login-expired page is the sole recovery exception: leave its
+        # visible window around long enough for the user to sign in, then
+        # close it with the same expected-session fence.
+        _schedule_auto_close(
+            expected_session=session,
+            delay_seconds=_LOGIN_RECOVERY_CLOSE_DELAY_SECONDS,
+        )
 
 
 async def close_session(*, expected_session=None, expected_generation=None):
     """关闭讯飞配音浏览器会话。"""
-    global _session, _close_timer, _close_timer_generation
+    global _session, _closing_session, _close_timer, _close_timer_generation
 
     with _close_timer_lock:
         if (
@@ -797,6 +1069,13 @@ async def close_session(*, expected_session=None, expected_generation=None):
                 return
             old = _session
             _session = None
+            old_profile_owner_pid = (
+                getattr(old, "_profile_owner_pid", None)
+                if old is not None
+                else None
+            )
+            if old is not None:
+                _closing_session = old
         _close_timer_generation += 1
         timer = _close_timer
         _close_timer = None
@@ -805,11 +1084,70 @@ async def close_session(*, expected_session=None, expected_generation=None):
                 timer.cancel()
             except Exception:
                 pass
+    if old is None:
+        return
+
+    import asyncio
+
+    executor = None
     try:
-        if old is not None:
-            await _run_playwright_sync(old.close)
-            _log("[xunfei] 浏览器会话已关闭")
-    except Exception as e:
-        _log(f"[xunfei] 关闭浏览器会话异常: {e}")
-    finally:
-        _shutdown_playwright_executor()
+        # Capture the exact worker before submission. If a concurrent recovery
+        # retires it in the narrow submit window, error handling below must
+        # never rotate a freshly-created replacement by mistake.
+        executor = _get_playwright_executor()
+        _, close_future = _submit_playwright_sync(
+            old.close,
+            playwright_executor=executor,
+        )
+        # The daemon worker can finish after this coroutine's event loop has
+        # gone away. Clear recovery metadata from the worker callback itself,
+        # not from an asyncio task that would be cancelled during loop teardown.
+        close_future.add_done_callback(lambda _future: _settle_session_close(old))
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(
+            asyncio.shield(asyncio.wrap_future(close_future, loop=loop)),
+            timeout=_SESSION_CLOSE_TIMEOUT_SECONDS,
+        )
+        _log("[xunfei] 浏览器会话已关闭")
+    except asyncio.TimeoutError:
+        # The browser may already be gone while Playwright's Sync transport is
+        # stuck in ``context.close``. Detach just this worker and remember its
+        # profile owner so the replacement can safely reclaim that known
+        # process instead of waiting behind it forever.
+        _remember_orphaned_close(
+            old,
+            profile_owner_pid=old_profile_owner_pid,
+        )
+        _release_closing_session(old)
+        _rotate_playwright_executor(old, expected_executor=executor)
+        _log(
+            "[xunfei] 关闭浏览器会话超时，已隔离旧执行线程；"
+            "下次任务将重建浏览器"
+        )
+    except asyncio.CancelledError:
+        # Cancellation must not leave every later retry fenced behind the
+        # abandoned close task. The Sync call continues only on its detached
+        # daemon, while the next session uses a clean worker.
+        _remember_orphaned_close(
+            old,
+            profile_owner_pid=old_profile_owner_pid,
+        )
+        _release_closing_session(old)
+        _rotate_playwright_executor(old, expected_executor=executor)
+        raise
+    except Exception as error:
+        # A failed close is also unsafe to reuse: retain only its narrow
+        # profile-reclaim fact, then avoid scheduling later work on that
+        # potentially corrupted Sync API worker.
+        _release_closing_session(old)
+        _remember_orphaned_close(
+            old,
+            profile_owner_pid=old_profile_owner_pid,
+        )
+        _rotate_playwright_executor(old, expected_executor=executor)
+        _log(f"[xunfei] 关闭浏览器会话异常: {error}")
+    # Keep the daemon worker alive after a normal browser close. A retry may
+    # already be queued behind ``old.close``; shutting the worker down here
+    # cancels that queued login or binds its new session to the wrong thread.
+    # Disconnect recovery still rotates a stuck worker, and process exit does
+    # the final shutdown.

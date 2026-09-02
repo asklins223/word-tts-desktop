@@ -79,6 +79,25 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(unavailable_snapshot["status"], "UNAVAILABLE")
         self.assertFalse(unavailable_snapshot["can_start_generation"])
 
+        # A task-time login failure intentionally leaves the browser visible
+        # for manual recovery.  The page can still report logged_in while the
+        # adapter must continue projecting the explicit expired state.
+        with mock.patch.object(legacy, "is_available", return_value=True), mock.patch.object(
+            legacy,
+            "session_status_snapshot",
+            return_value={
+                "logged_in": True,
+                "browser_disconnected": False,
+            },
+        ):
+            provider._last_runtime_status = "EXPIRED"
+            expired_snapshot = provider.capability_snapshot()
+        self.assertEqual(expired_snapshot["status"], "EXPIRED")
+        self.assertFalse(expired_snapshot["ready"])
+        self.assertFalse(expired_snapshot["can_generate"])
+        self.assertTrue(expired_snapshot["can_start_generation"])
+        self.assertIn("登录状态已失效", expired_snapshot["reason"])
+
         disabled = XunfeiTTSAdapter(account_scope="test-account", allow_real=False)
         disabled_snapshot = disabled.capability_snapshot()
         self.assertEqual(disabled_snapshot["status"], "DISABLED")

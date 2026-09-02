@@ -10,6 +10,48 @@ import xunfei.config as xunfei_config
 
 
 class XunfeiConfigTests(unittest.TestCase):
+    def test_initialized_legacy_profile_wins_over_update_created_canonical_profile(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir) / "WordTTS"
+            legacy_dir = Path(temp_dir) / "legacy-profile"
+            canonical_dir = base_dir / "xunfei_chrome_profile"
+
+            legacy_state = legacy_dir / "Default" / "Cookies"
+            legacy_state.parent.mkdir(parents=True)
+            legacy_state.touch()
+            canonical_state = canonical_dir / "Default" / "Cookies"
+            canonical_state.parent.mkdir(parents=True)
+            canonical_state.touch()
+
+            self.assertEqual(
+                xunfei_config._resolve_profile_dir(base_dir, legacy_dir),
+                str(legacy_dir.absolute()),
+            )
+
+    def test_new_canonical_profile_is_used_when_legacy_profile_is_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir) / "WordTTS"
+            legacy_dir = Path(temp_dir) / "legacy-profile"
+            canonical_dir = base_dir / "xunfei_chrome_profile"
+            (legacy_dir / "Default").mkdir(parents=True)
+            (canonical_dir / "Default" / "Network").mkdir(parents=True)
+            (canonical_dir / "Default" / "Network" / "Cookies").touch()
+
+            self.assertEqual(
+                xunfei_config._resolve_profile_dir(base_dir, legacy_dir),
+                str(canonical_dir),
+            )
+
+    def test_new_install_without_either_profile_uses_canonical_profile(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir) / "WordTTS"
+            legacy_dir = Path(temp_dir) / "legacy-profile"
+
+            self.assertEqual(
+                xunfei_config._resolve_profile_dir(base_dir, legacy_dir),
+                str(base_dir / "xunfei_chrome_profile"),
+            )
+
     def test_windows_chrome_install_locations_are_checked_without_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             chrome = Path(temp_dir) / "Google" / "Chrome" / "Application" / "chrome.exe"

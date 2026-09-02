@@ -31,13 +31,49 @@ API_SIGN_URL = "https://peiyin.xunfei.cn/video-api/synth/get_work_sign_url"
 
 # 持久化浏览器配置目录（保存 cookies / 登录状态）。
 # 首次升级时优先复用旧目录，避免用户被迫重新扫码登录；新安装统一放在
-# WordTTS 数据目录内，和音频、音色缓存保持同一数据边界。
+# WordTTS 数据目录内，和音频、音色缓存保持同一数据边界。不能只用
+# ``os.path.exists`` 判断新目录：版本升级或一次启动可能先创建了空的
+# 新目录，从而把仍然有登录状态的旧目录遮住。
 _legacy_profile_dir = os.path.join(
     os.path.expanduser("~"), ".xunfei_chrome_profile"
 )
-PROFILE_DIR = os.path.join(BASE_DIR, "xunfei_chrome_profile")
-if not os.path.exists(PROFILE_DIR) and os.path.isdir(_legacy_profile_dir):
-    PROFILE_DIR = _legacy_profile_dir
+
+
+def _has_persistent_browser_state(profile_dir):
+    """判断 Profile 是否已初始化，只检查 Chrome 状态文件是否存在。
+
+    不读取 Cookies 内容，避免在配置解析阶段接触任何登录凭据；这些文件
+    名称也兼容 Chromium 在不同版本中的 Cookies 存放位置。
+    """
+
+    profile_root = os.path.abspath(os.path.expanduser(str(profile_dir)))
+    return any(
+        os.path.isfile(os.path.join(profile_root, relative_path))
+        for relative_path in (
+            "Default/Cookies",
+            "Default/Network/Cookies",
+            "Default/Preferences",
+            "Local State",
+        )
+    )
+
+
+def _resolve_profile_dir(base_dir, legacy_profile_dir):
+    """Resolve one stable Profile path across app updates.
+
+    The legacy location was authoritative before the data-directory refactor.
+    If it still contains an initialized browser Profile, keep using it even
+    when an update has already created a second canonical directory. This
+    avoids silently switching the account's encrypted browser storage.
+    """
+
+    canonical_profile_dir = os.path.join(base_dir, "xunfei_chrome_profile")
+    if _has_persistent_browser_state(legacy_profile_dir):
+        return os.path.abspath(os.path.expanduser(str(legacy_profile_dir)))
+    return canonical_profile_dir
+
+
+PROFILE_DIR = _resolve_profile_dir(BASE_DIR, _legacy_profile_dir)
 
 # Chrome 可执行文件路径候选。Windows 不应该依赖 PATH：普通安装通常把
 # chrome.exe 放在 Program Files 或用户的 LocalAppData 中，而桌面应用启动

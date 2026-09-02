@@ -655,6 +655,20 @@ class JS:
     }
     """
 
+    CHECK_LOGIN_SURFACE = """
+    () => {
+        const text = String(document.body?.innerText || '').replace(/\\s+/g, '');
+        const href = String(window.location?.href || '').toLowerCase();
+        if (href.includes('/login') || href.includes('login')) return true;
+        return text.includes('登录') && (
+            text.includes('扫码')
+            || text.includes('手机号')
+            || text.includes('验证码')
+            || text.includes('账号密码')
+        );
+    }
+    """
+
     GET_DOWNLOAD_ROWS = """
     () => {
         const rowFromInput = (input) => {
@@ -1400,8 +1414,14 @@ class JS:
                 headers: Object.assign({'Content-Type': 'application/json'}, headers || {}),
                 body: JSON.stringify({param, base})
             });
+            // Read the body only once. Some expired sessions return plain text
+            // (for example "请先登录") instead of JSON; preserve that text so
+            // the Python layer can classify it as an authentication failure.
+            const body = await response.text();
             let data = null;
-            try { data = await response.json(); } catch (_) {}
+            if (body.trim()) {
+                try { data = JSON.parse(body); } catch (_) { data = body; }
+            }
             return {httpStatus: response.status, data};
         } catch (error) {
             return {httpStatus: 0, error: String(error)};

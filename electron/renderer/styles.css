@@ -480,6 +480,7 @@ select:disabled { color: var(--ink-muted); background: var(--surface-soft); }
 .upload-zone-large:hover,
 .upload-zone-large.dragover { background: var(--surface-blue); border-color: var(--primary); box-shadow: 0 0 0 4px rgba(var(--primary-rgb), .12), 0 16px 30px rgba(30, 99, 137, .12); }
 .upload-zone-large.has-file { border-color: var(--signal); }
+.upload-zone-large.is-queued { border-color: var(--primary); border-style: dashed; }
 .upload-zone-large.has-error { border-color: var(--danger); }
 .upload-zone-large.is-processing { cursor: progress; }
 .upload-zone-large.is-disabled { cursor: not-allowed; opacity: .62; }
