@@ -129,6 +129,14 @@ test('核对页展示解析出的多级题型和默认男女声', () => {
     );
     assert.deepEqual(
         JSON.parse(JSON.stringify(api.reviewTypePathForItem({
+            doc_type: '模仿朗读',
+            item_type: '模仿朗读-试卷正文',
+            type_path: ['模仿朗读'],
+        }))),
+        ['模仿朗读'],
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.reviewTypePathForItem({
             doc_type: '综合题',
             item_type: 'question',
             type_path: ['综合题', '阅读理解', '阅读理解'],

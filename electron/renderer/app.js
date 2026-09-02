@@ -3324,14 +3324,16 @@ function reviewTypePathForItem(item, fallbackDocType = '') {
             parts.push(...familyParts, ...explicitParts);
         }
 
-        // Some legacy parsers emit only the family in type_path. In that one
-        // case, retain the older category fallback so the leaf type is not
-        // lost; a deeper explicit path must remain untouched.
-        if (reviewTypePartsMatch(explicitParts, familyParts)) {
-            reviewAppendUniqueTypeParts(parts, fallbackParts);
-        }
+        // An explicit path is authoritative. If it contains only the family,
+        // that means this item has no real subtype. Do not infer one from
+        // parser presentation categories such as “模仿朗读-试卷正文” or
+        // “模仿朗读-框内英文”; those describe the source/material variant,
+        // not a navigable question-type level.
     } else {
         parts.push(...familyParts);
+        // Without an explicit path, retain the legacy category fallback so
+        // parsers that only expose a leaf category (for example
+        // “句子跟读” under “课文跟读”) still produce a useful hierarchy.
         reviewAppendUniqueTypeParts(parts, fallbackParts);
     }
 
