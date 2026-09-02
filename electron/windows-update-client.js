@@ -845,7 +845,10 @@ function createWindowsUpdateClient(options = {}) {
                 cwd: path.dirname(installerPath),
                 detached: true,
                 stdio: 'ignore',
-                windowsHide: true,
+                // Setup.exe owns a visible installer UI. Let Windows treat it
+                // as a normal GUI launch so the subsequent app handoff can
+                // participate in foreground activation.
+                windowsHide: false,
                 // The portable wrapper normally sets this itself, but an
                 // updater can inherit the current app's value. Point the
                 // child at the downloaded Setup explicitly so its installer

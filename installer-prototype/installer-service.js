@@ -1937,7 +1937,10 @@ function createInstallerService(options = {}) {
                 cwd: normalizedTarget,
                 detached: true,
                 stdio: 'ignore',
-                windowsHide: true,
+                // This is a GUI Electron executable. Do not mark the child as
+                // hidden in STARTUPINFO: Windows may carry that state into the
+                // first BrowserWindow and leave the app behind the installer.
+                windowsHide: false,
                 env: launchEnvironment(environment),
             });
             if (!child || typeof child !== 'object') {

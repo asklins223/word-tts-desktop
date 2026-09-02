@@ -18,6 +18,7 @@ const { pathToFileURL } = require('url');
 const { createNativeFileDialogs } = require('./file-dialogs');
 const { createSourceUploadStaging } = require('./source-staging');
 const { createUpdateManager } = require('./update-manager');
+const { scheduleWindowActivation } = require('./window-activation');
 const {
     newStreamId,
     openWorkflowSse,
@@ -40,6 +41,8 @@ let rendererReady = false;
 let rendererFatalShown = false;
 let updateManager = null;
 let latestUpdateState = null;
+let cancelMainWindowActivation = () => {};
+let pendingMainWindowActivation = false;
 let pythonStopPromise = null;
 let quitCleanupStarted = false;
 let persistentUserDataPath = null;
@@ -538,9 +541,7 @@ function waitForServer(timeoutMs = 90000) {
 
 function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        if (!mainWindow.isVisible()) mainWindow.show();
-        mainWindow.focus();
+        requestMainWindowActivation();
         return mainWindow;
     }
 
@@ -553,8 +554,10 @@ function createWindow() {
         minWidth: 900,
         minHeight: 600,
         // Windows runner 中隐藏 BrowserWindow 偶发触发 Chromium renderer
-        // 访问冲突（0xC0000005）；冒烟测试使用可见窗口，正常运行保持可见。
-        show: !isSmokeTest || process.platform === 'win32',
+        // 访问冲突（0xC0000005）；冒烟测试使用可见窗口。正常运行先等
+        // renderer 完成首屏，再通过 requestMainWindowActivation 显式显示
+        // 并激活，避免从安装器启动时窗口只创建在后台。
+        show: isSmokeTest && process.platform === 'win32',
         title: PRODUCT_NAME,
         transparent: false,
         backgroundColor: '#f4f9ff',
@@ -611,6 +614,11 @@ function createWindow() {
         return { action: 'deny' };
     });
     win.loadFile(RENDERER_ENTRY_PATH);
+    win.once('ready-to-show', () => {
+        if (mainWindow !== win) return;
+        smokeLog('renderer ready-to-show');
+        requestMainWindowActivation();
+    });
     if (process.env.WORDTTS_DEBUG_LOGS === '1' || process.argv.includes('--dev')) {
         win.webContents.on('console-message', (details) => {
             console.log(`[renderer:${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`);
@@ -621,6 +629,7 @@ function createWindow() {
         smokeLog('renderer did-finish-load');
         rendererReady = true;
         flushAppNotices();
+        requestMainWindowActivation();
     });
     win.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
         if (!isMainFrame) return;
@@ -646,6 +655,8 @@ function createWindow() {
     }
 
     win.on('closed', () => {
+        cancelMainWindowActivation();
+        cancelMainWindowActivation = () => {};
         closeWorkflowStreamsForSender(windowWebContentsId, 'window-closed');
         if (mainWindow !== win) return;
         rendererReady = false;
@@ -653,6 +664,22 @@ function createWindow() {
     });
 
     return win;
+}
+
+function requestMainWindowActivation() {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        pendingMainWindowActivation = true;
+        return false;
+    }
+    pendingMainWindowActivation = false;
+    cancelMainWindowActivation();
+    cancelMainWindowActivation = scheduleWindowActivation({
+        app,
+        getWindow: () => mainWindow,
+        platform: process.platform,
+        forceWindows: true,
+    });
+    return true;
 }
 
 async function verifyRendererSmokeTest(win, timeoutMs = 15000) {
@@ -1652,10 +1679,12 @@ function registerIpcHandlers() {
 
 if (hasSingleInstanceLock) {
     app.on('second-instance', () => {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        if (!mainWindow.isVisible()) mainWindow.show();
-        mainWindow.focus();
+        // An update/install relaunch can arrive while the existing process is
+        // still waiting for its backend and has not created the renderer yet.
+        // Keep the wake-up request until createWindow() completes instead of
+        // silently dropping it.
+        pendingMainWindowActivation = true;
+        requestMainWindowActivation();
     });
 }
 
@@ -1740,6 +1769,10 @@ app.whenReady().then(async () => {
     }
 
     createWindow();
+    // Normal launches reach this point with a real window, while a relaunch
+    // received during bootstrap is represented by pendingMainWindowActivation
+    // and is consumed by the renderer load handler as well.
+    if (pendingMainWindowActivation) requestMainWindowActivation();
     updateManager?.start?.();
 }).catch(error => {
     // Failures before waitForServer's recovery path (for example, inability
@@ -1794,5 +1827,7 @@ app.on('activate', () => {
     if (!desktopServicesReady) return;
     if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
+    } else {
+        requestMainWindowActivation();
     }
 });

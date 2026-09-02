@@ -23,6 +23,7 @@ const packageJson = JSON.parse(
     fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8'),
 );
 const buildFiles = packageJson.build?.files;
+const windowsUpdateClient = fs.readFileSync(path.join(APP_DIR, 'windows-update-client.js'), 'utf8');
 
 test('Windows 自绘 portable 模板收尾时切换到 TEMP，不重建安装目录', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtts-portable-template-'));
@@ -323,6 +324,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.equal(packageJson.build?.win?.target?.[0]?.arch?.[0], 'x64');
     assert.equal(packageJson.build?.nsis, undefined, 'Windows must not fall back to electron-builder NSIS');
     assert.ok(buildFiles.includes('windows-update-client.js'));
+    assert.ok(buildFiles.includes('window-activation.js'));
 
     const installerSourceDir = path.join(APP_DIR, '..', 'installer-prototype');
     for (const entry of [
@@ -429,6 +431,17 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsInstallerBuildScript, /\$EXEPATH\.cleanup\.cmd/);
     assert.match(installerService, /安装目录删除后仍然存在/);
     assert.match(installerService, /WORDTTS_PAYLOAD_EXPORT_DIR/);
+    assert.match(installerService, /windowsHide: false/);
+    assert.match(windowsUpdateAuditScript, /rangeRequests/);
+    const mainSource = fs.readFileSync(path.join(APP_DIR, 'main.js'), 'utf8');
+    const windowActivationSource = fs.readFileSync(path.join(APP_DIR, 'window-activation.js'), 'utf8');
+    assert.match(mainSource, /scheduleWindowActivation/);
+    assert.match(mainSource, /pendingMainWindowActivation/);
+    assert.match(mainSource, /requestMainWindowActivation()/);
+    assert.match(mainSource, /did-finish-load/);
+    assert.match(windowActivationSource, /setAlwaysOnTop/);
+    assert.match(windowActivationSource, /app\.focus/);
+    assert.match(windowsUpdateClient, /windowsHide: false/);
     assert.match(windowsWorkflow, /\[handoff\] NSIS relocated uninstaller active/);
     assert.match(windowsWorkflow, /\[complete\] installer operation succeeded/);
     assert.match(windowsWorkflow, /staged cleanup complete/);
@@ -563,4 +576,6 @@ test('打包冒烟使用完整 Chromium，并固定 Windows Python 输出为 UTF
         windowsWorkflow,
         /name: Smoke test custom install, update and uninstall[\s\S]*?PYTHONUTF8: '1'[\s\S]*?PYTHONIOENCODING: 'utf-8'/,
     );
+    assert.match(windowsWorkflow, /WordTtsForegroundProbe/);
+    assert.match(windowsWorkflow, /安装后应用进程已启动，但窗口未显示到前台/);
 });

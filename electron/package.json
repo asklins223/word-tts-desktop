@@ -1,6 +1,6 @@
 {
   "name": "word-tts-desktop",
-  "version": "3.0.5",
+  "version": "3.0.6",
   "description": "小猪wordTTS 文档配音桌面工具",
   "main": "main.js",
   "author": "asklins223",
@@ -54,6 +54,7 @@
       "source-staging.js",
       "workflow-event-transport.js",
       "workflow-artifact-transport.js",
+      "window-activation.js",
       "preload.js",
       "renderer/**/*"
     ],

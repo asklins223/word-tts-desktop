@@ -476,6 +476,58 @@ jobs:
             Invoke-CheckedProcess -FilePath $appExe -Arguments @("--smoke-test")
             Write-Host "已安装应用启动冒烟测试通过"
 
+            Write-Host "验证安装后应用窗口可见且位于前台..."
+            Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class WordTtsForegroundProbe {
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetForegroundWindow();
+              [DllImport("user32.dll")]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              public static extern bool IsWindowVisible(IntPtr hWnd);
+              [DllImport("user32.dll")]
+              public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+          }
+          '@
+            $foregroundProcess = Start-Process -FilePath $appExe -WorkingDirectory $installDir -WindowStyle Normal -PassThru
+            $foregroundValidated = $false
+            $foregroundDeadline = (Get-Date).AddSeconds(90)
+            try {
+              while ((Get-Date) -lt $foregroundDeadline) {
+                try { $foregroundProcess.Refresh() } catch {}
+                $windowHandle = $foregroundProcess.MainWindowHandle
+                if ($windowHandle -ne [IntPtr]::Zero -and [WordTtsForegroundProbe]::IsWindowVisible($windowHandle)) {
+                  [uint32]$windowOwnerPid = 0
+                  [void][WordTtsForegroundProbe]::GetWindowThreadProcessId($windowHandle, [ref]$windowOwnerPid)
+                  $foregroundHandle = [WordTtsForegroundProbe]::GetForegroundWindow()
+                  [uint32]$foregroundOwnerPid = 0
+                  if ($foregroundHandle -ne [IntPtr]::Zero) {
+                    [void][WordTtsForegroundProbe]::GetWindowThreadProcessId($foregroundHandle, [ref]$foregroundOwnerPid)
+                  }
+                  if ($windowOwnerPid -eq [uint32]$foregroundProcess.Id -and
+                      ($foregroundHandle -eq $windowHandle -or $foregroundOwnerPid -eq [uint32]$foregroundProcess.Id)) {
+                    $foregroundValidated = $true
+                    Write-Host "安装后应用窗口已显示并位于前台: pid=$($foregroundProcess.Id), hwnd=$windowHandle"
+                    break
+                  }
+                }
+                Start-Sleep -Milliseconds 250
+              }
+              if (-not $foregroundValidated) {
+                try { $foregroundProcess.Refresh() } catch {}
+                Write-Host "前台校验诊断: pid=$($foregroundProcess.Id), handle=$($foregroundProcess.MainWindowHandle), title=$($foregroundProcess.MainWindowTitle)"
+                Get-Process -Id $foregroundProcess.Id -ErrorAction SilentlyContinue |
+                  Select-Object Id, ProcessName, MainWindowHandle, MainWindowTitle, Responding |
+                  Format-List | Out-String | Write-Host
+                throw "安装后应用进程已启动，但窗口未显示到前台"
+              }
+            } finally {
+              if ($foregroundProcess -and -not $foregroundProcess.HasExited) {
+                & taskkill.exe /PID $foregroundProcess.Id /T /F 2>$null | Out-Null
+              }
+            }
+
             Write-Host "验证已安装后端的持久化 Chromium..."
             $installedBackend = Join-Path $installDir "resources/server_backend/server_backend.exe"
             $installedBrowsersCandidates = @(
