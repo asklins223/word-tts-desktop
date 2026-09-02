@@ -778,6 +778,10 @@ class WorkflowApplicationService:
             groups.setdefault(doc_type, []).append({
                 "id": item.identity_key,
                 "category": item.item_type,
+                # The parser sequence is document-wide. Keep it in the
+                # compatibility projection; category-local ``number`` values
+                # must never be used to reorder mixed question types.
+                "sequence": int(item.sequence),
                 "text": item.normalized_content,
                 "role": item.role,
                 "voice_key": item.voice_key,

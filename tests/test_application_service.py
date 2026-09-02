@@ -110,6 +110,7 @@ class ApplicationServiceTests(unittest.TestCase):
             self.assertEqual(parsed["workflow"].item_count, 1)
             self.assertEqual(parsed["source_filename"], "lesson.docx")
             self.assertEqual(len(parsed["parse_results"]), 1)
+            self.assertEqual(parsed["parse_results"][0]["items"][0]["sequence"], 0)
             self.assertEqual(len(service.artifacts(draft.workflow_id)), 2)
             self.assertEqual(len(bridge_paths), 1)
             self.assertFalse(bridge_paths[0].exists(), "桥接完成后临时文件应被清理")

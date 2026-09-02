@@ -36,7 +36,7 @@ function loadRendererConfigFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationRecoveryIsSuppressed, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultVoiceKeysForItem, resultVoiceKeysFromAcceptedContent, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, normalizeUpdateState, hasInstallableUpdate, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream, sourceFileDisplayName, pendingSourceFilePresentation, globalFileDropPresentation, handleIncomingSourceFile, setUploadParsing, schedulePendingServiceSourceFileImport, pendingServiceSourceFile: () => pendingServiceSourceFile, setSourceImportServiceState: state => { sourceImportServiceState = state; }, setSourceImportBusy: busy => { isParsing = Boolean(busy); sourceImportInFlight = Boolean(busy); } };`, context);
+    vm.runInContext(`${source}\nglobalThis.__rendererTests = { clampParamValue, normalizeClientConfig, normalizePersistedConfig, buildWorkflowConfiguration, saveCurrentConfig, integerProgressCount, visualProgressPercent, terminalProgressPercent, generationStatePresentation, generationRecoveryPresentation, generationRecoveryIsSuppressed, generationProgressPercentForView, generationProgressCopy, generationProgressAriaText, resultVoiceKeysForFile, resultVoiceKeysForItem, resultVoiceKeysFromAcceptedContent, resultFilesFromArtifacts, resultZipState, filenameWithExtension, deliveryZipFilename, resultVoiceKeyFromAcceptedConfiguration, historyStatusPresentation, historyActiveCandidateState, historyActiveActionLabel, historyActiveStatusLabel, activeCandidateHintText, readBoundedSourceFile, nonNegativeCount, historyProgressCounts, resultSummaryCounts, setVoiceCatalog, getVoiceFilterOptions, migrateVoiceSelections, canonicalVoiceKey, getResultVoiceEntry, voiceAssetCacheReady, workflowSnapshotIsOlder, workflowSnapshotBelongsToSession, mergeWorkflowSnapshotIntoSession, isTerminalWorkflowSnapshot, isHardStoppedWorkflowSnapshot, isAcceptedGenerationSnapshot, isCancellationSettledSnapshot, shouldAdoptResumedGeneration, generationWorkspaceNavigationAllowed, generationWorkflowOwnsRuntimeView, reviewTypePathForItem, reviewVoicePresentation, reviewDocumentSequence, reviewItemsInDocumentOrder, reviewOutlineReportedCount, buildReviewOutlineModel, reviewOutlineDefaultExpanded, reviewOutlineFirstItem, normalizeUpdateState, hasInstallableUpdate, updateStatusPresentation, formatUpdateBytes, rendererReadableArtifactStream, sourceFileDisplayName, pendingSourceFilePresentation, globalFileDropPresentation, handleIncomingSourceFile, setUploadParsing, schedulePendingServiceSourceFileImport, pendingServiceSourceFile: () => pendingServiceSourceFile, setSourceImportServiceState: state => { sourceImportServiceState = state; }, setSourceImportBusy: busy => { isParsing = Boolean(busy); sourceImportInFlight = Boolean(busy); } };`, context);
     vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
     return { api: context.__rendererTests, storage, document, mediaState };
 }
@@ -111,8 +111,209 @@ test('核对页展示解析出的多级题型和默认男女声', () => {
         }))),
         ['信息获取', '听选信息'],
     );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.reviewTypePathForItem({
+            doc_type: '信息获取',
+            item_type: '听选信息题目',
+            type_path: ['听选信息题目'],
+        }))),
+        ['信息获取', '听选信息'],
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.reviewTypePathForItem({
+            doc_type: '听后选择',
+            item_type: '听后选择录音稿',
+            type_path: ['听后选择'],
+        }))),
+        ['听后选择'],
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(api.reviewTypePathForItem({
+            doc_type: '综合题',
+            item_type: 'question',
+            type_path: ['综合题', '阅读理解', '阅读理解'],
+        }))),
+        ['综合题', '阅读理解', '阅读理解'],
+    );
     assert.equal(api.reviewVoicePresentation({ voice: 'female' }).voice, '默认女声');
     assert.equal(api.reviewVoicePresentation({ voice: 'male' }).voice, '默认男声');
+});
+
+test('核对页目录按大题型、小题型和具体题目分级且保留大题型条数', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [
+        {
+            groupIndex: 0,
+            reviewIndex: 0,
+            type_path: ['信息获取', '听选信息'],
+            text: '第一道听选信息题',
+        },
+        {
+            groupIndex: 0,
+            reviewIndex: 1,
+            type_path: ['信息获取', '听选信息'],
+            text: '第二道听选信息题',
+        },
+        {
+            groupIndex: 0,
+            reviewIndex: 2,
+            type_path: ['信息获取', '回答问题'],
+            text: '回答问题题',
+        },
+    ];
+    const model = api.buildReviewOutlineModel([
+        { doc_type: '信息获取', item_count: 14, items },
+    ], items);
+
+    assert.equal(model.length, 1);
+    assert.equal(model[0].name, '信息获取');
+    assert.equal(model[0].itemCount, 14);
+    assert.equal(api.reviewOutlineReportedCount({ item_count: 1 }, items), 3);
+    const visibleOnlyModel = api.buildReviewOutlineModel([
+        { doc_type: '信息获取', items },
+    ], items.slice(0, 1));
+    assert.equal(visibleOnlyModel[0].itemCount, 3);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(model[0].children.map(child => [child.name, child.itemCount, child.items.map(item => item.reviewIndex)]))),
+        [
+            ['听选信息', 2, [0, 1]],
+            ['回答问题', 1, [2]],
+        ],
+    );
+});
+
+test('核对页目录按实际题型路径递归，并默认隐藏具体题目', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [
+        {
+            groupIndex: 0,
+            reviewIndex: 0,
+            type_path: ['综合题'],
+            text: '没有继续细分题型的内容',
+        },
+        {
+            groupIndex: 0,
+            reviewIndex: 1,
+            type_path: ['综合题', '阅读理解', '第一篇'],
+            text: '第一篇第一题',
+        },
+        {
+            groupIndex: 0,
+            reviewIndex: 2,
+            type_path: ['综合题', '阅读理解', '第一篇'],
+            text: '第一篇第二题',
+        },
+        {
+            groupIndex: 0,
+            reviewIndex: 3,
+            type_path: ['综合题', '阅读理解', '第二篇'],
+            text: '第二篇第一题',
+        },
+    ];
+    const [root] = api.buildReviewOutlineModel([
+        { doc_type: '综合题', item_count: 4, items },
+    ], items);
+    const reading = root.children.find(child => child.name === '阅读理解');
+    const firstPassage = reading.children.find(child => child.name === '第一篇');
+    const untyped = root.children.find(child => child.name === '未标注小题型');
+
+    assert.equal(root.itemCount, 4);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(root.children.map(child => child.name))),
+        ['阅读理解', '未标注小题型'],
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(reading.children.map(child => [child.name, child.itemCount]))),
+        [['第一篇', 2], ['第二篇', 1]],
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(firstPassage.items.map(item => item.reviewIndex))),
+        [1, 2],
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(untyped.items.map(item => item.reviewIndex))),
+        [0],
+    );
+    assert.equal(api.reviewOutlineDefaultExpanded(root), true);
+    assert.equal(api.reviewOutlineDefaultExpanded(reading), true);
+    assert.equal(api.reviewOutlineDefaultExpanded(firstPassage), false);
+    assert.equal(api.reviewOutlineDefaultExpanded(untyped), false);
+    assert.equal(api.reviewOutlineFirstItem(root).reviewIndex, 0);
+    assert.equal(api.reviewOutlineFirstItem(reading).reviewIndex, 1);
+});
+
+test('没有小题型时不伪造目录层级，且大题型默认收起题目', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [
+        { groupIndex: 0, reviewIndex: 0, type_path: ['词汇'], text: 'apple' },
+        { groupIndex: 0, reviewIndex: 1, type_path: ['词汇'], text: 'book' },
+    ];
+    const [root] = api.buildReviewOutlineModel([
+        { doc_type: '词汇', item_count: 2, items },
+    ], items);
+
+    assert.equal(root.children.length, 0);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(root.items.map(item => item.reviewIndex))),
+        [0, 1],
+    );
+    assert.equal(api.reviewOutlineDefaultExpanded(root), false);
+});
+
+test('核对页按文档全局序号排列，不使用题型内的 number 交错排序', () => {
+    const { api } = loadRendererConfigFunctions();
+    const ordered = api.reviewItemsInDocumentOrder([
+        {
+            doc_type: '大题甲',
+            items: [
+                { item_id: 'a-2', sequence: 2, number: 1, text: '甲题二' },
+                { item_id: 'a-4', sequence: 4, number: 2, text: '甲题四' },
+            ],
+        },
+        {
+            doc_type: '大题乙',
+            items: [
+                { item_id: 'b-1', sequence: 1, number: 1, text: '乙题一' },
+                { item_id: 'b-3', sequence: 3, number: 2, text: '乙题三' },
+            ],
+        },
+    ]);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(ordered.map(item => [item.item_id, item.sequence]))),
+        [['b-1', 1], ['a-2', 2], ['b-3', 3], ['a-4', 4]],
+    );
+
+    const legacyOrder = api.reviewItemsInDocumentOrder([
+        { doc_type: '大题甲', items: [{ item_id: 'a-2', number: 2 }, { item_id: 'a-1', number: 1 }] },
+        { doc_type: '大题乙', items: [{ item_id: 'b-1', number: 1 }] },
+    ]);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(legacyOrder.map(item => item.item_id))),
+        ['a-2', 'a-1', 'b-1'],
+    );
+});
+
+test('泛化内容组会从后续有题型信息的条目推导目录根节点', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [
+        { groupIndex: 0, reviewIndex: 0, item_type: 'audio', text: '未标注内容' },
+        {
+            groupIndex: 0,
+            reviewIndex: 1,
+            type_path: ['信息获取', '听选信息'],
+            text: '听选信息题',
+        },
+    ];
+    const [root] = api.buildReviewOutlineModel([
+        { doc_type: 'document', item_count: 2, items },
+    ], items);
+
+    assert.equal(root.name, '信息获取');
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(root.children.map(child => [child.name, child.itemCount]))),
+        [['听选信息', 1], ['未标注小题型', 1]],
+    );
+    assert.equal(api.reviewOutlineDefaultExpanded(root), true);
 });
 
 test('生成前会把当前文档和讯飞配置写入工作流快照', () => {

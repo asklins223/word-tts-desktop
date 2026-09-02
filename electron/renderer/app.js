@@ -74,6 +74,17 @@ let roleVoiceMap = {};
 let voiceParamConfigs = {};
 let selectedDefaultFemaleVoice = 'amanda';
 let selectedDefaultMaleVoice = 'george';
+let reviewOutlineExpansion = new Map();
+let reviewSelectedItemId = '';
+let reviewSelectedIndex = null;
+const REVIEW_RENDER_LIMIT = 500;
+
+function resetReviewNavigationState() {
+    reviewOutlineExpansion.clear();
+    reviewSelectedItemId = '';
+    reviewSelectedIndex = null;
+}
+
 const DEFAULT_FEMALE_ROLE_KEY = '__default_female__';
 const DEFAULT_MALE_ROLE_KEY = '__default_male__';
 const ROLE_CONFIG_PREFIX = 'role:';
@@ -2317,6 +2328,7 @@ async function startProcessing(useDefaults, presetConfig, itemIds = null) {
                 latest_seq: 0,
                 last_event_id: null,
             };
+            resetReviewNavigationState();
             currentSession = nextSession;
             session = nextSession;
             // A terminal run is immutable and its item IDs belong to the old
@@ -2909,6 +2921,210 @@ function reviewContentForItem(item) {
     return '';
 }
 
+function reviewDocumentSequence(item) {
+    const metadata = item?.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+    const raw = item?.sequence
+        ?? item?.document_sequence
+        ?? item?.source_sequence
+        ?? metadata.sequence
+        ?? metadata.document_sequence
+        ?? metadata.source_sequence;
+    if (raw === null || raw === undefined || (typeof raw === 'string' && !raw.trim())) return null;
+    const sequence = Number(raw);
+    return Number.isFinite(sequence) ? sequence : null;
+}
+
+function reviewGroupsInDocumentOrder(groups) {
+    const sourceGroups = Array.isArray(groups) ? groups : [];
+    const allItems = sourceGroups.flatMap(group => (
+        Array.isArray(group?.items) ? group.items : []
+    ));
+    // `number` is often reset inside each question type. Only reorder groups
+    // when every item carries the parser/workspace's document-wide sequence;
+    // otherwise the returned group order is the only trustworthy fallback.
+    const hasCompleteSequence = allItems.length > 0
+        && allItems.every(item => reviewDocumentSequence(item) !== null);
+    if (!hasCompleteSequence) return sourceGroups;
+
+    return sourceGroups
+        .map((group, groupIndex) => {
+            const groupItems = Array.isArray(group?.items) ? group.items : [];
+            const sequences = groupItems
+                .map(item => reviewDocumentSequence(item))
+                .filter(sequence => sequence !== null);
+            return {
+                group,
+                groupIndex,
+                firstSequence: sequences.length ? Math.min(...sequences) : Number.MAX_SAFE_INTEGER,
+            };
+        })
+        .sort((left, right) => left.firstSequence - right.firstSequence || left.groupIndex - right.groupIndex)
+        .map(entry => entry.group);
+}
+
+function reviewItemsInDocumentOrder(groups) {
+    const orderedGroups = reviewGroupsInDocumentOrder(groups);
+    let sourceOrder = 0;
+    const sourceItems = orderedGroups.flatMap((group, groupIndex) => {
+        const groupItems = Array.isArray(group?.items) ? group.items : [];
+        return groupItems.map(item => ({
+            ...item,
+            doc_type: item?.doc_type || group?.doc_type || group?.category || '未分类',
+            sequence: reviewDocumentSequence(item),
+            groupIndex,
+            sourceOrder: sourceOrder++,
+        }));
+    });
+    const hasCompleteSequence = sourceItems.length > 0
+        && sourceItems.every(item => item.sequence !== null);
+    if (!hasCompleteSequence) return sourceItems;
+    return sourceItems.sort((left, right) => (
+        left.sequence - right.sequence
+        || left.sourceOrder - right.sourceOrder
+    ));
+}
+
+function reviewOutlineReportedCount(group, fallbackItems = []) {
+    const reported = Number(group?.item_count);
+    if (Number.isFinite(reported) && reported >= 0) return Math.max(reported, fallbackItems.length);
+    return fallbackItems.length;
+}
+
+function reviewOutlineNode(key, name, level) {
+    return {
+        key,
+        name,
+        level,
+        itemCount: 0,
+        items: [],
+        children: [],
+    };
+}
+
+function reviewOutlineRelativeTypePath(item, groupName) {
+    const path = reviewTypePathForItem(item, groupName)
+        .map(part => reviewTypeLabel(part))
+        .filter(part => part && reviewTypeKey(part) !== '未分类');
+    const normalizedGroupName = reviewTypeKey(groupName);
+    const groupIndex = path.findIndex(part => reviewTypeKey(part) === normalizedGroupName);
+    return groupIndex >= 0 ? path.slice(groupIndex + 1) : path;
+}
+
+function reviewOutlineEnsureChild(parent, name) {
+    const normalizedName = reviewTypeLabel(name) || '未标注小题型';
+    const childKey = reviewTypeKey(normalizedName);
+    let child = parent.children.find(entry => reviewTypeKey(entry.name) === childKey);
+    if (!child) {
+        child = reviewOutlineNode(
+            `${parent.key}/${childKey}`,
+            normalizedName,
+            Number(parent.level || 1) + 1,
+        );
+        parent.children.push(child);
+    }
+    return child;
+}
+
+function reviewOutlineNormalizeDirectItems(node) {
+    const children = Array.isArray(node?.children) ? node.children : [];
+    children.forEach(child => reviewOutlineNormalizeDirectItems(child));
+    if (children.length === 0 || !Array.isArray(node?.items) || node.items.length === 0) return;
+
+    // A node can contain both a typed branch and items without a deeper type.
+    // Keep the branch visible by giving those items an explicit, collapsible
+    // bucket instead of exposing question leaves by default.
+    const untyped = reviewOutlineEnsureChild(node, '未标注小题型');
+    untyped.items.push(...node.items);
+    untyped.itemCount += node.items.length;
+    node.items = [];
+    reviewOutlineNormalizeDirectItems(untyped);
+}
+
+function reviewOutlineDefaultExpanded(model) {
+    const children = Array.isArray(model?.children) ? model.children : [];
+    const items = Array.isArray(model?.items) ? model.items : [];
+    // Keep every type level visible, but hide question leaves until the user
+    // opens the deepest type node.  A node with no deeper type is therefore
+    // collapsed by default when it owns concrete items.
+    return children.length > 0 && items.length === 0;
+}
+
+function reviewOutlineFirstItem(model) {
+    let firstItem = null;
+    let firstIndexedItem = null;
+    let firstIndex = Number.MAX_SAFE_INTEGER;
+    const visit = node => {
+        if (!node) return;
+        const items = Array.isArray(node.items) ? node.items : [];
+        items.forEach(item => {
+            if (!firstItem) firstItem = item;
+            const index = reviewOutlineItemIndex(item);
+            if (index !== null && index < firstIndex) {
+                firstIndex = index;
+                firstIndexedItem = item;
+            }
+        });
+        const children = Array.isArray(node.children) ? node.children : [];
+        children.forEach(visit);
+    };
+    visit(model);
+    return firstIndexedItem || firstItem;
+}
+
+function reviewOutlineItemIndex(item) {
+    const raw = item?.reviewIndex;
+    if (raw === null || raw === undefined || (typeof raw === 'string' && !raw.trim())) return null;
+    const index = Number(raw);
+    return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+function buildReviewOutlineModel(groups, items) {
+    const sourceGroups = Array.isArray(groups) ? groups : [];
+    const sourceItems = Array.isArray(items) ? items : [];
+    return sourceGroups.map((group, groupIndex) => {
+        const groupItems = sourceItems.filter(item => item?.groupIndex === groupIndex);
+        const fullGroupItems = Array.isArray(group?.items) ? group.items : groupItems;
+        const rawGroupValue = group?.doc_type || group?.category || `内容组 ${groupIndex + 1}`;
+        const rawGroupParts = reviewTypeParts(rawGroupValue)
+            .map(part => reviewTypeLabel(part))
+            .filter(Boolean);
+        const isMeaningfulTypePart = part => part
+            && !reviewIsGenericType(part)
+            && reviewTypeKey(part) !== '未分类';
+        const firstPath = fullGroupItems
+            .map(item => reviewTypePathForItem(item, String(rawGroupValue)))
+            .find(path => path.some(isMeaningfulTypePart))
+            || [];
+        const rawGroupName = rawGroupParts.find(isMeaningfulTypePart)
+            || firstPath.find(isMeaningfulTypePart)
+            || rawGroupParts[0]
+            || `内容组 ${groupIndex + 1}`;
+        const groupName = reviewTypeLabel(rawGroupName) || `内容组 ${groupIndex + 1}`;
+        const groupPrefix = rawGroupParts.length > 1
+            && reviewTypeKey(rawGroupParts[0]) === reviewTypeKey(groupName)
+            ? rawGroupParts.slice(1)
+            : [];
+        const root = reviewOutlineNode(
+            `major:${groupIndex}:${reviewTypeKey(groupName)}`,
+            groupName,
+            1,
+        );
+        root.itemCount = reviewOutlineReportedCount(group, fullGroupItems);
+        groupItems.forEach(item => {
+            let relativePath = reviewOutlineRelativeTypePath(item, groupName);
+            if (relativePath.length === 0 && groupPrefix.length > 0) relativePath = groupPrefix;
+            let node = root;
+            relativePath.forEach(part => {
+                node = reviewOutlineEnsureChild(node, part);
+                node.itemCount += 1;
+            });
+            node.items.push(item);
+        });
+        reviewOutlineNormalizeDirectItems(root);
+        return root;
+    });
+}
+
 function reviewItemIsEditable(item, workspace = authoritativeWorkspace()) {
     const status = String(item?.status || '').toUpperCase();
     const hasContent = readItemContentCache(item?.item_id) !== undefined
@@ -2956,7 +3172,13 @@ const REVIEW_TYPE_ALIASES = Object.freeze({
     '听选信息录音稿': '听选信息',
     '回答问题题目': '回答问题',
     '回答问题录音稿': '回答问题',
+    '听后选择录音稿': '听后选择',
+    '听后应答录音稿': '听后应答',
     '听后记录并转述信息录音稿': '听后记录并转述信息',
+    '信息转述录音稿': '信息转述',
+    '询问信息录音稿': '询问信息',
+    '模仿朗读录音稿': '模仿朗读',
+    '课文跟读录音稿': '课文跟读',
 });
 
 const REVIEW_TYPE_FAMILIES = Object.freeze({
@@ -2976,6 +3198,7 @@ const REVIEW_TYPE_FAMILIES = Object.freeze({
 
 const REVIEW_GENERIC_TYPES = new Set([
     'document', 'audio', 'content', 'question', 'stimulus', 'work_item',
+    '题目', '题干', '录音稿', '正文', '文本', '文档', '内容',
 ]);
 
 function reviewTypeKey(value) {
@@ -2986,7 +3209,7 @@ function reviewTypeLabel(value) {
     const raw = String(value ?? '').trim();
     if (!raw) return '';
     const key = reviewTypeKey(raw);
-    return REVIEW_TYPE_LABELS[key] || REVIEW_TYPE_ALIASES[raw] || raw;
+    return REVIEW_TYPE_LABELS[key] || REVIEW_TYPE_ALIASES[raw] || REVIEW_TYPE_ALIASES[key] || raw;
 }
 
 function reviewTypeParts(value) {
@@ -3004,6 +3227,35 @@ function reviewTypeParts(value) {
         .split(/\s*(?:\/|>|＞|→|›|»|·)\s*/)
         .map(part => reviewTypeLabel(part))
         .filter(part => part && !/^\d+$/.test(part));
+}
+
+function reviewCleanTypeParts(value) {
+    return reviewTypeParts(value)
+        .map(part => reviewTypeLabel(part))
+        .filter(part => part && !reviewIsGenericType(part));
+}
+
+function reviewTypePartsMatch(left, right) {
+    return left.length === right.length
+        && left.every((part, index) => reviewTypeKey(part) === reviewTypeKey(right[index]));
+}
+
+function reviewTypeSequenceIndex(parts, sequence) {
+    if (!sequence.length || sequence.length > parts.length) return -1;
+    for (let index = 0; index <= parts.length - sequence.length; index += 1) {
+        if (reviewTypePartsMatch(parts.slice(index, index + sequence.length), sequence)) return index;
+    }
+    return -1;
+}
+
+function reviewAppendUniqueTypeParts(target, values) {
+    values.forEach(value => {
+        reviewCleanTypeParts(value).forEach(part => {
+            if (!target.some(existing => reviewTypeKey(existing) === reviewTypeKey(part))) {
+                target.push(part);
+            }
+        });
+    });
 }
 
 function reviewIsGenericType(value) {
@@ -3033,26 +3285,55 @@ function reviewTypePathForItem(item, fallbackDocType = '') {
         || metadata.type_path
         || metadata.type_hierarchy
         || metadata.typeHierarchy;
-    const parts = [];
-    reviewPushTypePart(parts, explicitPath);
-
     let family = item?.major_type
         || metadata.major_type
         || metadata.doc_type
         || item?.doc_type
         || fallbackDocType;
     if (reviewIsGenericType(family) && subtypeCode) family = REVIEW_TYPE_FAMILIES[reviewTypeKey(subtypeCode)] || family;
-    reviewPushTypePart(parts, family);
-
-    // item_type/category is the parser's concrete leaf type for legacy and
-    // current source imports.  Stable subtype codes cover atomic projections
-    // where the item type is only “audio”.
-    reviewPushTypePart(parts, item?.category);
-    reviewPushTypePart(parts, item?.item_type);
-    reviewPushTypePart(parts, metadata.category);
-    reviewPushTypePart(parts, subtypeLabel);
+    const explicitParts = reviewCleanTypeParts(explicitPath);
+    const familyParts = reviewCleanTypeParts(family);
+    const fallbackParts = [
+        // item_type/category is the parser's concrete leaf type for legacy and
+        // current source imports.  Stable subtype codes cover atomic
+        // projections where the item type is only “audio”.
+        item?.category,
+        item?.item_type,
+        metadata.category,
+        subtypeLabel,
+    ];
     const roleCode = reviewTypeKey(item?.role);
-    if (REVIEW_TYPE_LABELS[roleCode]) reviewPushTypePart(parts, roleCode);
+    if (REVIEW_TYPE_LABELS[roleCode]) fallbackParts.push(roleCode);
+
+    const parts = [];
+    if (explicitParts.length > 0) {
+        const familyPrefix = familyParts.length > 0
+            && reviewTypePartsMatch(explicitParts.slice(0, familyParts.length), familyParts);
+        const familyIndex = familyPrefix ? 0 : reviewTypeSequenceIndex(explicitParts, familyParts);
+        if (familyPrefix || familyParts.length === 0) {
+            // A supplied type_path is authoritative, including repeated names
+            // at different levels.  Do not flatten it with set-like de-duping.
+            parts.push(...explicitParts);
+        } else if (familyIndex > 0) {
+            // Older projections occasionally put the family after a leaf
+            // label. Restore the navigable order without losing the path.
+            parts.push(...familyParts, ...explicitParts.slice(0, familyIndex), ...explicitParts.slice(familyIndex + familyParts.length));
+        } else {
+            // A relative path is still a path: anchor it under the document
+            // family so the outline can consistently render a major node.
+            parts.push(...familyParts, ...explicitParts);
+        }
+
+        // Some legacy parsers emit only the family in type_path. In that one
+        // case, retain the older category fallback so the leaf type is not
+        // lost; a deeper explicit path must remain untouched.
+        if (reviewTypePartsMatch(explicitParts, familyParts)) {
+            reviewAppendUniqueTypeParts(parts, fallbackParts);
+        }
+    } else {
+        parts.push(...familyParts);
+        reviewAppendUniqueTypeParts(parts, fallbackParts);
+    }
 
     return parts.length ? parts : ['未分类'];
 }
@@ -3166,11 +3447,15 @@ function renderReviewInspector(item, index = 0) {
 }
 
 function selectReviewItem(item, index, row) {
+    const selectedIndex = Number(index);
+    reviewSelectedIndex = Number.isInteger(selectedIndex) && selectedIndex >= 0 ? selectedIndex : null;
+    reviewSelectedItemId = item?.item_id ? String(item.item_id) : '';
     $$('.review-item-row').forEach(entry => {
         const selected = entry === row;
         entry.classList.toggle('is-selected', selected);
         entry.setAttribute('aria-current', selected ? 'true' : 'false');
     });
+    syncReviewOutlineSelection(index);
     renderReviewInspector(item, index);
 }
 
@@ -3270,68 +3555,261 @@ async function patchCurrentWorkspaceItem(itemId, patch) {
     return updated;
 }
 
+function reviewOutlineNodeLabel(level) {
+    if (level === 1) return '大题型';
+    if (level === 2) return '小题型';
+    return `第${level}级题型`;
+}
+
+function reviewOutlineItemExcerpt(item) {
+    const text = reviewContentForItem(item).replace(/\s+/g, ' ').trim();
+    if (!text) return '无正文预览';
+    return text.length > 56 ? `${text.slice(0, 56)}…` : text;
+}
+
+function createReviewOutlineChevron() {
+    const icon = document.createElement('span');
+    icon.className = 'review-outline-chevron';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+    return icon;
+}
+
+function setReviewOutlineExpanded(node, children, disclosure, model, level, expanded) {
+    reviewOutlineExpansion.set(model.key, expanded);
+    node.classList.toggle('is-collapsed', !expanded);
+    node.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    children.hidden = !expanded;
+    disclosure.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    disclosure.setAttribute(
+        'aria-label',
+        `${expanded ? '收起' : '展开'}${reviewOutlineNodeLabel(level)}：${model.name}`,
+    );
+    disclosure.title = expanded ? '收起此层级' : '展开此层级';
+}
+
+function createReviewOutlineJumpButton({ kind, level, name, count, target, targetIndex }) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `review-outline-jump review-outline-jump-${kind}`;
+    const hasTargetIndex = Number.isInteger(targetIndex) && targetIndex >= 0;
+    const label = target
+        ? `跳转到${reviewOutlineNodeLabel(level)}：${name}，共 ${count} 条`
+        : `${reviewOutlineNodeLabel(level)}：${name}，当前没有可跳转的条目`;
+    button.setAttribute('aria-label', label);
+    button.title = target ? `跳转到${name}` : label;
+    button.disabled = !target || !hasTargetIndex;
+
+    const copy = document.createElement('span');
+    copy.className = 'review-outline-jump-copy';
+    const kindLabel = document.createElement('small');
+    kindLabel.className = 'review-outline-node-kind';
+    kindLabel.textContent = reviewOutlineNodeLabel(level);
+    const title = document.createElement('strong');
+    title.className = 'review-outline-jump-title';
+    title.textContent = name;
+    copy.append(kindLabel, title);
+
+    const countEl = document.createElement('span');
+    countEl.className = 'review-outline-count';
+    countEl.textContent = `${count} 条`;
+    button.append(copy, countEl);
+    if (target && hasTargetIndex) {
+        button.addEventListener('click', () => jumpToReviewItem(target, targetIndex));
+    }
+    return button;
+}
+
+function appendReviewOutlineLeaf(parent, item, level, position, setSize) {
+    const node = document.createElement('li');
+    node.className = 'review-outline-node review-outline-leaf';
+    node.setAttribute('role', 'treeitem');
+    node.setAttribute('aria-level', String(level));
+    node.setAttribute('aria-posinset', String(position + 1));
+    node.setAttribute('aria-setsize', String(setSize));
+    const targetIndex = reviewOutlineItemIndex(item);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'review-outline-leaf-jump';
+    button.setAttribute(
+        'aria-label',
+        `跳转到第 ${targetIndex !== null ? targetIndex + 1 : position + 1} 条解析内容：${reviewOutlineItemExcerpt(item)}`,
+    );
+    button.title = '跳转到对应解析条目';
+    if (targetIndex === null) button.disabled = true;
+
+    const number = document.createElement('span');
+    number.className = 'review-outline-leaf-number';
+    number.textContent = String(targetIndex !== null ? targetIndex + 1 : position + 1).padStart(2, '0');
+    const title = document.createElement('span');
+    title.className = 'review-outline-leaf-title';
+    title.textContent = reviewOutlineItemExcerpt(item);
+    button.append(number, title);
+    if (targetIndex !== null) {
+        button.dataset.reviewIndex = String(targetIndex);
+        button.addEventListener('click', () => jumpToReviewItem(item, targetIndex));
+    }
+    node.appendChild(button);
+    parent.appendChild(node);
+}
+
+function appendReviewOutlineParent(parent, model, level, position, setSize, idState) {
+    const nodeLevel = Number.isInteger(model?.level) ? model.level : level;
+    const childModels = Array.isArray(model?.children) ? model.children : [];
+    const leafItems = Array.isArray(model?.items) ? model.items : [];
+    const hasContent = childModels.length > 0 || leafItems.length > 0;
+    const node = document.createElement('li');
+    node.className = `review-outline-node review-outline-parent is-level-${nodeLevel}`;
+    node.setAttribute('role', 'treeitem');
+    node.setAttribute('aria-level', String(nodeLevel));
+    node.setAttribute('aria-posinset', String(position + 1));
+    node.setAttribute('aria-setsize', String(setSize));
+    node.dataset.level = String(nodeLevel);
+
+    const row = document.createElement('div');
+    row.className = 'review-outline-node-row';
+    const target = reviewOutlineFirstItem(model);
+    const targetIndex = reviewOutlineItemIndex(target);
+    const jump = createReviewOutlineJumpButton({
+        kind: nodeLevel === 1 ? 'major' : 'minor',
+        level: nodeLevel,
+        name: model.name,
+        count: model.itemCount,
+        target,
+        targetIndex,
+    });
+
+    let disclosure = null;
+    let children = null;
+    if (hasContent) {
+        disclosure = document.createElement('button');
+        disclosure.type = 'button';
+        disclosure.className = 'review-outline-disclosure';
+        disclosure.appendChild(createReviewOutlineChevron());
+        const childId = `review-outline-children-${idState.value}`;
+        idState.value += 1;
+        disclosure.setAttribute('aria-controls', childId);
+        row.appendChild(disclosure);
+
+        children = document.createElement('ul');
+        children.id = childId;
+        children.className = 'review-outline-children';
+        children.setAttribute('role', 'group');
+        const siblingCount = childModels.length + leafItems.length;
+        childModels.forEach((child, childIndex) => {
+            appendReviewOutlineParent(children, child, nodeLevel + 1, childIndex, siblingCount, idState);
+        });
+        leafItems.forEach((item, itemIndex) => {
+            appendReviewOutlineLeaf(
+                children,
+                item,
+                nodeLevel + 1,
+                childModels.length + itemIndex,
+                siblingCount,
+            );
+        });
+
+        const savedExpansion = reviewOutlineExpansion.get(model.key);
+        const expanded = typeof savedExpansion === 'boolean'
+            ? savedExpansion
+            : reviewOutlineDefaultExpanded(model);
+        setReviewOutlineExpanded(node, children, disclosure, model, nodeLevel, expanded);
+        disclosure.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const nextExpanded = node.getAttribute('aria-expanded') !== 'true';
+            setReviewOutlineExpanded(node, children, disclosure, model, nodeLevel, nextExpanded);
+        });
+    }
+    if (!hasContent) {
+        const placeholder = document.createElement('span');
+        placeholder.className = 'review-outline-disclosure-placeholder';
+        placeholder.setAttribute('aria-hidden', 'true');
+        row.appendChild(placeholder);
+    }
+    row.appendChild(jump);
+    node.appendChild(row);
+    if (children) node.appendChild(children);
+    parent.appendChild(node);
+}
+
+function renderReviewOutline(outline, model) {
+    outline.replaceChildren();
+    outline.setAttribute('role', 'tree');
+    outline.setAttribute('aria-label', '按题型层级和具体题目浏览解析内容');
+    if (!model.length) return;
+    const tree = document.createElement('ul');
+    tree.className = 'review-outline-tree';
+    tree.setAttribute('role', 'group');
+    const idState = { value: 0 };
+    model.forEach((group, groupIndex) => {
+        appendReviewOutlineParent(tree, group, 1, groupIndex, model.length, idState);
+    });
+    outline.appendChild(tree);
+}
+
+function syncReviewOutlineSelection(index) {
+    const rawIndex = index === null || index === undefined
+        || (typeof index === 'string' && !index.trim())
+        ? null
+        : Number(index);
+    const selectedIndex = Number.isInteger(rawIndex) && rawIndex >= 0 ? rawIndex : null;
+    $$('.review-outline-leaf-jump').forEach(button => {
+        const selected = selectedIndex !== null && Number(button.dataset.reviewIndex) === selectedIndex;
+        button.classList.toggle('is-active', selected);
+        button.setAttribute('aria-current', selected ? 'true' : 'false');
+    });
+}
+
+function jumpToReviewItem(item, index = item?.reviewIndex) {
+    const targetIndex = index === null || index === undefined
+        || (typeof index === 'string' && !index.trim())
+        ? null
+        : Number(index);
+    if (!Number.isInteger(targetIndex) || targetIndex < 0) return;
+    const list = $('review-items');
+    const row = [...(list?.querySelectorAll('.review-item-row') || [])]
+        .find(entry => Number(entry.dataset.reviewIndex) === targetIndex);
+    if (!row) {
+        showToast('该条内容未在当前列表中展示', 'warning');
+        return;
+    }
+    selectReviewItem(item, targetIndex, row);
+    const reducedMotion = typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    row.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'nearest' });
+}
+
 function renderContentReview(parseResults = currentSession?.parse_results) {
     const workspace = authoritativeWorkspace();
     const workspaceGroups = Array.isArray(workspace?.items)
         ? workspaceItemsToParseResults(workspace)
         : null;
     const groups = workspaceGroups || (Array.isArray(parseResults) ? parseResults : []);
+    const orderedGroups = reviewGroupsInDocumentOrder(groups);
     const summary = summarizeParseResults(groups);
-    const items = groups.flatMap((group, groupIndex) => {
-        const groupItems = Array.isArray(group?.items) ? group.items : [];
-        return groupItems.map((item, index) => ({
-            ...item,
-            doc_type: item?.doc_type || group?.doc_type || group?.category || '未分类',
-            sequence: Number(item?.sequence ?? item?.number ?? index + 1),
-            groupIndex,
-        }));
-    }).sort((left, right) => (
-        (Number.isFinite(left.sequence) ? left.sequence : Number.MAX_SAFE_INTEGER)
-        - (Number.isFinite(right.sequence) ? right.sequence : Number.MAX_SAFE_INTEGER)
-        || left.groupIndex - right.groupIndex
-    ));
+    const items = reviewItemsInDocumentOrder(orderedGroups);
+    items.forEach((item, index) => { item.reviewIndex = index; });
     const outline = $('review-outline');
     const reviewItems = $('review-items');
     const empty = $('review-empty');
     if ($('review-summary')) $('review-summary').textContent = `${summary.total} 条 · ${summary.types.length || groups.length} 类内容`;
     if ($('review-item-count')) $('review-item-count').textContent = `${items.length || summary.total} 条`;
-    if (outline) {
-        outline.replaceChildren();
-        groups.forEach((group, index) => {
-            const row = document.createElement('div');
-            row.className = 'review-outline-row';
-            const copy = document.createElement('div');
-            copy.className = 'review-outline-copy';
-            const name = document.createElement('strong');
-            const groupName = String(group?.doc_type || group?.category || `内容组 ${index + 1}`);
-            name.textContent = reviewTypeLabel(groupName);
-            copy.appendChild(name);
-            const childTypes = [...new Set(
-                (Array.isArray(group?.items) ? group.items : [])
-                    .map(item => reviewTypePathForItem({ ...item, doc_type: groupName }, groupName).slice(1).join(' / '))
-                    .filter(Boolean),
-            )];
-            if (childTypes.length > 0) {
-                const detail = document.createElement('small');
-                detail.className = 'review-outline-detail';
-                detail.textContent = childTypes.join(' · ');
-                copy.appendChild(detail);
-            }
-            const count = document.createElement('span');
-            count.textContent = `${Number(group?.item_count ?? group?.items?.length ?? 0)} 条`;
-            row.append(copy, count);
-            outline.appendChild(row);
-        });
-    }
+    const renderedItems = items.slice(0, REVIEW_RENDER_LIMIT);
+    if (outline) renderReviewOutline(outline, buildReviewOutlineModel(orderedGroups, renderedItems));
     if (!reviewItems) return;
     reviewItems.replaceChildren();
     if (items.length === 0) {
+        reviewSelectedItemId = '';
+        reviewSelectedIndex = null;
         if (empty) empty.hidden = false;
+        syncReviewOutlineSelection(null);
+        renderReviewInspector(null);
         return;
     }
     if (empty) empty.hidden = true;
     const fragment = document.createDocumentFragment();
-    items.slice(0, 500).forEach((item, index) => {
+    renderedItems.forEach((item, index) => {
         const row = document.createElement('article');
         row.className = 'review-item-row';
         row.setAttribute('role', 'listitem');
@@ -3341,6 +3819,7 @@ function renderContentReview(parseResults = currentSession?.parse_results) {
         const voicePresentation = reviewVoicePresentation(item);
         row.setAttribute('aria-label', `查看第 ${index + 1} 条${typePath.length ? ` ${typePath.join('，')}` : ''}`);
         if (item.item_id) row.dataset.itemId = String(item.item_id);
+        row.dataset.reviewIndex = String(index);
         row.classList.add(`is-${String(item.status || 'PENDING').toLowerCase()}`);
         const indexEl = document.createElement('span');
         indexEl.className = 'review-item-index';
@@ -3488,19 +3967,32 @@ function renderContentReview(parseResults = currentSession?.parse_results) {
         });
         fragment.appendChild(row);
     });
-    if (items.length > 500) {
+    if (items.length > REVIEW_RENDER_LIMIT) {
         const more = document.createElement('p');
         more.className = 'review-truncated-note';
-        more.textContent = `已展示前 500 条，剩余 ${items.length - 500} 条仍会按完整解析结果生成。`;
+        more.textContent = `已展示前 ${REVIEW_RENDER_LIMIT} 条，剩余 ${items.length - REVIEW_RENDER_LIMIT} 条仍会按完整解析结果生成。`;
         fragment.appendChild(more);
     }
     reviewItems.appendChild(fragment);
-    const firstRow = reviewItems.querySelector('.review-item-row');
-    if (firstRow) {
-        firstRow.classList.add('is-selected');
-        firstRow.setAttribute('aria-current', 'true');
-        renderReviewInspector(items[0], 0);
+    const previousSelectedId = reviewSelectedItemId;
+    const previousSelectedIndex = reviewSelectedIndex;
+    let selectedIndex = previousSelectedId
+        ? renderedItems.findIndex(item => String(item?.item_id || '') === previousSelectedId)
+        : -1;
+    if (selectedIndex < 0 && Number.isInteger(previousSelectedIndex)
+        && previousSelectedIndex >= 0 && previousSelectedIndex < renderedItems.length) {
+        selectedIndex = previousSelectedIndex;
+    }
+    if (selectedIndex < 0) selectedIndex = 0;
+    const selectedItem = renderedItems[selectedIndex];
+    const selectedRow = [...reviewItems.querySelectorAll('.review-item-row')]
+        .find(entry => Number(entry.dataset.reviewIndex) === selectedIndex);
+    if (selectedItem && selectedRow) {
+        selectReviewItem(selectedItem, selectedIndex, selectedRow);
     } else {
+        reviewSelectedItemId = '';
+        reviewSelectedIndex = null;
+        syncReviewOutlineSelection(null);
         renderReviewInspector(null);
     }
 }
@@ -7408,7 +7900,10 @@ async function adoptWorkflowWorkspace(workspace, { candidate = {}, record = {}, 
         await workflowStream.close().catch(() => {});
         workflowStream = null;
     }
-    if (previousWorkflowId !== session.session_id) itemContentCache.clear();
+    if (previousWorkflowId !== session.session_id) {
+        itemContentCache.clear();
+        resetReviewNavigationState();
+    }
     currentSession = session;
     currentWorkspace = workspace;
     generatedFiles = [];
@@ -7657,6 +8152,7 @@ async function deleteHistoryRecord(record, button) {
         historyRecords = historyRecords.filter(item => item.id !== workflowId && item.workflow_id !== workflowId);
         if (archivedCurrentResult) {
             currentSession = null;
+            resetReviewNavigationState();
             generatedFiles = [];
             activeResultContext = null;
             latestCurrentResultEvent = null;
@@ -8245,6 +8741,7 @@ async function processSourceContent(content, filename, expectedSizeBytes, option
             throw new Error('未识别到支持的题型内容，请检查文档结构后重试');
         }
         resetTaskVoiceConfiguration();
+        resetReviewNavigationState();
         currentSession = {
             session_id: draft.workflow_id,
             source_filename: data.source_filename || safeFilename,
@@ -11723,6 +12220,7 @@ async function restart({ notify = true } = {}) {
         }
     }
     currentSession = null;
+    resetReviewNavigationState();
     isGenerating = false;
 
     // 重置状态
