@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .data_safety import is_sensitive_key
 from .domain import DomainError, content_hash
+from wordtts.config import QUESTION_STEM_ITEM_TYPES, QUESTION_STEM_ROLE_KEY
 
 
 class ProviderError(RuntimeError):
@@ -612,6 +613,13 @@ class XunfeiTTSAdapter:
             text = str(item.get("content") or "")
             if not item_id or not text.strip():
                 raise ProviderError("Xunfei submission plan contains an empty item", code="VALIDATION_ERROR", ambiguous=False)
+            item_type = str(item.get("item_type") or item.get("category") or "").strip()
+            item_role = item.get("role")
+            if (
+                not str(item_role or "").strip()
+                and item_type in QUESTION_STEM_ITEM_TYPES
+            ):
+                item_role = QUESTION_STEM_ROLE_KEY
             result.append({
                 "item_id": item_id,
                 "text": text,
@@ -631,7 +639,12 @@ class XunfeiTTSAdapter:
                 "male_voice": profile.get("default_male_voice") or item.get("voice_key") or "george",
                 "role_voices": role_voices,
                 "role_configs": role_configs,
-                "default_role": item.get("role") or profile.get("default_role"),
+                # The workflow engine has already materialized the role and
+                # voice for every durable item.  Do not inherit a profile-wide
+                # default role here: a global ``题干音色`` would otherwise turn
+                # every unmarked/default-female item in the same submission
+                # into the information-retelling stem voice.
+                "default_role": item_role,
             })
         return result
 

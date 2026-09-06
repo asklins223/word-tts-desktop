@@ -24,6 +24,17 @@ VOICES = {
         "vcn_type": 1,
         "language": "英语",
     },
+    # 信息转述题干的中文女声。common/list 的稳定 key 在目录刷新后仍保持
+    # 不变；speaker_no 仅作为离线目录不可用时的页面选择兜底。
+    "common:10000023": {
+        "name": "晓燕",
+        "display": "晓燕 (普通话女声)",
+        "gender": "female",
+        "speaker_no": 130165,
+        "common_id": 10000023,
+        "vcn_type": 1,
+        "language": "普通话",
+    },
 }
 
 DEFAULT_FEMALE = "amanda"
@@ -114,4 +125,3 @@ def get_voice_info(voice_key):
     if key not in VOICES:
         raise ValueError(f"未知音色 {key!r}，请刷新讯飞音色目录后重试")
     return VOICES[key]
-

@@ -38,7 +38,7 @@ from workflow.domain import DomainError, content_hash, new_id
 from workflow.event_store import CursorExpired, EventStoreError, InvalidCursor
 from workflow.external import ExternalRecordService, ExternalSubmission, ExternalLease
 from workflow.garbage_collector import ArtifactGarbageCollector
-from workflow.parser import LegacyWordParser
+from workflow.parser import DocumentParser
 from workflow.providers import ProviderError, ProviderRegistry, XunfeiTTSAdapter
 from workflow.recovery import RecoveryService
 from workflow.repositories import (
@@ -53,6 +53,15 @@ from workflow.repositories import (
 from workflow.scheduler import PersistentScheduler
 from workflow.security import OneTimeTicketManager, TicketError, TicketExpired, verify_capability
 from workflow.source_imports import SourceImportService
+from workflow.system_input import (
+    SUPPORTED_EXTERNAL_INPUT_TYPES,
+    SystemInputError,
+    SystemInputService,
+    system_input_capabilities,
+)
+from workflow.system_input_executor import build_system_input_executor
+from workflow.textbook_catalog import TextbookCatalogService
+from workflow.platform_template_catalog import PlatformTemplateCatalogService
 from workflow.workspace import (
     DELIVERABLE_AUDIO_FORMAT,
     WORKSPACE_CONTENT_DETAIL_LIMIT,
@@ -271,6 +280,150 @@ class ExternalResolveBody(BaseModel):
         extra = "forbid"
 
 
+class SystemInputConfigurationBody(BaseModel):
+    expected_state_version: int
+    configuration_revision: int | None = Field(default=None, ge=1)
+    configuration: dict[str, Any]
+
+    class Config:
+        extra = "forbid"
+
+
+class AudioAcceptanceBody(BaseModel):
+    expected_state_version: int
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputStartBody(BaseModel):
+    expected_state_version: int
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputReconcileBody(BaseModel):
+    input_run_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+    external_record_id: str = Field(min_length=1, max_length=512)
+    evidence: ResolveEvidenceBody
+    resolved_by: str = Field(default="desktop", min_length=1, max_length=256)
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputExternalResolutionBody(BaseModel):
+    input_run_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+    decision: Literal["CONFIRMED", "NOT_SUBMITTED"]
+    external_record_id: str | None = Field(default=None, max_length=512)
+    evidence: ResolveEvidenceBody
+    resolved_by: str = Field(default="desktop", min_length=1, max_length=256)
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputVerificationBody(BaseModel):
+    input_run_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+    resolved_by: str = Field(default="desktop", min_length=1, max_length=256)
+    automatic: bool = False
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputRunControlBody(BaseModel):
+    input_run_id: str = Field(min_length=1, max_length=128)
+    expected_state_version: int | None = None
+    action: Literal["pause", "resume", "stop"]
+    reason: str | None = Field(default=None, max_length=512)
+    requested_by: str = Field(default="desktop", min_length=1, max_length=256)
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputReplacementBody(BaseModel):
+    expected_state_version: int
+    entry_id: str = Field(min_length=1, max_length=256)
+    external_record_id: str = Field(min_length=1, max_length=512)
+    evidence: ResolveEvidenceBody
+    resolved_by: str = Field(default="desktop", min_length=1, max_length=256)
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputBoundaryRangeBody(BaseModel):
+    item_ids: list[Annotated[str, Field(min_length=1, max_length=256)]] = Field(
+        min_length=1,
+        max_length=2000,
+    )
+    label: str | None = Field(default=None, max_length=128)
+
+    @field_validator("item_ids")
+    @classmethod
+    def item_ids_must_be_unique(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("item_ids must contain unique item ids")
+        return value
+
+    class Config:
+        extra = "forbid"
+
+
+class SystemInputBoundaryConfirmationBody(BaseModel):
+    expected_state_version: int
+    mode: Literal["single", "multiple"]
+    boundaries: list[SystemInputBoundaryRangeBody] = Field(default_factory=list, max_length=256)
+
+    class Config:
+        extra = "forbid"
+
+
+class InputTemplateBody(BaseModel):
+    input_type: Literal["paper", "textbook", "vocabulary"]
+    name: str = Field(min_length=1, max_length=256)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    platform_template_id: str | None = Field(default=None, max_length=256)
+    platform_template_name: str | None = Field(default=None, max_length=256)
+    platform_template_version: str | None = Field(default=None, max_length=128)
+
+    class Config:
+        extra = "forbid"
+
+
+class PlatformInputTemplateBody(BaseModel):
+    input_type: Literal["paper", "textbook", "vocabulary"]
+    name: str = Field(min_length=1, max_length=256)
+    platform_template_id: str | None = Field(default=None, max_length=256)
+    platform_template_version: str | None = Field(default=None, max_length=128)
+
+    class Config:
+        extra = "forbid"
+
+
+class PlatformInputTemplatePatchBody(BaseModel):
+    input_type: Literal["paper", "textbook", "vocabulary"] | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    platform_template_id: str | None = Field(default=None, max_length=256)
+    platform_template_version: str | None = Field(default=None, max_length=128)
+
+    class Config:
+        extra = "forbid"
+
+
+class PlatformInputTemplateDeleteBody(BaseModel):
+    reason: str | None = Field(default=None, max_length=256)
+
+    class Config:
+        extra = "forbid"
+
+
 @dataclass
 class WorkflowRuntime:
     database: WorkflowDatabase
@@ -282,6 +435,9 @@ class WorkflowRuntime:
     providers: ProviderRegistry
     tickets: OneTimeTicketManager
     capability: str | None = None
+    system_input: SystemInputService | None = None
+    textbook_catalog: TextbookCatalogService | None = None
+    platform_template_catalog: PlatformTemplateCatalogService | None = None
     initialized: bool = False
     generation_tasks: set[asyncio.Task] = field(default_factory=set)
     generation_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
@@ -289,6 +445,8 @@ class WorkflowRuntime:
     generation_tasks_by_workflow: dict[str, asyncio.Task] = field(default_factory=dict)
     generation_slot_owners: dict[str, asyncio.Task] = field(default_factory=dict)
     generation_cancel_events: dict[str, threading.Event] = field(default_factory=dict)
+    input_tasks: set[asyncio.Task] = field(default_factory=set)
+    input_tasks_by_run: dict[str, asyncio.Task] = field(default_factory=dict)
     recovery: RecoveryService | None = None
     scheduler: PersistentScheduler | None = None
     garbage_collector: ArtifactGarbageCollector | None = None
@@ -306,6 +464,16 @@ class WorkflowRuntime:
         # versioned router into an unauthenticated loopback service.
         if not self.capability:
             self.capability = secrets.token_urlsafe(32)
+        if self.system_input is None:
+            self.system_input = SystemInputService(
+                self.database,
+                self.repository,
+                external=self.external,
+            )
+        if self.textbook_catalog is None:
+            self.textbook_catalog = TextbookCatalogService()
+        if self.platform_template_catalog is None:
+            self.platform_template_catalog = PlatformTemplateCatalogService()
 
     @classmethod
     def from_paths(
@@ -334,19 +502,29 @@ class WorkflowRuntime:
             repository,
             SourceImportService(database, artifacts, ticket_manager=tickets, event_store=repository.events),
             artifacts,
-            parser=LegacyWordParser(),
+            parser=DocumentParser(),
             providers=providers,
         )
+        external = ExternalRecordService(database, intent_log=repository.intent_log)
+        page_executor = build_system_input_executor(repository, artifacts)
         return cls(
             database=database,
             repository=repository,
             artifacts=artifacts,
             imports=application.source_imports,
-            external=ExternalRecordService(database, intent_log=repository.intent_log),
+            external=external,
             application=application,
             providers=providers,
             tickets=tickets,
             capability=capability or secrets.token_urlsafe(32),
+            system_input=SystemInputService(
+                database,
+                repository,
+                external=external,
+                executor=page_executor,
+            ),
+            textbook_catalog=TextbookCatalogService(),
+            platform_template_catalog=PlatformTemplateCatalogService(),
             recovery=RecoveryService(database),
             scheduler=PersistentScheduler(database, event_store=repository.events),
             garbage_collector=ArtifactGarbageCollector(database, artifacts),
@@ -534,7 +712,7 @@ def _release_failed_idempotency(request: Request, exc: Exception) -> None:
     resource_id = next(
         (str(path_params[name]) for name in (
             "workflow_id", "import_id", "artifact_id", "external_record_id", "mapping_id",
-            "attempt_id", "operation_id",
+            "attempt_id", "operation_id", "platform_template_key",
         ) if path_params.get(name)),
         None,
     )
@@ -803,6 +981,174 @@ def _recover_workflow_envelope(runtime: WorkflowRuntime, row: Mapping[str, Any],
     return 200, _workflow_envelope(snapshot, str(row["idempotency_id"]))
 
 
+def _refresh_rerun_system_input_projection(runtime: WorkflowRuntime, workflow_id: str) -> None:
+    """Rebuild the optional input projection for a fresh rerun.
+
+    A rerun gets new parser item and input-unit IDs. The saved system-input
+    form lives in the cloned workflow configuration, while entry/run rows are
+    intentionally run-local and must be recreated. Keep this best-effort so
+    an older compatibility database can still rerun a normal TTS workflow.
+    """
+
+    service = runtime.system_input
+    if service is None or not service.available:
+        return
+    try:
+        service.sync_projection(workflow_id)
+        service.ensure_entries(workflow_id)
+    except Exception:
+        logger.warning(
+            "system-input projection refresh failed after workflow rerun: %s",
+            workflow_id,
+            exc_info=True,
+        )
+
+
+def _recover_workflow_rerun(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    workflow_id = str(event["workflow_id"])
+    _refresh_rerun_system_input_projection(runtime, workflow_id)
+    snapshot = runtime.repository.get_workflow(workflow_id)
+    return 200, _workflow_envelope(snapshot, str(row["idempotency_id"]))
+
+
+def _system_input_workspace_response(runtime: WorkflowRuntime, workflow_id: str, request_id: str) -> dict[str, Any]:
+    workspace = runtime.repository.get_workspace(
+        workflow_id,
+        capabilities=_workspace_capabilities(runtime, workflow_id),
+    )
+    return {
+        "request_id": request_id,
+        "workflow_id": workflow_id,
+        "workspace": workspace,
+        "system_input": workspace.get("system_input") if isinstance(workspace, Mapping) else None,
+    }
+
+
+def _recover_system_input_workspace(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    workflow_id = str(event["workflow_id"])
+    return 200, _system_input_workspace_response(runtime, workflow_id, str(row["idempotency_id"]))
+
+
+def _recover_system_input_boundaries(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    workflow_id = str(event["workflow_id"])
+    service = runtime.system_input
+    if service is None:
+        return None
+    # The boundary decision and its event commit before the derived projection
+    # refresh. Re-run this local, deterministic refresh while reconstructing a
+    # lost HTTP response so an orphaned idempotency row cannot return stale
+    # unit IDs after a process restart.
+    service.sync_projection(workflow_id)
+    return 200, _system_input_workspace_response(runtime, workflow_id, str(row["idempotency_id"]))
+
+
+def _recover_audio_acceptance(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    workflow_id = str(event["workflow_id"])
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    return 200, {
+        **_system_input_workspace_response(runtime, workflow_id, str(row["idempotency_id"])),
+        "acceptance_id": str(payload.get("acceptance_id") or "") or None,
+    }
+
+
+def _recover_input_run(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapping[str, Any]):
+    workflow_id = str(event["workflow_id"])
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    return 202, {
+        **_system_input_workspace_response(runtime, workflow_id, str(row["idempotency_id"])),
+        "input_run_id": str(payload.get("input_run_id") or "") or None,
+        "replayed": True,
+    }
+
+
+def _recover_input_template(runtime: WorkflowRuntime, row: Mapping[str, Any], body: InputTemplateBody):
+    service = runtime.system_input
+    if service is None:
+        return None
+    expected_hash = content_hash(body.configuration)
+    for template in service.list_templates(body.input_type):
+        if (
+            str(template.get("name") or "") == body.name
+            and content_hash(template.get("configuration") or {}) == expected_hash
+            and str(template.get("platform_template_id") or "") == str(body.platform_template_id or "")
+            and str(template.get("platform_template_version") or "") == str(body.platform_template_version or "")
+        ):
+            return 201, template
+    return None
+
+
+def _recover_platform_input_template(
+    runtime: WorkflowRuntime,
+    row: Mapping[str, Any],
+    body: PlatformInputTemplateBody,
+):
+    service = runtime.system_input
+    if service is None:
+        return None
+    expected_id = str(body.platform_template_id or "")
+    expected_version = str(body.platform_template_version or "")
+    for template in service.list_platform_templates(body.input_type):
+        if (
+            str(template.get("name") or "") == body.name
+            and str(template.get("platform_template_id") or "") == expected_id
+            and str(template.get("platform_template_version") or "") == expected_version
+        ):
+            return 201, template
+    return None
+
+
+def _recover_platform_input_template_update(
+    runtime: WorkflowRuntime,
+    row: Mapping[str, Any],
+    template_key: str,
+    body: PlatformInputTemplatePatchBody,
+):
+    service = runtime.system_input
+    if service is None:
+        return None
+    try:
+        template = service.get_platform_template(template_key)
+    except (NotFoundError, SystemInputError):
+        return None
+    if template.get("archived_at"):
+        return None
+    expected = body.model_dump(exclude_unset=True)
+    field_map = {
+        "input_type": "input_type",
+        "name": "name",
+        "platform_template_id": "platform_template_id",
+        "platform_template_version": "platform_template_version",
+    }
+    for request_key, row_key in field_map.items():
+        if request_key not in expected:
+            continue
+        if str(template.get(row_key) or "") != str(expected[request_key] or ""):
+            return None
+    return 200, template
+
+
+def _recover_platform_input_template_delete(
+    runtime: WorkflowRuntime,
+    row: Mapping[str, Any],
+    template_key: str,
+):
+    service = runtime.system_input
+    if service is None:
+        return None
+    try:
+        template = service.get_platform_template(template_key)
+    except (NotFoundError, SystemInputError):
+        return None
+    if not template.get("archived_at"):
+        return None
+    return 200, {
+        "request_id": str(row["idempotency_id"]),
+        "platform_template_key": template_key,
+        "deleted": True,
+        "platform_template": template,
+    }
+
+
 def _recover_parse_results(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for item in items:
@@ -844,12 +1190,23 @@ def _recover_parse(runtime: WorkflowRuntime, row: Mapping[str, Any], event: Mapp
         if isinstance(parsed_artifact_ids, list) and parsed_artifact_ids
         else None
     )
+    source_filename = runtime.application._source_filename(workflow_id, source_artifact_id)
+    # The parser transaction and the derived system-input graph are separate
+    # commits. If the process stopped after the parser event but before the
+    # normal route refreshed the projection, idempotency recovery must rebuild
+    # it before returning a cached parse response; otherwise the renderer can
+    # remain fail-closed forever with no document preflight result.
+    if runtime.system_input is not None and runtime.system_input.available:
+        runtime.system_input.sync_projection(
+            workflow_id,
+            source_filename=source_filename,
+        )
     return 202, _command_response(
         snapshot,
         "parse",
         str(row["idempotency_id"]),
         parse_results=_recover_parse_results(items),
-        source_filename=runtime.application._source_filename(workflow_id, source_artifact_id),
+        source_filename=source_filename,
         source_artifact_id=source_artifact_id,
         parsed_artifact_id=parsed_artifact_id,
     )
@@ -1077,13 +1434,32 @@ def _publish_generation_runtime_event(
     if elapsed_seconds is not None:
         payload["elapsed_seconds"] = round(max(0.0, float(elapsed_seconds)), 1)
     if isinstance(progress, dict):
-        for key in ("item_id", "segment_id", "stage", "completed_segments", "total_segments", "downloaded", "error"):
+        for key in (
+            "item_id",
+            "segment_id",
+            "stage",
+            "completed_segments",
+            "total_segments",
+            "submitted_works",
+            "downloaded_works",
+            "total_works",
+            "item_count",
+            "downloaded",
+            "error",
+        ):
             if key not in progress:
                 continue
             value = progress[key]
             if key == "error":
                 payload[key] = " ".join(str(value or "").split())[:500]
-            elif key in {"completed_segments", "total_segments"}:
+            elif key in {
+                "completed_segments",
+                "total_segments",
+                "submitted_works",
+                "downloaded_works",
+                "total_works",
+                "item_count",
+            }:
                 try:
                     payload[key] = max(0, int(value))
                 except (TypeError, ValueError):
@@ -1319,6 +1695,41 @@ def _workspace_capabilities(runtime: WorkflowRuntime, workflow_id: str) -> dict[
         provider_projection["can_start_generation"] = False
         provider_projection["reason"] = "当前运行时未注册该 Provider"
     capabilities["provider"] = provider_projection
+    system_input = runtime.system_input
+    if system_input is None:
+        system_input = SystemInputService(runtime.database, runtime.repository, external=runtime.external)
+        runtime.system_input = system_input
+    try:
+        system_input_available = bool(system_input.available)
+    except Exception:
+        system_input_available = False
+    input_type_capability_rows = system_input_capabilities()
+    executor_capability_reader = getattr(system_input.executor, "capabilities", None)
+    if callable(executor_capability_reader):
+        try:
+            executor_rows = executor_capability_reader()
+            executor_by_type = {
+                str(row.get("input_type") or ""): row
+                for row in executor_rows
+                if isinstance(row, Mapping)
+            }
+            for row in input_type_capability_rows:
+                executor_row = executor_by_type.get(str(row.get("input_type") or ""))
+                if executor_row is not None:
+                    row["executor_available"] = bool(executor_row.get("executor_available"))
+        except Exception:
+            # Capability reporting must not make the ordinary workspace
+            # projection unavailable if an optional adapter reports badly.
+            pass
+    capabilities["system_input"] = {
+        "available": system_input_available,
+        # This is deliberately false until a visible page executor is
+        # explicitly attached by the desktop runtime. The API never pretends
+        # it can write the external platform itself.
+        "executor_available": bool(system_input.executor is not None),
+        "supported_external_input_types": sorted(SUPPORTED_EXTERNAL_INPUT_TYPES),
+        "input_type_capabilities": input_type_capability_rows,
+    }
     if not active and snapshot.control_state in {"PAUSED", "PAUSE_REQUESTED"}:
         candidate = next(
             (
@@ -1446,6 +1857,9 @@ def _artifact_content_metadata(runtime: WorkflowRuntime, row: Mapping[str, Any])
         "flac": "audio/flac", "json": "application/json", "zip": "application/zip",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
     }.get(fmt, "application/octet-stream")
     size = row["blob_size_bytes"] if row["blob_size_bytes"] is not None else row["artifact_size_bytes"]
     sha256 = row["blob_sha256"] or row["artifact_sha256"]
@@ -1543,16 +1957,37 @@ def _schedule_generation_task(
                     message="正在启动讯飞浏览器会话",
                 )
 
+                # 合并模式的阶段信号（无 item_id）按作品阶段本地化；逐条
+                # 模式继续按条目展示。最近一次进度会随 2 秒心跳一起发出，
+                # 让渲染层的阶段进度在长合成等待期间持续可见。
+                composite_stage_messages = {
+                    "preparing": "正在讯飞编辑页填写并提交合并作品",
+                    "submitted": "合并作品已提交，讯飞正在合成音频",
+                    "downloading": "已在下载页等待合并音频就绪",
+                    "downloaded": "合并音频已下载，正在按停顿切割",
+                    "cut": "合并音频切割完成，正在整理输出",
+                }
+                last_provider_progress: dict[str, Any] = {}
+
                 def provider_progress(value: Mapping[str, Any]) -> None:
                     progress = dict(value or {})
+                    last_provider_progress.clear()
+                    last_provider_progress.update(progress)
                     stage = str(progress.get("stage") or progress.get("status") or "处理中")
                     item_id = str(progress.get("item_id") or "")
+                    if item_id:
+                        message = f"正在处理条目 {item_id}"
+                    else:
+                        message = composite_stage_messages.get(
+                            stage,
+                            f"讯飞浏览器：{stage}",
+                        )
                     _publish_generation_runtime_event(
                         runtime,
                         workflow_id,
                         event_type="TTS_RUNTIME_PROGRESS",
                         status=str(progress.get("status") or stage),
-                        message=(f"正在处理条目 {item_id}" if item_id else f"讯飞浏览器：{stage}"),
+                        message=message,
                         elapsed_seconds=time.monotonic() - started_at,
                         progress=progress,
                     )
@@ -1593,6 +2028,7 @@ def _schedule_generation_task(
                             status="waiting",
                             message="讯飞浏览器正在处理，任务仍在运行",
                             elapsed_seconds=time.monotonic() - started_at,
+                            progress=dict(last_provider_progress) or None,
                         )
                 result = await provider_task
                 _publish_generation_result_event(runtime, workflow_id, result)
@@ -1808,12 +2244,68 @@ async def _dispatch_recoverable_once(runtime: WorkflowRuntime) -> int:
     return dispatched
 
 
+def _active_input_task(runtime: WorkflowRuntime, input_run_id: str) -> asyncio.Task | None:
+    task = runtime.input_tasks_by_run.get(str(input_run_id))
+    if task is None or task.done():
+        return None
+    return task
+
+
+async def _dispatch_input_runs_once(runtime: WorkflowRuntime) -> int:
+    """Resume user-started page runs after a backend restart.
+
+    This dispatcher only considers durable runs that the user already
+    launched.  It never creates a new run and the worker's operation state
+    machine still prevents a second page submission for an uncertain result.
+    """
+
+    service = runtime.system_input
+    if service is None:
+        return 0
+    # Browser-close/stop finalization is intentionally a short two-phase
+    # handoff: publish the durable marker before rolling up the attempted unit.
+    # If the process restarts in that window, finish the terminal stop first;
+    # never feed the marked run back into the normal recovery list.
+    try:
+        marked_run_ids = await asyncio.to_thread(service.list_browser_closed_run_ids, limit=16)
+    except Exception:
+        marked_run_ids = []
+    for input_run_id in marked_run_ids:
+        if _active_input_task(runtime, input_run_id) is not None:
+            continue
+        try:
+            await asyncio.to_thread(
+                service.finalize_stopped_input_run,
+                input_run_id,
+                reason="平台浏览器窗口被关闭或用户已停止，已恢复为终止状态",
+                requested_by="system-input-recovery",
+            )
+        except Exception:
+            # A concurrent worker or process may have completed the finalizer;
+            # the durable error marker still keeps this run out of recovery.
+            continue
+    if service.executor is None:
+        return 0
+    try:
+        run_ids = await asyncio.to_thread(service.list_recoverable_run_ids, limit=16)
+    except Exception:
+        return 0
+    dispatched = 0
+    for input_run_id in run_ids:
+        if _active_input_task(runtime, input_run_id) is not None:
+            continue
+        _schedule_input_task(runtime, input_run_id)
+        dispatched += 1
+    return dispatched
+
+
 async def _automatic_retry_loop(runtime: WorkflowRuntime) -> None:
     """Keep retry dispatch alive across API requests and backend restarts."""
 
     while True:
         await asyncio.sleep(1.0)
         try:
+            await _dispatch_input_runs_once(runtime)
             await _dispatch_recoverable_once(runtime)
             await _dispatch_due_retries_once(runtime)
         except asyncio.CancelledError:
@@ -1831,6 +2323,40 @@ def _idempotency_key(value: str | None) -> str:
     return value
 
 
+def _schedule_input_task(runtime: WorkflowRuntime, input_run_id: str) -> asyncio.Task:
+    """Execute page input off the event loop and retain the task until done."""
+
+    existing = _active_input_task(runtime, input_run_id)
+    if existing is not None:
+        return existing
+
+    async def worker() -> None:
+        try:
+            service = runtime.system_input
+            if service is None:
+                raise SystemInputError("页面录入执行器未连接", code="INPUT_EXECUTOR_UNAVAILABLE")
+            await asyncio.to_thread(service.execute_input_run, input_run_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Per-entry failures are persisted by the service.  A worker-level
+            # exception is logged but is not exposed as a false external
+            # success; the next workspace read remains authoritative.
+            logger.exception("system-input page executor failed: %s", input_run_id)
+
+    task = asyncio.create_task(worker(), name=f"system-input-{input_run_id}")
+    runtime.input_tasks.add(task)
+    runtime.input_tasks_by_run[str(input_run_id)] = task
+
+    def cleanup(done: asyncio.Task) -> None:
+        runtime.input_tasks.discard(done)
+        if runtime.input_tasks_by_run.get(str(input_run_id)) is done:
+            runtime.input_tasks_by_run.pop(str(input_run_id), None)
+
+    task.add_done_callback(cleanup)
+    return task
+
+
 def install_workflow_api(
     app,
     *,
@@ -1838,6 +2364,7 @@ def install_workflow_api(
     database_path: str | os.PathLike[str] | None = None,
     artifact_root: str | os.PathLike[str] | None = None,
     capability: str | None = None,
+    profile: str = "2a",
 ) -> WorkflowRuntime:
     """Mount the new API and return its runtime for tests/health checks."""
 
@@ -1847,6 +2374,7 @@ def install_workflow_api(
             database_path or os.environ.get("WORDTTS_WORKFLOW_DB_PATH", str(data_dir / "workflow.db")),
             artifact_root or os.environ.get("WORDTTS_ARTIFACT_ROOT", str(data_dir / "artifacts")),
             capability=capability if capability is not None else os.environ.get("WORDTTS_API_TOKEN"),
+            profile=profile,
         )
     elif not runtime.capability:
         # Keep callers that assemble a runtime manually fail-closed as well.
@@ -1893,6 +2421,907 @@ def install_workflow_api(
             capabilities=_workspace_capabilities(runtime, workflow_id),
         )
         return {"request_id": _request_id(), "workspace": workspace}
+
+    @router.get("/workflows/{workflow_id}/system-input")
+    async def get_system_input_projection(workflow_id: str):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        return {
+            "request_id": _request_id(),
+            "workflow_id": workflow_id,
+            "system_input": service.get_projection(workflow_id),
+        }
+
+    @router.patch("/workflows/{workflow_id}/system-input/configuration")
+    async def save_system_input_configuration(
+        workflow_id: str,
+        body: SystemInputConfigurationBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input",
+            client_key=key,
+            command_name="saveSystemInputConfiguration",
+            method="PATCH",
+            resource_id=workflow_id,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SYSTEM_INPUT_CONFIGURATION_SAVED"},
+                lambda row, event: _recover_system_input_workspace(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        result = await asyncio.to_thread(
+            service.save_configuration,
+            workflow_id,
+            body.expected_state_version,
+            body.configuration,
+            expected_configuration_revision=body.configuration_revision,
+            request_id=request_id,
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "configuration_revision": result["configuration_revision"],
+            "workspace": runtime.repository.get_workspace(
+                workflow_id,
+                capabilities=_workspace_capabilities(runtime, workflow_id),
+            ),
+        }
+        response["system_input"] = response["workspace"].get("system_input")
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return response
+
+    @router.post("/workflows/{workflow_id}/system-input/boundaries")
+    async def confirm_system_input_boundaries(
+        workflow_id: str,
+        body: SystemInputBoundaryConfirmationBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input-boundaries",
+            client_key=key,
+            command_name="confirmSystemInputBoundaries",
+            method="POST",
+            resource_id=workflow_id,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SYSTEM_INPUT_BOUNDARIES_CONFIRMED"},
+                lambda row, event: _recover_system_input_boundaries(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        result = await asyncio.to_thread(
+            service.confirm_unit_boundaries,
+            workflow_id,
+            body.expected_state_version,
+            mode=body.mode,
+            boundaries=[boundary.model_dump() for boundary in body.boundaries],
+            request_id=request_id,
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "boundary_decision": result.get("decision"),
+            "workspace": runtime.repository.get_workspace(
+                workflow_id,
+                capabilities=_workspace_capabilities(runtime, workflow_id),
+            ),
+        }
+        response["system_input"] = response["workspace"].get("system_input")
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return response
+
+    @router.post("/workflows/{workflow_id}/audio-acceptance")
+    async def accept_workflow_audio(
+        workflow_id: str,
+        body: AudioAcceptanceBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:audio-acceptance",
+            client_key=key,
+            command_name="acceptAudioBatch",
+            method="POST",
+            resource_id=workflow_id,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"AUDIO_BATCH_ACCEPTED"},
+                lambda row, event: _recover_audio_acceptance(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        result = await asyncio.to_thread(
+            service.accept_audio,
+            workflow_id,
+            body.expected_state_version,
+            request_id=request_id,
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "acceptance_id": result["projection"].get("audio_acceptance", {}).get("acceptance_id"),
+            "workspace": runtime.repository.get_workspace(
+                workflow_id,
+                capabilities=_workspace_capabilities(runtime, workflow_id),
+            ),
+        }
+        response["system_input"] = response["workspace"].get("system_input")
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return response
+
+    @router.post("/workflows/{workflow_id}/system-input/start", status_code=202)
+    async def start_system_input(
+        workflow_id: str,
+        body: SystemInputStartBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None or service.executor is None:
+            raise SystemInputError("页面录入执行器未连接", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input-run",
+            client_key=key,
+            command_name="startSystemInput",
+            method="POST",
+            resource_id=workflow_id,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SYSTEM_INPUT_RUN_CREATED", "SYSTEM_INPUT_RUN_RETRY_CREATED"},
+                lambda row, event: _recover_input_run(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        result = await asyncio.to_thread(
+            service.start_input,
+            workflow_id,
+            body.expected_state_version,
+            idempotency_key=key,
+            request_id=request_id,
+        )
+        input_run_id = str(result["input_run_id"])
+        _schedule_input_task(runtime, input_run_id)
+        workspace = runtime.repository.get_workspace(
+            workflow_id,
+            capabilities=_workspace_capabilities(runtime, workflow_id),
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "input_run_id": input_run_id,
+            "replayed": bool(result.get("replayed")),
+            "workspace": workspace,
+            "system_input": workspace.get("system_input"),
+        }
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=202,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return JSONResponse(response, status_code=202)
+
+    @router.post("/workflows/{workflow_id}/system-input/reconcile-external-record", status_code=200)
+    async def reconcile_system_input_external_record(
+        workflow_id: str,
+        body: SystemInputReconcileBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Repair a local ambiguous run after an external record is confirmed.
+
+        The external operation must already be resolved through the external
+        operation endpoint. This route only closes the matching local attempt
+        as retryable, so the next run edits the observed record instead of
+        creating a duplicate.
+        """
+
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input-reconciliation",
+            client_key=key,
+            command_name="reconcileSystemInputExternalRecord",
+            method="POST",
+            resource_id=workflow_id,
+            target={
+                "input_run_id": body.input_run_id,
+                "attempt_id": body.attempt_id,
+                "external_record_id": body.external_record_id,
+            },
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SYSTEM_INPUT_EXTERNAL_RECORD_RECONCILED"},
+                lambda row, event: _recover_system_input_workspace(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        projection = await asyncio.to_thread(
+            service.reconcile_observed_external_record,
+            workflow_id,
+            body.input_run_id,
+            body.attempt_id,
+            body.external_record_id,
+            evidence=body.evidence.model_dump(),
+            request_id=request_id,
+            resolved_by=body.resolved_by,
+        )
+        workspace = runtime.repository.get_workspace(
+            workflow_id,
+            capabilities=_workspace_capabilities(runtime, workflow_id),
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "workspace": workspace,
+            "system_input": projection,
+        }
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return response
+
+    @router.post("/workflows/{workflow_id}/system-input/resolve-external-operation", status_code=200)
+    async def resolve_system_input_external_operation(
+        workflow_id: str,
+        body: SystemInputExternalResolutionBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Close an ambiguous page write and expose a safe retry path.
+
+        ``CONFIRMED`` first binds the observed platform record to the durable
+        external operation, while ``NOT_SUBMITTED`` archives the operation as
+        rejected.  Both decisions repair the local input projection without
+        issuing another page write.
+        """
+
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input-external-resolution",
+            client_key=key,
+            command_name="resolveSystemInputExternalOperation",
+            method="POST",
+            resource_id=workflow_id,
+            target={
+                "input_run_id": body.input_run_id,
+                "attempt_id": body.attempt_id,
+                "decision": body.decision,
+                "external_record_id": body.external_record_id,
+            },
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SYSTEM_INPUT_EXTERNAL_OPERATION_RESOLVED", "SYSTEM_INPUT_EXTERNAL_RECORD_RECONCILED"},
+                lambda row, event: _recover_system_input_workspace(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        projection = await asyncio.to_thread(
+            service.resolve_ambiguous_external_operation,
+            workflow_id,
+            body.input_run_id,
+            body.attempt_id,
+            body.decision,
+            body.external_record_id,
+            evidence=body.evidence.model_dump(),
+            request_id=request_id,
+            resolved_by=body.resolved_by,
+        )
+        workspace = runtime.repository.get_workspace(
+            workflow_id,
+            capabilities=_workspace_capabilities(runtime, workflow_id),
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "workspace": workspace,
+            "system_input": projection,
+        }
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return response
+
+    @router.post("/workflows/{workflow_id}/system-input/verify-external-record", status_code=202)
+    async def verify_system_input_external_record(
+        workflow_id: str,
+        body: SystemInputVerificationBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Run the automated read-only reconciliation for an ambiguous page write.
+
+        The page executor searches the platform paper list for the configured
+        title and only reads list responses. One match binds automatically,
+        zero matches resolves as not submitted, and anything else fails closed
+        with the concrete problem. The outcome is durable on the attempt
+        evidence, so the renderer polls the workspace instead of holding this
+        request open.
+        """
+
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None or service.executor is None:
+            raise SystemInputError("页面录入执行器未连接", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input-verification",
+            client_key=key,
+            command_name="verifySystemInputExternalRecord",
+            method="POST",
+            resource_id=workflow_id,
+            target={
+                "input_run_id": body.input_run_id,
+                "attempt_id": body.attempt_id,
+                "automatic": body.automatic,
+            },
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {
+                    "SYSTEM_INPUT_EXTERNAL_RECORD_VERIFIED",
+                    "SYSTEM_INPUT_EXTERNAL_OPERATION_RESOLVED",
+                    "SYSTEM_INPUT_EXTERNAL_RECORD_RECONCILED",
+                },
+                lambda row, event: _recover_system_input_workspace(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+
+        async def worker() -> None:
+            try:
+                await asyncio.to_thread(
+                    service.verify_ambiguous_external_record,
+                    workflow_id,
+                    body.input_run_id,
+                    body.attempt_id,
+                    request_id=request_id,
+                    resolved_by=body.resolved_by,
+                    automatic=body.automatic,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Terminal verification outcomes are persisted on the attempt
+                # evidence by the service. A worker-level failure stays logged
+                # so the next workspace read remains authoritative.
+                logger.exception("system-input read-only verification failed: %s", request_id)
+
+        task = asyncio.create_task(worker(), name=f"system-input-verify-{request_id}")
+        runtime.input_tasks.add(task)
+        task.add_done_callback(lambda done: runtime.input_tasks.discard(done))
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "status": "verification_started",
+            "input_run_id": body.input_run_id,
+            "attempt_id": body.attempt_id,
+        }
+        # The verification outcome is durable on the attempt evidence, so the
+        # accepted response itself is the completed result of this command;
+        # leaving the idempotency row open would strand replays of this key.
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=202,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return JSONResponse(response, status_code=202)
+
+    @router.post("/workflows/{workflow_id}/system-input/run-control", status_code=202)
+    async def control_system_input_run(
+        workflow_id: str,
+        body: SystemInputRunControlBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Pause, resume, or stop an active system-input run.
+
+        The flags are durable and the page adapter honours them at safe page
+        checkpoints; a browser action already in flight always completes or
+        fails on its own.
+        ``stop`` without a live worker finalizes the run immediately, and
+        ``resume`` re-arms the worker for a run parked before this backend
+        process started.
+        """
+
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input-run-control",
+            client_key=key,
+            command_name="controlSystemInputRun",
+            method="POST",
+            resource_id=workflow_id,
+            target={
+                "input_run_id": body.input_run_id,
+                "action": body.action,
+                "expected_state_version": body.expected_state_version,
+            },
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SYSTEM_INPUT_RUN_CONTROLLED", "SYSTEM_INPUT_RUN_STOPPED"},
+                lambda row, event: _recover_system_input_workspace(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        result = await asyncio.to_thread(
+            service.request_input_run_control,
+            workflow_id,
+            body.input_run_id,
+            action=body.action,
+            reason=body.reason,
+            request_id=request_id,
+            requested_by=body.requested_by,
+            expected_state_version=body.expected_state_version,
+        )
+        has_worker = _active_input_task(runtime, body.input_run_id) is not None
+        if body.action == "stop" and not has_worker:
+            # Nobody is polling the control flags anymore. Finalize now so
+            # the run does not linger as RUNNING until the next restart.
+            await asyncio.to_thread(
+                service.finalize_stopped_input_run,
+                body.input_run_id,
+                reason=body.reason or "用户停止了系统录入",
+                request_id=request_id,
+                requested_by=body.requested_by,
+            )
+        if body.action == "resume" and not has_worker:
+            # A run parked before a restart has no worker to wake up.
+            # Re-arm one; the run state machine rejects unsafe resumes.
+            _schedule_input_task(runtime, body.input_run_id)
+        workspace = runtime.repository.get_workspace(
+            workflow_id,
+            capabilities=_workspace_capabilities(runtime, workflow_id),
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "action": body.action,
+            "workspace": workspace,
+            "system_input": workspace.get("system_input"),
+        }
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=202,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return JSONResponse(response, status_code=202)
+
+    @router.post("/workflows/{workflow_id}/system-input/replace-external-record", status_code=200)
+    async def replace_system_input_external_record(
+        workflow_id: str,
+        body: SystemInputReplacementBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Detach a confirmed incompatible paper before creating a replacement.
+
+        The old platform record and its confirmed operation remain immutable;
+        only the current local entry pointer is cleared. The next input run
+        then uses a new external business mapping.
+        """
+
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}:system-input-replacement",
+            client_key=key,
+            command_name="replaceSystemInputExternalRecord",
+            method="POST",
+            resource_id=workflow_id,
+            target={
+                "entry_id": body.entry_id,
+                "external_record_id": body.external_record_id,
+            },
+            request=body.model_dump(),
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"SYSTEM_INPUT_EXTERNAL_RECORD_DETACHED"},
+                lambda row, event: _recover_system_input_workspace(runtime, row, event),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        request_id = str(idem_id)
+        projection = await asyncio.to_thread(
+            service.detach_confirmed_external_record_for_replacement,
+            workflow_id,
+            body.entry_id,
+            body.external_record_id,
+            body.expected_state_version,
+            evidence=body.evidence.model_dump(),
+            request_id=request_id,
+            resolved_by=body.resolved_by,
+        )
+        workspace = runtime.repository.get_workspace(
+            workflow_id,
+            capabilities=_workspace_capabilities(runtime, workflow_id),
+        )
+        response = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "workspace": workspace,
+            "system_input": projection,
+        }
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=response,
+            workflow_id=workflow_id,
+        )
+        return response
+
+    @router.get("/system-input/templates")
+    async def list_system_input_templates(input_type: str | None = None):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        return {"request_id": _request_id(), "templates": service.list_templates(input_type)}
+
+    @router.get("/system-input/textbook-catalog")
+    async def get_system_input_textbook_catalog():
+        """Return the last manual textbook-directory sync and its local cache."""
+
+        runtime.ensure_initialized()
+        service = runtime.textbook_catalog
+        if service is None:
+            raise RepositoryError("教材目录服务未初始化", code="TEXTBOOK_CATALOG_UNAVAILABLE")
+        return {
+            "request_id": _request_id(),
+            "catalog": service.get_catalog(),
+            "sync": service.get_sync_status(),
+        }
+
+    @router.post("/system-input/textbook-catalog/sync", status_code=202)
+    async def start_system_input_textbook_catalog_sync(
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Open the visible textbook page and asynchronously observe all pages."""
+
+        runtime.ensure_initialized()
+        service = runtime.textbook_catalog
+        if service is None:
+            raise RepositoryError("教材目录服务未初始化", code="TEXTBOOK_CATALOG_UNAVAILABLE")
+        # The header keeps this endpoint consistent with other renderer
+        # mutations.  The actual browser job is intentionally not stored in
+        # the workflow idempotency table: retrying while it is running simply
+        # returns the one in-process job instead of opening another browser.
+        _idempotency_key(idempotency_key)
+        sync = await asyncio.to_thread(service.start_sync)
+        return {"request_id": _request_id(), "sync": sync}
+
+    @router.get("/system-input/textbook-catalog/sync/{sync_id}")
+    async def get_system_input_textbook_catalog_sync(sync_id: str):
+        runtime.ensure_initialized()
+        service = runtime.textbook_catalog
+        if service is None:
+            raise RepositoryError("教材目录服务未初始化", code="TEXTBOOK_CATALOG_UNAVAILABLE")
+        sync = service.get_sync_status()
+        # A restart can lose the in-memory job, so keep the requested id in
+        # the response while exposing the durable cache as the authority.
+        if not sync.get("sync_id"):
+            sync = {**sync, "sync_id": sync_id}
+        return {
+            "request_id": _request_id(),
+            "sync": sync,
+            "catalog": service.get_catalog(),
+        }
+
+    @router.get("/system-input/platform-template-catalog")
+    async def get_system_input_platform_template_catalog():
+        """Return the cached scoped platform-template directory."""
+
+        runtime.ensure_initialized()
+        service = runtime.platform_template_catalog
+        if service is None:
+            raise RepositoryError("平台模板目录服务未初始化", code="PLATFORM_TEMPLATE_CATALOG_UNAVAILABLE")
+        return {
+            "request_id": _request_id(),
+            "catalog": service.get_catalog(),
+            "sync": service.get_sync_status(),
+        }
+
+    @router.post("/system-input/platform-template-catalog/sync", status_code=202)
+    async def start_system_input_platform_template_catalog_sync(
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        """Open the visible Chrome template page and observe both lists."""
+
+        runtime.ensure_initialized()
+        service = runtime.platform_template_catalog
+        if service is None:
+            raise RepositoryError("平台模板目录服务未初始化", code="PLATFORM_TEMPLATE_CATALOG_UNAVAILABLE")
+        _idempotency_key(idempotency_key)
+        sync = await asyncio.to_thread(service.start_sync)
+        return {"request_id": _request_id(), "sync": sync}
+
+    @router.get("/system-input/platform-template-catalog/sync/{sync_id}")
+    async def get_system_input_platform_template_catalog_sync(sync_id: str):
+        runtime.ensure_initialized()
+        service = runtime.platform_template_catalog
+        if service is None:
+            raise RepositoryError("平台模板目录服务未初始化", code="PLATFORM_TEMPLATE_CATALOG_UNAVAILABLE")
+        sync = service.get_sync_status()
+        if not sync.get("sync_id"):
+            sync = {**sync, "sync_id": sync_id}
+        return {
+            "request_id": _request_id(),
+            "sync": sync,
+            "catalog": service.get_catalog(),
+        }
+
+    @router.post("/system-input/templates", status_code=201)
+    async def create_system_input_template(
+        body: InputTemplateBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope="system-input:templates",
+            client_key=key,
+            command_name="createSystemInputTemplate",
+            method="POST",
+            resource_id=None,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=None,
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_input_template(runtime, row, body),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        template = await asyncio.to_thread(
+            service.create_template,
+            body.input_type,
+            body.name,
+            body.configuration,
+            platform_template_id=body.platform_template_id,
+            platform_template_name=body.platform_template_name,
+            platform_template_version=body.platform_template_version,
+        )
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=201,
+            response=template,
+            workflow_id=None,
+        )
+        return template
+
+    @router.get("/system-input/platform-templates")
+    async def list_system_input_platform_templates(input_type: str | None = None):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        return {
+            "request_id": _request_id(),
+            "templates": service.list_platform_templates(input_type),
+        }
+
+    @router.post("/system-input/platform-templates", status_code=201)
+    async def create_system_input_platform_template(
+        body: PlatformInputTemplateBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope="system-input:platform-templates",
+            client_key=key,
+            command_name="createSystemInputPlatformTemplate",
+            method="POST",
+            resource_id=None,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=None,
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_platform_input_template(runtime, row, body),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        template = await asyncio.to_thread(
+            service.create_platform_template,
+            body.input_type,
+            body.name,
+            platform_template_id=body.platform_template_id,
+            platform_template_version=body.platform_template_version,
+        )
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=201,
+            response=template,
+            workflow_id=None,
+        )
+        return template
+
+    @router.patch("/system-input/platform-templates/{platform_template_key}")
+    async def update_system_input_platform_template(
+        platform_template_key: str,
+        body: PlatformInputTemplatePatchBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        request = body.model_dump(exclude_unset=True)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"system-input:platform-template:{platform_template_key}",
+            client_key=key,
+            command_name="updateSystemInputPlatformTemplate",
+            method="PATCH",
+            resource_id=platform_template_key,
+            target=None,
+            request=request,
+            workflow_id=None,
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_platform_input_template_update(
+                    runtime,
+                    row,
+                    platform_template_key,
+                    body,
+                ),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        template = await asyncio.to_thread(
+            service.update_platform_template,
+            platform_template_key,
+            request,
+        )
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=template,
+            workflow_id=None,
+        )
+        return template
+
+    @router.delete("/system-input/platform-templates/{platform_template_key}")
+    async def delete_system_input_platform_template(
+        platform_template_key: str,
+        body: PlatformInputTemplateDeleteBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        service = runtime.system_input
+        if service is None:
+            raise SystemInputError("系统录入服务未初始化", code="INPUT_EXECUTOR_UNAVAILABLE")
+        key = _idempotency_key(idempotency_key)
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"system-input:platform-template:{platform_template_key}",
+            client_key=key,
+            command_name="deleteSystemInputPlatformTemplate",
+            method="DELETE",
+            resource_id=platform_template_key,
+            target=None,
+            request=body.model_dump(),
+            workflow_id=None,
+            recovery=_durable_idempotency_recovery(
+                lambda row: _recover_platform_input_template_delete(
+                    runtime,
+                    row,
+                    platform_template_key,
+                ),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        template = await asyncio.to_thread(
+            service.delete_platform_template,
+            platform_template_key,
+        )
+        response = {
+            "request_id": str(idem_id),
+            "platform_template_key": platform_template_key,
+            "deleted": True,
+            "platform_template": template,
+        }
+        runtime.repository.complete_idempotency(
+            idem_id,
+            response_status=200,
+            response=response,
+            workflow_id=None,
+        )
+        return response
 
     @router.get("/workflows/{workflow_id}")
     async def get_workflow(workflow_id: str):
@@ -2409,6 +3838,15 @@ def install_workflow_api(
             source_artifact_id=body.source_artifact_id,
             request_id=request_id,
         )
+        # The parser remains the source of truth for TTS items.  The adjacent
+        # system-input graph is refreshed only after the parser transaction
+        # has committed, and only in the full schema profile.
+        if runtime.system_input is not None and runtime.system_input.available:
+            await asyncio.to_thread(
+                runtime.system_input.sync_projection,
+                workflow_id,
+                source_filename=result["source_filename"],
+            )
         snapshot = result["workflow"]
         response = _command_response(
             snapshot,
@@ -2618,7 +4056,7 @@ def install_workflow_api(
             recovery=_event_idempotency_recovery(
                 runtime,
                 {"WORKFLOW_RERUN_CREATED"},
-                lambda row, event: _recover_workflow_envelope(runtime, row, event),
+                lambda row, event: _recover_workflow_rerun(runtime, row, event),
             ),
         )
         if cached is not None:
@@ -2629,6 +4067,15 @@ def install_workflow_api(
             expected_group_state_version=body.expected_group_state_version,
             request_id=request_id,
             reason=body.reason,
+        )
+        # A rerun gets fresh WorkItems, so rebuild the optional system-input
+        # projection against those new item IDs before the renderer reads the
+        # workspace. The helper also recreates run-local input entries from
+        # the cloned target configuration.
+        await asyncio.to_thread(
+            _refresh_rerun_system_input_projection,
+            runtime,
+            snapshot.workflow_id,
         )
         response = _workflow_envelope(snapshot, request_id)
         runtime.repository.complete_idempotency(idem_id, response_status=201, response=response, workflow_id=snapshot.workflow_id)

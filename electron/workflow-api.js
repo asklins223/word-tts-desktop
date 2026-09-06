@@ -81,6 +81,166 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}/workspace`);
             return response?.workspace || null;
         },
+        async getSystemInput(workflowId) {
+            const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}/system-input`);
+            return response?.system_input || null;
+        },
+        async saveSystemInputConfiguration(workflowId, input, options = {}) {
+            const response = await mutate(
+                'PATCH',
+                `/api/v1/workflows/${encode(workflowId)}/system-input/configuration`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async confirmSystemInputBoundaries(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/system-input/boundaries`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async acceptAudio(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/audio-acceptance`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async startSystemInput(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/system-input/start`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async controlSystemInputRun(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/system-input/run-control`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async replaceSystemInputExternalRecord(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/system-input/replace-external-record`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async resolveSystemInputExternalOperation(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/system-input/resolve-external-operation`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async verifySystemInputExternalRecord(workflowId, input, options = {}) {
+            const response = await mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/system-input/verify-external-record`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+            return response || null;
+        },
+        async listSystemInputTemplates(inputType = null) {
+            const query = inputType ? `?input_type=${encode(inputType)}` : '';
+            const response = await call('GET', `/api/v1/system-input/templates${query}`);
+            return Array.isArray(response?.templates) ? response.templates : [];
+        },
+        async getTextbookCatalog() {
+            return call('GET', '/api/v1/system-input/textbook-catalog');
+        },
+        async startTextbookCatalogSync(options = {}) {
+            return mutate(
+                'POST',
+                '/api/v1/system-input/textbook-catalog/sync',
+                {},
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
+        async getTextbookCatalogSync(syncId) {
+            return call('GET', `/api/v1/system-input/textbook-catalog/sync/${encode(syncId)}`);
+        },
+        async getPlatformTemplateCatalog() {
+            return call('GET', '/api/v1/system-input/platform-template-catalog');
+        },
+        async startPlatformTemplateCatalogSync(options = {}) {
+            return mutate(
+                'POST',
+                '/api/v1/system-input/platform-template-catalog/sync',
+                {},
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
+        async getPlatformTemplateCatalogSync(syncId) {
+            return call('GET', `/api/v1/system-input/platform-template-catalog/sync/${encode(syncId)}`);
+        },
+        async createSystemInputTemplate(input, options = {}) {
+            return mutate(
+                'POST',
+                '/api/v1/system-input/templates',
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
+        async listSystemInputPlatformTemplates(inputType = null) {
+            const query = inputType ? `?input_type=${encode(inputType)}` : '';
+            const response = await call('GET', `/api/v1/system-input/platform-templates${query}`);
+            return Array.isArray(response?.templates) ? response.templates : [];
+        },
+        async createSystemInputPlatformTemplate(input, options = {}) {
+            return mutate(
+                'POST',
+                '/api/v1/system-input/platform-templates',
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
+        async updateSystemInputPlatformTemplate(templateKey, input, options = {}) {
+            return mutate(
+                'PATCH',
+                `/api/v1/system-input/platform-templates/${encode(templateKey)}`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
+        async deleteSystemInputPlatformTemplate(templateKey, options = {}) {
+            return mutate(
+                'DELETE',
+                `/api/v1/system-input/platform-templates/${encode(templateKey)}`,
+                options?.body || {},
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
         async getItemContent(workflowId, itemId, contentId, expectedStateVersion, options = {}) {
             const params = new URLSearchParams();
             if (expectedStateVersion !== undefined && expectedStateVersion !== null) {

@@ -8,6 +8,8 @@ from wordtts.config import (
     DEFAULT_MALE_ROLE_KEY,
     FEMALE_VOICE,
     MALE_VOICE,
+    QUESTION_STEM_ROLE_KEY,
+    QUESTION_STEM_VOICE,
     WORD_CATEGORIES,
 )
 from wordtts.tts_config import normalize_role_key
@@ -41,6 +43,8 @@ def _looks_like_role_label(label):
 
 def _infer_role_voice(label, female_voice, male_voice):
     """没有手动分配时，按 Mr/Ms 等常见称谓给角色一个可改的初始音色。"""
+    if normalize_role_key(label) == QUESTION_STEM_ROLE_KEY.casefold():
+        return QUESTION_STEM_VOICE
     value = str(label or "").strip().casefold()
     if re.match(r"^(mr|mr\.|sir|男|先生)\b", value):
         return male_voice
@@ -202,6 +206,8 @@ def default_voice_for_item(raw_item, female_voice=None, male_voice=None):
     item = raw_item if isinstance(raw_item, dict) else {}
     fv = female_voice or FEMALE_VOICE
     mv = male_voice or MALE_VOICE
+    if normalize_role_key(item.get("role")) == QUESTION_STEM_ROLE_KEY.casefold():
+        return QUESTION_STEM_VOICE
     if item.get("category") in WORD_CATEGORIES:
         return fv
     return mv if item.get("voice") == "male" else fv

@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from audio_naming import is_exam_paper_bundle
-from question_types import parse_document_auto
+from platform_entry.adapter.normalizers.legacy_exam import normalise_info_acquisition_group
 from question_types.segmenter import load_document_once, parse_document_once
 from question_model import extract_candidate
 from wordtts.progress import build_progress
-from workflow.parser import LegacyWordParser
+from workflow.parser import DocumentParser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +27,44 @@ def test_legacy_bundle_detection_accepts_chinese_score_numbers():
     ]
 
     assert is_exam_paper_bundle(paragraphs)
+
+
+def test_legacy_info_acquisition_normalizer_builds_inline_prompt_and_keeps_prompt_audio(tmp_path):
+    original_audio = tmp_path / "original.mp3"
+    prompt_audio = tmp_path / "prompt.mp3"
+    original_audio.write_bytes(b"original")
+    prompt_audio.write_bytes(b"prompt")
+
+    normalized = normalise_info_acquisition_group(
+        {
+            "materials": [
+                {
+                    "audio_path": str(original_audio),
+                    "listening_text": "source",
+                    "questions": [
+                        {
+                            "prompt": "How many subjects does Mary have at school?",
+                            "options": [
+                                {"option_id": "A", "text": "Four."},
+                                {"option_id": "B", "text": "Five."},
+                                {"option_id": "C", "text": "Six."},
+                            ],
+                            "score": 1.5,
+                            "answer": "B",
+                            "prompt_audio_path": str(prompt_audio),
+                        }
+                    ],
+                }
+            ]
+        },
+        0,
+        base_dir=None,
+    )
+
+    question = normalized["materials"][0]["questions"][0]
+    assert question["prompt"] == "How many subjects does Mary have at school? (Four. / Five. / Six.)"
+    assert question["text"] == question["prompt"]
+    assert question["prompt_audio_path"] == str(prompt_audio.resolve())
 
 
 @pytest.mark.skipif(not FIXTURE.exists(), reason="旧题型套卷样例未随工作区提供")
@@ -70,6 +108,13 @@ def test_legacy_exam_bundle_is_parsed_without_cross_section_leaks():
     assert retelling["item_count"] == 1
     assert retelling["items"][0]["text"].startswith("(W) Good morning")
     assert [task["number"] for task in retelling["tasks"]] == [11, 12]
+
+    imitation = by_type["模仿朗读"]
+    imitation_item = next(
+        item for item in imitation["items"]
+        if item["category"] == "模仿朗读-试卷正文"
+    )
+    assert imitation_item["reference_answers"] == [imitation_item["text"]]
     assert all(task["reference_answer"] for task in retelling["tasks"])
 
     imitation = by_type["模仿朗读"]
@@ -109,11 +154,30 @@ def test_legacy_exam_bundle_is_parsed_without_cross_section_leaks():
     questions = [
         item for item in info_items if item["category"].endswith("题目")
     ]
-    assert questions[0]["text"] == "How many subjects does Mary have at school?"
+    assert questions[0]["text"] == "How many subjects does Mary have at school? (Four. / Five. / Six.)"
     assert questions[0]["voice"] == "male"
     assert not questions[0]["text"].startswith(("M:", "W:"))
 
-    parsed = LegacyWordParser().parse(FIXTURE)
+    semantic_questions = by_type["信息获取"]["questions"]
+    assert semantic_questions[0]["reference_answers_source"] == "document"
+    assert semantic_questions[0]["reference_answers"] == [
+        "Five.",
+        "Five subjects.",
+        "She has five subjects.",
+        "Mary has five subjects.",
+        "She has five subjects at school.",
+        "Mary has five subjects at school.",
+    ]
+    assert semantic_questions[1]["reference_answers_source"] == "document"
+    assert semantic_questions[1]["reference_answers"] == [
+        "Science.",
+        "He likes science best.",
+        "Bill likes science best.",
+        "His favourite subject is science.",
+        "Bill’s favourite subject is science.",
+    ]
+
+    parsed = DocumentParser().parse(FIXTURE)
     assert parsed.item_count == 16
     assert Counter(item.item_type for item in parsed.items) == Counter({
         "听选信息题目": 6,
@@ -124,7 +188,6 @@ def test_legacy_exam_bundle_is_parsed_without_cross_section_leaks():
         "模仿朗读-试卷正文": 1,
     })
 
-    assert parse_document_auto(FIXTURE) == parse_document_once(FIXTURE)
 
 
 def test_legacy_exam_bundle_candidate_keeps_visual_content_out_of_audio_items():
@@ -144,3 +207,65 @@ def test_legacy_exam_bundle_candidate_keeps_visual_content_out_of_audio_items():
     assert len(imitation.entities) == 1
     assert imitation.entities[0].text.startswith("Good morning, everyone!")
     assert "How old is Li Ling?" not in imitation.entities[0].text
+
+
+@pytest.mark.skipif(not FIXTURE.exists(), reason="旧题型套卷样例未随工作区提供")
+def test_legacy_page_facts_separate_tts_markers_from_visible_text_and_split_answers():
+    parsed = DocumentParser().parse(FIXTURE, include_auxiliary_audio=True)
+
+    response_item = next(item for item in parsed.items if item.item_type == "回答问题录音稿")
+    response_page = response_item.metadata["page_input"]
+    response_text = response_page["materials"][0]["listening_text"]
+    assert "(M)" not in response_text
+    assert response_text.startswith("Hello, everyone!")
+
+    retelling_item = next(item for item in parsed.items if item.item_type == "信息转述录音稿")
+    retelling_page = retelling_item.metadata["page_input"]
+    retelling_text = retelling_page["recording"]["listening_text"]
+    assert "(W)" not in retelling_text
+    assert retelling_text.startswith("Good morning, everyone!")
+    assert retelling_page["retelling"]["prompt"] == (
+        "你可以这样开始：Let me tell you about Li Ling."
+    )
+    assert len(retelling_page["retelling"]["reference_answers"]) == 4
+    assert retelling_page["recording"]["asking_instruction_text"].startswith(
+        "你希望了解更多关于Li Ling的信息"
+    )
+    assert retelling_page["recording"]["asking_instruction_audio_filename_stem"] == (
+        "询问信息题干-1"
+    )
+
+    info_recording_items = [
+        item for item in parsed.items
+        if item.item_type in {"听选信息录音稿", "回答问题录音稿"}
+    ]
+    assert [
+        item.metadata["page_input"]["materials"][0]["section"]
+        for item in info_recording_items
+    ] == ["听选信息", "听选信息", "听选信息", "回答问题"]
+    for item in info_recording_items:
+        visible_text = item.metadata["page_input"]["materials"][0]["listening_text"]
+        assert "(W)" not in visible_text
+        assert "(M)" not in visible_text
+        assert "W:" not in visible_text
+        assert "M:" not in visible_text
+    assert info_recording_items[0].metadata["page_input"]["materials"][0]["listening_text"].startswith(
+        "What subjects do you have at school, Mary?"
+    )
+
+    asking = retelling_page["asking"]
+    assert [item["number"] for item in asking] == [11, 12]
+    assert asking[0]["reference_answers"] == [
+        "What colour do you like best?",
+        "What’s your favourite colour?",
+        "What is your favourite colour?",
+    ]
+    assert asking[1]["reference_answers"] == [
+        "How many classrooms are there in your new school?",
+        "How many classrooms does your new school have?",
+    ]
+
+    question_audio = next(item for item in parsed.items if item.item_type == "听选信息题目")
+    assert question_audio.normalized_content == (
+        "How many subjects does Mary have at school? (Four. / Five. / Six.)"
+    )

@@ -1,10 +1,10 @@
 """题型注册表：解析器绑定与派生视图。
 
 题型元数据的**唯一权威**在 ``question_model.model`` 的
-``FAMILY_REGISTRY``（大题型展示/检测/兼容视图）与 ``SUB_TYPE_REGISTRY``
+``FAMILY_REGISTRY``（大题型展示/结构检测/策略视图）与 ``SUB_TYPE_REGISTRY``
 （小题型能力/音色/命名/状态）。本模块只做一件事：把解析器类绑定到
-family code，其余（QuestionType、颜色表、内容标记、文件名/内容检测、
-旧链路女声兼容）全部派生——不存在需要多处同步、漏改即报错的
+family code，其余（QuestionType、颜色表、内容标记、结构检测、声线策略）
+全部派生——不存在需要多处同步、漏改即报错的
 第二份注册表（方案 2A category 解耦；方案目标 5：新增题型只改一处）。
 
 新增大题型的完整步骤：
@@ -12,7 +12,7 @@ family code，其余（QuestionType、颜色表、内容标记、文件名/内�
    ``QuestionSubType``（能力/音色/命名）；
 2. 新建解析器切片（``BaseParser`` 子类）；
 3. 在下方 ``PARSERS_BY_FAMILY`` 加一行绑定。
-检测、颜色、旧链路音色、原子模型候选抽取（补 EXTRACTORS 一行或
+检测、颜色、声线策略、原子模型候选抽取（补 EXTRACTORS 一行或
 享受温和降级）全部自动生效，无需改动任何下游代码。
 """
 
@@ -75,10 +75,8 @@ QUESTION_TYPES = tuple(
         key=family.display_name,
         parser=PARSERS_BY_FAMILY[code],
         color=family.color,
-        filename_keywords=family.filename_keywords,
-        filename_extensions=family.filename_extensions,
         content_markers=family.content_markers,
-        # 旧链路 force_female 兼容视图（新代码用 SUB_TYPE_REGISTRY.voice_policy）
+        # 声线策略投影（新代码用 SUB_TYPE_REGISTRY.voice_policy）
         force_female_categories=family.female_categories,
     )
     for code, family in FAMILY_REGISTRY.items()
@@ -91,44 +89,11 @@ TYPE_COLORS = {qt.key: qt.color for qt in QUESTION_TYPES}
 CONTENT_MARKERS = {qt.key: tuple(qt.content_markers) for qt in QUESTION_TYPES}
 
 
-def detect_doc_type(filename):
-    """根据文件名自动识别文档类型，返回类型名或 None。
-
-    Excel 文件统一归为词汇类型；其余按 family 注册表的扩展名/关键词匹配。
-    """
-    lower = filename.lower()
-    for family in FAMILY_REGISTRY.values():
-        if any(lower.endswith(ext) for ext in family.filename_extensions):
-            return family.display_name
-    for family in FAMILY_REGISTRY.values():
-        if any(keyword in filename for keyword in family.filename_keywords):
-            return family.display_name
-    return None
-
-
-def detect_types_in_content(paras):
-    """
-    根据文档内容自动识别包含的题型。
-    返回检测到的题型名称列表，保持固定顺序。
-    """
-    full_text = '\n'.join(text for _, text, _ in paras)
-    detected = []
-    for family in FAMILY_REGISTRY.values():  # 注册顺序即固定优先级
-        for marker in family.content_markers:
-            if marker.search(full_text):
-                detected.append(family.display_name)
-                break
-    return detected
-
-
-def parse_document_auto(filepath):
-    """自动检测并解析文档的兼容入口。
-
-    ``parse_document_once`` 现在是唯一的 Word 结构读取与题型路由实现；
-    保留本函数名，确保旧调用方和工作流 API 不需要迁移，也避免自动入口
-    与一次加载入口在套卷、文本框等新格式上产生分叉。
-    """
-
-    from .segmenter import parse_document_once
-
-    return parse_document_once(filepath)
+# 真实文件判型与已加载内容判型都由结构证据检测器统一负责。
+from .detection import (  # noqa: E402
+    DocumentTypeEvidence,
+    PaperCategoryEvidence,
+    classify_paper_category,
+    detect_document_type,
+    detect_document_types,
+)

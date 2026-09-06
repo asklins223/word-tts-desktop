@@ -3,8 +3,14 @@
 import re
 
 from audio_naming import audio_filename_stem, is_exam_paper_bundle
+from document_profiles import (
+    RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE,
+    RESPONSE_ENTRY_PROFILE,
+    RESPONSE_UNKNOWN_PROFILE,
+)
 from question_types.base import BaseParser
 from question_types.text_utils import is_chinese, sanitize
+from question_types.text_utils import has_red_text_in_range
 
 
 # ============================================================================
@@ -20,6 +26,15 @@ class ListeningResponseParser(BaseParser):
     """
 
     DOC_TYPE = "听后应答"
+
+    @staticmethod
+    def _capabilities(*, external_input: bool) -> dict[str, bool]:
+        return {
+            "parse": True,
+            "audio": True,
+            "normalize": True,
+            "external_input": bool(external_input),
+        }
 
     RE_SECTION_START = re.compile(r'听后应答')
     RE_PROMPT = re.compile(
@@ -40,6 +55,18 @@ class ListeningResponseParser(BaseParser):
     )
     RE_ANSWER_OPTIONS = re.compile(r'^\s*[★☆*]')
     RE_ANSWER_PROMPT = re.compile(r'请朗读应答语|朗读应答语', re.I)
+    RE_SCORE = re.compile(
+        r'每小题\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
+        re.I,
+    )
+    RE_FULL_SCORE = re.compile(
+        r'满分\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
+        re.I,
+    )
+    RE_ANSWER_TIME = re.compile(
+        r'(?P<seconds>[0-9０-９]+)\s*秒(?:钟)?',
+        re.I,
+    )
     RE_GRADE = re.compile(
         r'(?<!\d)(?P<grade>[789七八九])\s*(?:年级\s*)?上',
         re.I,
@@ -106,6 +133,48 @@ class ListeningResponseParser(BaseParser):
                 lines.append(value)
         return lines
 
+    @staticmethod
+    def _answer_options(text, *, paragraph_metadata=None):
+        """Extract the visible answer choices from a starred option row.
+
+        The response documents use both ``★ A  ★ B`` and
+        ``10.★ A  ★ B``.  The star is a display bullet, not a correctness
+        marker.  Keep it in every option's visible text because the platform
+        page renders these response choices with the star prefix.  Explicit
+        red font is used only to identify the separate correct option.
+        """
+
+        value = str(text or '').strip()
+        if not re.search(r'[★☆*]', value):
+            return [], []
+        markers = list(re.finditer(r'[★☆*]', value))
+        options = []
+        red_option_indexes = []
+        for marker_index, marker in enumerate(markers):
+            start = marker.end()
+            end = markers[marker_index + 1].start() if marker_index + 1 < len(markers) else len(value)
+            raw_chunk = value[start:end]
+            left_trimmed = raw_chunk.lstrip()
+            chunk_start = start + (len(raw_chunk) - len(left_trimmed))
+            right_trimmed = left_trimmed.rstrip()
+            chunk_end = chunk_start + len(right_trimmed)
+            chunk = right_trimmed
+            if chunk:
+                option_text = sanitize(chunk)
+                if not option_text:
+                    continue
+                options.append({
+                    'option_id': chr(ord('A') + len(options)),
+                    'text': f'★ {option_text}',
+                })
+                if has_red_text_in_range(
+                    paragraph_metadata,
+                    chunk_start,
+                    chunk_end,
+                ):
+                    red_option_indexes.append(len(options) - 1)
+        return options, red_option_indexes
+
     def parse(self):
         items = []
         collecting = False
@@ -117,9 +186,25 @@ class ListeningResponseParser(BaseParser):
         use_exam_naming = is_exam_paper_bundle(self.paras)
         answer_item_indexes = set()
         answer_numbers = {}
+        questions = []
+        section_score = None
+        declared_item_scores = []
+        declared_section_scores = []
+        response_section_seen = False
+        answer_time = None
 
-        def apply_exam_number(item, question_number):
-            if not use_exam_naming or question_number is None:
+        def parse_score_value(raw):
+            normalized = str(raw or '').translate(
+                str.maketrans('０１２３４５６７８９', '0123456789')
+            )
+            try:
+                score = float(normalized)
+            except ValueError:
+                return None
+            return int(score) if score.is_integer() else score
+
+        def apply_source_number(item, question_number):
+            if question_number is None:
                 return
             item.update({
                 "number": question_number,
@@ -132,20 +217,60 @@ class ListeningResponseParser(BaseParser):
             nonlocal collecting, expected_count, current_lines, response_index
             for line in current_lines:
                 response_index += 1
-                items.append({
+                item = {
                     "category": "听后应答录音稿",
                     "index": response_index,
                     "number": response_index,
                     "filename_stem": f"{grade_prefix}-应答-{response_index}",
                     "voice": "female",
                     "text": line,
-                })
+                }
+                if section_score is not None:
+                    item["score"] = section_score
+                if answer_time is not None:
+                    item["answer_time"] = answer_time
+                items.append(item)
+                question = {
+                    "number": response_index,
+                    "prompt": line,
+                    "listening_text": line,
+                }
+                if section_score is not None:
+                    question["score"] = section_score
+                if answer_time is not None:
+                    question["answer_time"] = answer_time
+                questions.append(question)
             collecting = False
             expected_count = None
             current_lines = []
 
         for position, (_, text, _) in enumerate(self.paras):
             value = str(text or '').strip()
+            if self.RE_SECTION_START.search(value):
+                response_section_seen = True
+            score_match = self.RE_SCORE.search(value)
+            if response_section_seen and score_match:
+                section_score = parse_score_value(score_match.group('score'))
+                if section_score is not None:
+                    declared_item_scores.append(section_score)
+            full_score_match = self.RE_FULL_SCORE.search(value)
+            if response_section_seen and full_score_match:
+                parsed_full_score = parse_score_value(full_score_match.group('score'))
+                if parsed_full_score is not None and not declared_section_scores:
+                    declared_section_scores.append(parsed_full_score)
+            time_match = self.RE_ANSWER_TIME.search(value)
+            if response_section_seen and time_match and any(
+                marker in value for marker in ('朗读', '倒计时', '答题')
+            ):
+                parsed_answer_time = parse_score_value(time_match.group('seconds'))
+                if parsed_answer_time is not None:
+                    answer_time = parsed_answer_time
+                    # Some documents put the countdown paragraph after the
+                    # answer prompt has already flushed the sentence. Fill
+                    # that just-created question retroactively, but never
+                    # overwrite an explicit earlier duration.
+                    if questions and '倒计时' in value:
+                        questions[-1].setdefault('answer_time', answer_time)
             prompt = self.RE_PROMPT.search(value)
             if prompt:
                 flush()
@@ -172,6 +297,23 @@ class ListeningResponseParser(BaseParser):
                         answer_numbers[item_index] = int(
                             answer_number.group("number")
                         )
+                    paragraph_metadata = (
+                        self.paragraph_metadata[position]
+                        if position < len(self.paragraph_metadata)
+                        else {}
+                    )
+                    options, red_option_indexes = self._answer_options(
+                        value,
+                        paragraph_metadata=paragraph_metadata,
+                    )
+                    if options and 1 <= item_index <= len(questions):
+                        question = questions[item_index - 1]
+                        question["options"] = options
+                        if len(red_option_indexes) == 1:
+                            question["answer"] = options[red_option_indexes[0]]["option_id"]
+                        elif len(red_option_indexes) > 1:
+                            question["answer"] = None
+                            question["answer_status"] = "ambiguous_red"
                     awaiting_answer_choices = False
                 continue
 
@@ -201,7 +343,7 @@ class ListeningResponseParser(BaseParser):
                     flush()
 
         flush()
-        if use_exam_naming and answer_numbers:
+        if answer_numbers:
             # 部分试卷的某一行答案选项漏写了题号。用同一大题中已出现的
             # 题号反推连续区间；只有区间基准一致时才补号，避免猜错。
             bases = {
@@ -214,7 +356,11 @@ class ListeningResponseParser(BaseParser):
                     answer_numbers.setdefault(item_index, base + item_index - 1)
             for item_index, number in answer_numbers.items():
                 if 1 <= item_index <= len(items):
-                    apply_exam_number(items[item_index - 1], number)
+                    # 专项卷的录音文件仍按 1..N 命名，但文稿核对必须保留
+                    # Word 原文的题号（本画像为 9..15），不能显示成 1..7。
+                    apply_source_number(items[item_index - 1], number)
+                    if item_index <= len(questions):
+                        questions[item_index - 1]["number"] = number
         if use_exam_naming:
             for ordinal, item in enumerate(items, start=1):
                 filename_stem = audio_filename_stem(["听后应答"], ordinal)
@@ -223,4 +369,58 @@ class ListeningResponseParser(BaseParser):
                     "filename_stem": filename_stem,
                     "audio_filename_stem": filename_stem,
                 })
-        return self._result(items)
+        profile_confirmed = bool(
+            response_section_seen
+            and len(items) == 7
+            and len(questions) == 7
+            and all(
+                isinstance(question.get("options"), list)
+                and len(question["options"]) == 2
+                and question.get("answer") in {
+                    option.get("option_id") for option in question["options"]
+                }
+                for question in questions
+            )
+        )
+        external_input_ready = bool(
+            profile_confirmed
+            and all(
+                isinstance(question.get("score"), (int, float))
+                and not isinstance(question.get("score"), bool)
+                and isinstance(question.get("answer_time"), (int, float))
+                and not isinstance(question.get("answer_time"), bool)
+                for question in questions
+            )
+        )
+        for item in items:
+            item.update({
+                "major_section_profile": (
+                    RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE
+                    if profile_confirmed
+                    else RESPONSE_UNKNOWN_PROFILE
+                ),
+                "entry_profile": (
+                    RESPONSE_ENTRY_PROFILE
+                    if external_input_ready
+                    else None
+                ),
+                "capabilities": self._capabilities(
+                    external_input=external_input_ready,
+                ),
+            })
+        result = self._result(items)
+        computed_score = sum(
+            score for score in (
+                question.get("score") for question in questions
+            ) if isinstance(score, (int, float))
+        )
+        if declared_item_scores:
+            result["score_per_item"] = declared_item_scores[0] if len(set(declared_item_scores)) == 1 else None
+        result["section_score"] = (
+            declared_section_scores[0]
+            if declared_section_scores
+            else computed_score
+        )
+        result["computed_score"] = computed_score
+        result["questions"] = questions
+        return result

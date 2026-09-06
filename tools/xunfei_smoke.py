@@ -18,7 +18,7 @@ import platform
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +63,18 @@ class _LogicalXunfeiBackend:
         digest = hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        plan = payload.get("plan") if isinstance(payload.get("plan"), list) else []
+        # ``composite_cut`` is required to return independently verifiable
+        # bytes for every durable work item.  The logical backend is meant to
+        # exercise the same publication gate as the real adapter, so a single
+        # composite placeholder is not sufficient for multi-item documents.
+        segments = {
+            str(item.get("item_id")): self._MP3_FRAME_HEADER + (
+                "logical-xunfei-mp3:" + digest + ":item:" + str(item.get("item_id"))
+            ).encode("ascii")
+            for item in plan
+            if isinstance(item, Mapping) and item.get("item_id")
+        }
         receipt = {
             "provider": "xunfei",
             "account_scope": self.account_scope,
@@ -71,6 +83,7 @@ class _LogicalXunfeiBackend:
             "temporary_works_id": f"logical-temp-{digest[:16]}",
             "formal_works_id": f"logical-formal-{digest[:16]}",
             "output": self._MP3_FRAME_HEADER + ("logical-xunfei-mp3:" + digest).encode("ascii"),
+            "segments": segments,
             "summary": {"mode": "logical-only", "network": False, "page": False},
         }
         self._receipts[submission_key] = receipt
@@ -108,7 +121,7 @@ def run_logical_smoke(
     from application.workflow_service import WorkflowApplicationService
     from workflow.artifact_store import ArtifactStore
     from workflow.database import WorkflowDatabase
-    from workflow.parser import LegacyWordParser
+    from workflow.parser import DocumentParser
     from workflow.providers import ProviderRegistry, XunfeiTTSAdapter
     from workflow.repositories import WorkflowRepository
     from workflow.source_imports import SourceImportService
@@ -130,7 +143,7 @@ def run_logical_smoke(
                 repository,
                 imports,
                 artifacts,
-                parser=LegacyWordParser(),
+                parser=DocumentParser(),
                 providers=registry,
             )
             draft = service.create_draft(
@@ -206,7 +219,7 @@ def run_smoke(source: Path, *, max_items: int = 20, max_source_bytes: int = 16 *
     from application.workflow_service import WorkflowApplicationService
     from workflow.artifact_store import ArtifactStore
     from workflow.database import WorkflowDatabase
-    from workflow.parser import LegacyWordParser
+    from workflow.parser import DocumentParser
     from workflow.providers import ProviderRegistry, XunfeiTTSAdapter
     from workflow.repositories import WorkflowRepository
     from workflow.source_imports import SourceImportService
@@ -227,7 +240,7 @@ def run_smoke(source: Path, *, max_items: int = 20, max_source_bytes: int = 16 *
                 repository,
                 imports,
                 artifacts,
-                parser=LegacyWordParser(),
+                parser=DocumentParser(),
                 providers=registry,
             )
             draft = service.create_draft(

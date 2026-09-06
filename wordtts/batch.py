@@ -151,8 +151,45 @@ async def _synth_items_batch(
                 job_id = str(event.get("job_id") or "")
                 item_id = job_item_ids.get(job_id)
                 if not item_id:
+                    # Browser startup/login lifecycle events do not belong to
+                    # one segment yet.  Do not drop them: the API forwards
+                    # these bounded signals to the generation card while the
+                    # provider is still preparing the first submission.
+                    try:
+                        lifecycle_stage = str(
+                            event.get("stage") or event.get("status") or "processing"
+                        )
+                        lifecycle_payload = {
+                            "status": str(event.get("status") or lifecycle_stage),
+                            "stage": lifecycle_stage,
+                            "message": event.get("message") or event.get("error"),
+                        }
+                        callback_result = progress_callback(lifecycle_payload)
+                        if inspect.isawaitable(callback_result):
+                            await callback_result
+                    except Exception as error:
+                        _log(f"[xunfei] 浏览器生命周期进度回调异常（已忽略）: {error}")
                     continue
                 stage = str(event.get("stage") or "saved")
+                if stage == "downloading":
+                    # “下载页等待就绪”只是阶段信号，不代表任何分段已经
+                    # 落盘；不能计入 saved_jobs 触发提前的最终进度。但仍
+                    # 要向上层转发它，否则长时间等待下载时任务卡会停在
+                    # “提交”阶段，和实际浏览器阶段不一致。
+                    try:
+                        callback_result = progress_callback({
+                            "item_id": item_id,
+                            "status": "downloading",
+                            "stage": "downloading",
+                            "total_segments": len(item_job_ids[item_id]),
+                            "segment_id": job_id,
+                            **work_progress_snapshot(item_id),
+                        })
+                        if inspect.isawaitable(callback_result):
+                            await callback_result
+                    except Exception as error:
+                        _log(f"[xunfei] 题目下载等待进度回调异常（已忽略）: {error}")
+                    continue
                 track_work_event(item_id, job_id, event)
                 if stage == "submitted":
                     if job_id not in submitted_jobs[item_id]:
@@ -161,6 +198,7 @@ async def _synth_items_batch(
                             callback_result = progress_callback({
                                 "item_id": item_id,
                                 "status": "submitted",
+                                "stage": "submitted",
                                 "completed_segments": len(submitted_jobs[item_id]),
                                 "total_segments": len(item_job_ids[item_id]),
                                 "segment_id": job_id,
@@ -177,6 +215,7 @@ async def _synth_items_batch(
                             callback_result = progress_callback({
                                 "item_id": item_id,
                                 "status": "downloaded",
+                                "stage": "downloaded",
                                 "completed_segments": len(downloaded_jobs[item_id]),
                                 "total_segments": len(item_job_ids[item_id]),
                                 "segment_id": job_id,
@@ -197,6 +236,7 @@ async def _synth_items_batch(
                             callback_result = progress_callback({
                                 "item_id": item_id,
                                 "status": "error",
+                                "stage": "error",
                                 "completed_segments": sum(
                                     1 for downloaded in saved_jobs[item_id].values()
                                     if downloaded
@@ -227,6 +267,7 @@ async def _synth_items_batch(
                             callback_result = progress_callback({
                                 "item_id": item_id,
                                 "status": "ready" if not failures else "error",
+                                "stage": "ready" if not failures else "error",
                                 "completed_segments": len(item_job_ids[item_id]) - len(failures),
                                 "total_segments": len(item_job_ids[item_id]),
                                 "error": event.get("error") if failures else None,
@@ -390,11 +431,21 @@ async def _synth_items_batch_composite(
             status = "error"
         else:
             status = "downloaded" if work_id in downloaded_work_ids else "submitted"
+        # 题目级计数：已下载作品包含的题目视为已完成，让合并模式在多个
+        # 作品时也能按题目推进进度条（单作品场景由阶段爬升兜底）。
+        items_total = sum(int(w.get("item_count") or 0) for w in works)
+        items_done = sum(
+            int((work_by_id.get(done_id) or {}).get("item_count") or 0)
+            for done_id in downloaded_work_ids
+        )
         callback_payload = {
             "work_id": work_id,
             "job_id": work_id,
             "status": status,
-            "stage": stage,
+            # A failed download/cut must not retain the normal "saved"
+            # stage: the renderer uses this field for the visible stage rail
+            # and would otherwise report an error as active cutting.
+            "stage": "error" if status == "error" else stage,
             "works_id": payload.get("works_id"),
             "works_name": payload.get("works_name") or work.get("works_name"),
             "item_count": int(work.get("item_count") or 0),
@@ -402,6 +453,8 @@ async def _synth_items_batch_composite(
             "total_works": len(works),
             "submitted_works": len(submitted_work_ids),
             "downloaded_works": len(downloaded_work_ids),
+            "completed_segments": min(items_done, items_total),
+            "total_segments": items_total,
             "error": payload.get("error"),
         }
         if payload.get("ambiguous_works_id"):
@@ -588,8 +641,14 @@ async def _synth_items_batch_composite(
 
 
 def generate_item_audio(text, rate, volume, pitch, default_voice=None,
-                        female_voice=None, male_voice=None):
+                        female_voice=None, male_voice=None, voice_configs=None,
+                        role_voices=None, role_configs=None, default_role=None):
     """同步包装：为一条文本生成音频。"""
     return asyncio.run(_synth_item(text, rate, volume, pitch,
                                    default_voice=default_voice,
-                                   female_voice=female_voice, male_voice=male_voice))
+                                   female_voice=female_voice,
+                                   male_voice=male_voice,
+                                   voice_configs=voice_configs,
+                                   role_voices=role_voices,
+                                   role_configs=role_configs,
+                                   default_role=default_role))

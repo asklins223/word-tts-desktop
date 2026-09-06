@@ -101,7 +101,7 @@ def run_gate(*, include_electron: bool = True) -> dict[str, Any]:
             _command("contract-check", ["npm", "run", "check:contracts"], cwd=ELECTRON),
             _command("electron-main-syntax", ["node", "--check", "main.js"], cwd=ELECTRON),
             _command("electron-preload-syntax", ["node", "--check", "preload.js"], cwd=ELECTRON),
-            _command("electron-renderer-syntax", ["node", "--check", "renderer/app.js"], cwd=ELECTRON),
+            _command("electron-renderer-syntax", ["npm", "run", "check:renderer"], cwd=ELECTRON),
         ])
     passed = all(item["status"] == "PASS" for item in checks)
     node_version = _version("node", ["node", "--version"])

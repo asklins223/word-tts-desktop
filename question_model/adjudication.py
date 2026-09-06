@@ -2,7 +2,7 @@
 
 固定规则：
 
-1. 显式题型标记（文件名/内容检测得到的 doc_type）优先于自动检测；
+1. 结构检测得到的 doc_type 优先于自动检测；文件名不参与 owner 裁决；
 2. 同一结构块（claimed_block）只能有一个题型规则成为 owner；
 3. 多个规则同时命中且无法按优先级唯一裁决时，保留多个候选并写入
    AMBIGUOUS，冲突块的实体不发布，不能把两份结果都发布为小题；
@@ -64,7 +64,7 @@ def _entity_id(entity) -> str:
 def adjudicate(candidates, explicit_type_code: str | None = None) -> AdjudicatedParse:
     """对同一文档的多个题型候选做 owner 裁决。
 
-    ``explicit_type_code`` 是显式题型标记（检测链路的 doc_type）；
+    ``explicit_type_code`` 是结构检测链路得到的 doc_type；
     候选顺序保持输入顺序，发布实体按候选顺序稳定排列。
     """
     # 同一候选重复输入先去重（保持首次出现顺序）

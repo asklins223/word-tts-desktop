@@ -579,7 +579,11 @@ if os.path.isdir(_renderer_dir):
 # The versioned workflow API is mounted independently from the legacy UI API.
 # Its database is initialized lazily on the first request so importing server.py
 # for the existing unit tests cannot mutate a user's runtime database.
-_workflow_runtime = install_workflow_api(app, capability=_versioned_api_capability())
+_workflow_runtime = install_workflow_api(
+    app,
+    capability=_versioned_api_capability(),
+    profile="full",
+)
 @app.get("/api/v1/health")
 async def health():
     instance = hashlib.sha256(_API_TOKEN.encode("utf-8")).hexdigest()[:16] if _API_TOKEN else "development"

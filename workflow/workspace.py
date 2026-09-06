@@ -23,6 +23,12 @@ from audio_naming import (
 )
 from .domain import content_hash
 from .repositories import NotFoundError, _snapshot_from_connection
+from .system_input import (
+    SystemInputError,
+    SystemInputService,
+    platform_template_reference_complete,
+)
+from wordtts.config import QUESTION_STEM_ITEM_TYPES, QUESTION_STEM_ROLE_KEY
 
 
 RETRY_SCOPES = {"NONE", "WORKFLOW", "ITEMS"}
@@ -45,8 +51,17 @@ _ITEM_METADATA_ALLOWLIST = {
     "operation_id", "scope_row_id", "projection", "parser_version",
     "normalization_version", "voice", "voice_gender", "gender", "type_path",
     "filename_stem",
-    "type_hierarchy", "audio_filename_stem", "question_numbers",
+    "type_hierarchy", "audio_filename_stem", "audio_only_auxiliary", "question_numbers",
     "_workflow_skip_reason",
+    # Source facts consumed by the separate system-input projection.  Keep
+    # them bounded and visible to the review UI without mixing them into the
+    # TTS configuration or inferring an external write.
+    "unit", "unit_id", "unit_label", "set_number", "paper_set", "set",
+    "source", "raw_text", "listening_text", "score", "answer",
+    "reference_answer", "paper_category", "paper_category_status",
+    "paper_category_evidence", "exam_form", "parse_coverage_status",
+    "confidence", "segment_id", "major_section_profile", "entry_profile",
+    "capabilities",
 }
 
 
@@ -155,6 +170,9 @@ def _mime_type(fmt: str, artifact_type: str) -> str:
         "json": "application/json",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
     }.get(fmt, "application/octet-stream")
 
 
@@ -429,6 +447,79 @@ def build_workflow_workspace(
         is_tts_workflow = str(workflow_row["workflow_type"] or "").lower() == "tts"
         config, configuration_revision = _stored_configuration(workflow_row)
         source_filename = _source_filename(con, workflow_id, config)
+
+        # System-input is an optional full-profile projection.  A legacy
+        # 2A database must keep rendering its normal TTS workspace when the
+        # adjacent tables are not installed; malformed legacy configuration
+        # is also projected as a fail-closed error instead of blocking the
+        # entire workspace refresh.
+        try:
+            system_input = SystemInputService(repository.database, repository).get_projection(
+                workflow_id, con=con,
+            )
+        except SystemInputError as exc:
+            system_input = {
+                "available": False,
+                "delivery_mode": "audio_only",
+                "input_type": None,
+                "input_status": "not_enabled",
+                "executor_available": False,
+                "supported_external_input": False,
+                "units": [],
+                "structure_nodes": [],
+                "content_segments": [],
+                "entries": [],
+                "audio_gate": {
+                    "technical_status": "failed",
+                    "reasons": {"projection": getattr(exc, "code", "SYSTEM_INPUT_PROJECTION_FAILED")},
+                },
+                "audio_acceptance": {"status": "pending"},
+                "error_code": getattr(exc, "code", "SYSTEM_INPUT_PROJECTION_FAILED"),
+            }
+        except Exception:
+            # The renderer must retain the ordinary TTS recovery surface even
+            # if an optional projection cannot be read during a compatibility
+            # upgrade.  The next full-profile refresh can retry it.
+            system_input = {
+                "available": False,
+                "delivery_mode": "audio_only",
+                "input_type": None,
+                "input_status": "not_enabled",
+                "executor_available": False,
+                "supported_external_input": False,
+                "units": [],
+                "structure_nodes": [],
+                "content_segments": [],
+                "entries": [],
+                "audio_gate": {"technical_status": "failed", "reasons": {"projection": "UNAVAILABLE"}},
+                "audio_acceptance": {"status": "pending"},
+                "error_code": "SYSTEM_INPUT_PROJECTION_UNAVAILABLE",
+            }
+        system_input_capabilities = capabilities.get("system_input")
+        if isinstance(system_input_capabilities, Mapping):
+            system_input["available"] = bool(system_input_capabilities.get("available", True))
+            system_input["executor_available"] = bool(system_input_capabilities.get("executor_available", False))
+            supported_types = system_input_capabilities.get("supported_external_input_types")
+            if isinstance(supported_types, (list, tuple, set)):
+                system_input["supported_external_input_types"] = [str(value)[:64] for value in list(supported_types)[:16]]
+            capability_rows = system_input_capabilities.get("input_type_capabilities")
+            if isinstance(capability_rows, (list, tuple)):
+                safe_rows = [
+                    dict(row) for row in capability_rows[:16]
+                    if isinstance(row, Mapping) and str(row.get("input_type") or "")[:64]
+                ]
+                if safe_rows:
+                    system_input["input_type_capabilities"] = safe_rows
+                    selected_type = str(system_input.get("input_type") or "")
+                    selected_capability = next(
+                        (row for row in safe_rows if str(row.get("input_type") or "") == selected_type),
+                        None,
+                    )
+                    if selected_capability is not None:
+                        system_input["input_capability"] = selected_capability
+                        system_input["supported_external_input"] = bool(
+                            selected_capability.get("external_supported")
+                        )
 
         item_rows = con.execute(
             "SELECT * FROM work_items WHERE workflow_id=? ORDER BY sequence, item_id",
@@ -825,6 +916,13 @@ def build_workflow_workspace(
                     "max_response_bytes": WORKSPACE_CONTENT_DETAIL_LIMIT,
                 }
             metadata, metadata_overflow = _safe_item_metadata(row["metadata_json"])
+            item_type = _clean_text(row["item_type"], 128) or "document"
+            stored_role = str(row["role"]) if row["role"] is not None else None
+            role = stored_role or (
+                QUESTION_STEM_ROLE_KEY
+                if item_type in QUESTION_STEM_ITEM_TYPES
+                else None
+            )
             skip_reason = _clean_text(metadata.pop("_workflow_skip_reason", None), 500)
             if metadata_overflow:
                 blockers.append(_blocker(
@@ -836,7 +934,7 @@ def build_workflow_workspace(
                 "item_id": item_id,
                 "item_identity_key": str(row["item_identity_key"]),
                 "sequence": int(row["sequence"]),
-                "item_type": _clean_text(row["item_type"], 128) or "document",
+                "item_type": item_type,
                 "normalized_content": inline_content,
                 "content_ref": content_ref,
                 "source_locator": _clean_text(row["source_locator"], 512),
@@ -844,7 +942,7 @@ def build_workflow_workspace(
                 "skip_reason": skip_reason,
                 "content_hash": stored_content_hash,
                 "status": status,
-                "role": str(row["role"]) if row["role"] is not None else None,
+                "role": role,
                 "voice_key": (
                     planned_voice_keys.get(item_id)
                     or (str(row["voice_key"]) if row["voice_key"] is not None else None)
@@ -1186,6 +1284,203 @@ def build_workflow_workspace(
             reason=export_reason,
             target=workflow_target, expected_state_version=snapshot.state_version,
         ))
+
+        audio_gate = system_input.get("audio_gate") if isinstance(system_input, Mapping) else {}
+        audio_acceptance = system_input.get("audio_acceptance") if isinstance(system_input, Mapping) else {}
+        gate_passed = isinstance(audio_gate, Mapping) and audio_gate.get("technical_status") == "passed"
+        accepted_audio = isinstance(audio_acceptance, Mapping) and audio_acceptance.get("status") == "accepted"
+        audio_ready_for_acceptance = terminal and snapshot.result_status in {"SUCCEEDED", "PARTIAL_SUCCESS"}
+        accept_audio_enabled = bool(
+            system_input.get("available") is not False
+            and audio_ready_for_acceptance
+            and gate_passed
+            and not accepted_audio
+            and not system_input.get("input_run")
+        )
+        service_actions.append(_action(
+            "SERVICE", "ACCEPT_AUDIO", enabled=accept_audio_enabled,
+            reason=(
+                None if accept_audio_enabled else
+                "音频已经验收" if accepted_audio else
+                "系统录入运行已经创建，音频批次已冻结" if system_input.get("input_run") else
+                "音频尚未达到整批验收条件" if not audio_ready_for_acceptance or not gate_passed else
+                "当前工作流不支持音频验收"
+            ),
+            target=workflow_target, expected_state_version=snapshot.state_version,
+        ))
+        delivery_mode = str(system_input.get("delivery_mode") or "audio_only")
+        input_type = str(system_input.get("input_type") or "")
+        input_status = str(system_input.get("input_status") or "not_enabled")
+        supported_input = bool(system_input.get("supported_external_input"))
+        document_entry = system_input.get("document_entry_support")
+        document_entry_supported = (
+            isinstance(document_entry, Mapping)
+            and document_entry.get("supported") is True
+        )
+        # The user-facing preflight has exactly two outcomes. Missing or
+        # unsupported evidence must not expose an external-write action.
+        document_entry_gate = document_entry_supported
+        executor_available = bool(system_input.get("executor_available"))
+        system_units = system_input.get("units") if isinstance(system_input, Mapping) else []
+        if not isinstance(system_units, (list, tuple)):
+            system_units = []
+        unit_boundaries_confirmed = bool(system_units) and not any(
+            str(unit.get("unit_count_status") or "") == "multiple_candidate"
+            for unit in system_units
+            if isinstance(unit, Mapping)
+        )
+        input_classification_conflict = any(
+            str(unit.get("input_type_status") or "") == "conflict"
+            or str(unit.get("paper_category_status") or "") == "conflict"
+            for unit in system_units
+            if isinstance(unit, Mapping)
+        )
+        input_classification_confirmed = bool(system_units) and all(
+            isinstance(unit, Mapping)
+            and str(unit.get("input_type_status") or "") in {"confirmed", "user_override"}
+            and (
+                input_type != "paper"
+                or str(unit.get("paper_category_status") or "") in {"confirmed", "user_override"}
+            )
+            for unit in system_units
+        )
+        input_coverage_complete = bool(system_units) and (
+            str(system_input.get("parse_coverage_status") or "") == "complete"
+            and all(
+                isinstance(unit, Mapping)
+                and str(unit.get("parse_coverage_status") or "") == "complete"
+                for unit in system_units
+            )
+        )
+        platform_template_available = bool(system_units) and all(
+            isinstance(unit, Mapping)
+            and (
+                # 平台题型模板只属于试卷页面；课文录入没有模板概念。
+                str(unit.get("input_type") or input_type or "") != "paper"
+                or platform_template_reference_complete(unit.get("configuration"))
+            )
+            for unit in system_units
+        )
+        # Keep the action projection in lockstep with the authoritative start
+        # route. A stale/partial projection must never render a clickable
+        # external-write action that the server will reject after the user
+        # clicks it.
+        input_items_complete = bool(item_rows) and all(
+            str(row["status"] or "") == "SUCCEEDED" for row in item_rows
+        )
+        page_content_status = system_input.get("page_content_status")
+        page_content_ready = isinstance(page_content_status, Mapping) and str(
+            page_content_status.get("status") or ""
+        ) in {"complete", "not_required"}
+        start_input_enabled = bool(
+            delivery_mode == "audio_and_input"
+            and supported_input
+            and document_entry_gate
+            and executor_available
+            and audio_ready_for_acceptance
+            and gate_passed
+            and accepted_audio
+            and input_status in {"pending_execute", "failed_retryable"}
+            and unit_boundaries_confirmed
+            and not input_classification_conflict
+            and input_classification_confirmed
+            and input_coverage_complete
+            and platform_template_available
+            and input_items_complete
+            and page_content_ready
+        )
+        if delivery_mode != "audio_and_input":
+            start_input_reason = "未开启生成音频并录入系统"
+        elif not supported_input:
+            start_input_reason = "当前录入类型暂不支持外部录入"
+        elif not document_entry_gate:
+            start_input_reason = (
+                str(document_entry.get("reason") or "当前文档暂不支持系统录入")
+                if isinstance(document_entry, Mapping)
+                else "当前文档暂未通过录入结构判断，当前暂不支持系统录入"
+            )
+        elif not executor_available:
+            start_input_reason = "页面录入执行器尚未连接"
+        elif not unit_boundaries_confirmed:
+            start_input_reason = "录入单元数量仍待确认"
+        elif input_classification_conflict:
+            start_input_reason = "录入类型或试卷分类存在冲突"
+        elif not input_classification_confirmed:
+            start_input_reason = "录入类型或试卷分类还没有完成确认"
+        elif not platform_template_available:
+            start_input_reason = "当前平台录入模板已失效或无权访问"
+        elif not input_coverage_complete:
+            start_input_reason = "解析结果仍有未归类或未完成映射的内容"
+        elif not input_items_complete:
+            start_input_reason = "仍有音频条目未成功生成"
+        elif not page_content_ready:
+            start_input_reason = (
+                page_content_status.get("reason")
+                if isinstance(page_content_status, Mapping)
+                else None
+            ) or "页面内容事实不完整，不能开始录入"
+        elif not audio_ready_for_acceptance or not gate_passed:
+            start_input_reason = "请先完成音频生成和技术核验"
+        elif not accepted_audio:
+            start_input_reason = "请先完成整批音频验收"
+        elif input_status == "needs_reconcile":
+            start_input_reason = "录入结果待核验，请先完成外部记录对账"
+        elif input_status == "failed_retryable":
+            start_input_reason = None
+        elif input_status != "pending_execute":
+            start_input_reason = "录入单元配置尚未完成或已有运行记录"
+        else:
+            start_input_reason = None
+        service_actions.append(_action(
+            "SERVICE", "START_INPUT", enabled=start_input_enabled,
+            reason=start_input_reason,
+            target=workflow_target, expected_state_version=snapshot.state_version,
+        ))
+        # Run controls follow the same server-decides principle as START_INPUT:
+        # the renderer renders these actions instead of inferring run state
+        # locally. Pause/resume/stop only exist while a run is active; resume
+        # is enabled exactly when the worker parked on the pause flag.
+        input_run_facts = system_input.get("input_run") if isinstance(system_input, Mapping) else None
+        if isinstance(input_run_facts, Mapping) and input_run_facts:
+            input_run_control = (
+                input_run_facts.get("control")
+                if isinstance(input_run_facts.get("control"), Mapping)
+                else {}
+            )
+            input_run_active = str(input_run_facts.get("status") or "") in {"PENDING", "RUNNING"}
+            input_run_stopping = input_run_active and bool(input_run_control.get("stop_requested"))
+            input_run_paused = (
+                input_run_active
+                and not input_run_stopping
+                and bool(input_run_control.get("pause_requested"))
+            )
+            input_run_control_target = {
+                "input_run_id": str(input_run_facts.get("input_run_id") or "") or None,
+            }
+            service_actions.append(_action(
+                "SERVICE", "INPUT_RUN_PAUSE",
+                enabled=input_run_active and not input_run_paused and not bool(input_run_control.get("stop_requested")),
+                reason=None if input_run_active and not input_run_paused else "当前录入运行不能暂停",
+                target=input_run_control_target, expected_state_version=snapshot.state_version,
+            ))
+            service_actions.append(_action(
+                "SERVICE", "INPUT_RUN_RESUME",
+                enabled=input_run_paused,
+                reason=(
+                    None
+                    if input_run_paused
+                    else "当前录入运行已请求停止"
+                    if input_run_stopping
+                    else "当前录入运行没有处于暂停状态"
+                ),
+                target=input_run_control_target, expected_state_version=snapshot.state_version,
+            ))
+            service_actions.append(_action(
+                "SERVICE", "INPUT_RUN_STOP",
+                enabled=input_run_active,
+                reason=None if input_run_active else "当前录入运行已结束，无需停止",
+                target=input_run_control_target, expected_state_version=snapshot.state_version,
+            ))
         for item_id, item_row, step_id in failed_item_rows:
             unit = item_units.get(item_id) or {}
             item_requires_reconcile = not is_tts_workflow and str(item_row["status"]) in {"AMBIGUOUS", "UNRESOLVED"}
@@ -1334,6 +1629,7 @@ def build_workflow_workspace(
             "configuration": configuration,
             "provider": provider,
             "delivery": delivery,
+            "system_input": system_input,
             "sync": {
                 "state_version": snapshot.state_version,
                 "last_event_id": snapshot.latest_event_id,

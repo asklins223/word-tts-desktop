@@ -24,6 +24,12 @@ from .domain import DomainError, content_hash
 from .fake_provider import AmbiguousProviderError, FakeProviderError
 from .providers import ProviderError, TTSProviderPort
 from .repositories import RepositoryError, WorkflowRepository
+from wordtts.config import (
+    QUESTION_STEM_ROLE_KEY,
+    QUESTION_STEM_ITEM_TYPES,
+    QUESTION_STEM_VOICE,
+    QUESTION_STEM_VOICE_PARAMS,
+)
 
 TTSProvider = TTSProviderPort
 
@@ -255,6 +261,7 @@ class WorkflowEngine:
                     "ordinal": index,
                     "item_id": str(item["item_id"]),
                     "identity_key": str(item["item_identity_key"]),
+                    "item_type": str(item["item_type"]),
                     "content": str(item["normalized_content"]),
                     "content_hash": str(item["content_hash"]),
                     "role": item["role"],
@@ -842,7 +849,22 @@ class WorkflowEngine:
             ),
             None,
         )
+        item_type = str(
+            item.get("item_type")
+            or item.get("category")
+            or item_metadata.get("category")
+            or ""
+        ).strip()
         role = cls._role_key(item.get("role"))
+        # Older tasks were persisted before the instruction paragraph joined
+        # the editable question-stem role.  Recover that exact leaf type here
+        # without changing any other unmarked/default-female content.
+        is_question_stem = (
+            item_type in QUESTION_STEM_ITEM_TYPES
+            or role == QUESTION_STEM_ROLE_KEY.casefold()
+        )
+        if is_question_stem and not role:
+            role = QUESTION_STEM_ROLE_KEY.casefold()
         role_voices = config.get("role_voices")
         role_voices = role_voices if isinstance(role_voices, Mapping) else {}
         role_voice = (
@@ -850,6 +872,8 @@ class WorkflowEngine:
             if role
             else None
         )
+        if not role_voice and is_question_stem:
+            role_voice = QUESTION_STEM_VOICE
         male_role = bool(re.match(r"^(mr|mr\.|sir|男|先生)\b", role))
         male_slot = item_gender == "male" if item_gender else male_role
         default_female = str(config.get("default_female_voice") or "amanda").strip()
@@ -869,6 +893,8 @@ class WorkflowEngine:
             params = role_configs.get(f"role:{role}")
         else:
             params = None
+        if not isinstance(params, Mapping) and is_question_stem:
+            params = QUESTION_STEM_VOICE_PARAMS
         if not isinstance(params, Mapping):
             params = role_configs.get("__default_male__" if male_slot else "__default_female__")
         if not isinstance(params, Mapping):
@@ -887,6 +913,8 @@ class WorkflowEngine:
             return max(0, min(100, int(number)))
 
         result = dict(item)
+        if is_question_stem and not str(result.get("role") or "").strip():
+            result["role"] = QUESTION_STEM_ROLE_KEY
         result["voice_key"] = voice_key
         result["speed"] = parameter("speed", 35 if male_slot else 50)
         result["pitch"] = parameter("pitch", 50)

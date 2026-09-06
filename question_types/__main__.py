@@ -14,7 +14,7 @@ PROJECT_ROOT = os.path.dirname(QUESTION_TYPES_DIR)
 WORD_DIR = os.path.join(PROJECT_ROOT, "examples", "documents")
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "examples", "parsed")
 
-from question_types import PARSER_MAP, detect_doc_type
+from question_types.segmenter import parse_document_once
 
 
 def main():
@@ -39,47 +39,39 @@ def main():
         return
 
     all_results = []
+    processed_file_count = 0
 
     for fname in sorted(word_files):
         filepath = os.path.join(WORD_DIR, fname)
-        doc_type = detect_doc_type(fname)
-
-        if doc_type is None:
+        results, summary = parse_document_once(filepath)
+        if not results:
             print(f"\n[跳过] 未识别类型的文件: {fname}")
             continue
 
-        parser_cls = PARSER_MAP[doc_type]
-        try:
-            parser = parser_cls(filepath)
-            result = parser.parse()
-        except Exception as e:
-            print(f"\n[错误] 解析失败: {fname} — {e}")
-            continue
+        # 一个套卷可能包含多种大题；所有题型均来自结构检测的结果。
+        processed_file_count += 1
+        print(f"\n[{fname}] {summary}")
+        for result in results:
+            all_results.append(result)
+            print(f"  [{result['doc_type']}] 共提取 {result['item_count']} 条内容:")
+            for item in result["items"]:
+                preview = item["text"][:80].replace('\n', ' ')
+                cat = item["category"]
 
-        all_results.append(result)
-
-        # 打印摘要
-        print(f"\n[{doc_type}] {fname}")
-        print(f"  共提取 {result['item_count']} 条内容:")
-
-        for item in result["items"]:
-            preview = item["text"][:80].replace('\n', ' ')
-            cat = item["category"]
-
-            if "number" in item:
-                print(f"  · [{cat}] #{item['number']:>2}  {preview}...")
-            elif "sentence_number" in item and "discourse_number" in item:
-                print(f"  · [{cat}] 语篇{item['discourse_number']}-{item['sentence_number']}  {preview}...")
-            elif "sentence_number" in item:
-                print(f"  · [{cat}] 句{item['sentence_number']}  {preview}...")
-            elif "index" in item:
-                print(f"  · [{cat}] #{item['index']:>2}  {preview}...")
-            elif "unit" in item:
-                print(f"  · [{cat}] ({item['unit']:<3}) {preview}...")
-            elif "discourse_number" in item:
-                print(f"  · [{cat}] 语篇{item['discourse_number']}  {preview}...")
-            else:
-                print(f"  · [{cat}] {preview}...")
+                if "number" in item:
+                    print(f"  · [{cat}] #{item['number']:>2}  {preview}...")
+                elif "sentence_number" in item and "discourse_number" in item:
+                    print(f"  · [{cat}] 语篇{item['discourse_number']}-{item['sentence_number']}  {preview}...")
+                elif "sentence_number" in item:
+                    print(f"  · [{cat}] 句{item['sentence_number']}  {preview}...")
+                elif "index" in item:
+                    print(f"  · [{cat}] #{item['index']:>2}  {preview}...")
+                elif "unit" in item:
+                    print(f"  · [{cat}] ({item['unit']:<3}) {preview}...")
+                elif "discourse_number" in item:
+                    print(f"  · [{cat}] 语篇{item['discourse_number']}  {preview}...")
+                else:
+                    print(f"  · [{cat}] {preview}...")
 
     # 保存汇总 JSON
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -89,7 +81,7 @@ def main():
 
     print("\n" + "=" * 70)
     total_items = sum(r["item_count"] for r in all_results)
-    print(f"解析完成！共处理 {len(all_results)} 个文件，提取 {total_items} 条内容")
+    print(f"解析完成！共处理 {processed_file_count} 个文件，提取 {total_items} 条内容")
     print(f"结果已保存到: {output_path}")
     print("=" * 70)
 

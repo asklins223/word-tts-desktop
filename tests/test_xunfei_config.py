@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,6 +8,16 @@ from unittest import mock
 
 import wordtts as core
 import xunfei.config as xunfei_config
+
+
+def _read_renderer_source() -> str:
+    renderer_dir = Path(__file__).resolve().parents[1] / "electron" / "renderer"
+    template = (renderer_dir / "index.html").read_text(encoding="utf-8")
+    scripts = re.findall(r'<script\s+src="([^"]+)"></script>', template)
+    return "\n".join(
+        (renderer_dir / script).read_text(encoding="utf-8")
+        for script in scripts
+    )
 
 
 class XunfeiConfigTests(unittest.TestCase):
@@ -204,8 +215,7 @@ class XunfeiConfigTests(unittest.TestCase):
         self.assertEqual(combined.channels, first.channels)
 
     def test_renderer_rebuilds_format_control_instead_of_falling_back_to_first_option(self):
-        renderer = Path(__file__).resolve().parents[1] / "electron" / "renderer" / "app.js"
-        source = renderer.read_text(encoding="utf-8")
+        source = _read_renderer_source()
 
         self.assertIn("format.replaceChildren(option)", source)
         self.assertIn("format: 'mp3'", source)

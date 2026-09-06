@@ -319,6 +319,21 @@ test('build.files 引用的关键文件都真实存在', () => {
     }
 });
 
+test('打包后端内置轻量 DOCX 块渲染脚本且不再注入 LibreOffice', () => {
+    const mainSource = fs.readFileSync(path.join(APP_DIR, 'main.js'), 'utf8');
+    const specSource = fs.readFileSync(path.join(APP_DIR, '..', 'server_pyinstaller.spec'), 'utf8');
+    assert.doesNotMatch(mainSource, /WORDTTS_SOFFICE|resourcesPath, 'soffice'/);
+    assert.match(specSource, /docx-renderer\.umd\.js/);
+    assert.match(specSource, /jszip\.min\.js/);
+    assert.match(specSource, /konva\.min\.js/);
+    assert.match(specSource, /lodash\.min\.js/);
+    assert.match(specSource, /workflow\/docx_renderer_assets/);
+    assert.equal(packageJson.devDependencies['docx-renderer'], '0.2.2');
+    assert.equal(packageJson.devDependencies.jszip, '3.10.1');
+    assert.equal(packageJson.devDependencies.konva, '10.2.0');
+    assert.equal(packageJson.devDependencies.lodash, '4.17.21');
+});
+
 test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸载生命周期', () => {
     assert.equal(packageJson.build?.win?.target?.[0]?.target, 'dir');
     assert.equal(packageJson.build?.win?.target?.[0]?.arch?.[0], 'x64');
@@ -376,6 +391,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(packageJson.scripts['build:win'], /build_windows_installer\.js --payload/);
     assert.match(windowsWorkflow, /electron-builder --win dir --publish never/);
     assert.match(windowsWorkflow, /build_windows_installer\.js --payload release\/win-unpacked/);
+    assert.doesNotMatch(windowsWorkflow, /libreoffice|soffice|stage_libreoffice/i);
     assert.match(windowsWorkflow, /verify_windows_installer_update\.js/);
     assert.match(windowsUpdateAuditScript, /createWindowsUpdateClient/);
     assert.match(windowsWorkflow, /Audit Setup blockmap and real Range differential update/);

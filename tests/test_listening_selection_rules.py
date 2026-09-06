@@ -12,8 +12,8 @@ sys.path.insert(0, str(ROOT))
 
 from question_types import (  # noqa: E402
     ListeningSelectionParser,
-    parse_document_auto,
 )
+from question_types.segmenter import parse_document_once
 import wordtts as core  # noqa: E402
 
 
@@ -98,7 +98,7 @@ class ListeningSelectionRuleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir, "7上 Starter Unit 1 Hello!.docx")
             self._make_document(path)
-            results, summary = parse_document_auto(path)
+            results, summary = parse_document_once(path)
 
         self.assertIn("检测到 1 种题型", summary)
         self.assertEqual([result["doc_type"] for result in results], ["听后选择"])
@@ -176,7 +176,7 @@ class ListeningSelectionRuleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir, "新旧题型混合.docx")
             self._make_mixed_document(path)
-            results, summary = parse_document_auto(path)
+            results, summary = parse_document_once(path)
 
         self.assertIn("检测到 2 种题型", summary)
         by_type = {result["doc_type"]: result for result in results}
@@ -214,6 +214,78 @@ class ListeningSelectionRuleTests(unittest.TestCase):
         self.assertEqual(result["questions"][0]["number"], 7)
         self.assertEqual(result["questions"][0]["stem"], "Who is the speaker")
         self.assertEqual(result["items"][0]["text"], "W: Hello.")
+
+    def test_red_option_becomes_correct_answer_and_score_summary_is_kept(self):
+        paras = [
+            (0, "一、听后选择（每小题1分，满分1分）", "Normal"),
+            (1, "1. What colour is the bag?", "Normal"),
+            (2, "A. Red.", "Normal"),
+            (3, "B. Green.", "Normal"),
+            (4, "【录音原文】", "Normal"),
+            (5, "W: It is green.", "Normal"),
+        ]
+        metadata = [{}, {}, {}, {
+            "colored_runs": [{
+                "start": 0,
+                "end": len(paras[3][1]),
+                "text": paras[3][1],
+                "rgb": "FF0000",
+            }],
+        }, {}, {}]
+
+        result = ListeningSelectionParser(
+            "red-answer.docx",
+            preloaded_paras=(paras, metadata),
+        ).parse()
+
+        self.assertEqual(result["questions"][0]["answer"], "B")
+        self.assertEqual(result["questions"][0]["score"], 1)
+        self.assertEqual(result["score_per_item"], 1)
+        self.assertEqual(result["section_score"], 1)
+
+    def test_reading_time_is_split_per_question_when_one_prompt_covers_two(self):
+        paras = [
+            (0, "一、听后选择（每小题1分，满分2分）", "Normal"),
+            (1, "（计算机语音提示）听下面一段对话，回答第5至第6小题。", "Normal"),
+            (2, "现在，你有10秒钟的时间阅读这两道小题。", "Normal"),
+            (3, "5. What is new?", "Normal"),
+            (4, "A. A bag.", "Normal"),
+            (5, "B. A cap.", "Normal"),
+            (6, "6. Where is it?", "Normal"),
+            (7, "A. On the desk.", "Normal"),
+            (8, "B. Under the chair.", "Normal"),
+            (9, "【录音原文】", "Normal"),
+            (10, "W: It is under the chair.", "Normal"),
+        ]
+
+        result = ListeningSelectionParser(
+            "reading-time.docx",
+            preloaded_paras=(paras, [{} for _ in paras]),
+        ).parse()
+
+        self.assertEqual(
+            [question["answer_time"] for question in result["questions"]],
+            [5, 5],
+        )
+
+    def test_reading_time_is_kept_for_single_question_prompt(self):
+        paras = [
+            (0, "一、听后选择（每小题1分，满分1分）", "Normal"),
+            (1, "（计算机语音提示）听下面一段对话，回答第1小题。", "Normal"),
+            (2, "现在，你有5秒钟的时间阅读这一小题。", "Normal"),
+            (3, "1. What is new?", "Normal"),
+            (4, "A. A bag.", "Normal"),
+            (5, "B. A cap.", "Normal"),
+            (6, "【录音原文】", "Normal"),
+            (7, "W: It is a cap.", "Normal"),
+        ]
+
+        result = ListeningSelectionParser(
+            "single-reading-time.docx",
+            preloaded_paras=(paras, [{} for _ in paras]),
+        ).parse()
+
+        self.assertEqual(result["questions"][0]["answer_time"], 5)
 
 
 if __name__ == "__main__":

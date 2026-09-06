@@ -1906,7 +1906,7 @@ components:
         truncated: { type: boolean }
     WorkflowHistoryRecord:
       type: object
-      required: [id, workflow_id, source_filename, available_files, completed, failed, cancelled, skipped, total, pending, format, generation_mode, preview, zip_available, zip_artifact_id, failed_items, status, result_status, execution_state, control_state, state_version, can_delete, delete_reason, created_at, completed_at, updated_at]
+      required: [id, workflow_id, source_filename, available_files, completed, failed, cancelled, skipped, total, pending, format, generation_mode, preview, zip_available, zip_artifact_id, failed_items, status, result_status, execution_state, control_state, state_version, can_delete, delete_reason, created_at, completed_at, updated_at, delivery_mode, input_status, input_type, input_units_total, input_units_succeeded]
       additionalProperties: false
       properties:
         id: { type: string }
@@ -1938,6 +1938,13 @@ components:
         created_at: { type: string, format: date-time }
         completed_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        delivery_mode: { type: string, enum: [audio_only, audio_and_input] }
+        input_status:
+          type: string
+          enum: [not_enabled, pending_config, pending_execute, running, succeeded, needs_reconcile, failed_retryable, failed]
+        input_type: { type: [string, 'null'], enum: [paper, textbook, vocabulary, null] }
+        input_units_total: { type: integer, minimum: 0 }
+        input_units_succeeded: { type: integer, minimum: 0 }
     WorkflowListResponse:
       type: object
       required: [workflows]

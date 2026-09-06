@@ -4,9 +4,15 @@
 import sys
 
 from wordtts.speakers import parse_speakers_with_roles
+from wordtts.config import (
+    QUESTION_STEM_ROLE_KEY,
+    QUESTION_STEM_VOICE,
+    QUESTION_STEM_VOICE_PARAMS,
+)
 from wordtts.tts_config import (
     _normalize_voice_params,
     clamp_tts_param,
+    normalize_role_key,
     role_config_key,
 )
 from wordtts.xunfei_bridge import _xunfei
@@ -48,9 +54,24 @@ def build_synthesis_segments(text, rate, volume, pitch, default_voice=None,
     按 ``音色 + 语速 + 语调 + 音量`` 重新分组提交。调用方最后按
     ``segment_index`` 拼回原题音频，因此分组不会改变成品顺序。
     """
+    normalized_default_role = normalize_role_key(default_role) if default_role else ""
+    effective_default_voice = default_voice
+    if normalized_default_role == QUESTION_STEM_ROLE_KEY.casefold():
+        configured_stem_voice = None
+        if isinstance(role_voices, dict):
+            configured_stem_voice = (
+                role_voices.get(QUESTION_STEM_ROLE_KEY)
+                or role_voices.get(f"role:{QUESTION_STEM_ROLE_KEY}")
+            )
+        # The role mapping is the editable override.  When it is absent, the
+        # question-stem policy owns both the default voice and its parameters.
+        effective_default_voice = str(
+            configured_stem_voice or QUESTION_STEM_VOICE
+        ).strip()
+
     segments = parse_speakers_with_roles(
         text,
-        default_voice=default_voice,
+        default_voice=effective_default_voice,
         female_voice=female_voice,
         male_voice=male_voice,
         role_voices=role_voices,
@@ -70,6 +91,12 @@ def build_synthesis_segments(text, rate, volume, pitch, default_voice=None,
     result = []
     for segment_index, (_role, voice, seg_text) in enumerate(segments):
         role_params = role_param_configs.get(role_config_key(_role)) if _role else None
+        if (
+            role_params is None
+            and _role
+            and normalize_role_key(_role) == QUESTION_STEM_ROLE_KEY.casefold()
+        ):
+            role_params = QUESTION_STEM_VOICE_PARAMS
         params = _normalize_voice_params(
             role_params if role_params is not None else configs.get(voice),
             base_params,

@@ -8,17 +8,225 @@ from pathlib import Path
 from unittest.mock import patch
 
 from application.workflow_service import WorkflowApplicationError, WorkflowApplicationService
+from workflow.docx_table_image import DocxTableImageError
 from workflow.artifact_store import ArtifactStore
 from workflow.database import WorkflowDatabase
 from workflow.engine import WorkflowEngine
 from workflow.fake_provider import FakeProvider
-from workflow.parser import LegacyWordParser
+from workflow.parser import DocumentParser, ParsedDocument, ParsedItem
 from workflow.providers import ProviderCapabilityError, ProviderRegistry
 from workflow.repositories import WorkflowRepository
 from workflow.source_imports import SourceImportService
 
 
 class ApplicationServiceTests(unittest.TestCase):
+    def test_block_image_contract_accepts_positioned_drawing_groups(self) -> None:
+        parsed = ParsedDocument(
+            schema_version="1",
+            parser_version="1",
+            normalization_version="1",
+            source_filename="drawing.docx",
+            source_sha256="d" * 64,
+            source_size_bytes=1,
+            items=(ParsedItem(
+                identity_key="drawing:1",
+                item_type="信息转述录音稿",
+                sequence=0,
+                normalized_content="Drawing source.",
+                metadata={
+                    "page_input": {
+                        "recording": {
+                            "block_image_required": True,
+                            "block_kind": "drawing_group",
+                            "block_index": 0,
+                        },
+                    },
+                },
+            ),),
+        )
+
+        self.assertEqual(
+            WorkflowApplicationService._block_image_requests(parsed),
+            [("drawing_group", 0)],
+        )
+        updated = WorkflowApplicationService._with_block_image_artifacts(
+            parsed,
+            {("drawing_group", 0): "artifact-drawing"},
+        )
+        self.assertEqual(
+            updated.items[0].metadata["page_input"]["recording"]["image_artifact_id"],
+            "artifact-drawing",
+        )
+
+    def test_parse_reuses_a_versioned_table_image_artifact(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-table-cache-test-") as tmp:
+            root = Path(tmp)
+            database = WorkflowDatabase(root / "workflow.db")
+            database.initialize()
+            artifacts = ArtifactStore(root / "artifacts")
+            repository = WorkflowRepository(database)
+            imports = SourceImportService(database, artifacts)
+
+            class TableParser:
+                @staticmethod
+                def parse(_source_path, **kwargs):
+                    return ParsedDocument(
+                        schema_version="1",
+                        parser_version="1",
+                        normalization_version="1",
+                        source_filename=str(kwargs["source_filename"]),
+                        source_sha256="a" * 64,
+                        source_size_bytes=14,
+                        items=(ParsedItem(
+                            identity_key="recording:1",
+                            item_type="听后记录并转述信息",
+                            sequence=0,
+                            normalized_content="Cindy's room is tidy.",
+                            metadata={
+                                "page_input": {
+                                    "recording": {
+                                        "table_image_required": True,
+                                        "table_index": 1,
+                                    },
+                                },
+                            },
+                        ),),
+                    )
+
+            service = WorkflowApplicationService(
+                repository,
+                imports,
+                artifacts,
+                parser=TableParser(),
+            )
+            draft = service.create_draft("tts", {})
+            imported = service.import_source(
+                draft.workflow_id,
+                b"managed source",
+                filename="recording.docx",
+                request_key="table-cache-source",
+            )
+            source_snapshot = repository.get_workflow(draft.workflow_id)
+
+            def fake_render(_source, output, **_kwargs):
+                Path(output).write_bytes(b"\x89PNG\r\n\x1a\nrendered-once")
+                return {"path": str(output)}
+
+            with (
+                patch(
+                    "application.workflow_service.render_docx_block_image",
+                    side_effect=fake_render,
+                ) as render,
+                patch(
+                    "application.atomic_bridge.bridge_parse_to_atomic_model",
+                    return_value={"bridged": True},
+                ),
+            ):
+                first = service.parse(
+                    draft.workflow_id,
+                    expected_state_version=source_snapshot.state_version,
+                    source_artifact_id=imported["source_artifact_id"],
+                )
+                replay = service.parse(
+                    draft.workflow_id,
+                    expected_state_version=first["workflow"].state_version,
+                    source_artifact_id=imported["source_artifact_id"],
+                )
+
+            self.assertEqual(render.call_count, 1)
+            self.assertEqual(
+                replay["table_image_artifact_ids"],
+                first["table_image_artifact_ids"],
+            )
+            self.assertEqual(len(first["table_image_artifact_ids"]), 1)
+            storage = repository.get_artifact_storage(
+                first["table_image_artifact_ids"][0],
+                workflow_id=draft.workflow_id,
+            )
+            self.assertEqual(storage["artifact_type"], "system-input-image")
+            self.assertEqual(storage["format"], "png")
+            database.close()
+
+    def test_parse_surfaces_the_table_image_renderer_reason(self) -> None:
+        """A render failure exposes the concrete cause, not just a dead-end gate."""
+        with tempfile.TemporaryDirectory(prefix="wordtts-table-fail-test-") as tmp:
+            root = Path(tmp)
+            database = WorkflowDatabase(root / "workflow.db")
+            database.initialize()
+            artifacts = ArtifactStore(root / "artifacts")
+            repository = WorkflowRepository(database)
+            imports = SourceImportService(database, artifacts)
+
+            class TableParser:
+                @staticmethod
+                def parse(_source_path, **kwargs):
+                    return ParsedDocument(
+                        schema_version="1",
+                        parser_version="1",
+                        normalization_version="1",
+                        source_filename=str(kwargs["source_filename"]),
+                        source_sha256="b" * 64,
+                        source_size_bytes=14,
+                        items=(ParsedItem(
+                            identity_key="recording:1",
+                            item_type="听后记录并转述信息",
+                            sequence=0,
+                            normalized_content="Cindy's room is tidy.",
+                            metadata={
+                                "page_input": {
+                                    "recording": {
+                                        "table_image_required": True,
+                                        "table_index": 1,
+                                    },
+                                },
+                            },
+                        ),),
+                    )
+
+            service = WorkflowApplicationService(
+                repository,
+                imports,
+                artifacts,
+                parser=TableParser(),
+            )
+            draft = service.create_draft("tts", {})
+            imported = service.import_source(
+                draft.workflow_id,
+                b"managed source",
+                filename="recording.docx",
+                request_key="table-fail-source",
+            )
+            source_snapshot = repository.get_workflow(draft.workflow_id)
+
+            def failing_render(_source, _output, **_kwargs):
+                raise DocxTableImageError("内置 Chromium 文档渲染依赖不可用")
+
+            with (
+                patch(
+                    "application.workflow_service.render_docx_block_image",
+                    side_effect=failing_render,
+                ),
+                patch(
+                    "application.atomic_bridge.bridge_parse_to_atomic_model",
+                    return_value={"bridged": True},
+                ),
+            ):
+                with self.assertRaises(WorkflowApplicationError) as caught:
+                    service.parse(
+                        draft.workflow_id,
+                        expected_state_version=source_snapshot.state_version,
+                        source_artifact_id=imported["source_artifact_id"],
+                    )
+
+            self.assertEqual(caught.exception.code, "PARSER_ERROR")
+            self.assertIn("内置 Chromium", caught.exception.message)
+            self.assertEqual(caught.exception.details["table_index"], 1)
+            self.assertEqual(
+                caught.exception.details["reason"],
+                "内置 Chromium 文档渲染依赖不可用",
+            )
+            database.close()
+
     def test_provider_ready_snapshot_must_confirm_generation_capability(self) -> None:
         class InconsistentProvider:
             backend = object()
@@ -82,7 +290,7 @@ class ApplicationServiceTests(unittest.TestCase):
                 repository,
                 imports,
                 artifacts,
-                parser=LegacyWordParser(parse_callable=parse),
+                parser=DocumentParser(parse_callable=parse),
                 engine=WorkflowEngine(repository, artifacts),
                 providers=registry,
             )

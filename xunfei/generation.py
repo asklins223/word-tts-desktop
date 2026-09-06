@@ -714,8 +714,16 @@ class GenerationMixin:
         pending = []
         results = {}
         reported_progress = set()
+        work_total = len(normalized_works)
+        work_by_id = {
+            str(work.get("work_id") or work.get("job_id") or ""): work
+            for work in normalized_works
+        }
+        submitted_count = 0
+        downloaded_count = 0
 
         def report_progress(payload):
+            nonlocal submitted_count, downloaded_count
             if not callable(progress_callback):
                 return
             item = dict(payload or {})
@@ -726,6 +734,19 @@ class GenerationMixin:
                 return
             if work_id:
                 reported_progress.add(key)
+            # 合并模式一次只有一个作品时，讯飞侧在“已提交”到“已下载”
+            # 之间没有任何进度信号。这里把每个作品的可靠节点（提交、
+            # 下载）连同累计计数一起上报，UI 才能把长任务拆成可见阶段。
+            if stage == "submitted":
+                submitted_count += 1
+            elif stage == "downloaded":
+                downloaded_count += 1
+            work = work_by_id.get(work_id) or {}
+            item.setdefault("work_index", int(work.get("work_index") or 0))
+            item["total_works"] = work_total
+            item["submitted_works"] = min(submitted_count, work_total)
+            item["downloaded_works"] = min(downloaded_count, work_total)
+            item["item_count"] = int(work.get("item_count") or 0)
             _notify_batch_progress(progress_callback, item)
 
         for work in normalized_works:
@@ -743,6 +764,13 @@ class GenerationMixin:
             )
             previous = resume_map.get(work_id)
             previous_id = previous.get("works_id") if isinstance(previous, dict) else None
+            report_progress({
+                "work_id": work_id,
+                "job_id": work_id,
+                "works_name": work.get("works_name"),
+                "stage": "preparing",
+                "downloaded": False,
+            })
             try:
                 if previous_id:
                     pending_item = {

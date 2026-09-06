@@ -46,6 +46,7 @@ HEADERS = {
 
 DEFAULT_FEMALE_KEY = "amanda"
 DEFAULT_MALE_KEY = "george"
+QUESTION_STEM_VOICE_KEY = "common:10000023"
 DEFAULT_FEMALE_NAME = "英语-Amanda"
 DEFAULT_MALE_NAME = "英语-George"
 
@@ -1027,12 +1028,14 @@ def normalize_voice(raw: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _fallback_voice(key: str, name: str, gender: str) -> dict[str, Any]:
-    # 这两个默认音色还要用于多人配音 payload；即使在线目录与本地缓存都
-    # 暂时不可用，也不能因为 speakerNo 缺失而让默认模式无法提交。
+    # 内置音色还要用于多人配音 payload；即使在线目录与本地缓存都暂时
+    # 不可用，也不能因为 speakerNo 缺失而让默认模式无法提交。
     fallback_speaker_no = {
         DEFAULT_FEMALE_KEY: 544508087,
         DEFAULT_MALE_KEY: 593031758,
+        QUESTION_STEM_VOICE_KEY: 130165,
     }.get(key)
+    fallback_language = "普通话" if key == QUESTION_STEM_VOICE_KEY else "英语"
     return {
         "key": key,
         "speaker_no": fallback_speaker_no,
@@ -1047,12 +1050,12 @@ def _fallback_voice(key: str, name: str, gender: str) -> dict[str, Any]:
         "emot_desc": "",
         "gender": gender,
         "gender_label": "女声" if gender == "female" else "男声",
-        "language": ["英语"],
-        "speaker_language": "英语",
+        "language": [fallback_language],
+        "speaker_language": fallback_language,
         "vcn_type": 1,
         "is_vip": False,
-        "tags": ["英语"],
-        "categories": ["女声" if gender == "female" else "男声", "英语"],
+        "tags": [fallback_language],
+        "categories": ["女声" if gender == "female" else "男声", fallback_language],
         "img_url": "",
         "audio_url": "",
         "icon_file": "",
@@ -1113,6 +1116,13 @@ def _normalize_voice_entries(
         DEFAULT_MALE_KEY,
         _fallback_voice(DEFAULT_MALE_KEY, DEFAULT_MALE_NAME, "male"),
     )
+    # 在线目录必须保持服务端返回的列表边界；只在内置目录或旧缓存中补上
+    # 题干音色，避免测试/在线目录凭空多出一张并非本次接口返回的卡片。
+    if source in {"builtin", "cache"}:
+        voices_by_key.setdefault(
+            QUESTION_STEM_VOICE_KEY,
+            _fallback_voice(QUESTION_STEM_VOICE_KEY, "晓燕", "female"),
+        )
 
     voices = list(voices_by_key.values())
     if sort:

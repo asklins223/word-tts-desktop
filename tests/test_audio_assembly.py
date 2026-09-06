@@ -168,8 +168,52 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
             (events[1]["completed_segments"], events[1]["total_segments"]),
             (2, 2),
         )
+        self.assertEqual(events[0]["stage"], "downloaded")
+        self.assertEqual(events[2]["stage"], "ready")
+        self.assertEqual(events[4]["stage"], "ready")
         self.assertEqual(set(result), {"q1", "q2"})
         self.assertTrue(all(result[item_id]["audio"] is not None for item_id in result))
+
+    async def test_batch_forwards_browser_lifecycle_progress_before_first_item(self):
+        segment = self._raw_segment()
+        events = []
+
+        async def fake_batch(jobs, progress_callback=None):
+            progress_callback({
+                "stage": "waiting_login",
+                "status": "waiting_login",
+                "message": "等待你在讯飞浏览器中完成登录",
+            })
+            job = jobs[0]
+            progress_callback({
+                "job_id": job["job_id"],
+                "downloaded": True,
+                "stage": "downloaded",
+            })
+            progress_callback({
+                "job_id": job["job_id"],
+                "downloaded": True,
+                "stage": "saved",
+            })
+            return {job["job_id"]: {"segment": segment, "error": None}}
+
+        with mock.patch.object(core._xunfei, "synth_xunfei_batch", new=fake_batch):
+            await core._synth_items_batch(
+                [{
+                    "item_id": "lifecycle-q1",
+                    "text": "waiting",
+                    "rate": 50,
+                    "volume": 50,
+                    "pitch": 50,
+                    "default_voice": core.FEMALE_VOICE,
+                }],
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(events[0]["stage"], "waiting_login")
+        self.assertEqual(events[0]["status"], "waiting_login")
+        self.assertEqual(events[0]["message"], "等待你在讯飞浏览器中完成登录")
+        self.assertNotIn("item_id", events[0])
 
     async def test_batch_forwards_resume_works_id_and_persists_it_in_progress_events(self):
         segment = self._raw_segment()
@@ -331,6 +375,42 @@ class AudioAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(result), {"q1", "q2"})
         self.assertTrue(all(result[item_id]["audio"] is not None for item_id in result))
         self.assertTrue(all(len(result[item_id]["audio"]) >= 600 for item_id in result))
+
+    async def test_composite_download_error_is_forwarded_as_error_stage(self):
+        events = []
+
+        async def fake_composite(works, progress_callback=None, resume=None):
+            work = works[0]
+            if progress_callback:
+                progress_callback({
+                    "work_id": work["work_id"],
+                    "stage": "saved",
+                    "error": "下载页未找到对应作品",
+                })
+            return {
+                work["work_id"]: {
+                    "audio": None,
+                    "error": "下载页未找到对应作品",
+                }
+            }
+
+        with mock.patch.object(
+            wordtts.batch,
+            "_XUNFEI_AVAILABLE",
+            True,
+        ), mock.patch.object(
+            core._xunfei,
+            "synth_xunfei_composite",
+            new=fake_composite,
+        ):
+            result = await core._synth_items_batch_composite(
+                [{"item_id": "error-q1", "text": "failed", "default_voice": core.FEMALE_VOICE}],
+                progress_callback=events.append,
+            )
+
+        self.assertIsNone(result["error-q1"]["audio"])
+        self.assertTrue(events)
+        self.assertTrue(all(event["stage"] == "error" for event in events))
 
     def test_composite_cut_uses_internal_pauses_and_keeps_short_edge_protection(self):
         tone = Sine(440).to_audio_segment(duration=900).apply_gain(-3)

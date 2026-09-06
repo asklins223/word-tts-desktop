@@ -73,6 +73,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // 服务器能力保留在主进程；renderer 只能通过下方的受限 workflow proxy 访问。
     workflow,
+    // Region choices are a bundled read-only snapshot.  The renderer uses it
+    // only to populate searchable page-form suggestions; it never turns the
+    // snapshot into an external write request.
+    readRegionTree: () => ipcRenderer.invoke('read-region-tree'),
     serverReady: () => ipcRenderer.invoke('server-ready'),
     onAppNotice: (callback) => {
         if (typeof callback !== 'function') return () => {};

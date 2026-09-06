@@ -203,8 +203,15 @@ test('abort 与 TTL 过期都会删除暂存文件', async () => {
     await staging.abort({ uploadId: aborted.uploadId });
     assert.equal(fs.existsSync(path.join(stagingDir, `${aborted.uploadId}.docx`)), false);
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    assert.equal(fs.existsSync(path.join(stagingDir, `${expired.uploadId}.docx`)), false);
+    // The TTL sweep is an unref'd timer plus async unlink; under a loaded
+    // event loop (full test suite) both can drift past any fixed sleep.
+    // Poll for the deletion instead of assuming it lands within 500ms.
+    const expiredPath = path.join(stagingDir, `${expired.uploadId}.docx`);
+    const sweepDeadline = Date.now() + 5000;
+    while (fs.existsSync(expiredPath) && Date.now() < sweepDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(fs.existsSync(expiredPath), false);
     await assert.rejects(
         () => staging.write({ uploadId: expired.uploadId, offset: 0, bytes: new Uint8Array([1]) }, SENDER),
         /missing or expired/,

@@ -9,14 +9,13 @@ from pydub import AudioSegment
 from question_model import extract_candidate
 from question_types import (
     ListeningRecordRetellingParser,
-    detect_doc_type,
-    parse_document_auto,
+    detect_document_type,
 )
 from question_types.segmenter import parse_document_once
 from wordtts import synthesis
 from wordtts.progress import build_progress
 from wordtts.synthesis import build_synthesis_segments
-from workflow.parser import LegacyWordParser
+from workflow.parser import DocumentParser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +26,7 @@ FIXTURE = ROOT / (
 
 
 def test_sample_extracts_only_the_first_section_listening_script():
-    results, summary = parse_document_auto(FIXTURE)
+    results, summary = parse_document_once(FIXTURE)
 
     assert summary == "检测到 1 种题型，成功提取 1 条内容"
     assert [result["doc_type"] for result in results] == ["听后记录并转述信息"]
@@ -43,9 +42,8 @@ def test_sample_extracts_only_the_first_section_listening_script():
     assert "Amy Lee helps make English name cards" not in item["text"]
 
 
-def test_once_loader_and_auto_loader_are_equivalent_for_new_type():
-    assert detect_doc_type(FIXTURE.name) == "听后记录并转述信息"
-    assert parse_document_once(FIXTURE) == parse_document_auto(FIXTURE)
+def test_new_type_is_detected_from_the_real_source():
+    assert detect_document_type(FIXTURE) == "听后记录并转述信息"
 
 
 def test_new_type_maps_to_one_audio_only_stimulus():
@@ -64,13 +62,25 @@ def test_new_type_maps_to_one_audio_only_stimulus():
 
 
 def test_workflow_parser_normalizes_the_new_audio_item():
-    parsed = LegacyWordParser().parse(FIXTURE)
+    parsed = DocumentParser().parse(FIXTURE)
 
     assert parsed.item_count == 1
     item = parsed.items[0]
     assert item.item_type == "听后记录并转述信息录音稿"
     assert item.metadata["doc_type"] == "听后记录并转述信息"
     assert item.normalized_content.startswith("(W)Hello, I'm Amy Lee.")
+    assert item.metadata["major_section_profile"] == "record_retelling_table_special"
+    assert item.metadata["entry_profile"] == "listening_record_retelling_v1"
+    assert item.metadata["capabilities"]["external_input"] is True
+    page_input = item.metadata["page_input"]
+    assert page_input["recording"]["table_image_required"] is True
+    assert page_input["recording"]["table_index"] == 0
+    assert [
+        question["answers"][0]
+        for question in page_input["recording"]["questions"]
+    ] == ["greet", "spell", "conversation"]
+    assert page_input["retelling"]["answer_time"] == 90
+    assert len(page_input["retelling"]["reference_answers"]) == 15
 
 
 def test_progress_keeps_marked_script_as_one_audio_item_and_maps_gender():

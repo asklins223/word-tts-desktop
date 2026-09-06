@@ -3,8 +3,8 @@
 在原子小题模型改造开始前，把 examples/documents 下所有示例文档按当前
 解析规则得到的完整结果单独存档，供后续对照回归：
 
-- 应用路径：``parse_document_auto``（内容识别，支持一份文档多种题型）；
-- CLI 路径：``detect_doc_type`` 文件名识别后的单题型解析；
+- 应用路径：``parse_document_once``（结构识别，支持一份文档多种题型）；
+- CLI 路径：真实文件结构识别后的单题型解析（混合套卷不猜 owner）；
 - 旧链路投影：``wordtts.progress.build_progress`` 派生的音频条目
   （id/category/seq/文件名/音色），这是 category→前缀、文件名去重、
   音色策略等数据处理最容易回归的地方。
@@ -94,15 +94,20 @@ def parse_one_document(filepath):
     返回 (doc_entry, fingerprints, versions)；doc_entry 为纯数据快照片段
     （不含时间戳）。
     """
-    from question_types import PARSER_MAP, detect_doc_type, parse_document_auto
+    from question_types import PARSER_MAP
+    from question_types.detection import detect_document_type
+    from question_types.segmenter import parse_document_once
 
     filename = os.path.basename(filepath)
 
-    results, summary = parse_document_auto(filepath)
+    results, summary = parse_document_once(filepath)
 
     cli_result = None
     cli_error = None
-    doc_type = detect_doc_type(filename)
+    # The baseline keeps the historical field names, but the value now comes
+    # from the same structure detector as the production route.  Do not pass
+    # ``filename`` here: a misleading basename must not alter the snapshot.
+    doc_type = detect_document_type(filepath)
     if doc_type is not None:
         try:
             cli_result = PARSER_MAP[doc_type](filepath).parse()

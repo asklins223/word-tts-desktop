@@ -83,7 +83,15 @@ test('projection-gap fixture never turns missing content into editable text', ()
 });
 
 test('renderer contains the workspace fields and transport boundaries exercised by fixtures', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+    // The renderer is split across classic-script feature modules; the
+    // contract is against the whole renderer tree, not a single app.js.
+    const rendererDir = path.join(__dirname, '..', 'renderer');
+    const collectSources = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) return collectSources(entryPath);
+        return entry.isFile() && entry.name.endsWith('.js') ? [fs.readFileSync(entryPath, 'utf8')] : [];
+    });
+    const source = collectSources(rendererDir).join('\n');
     [
         'normalized_content',
         'content_ref',

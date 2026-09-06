@@ -146,6 +146,31 @@ def test_info_retelling_asking_tasks_allow_chinese_ordinal_prompt():
     )
 
 
+def test_info_retelling_stem_selection_uses_structural_slots_not_wording():
+    result = _parse(InfoRetellingParser, [
+        "第一节 信息转述",
+        "改写后的转述指导语。",
+        "起始语：Let's tell Emma's story.",
+        "录音稿：W: first",
+        "第二节 询问信息",
+        "改写后的询问总题干。",
+        "请你准备第一个问题。",
+        "11. 你最喜欢什么颜色？",
+        "参考答案：",
+        "11. What colour do you like best?",
+    ])
+
+    audio_items = {
+        item["category"]: item
+        for item in result["audio_items"]
+    }
+    assert audio_items["信息转述题目指导文字"]["text"] == "改写后的转述指导语。"
+    assert audio_items["信息转述题干"]["text"] == (
+        "起始语：Let's tell Emma's story."
+    )
+    assert audio_items["询问信息题干"]["text"] == "改写后的询问总题干。"
+
+
 @pytest.mark.parametrize(
     "parser_cls,texts",
     [

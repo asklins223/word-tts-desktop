@@ -11,17 +11,15 @@ class QuestionType:
     """一个题型的全部静态定义。
 
     新增题型时在对应切片模块中定义解析器和 QUESTION_TYPE，并到
-    question_types/__init__.py 注册；解析映射、内容识别、展示颜色、
-    文件名识别和音色策略都从这里派生，不再散落在多个文件中。
+    question_types/__init__.py 注册；解析映射、结构识别、展示颜色和
+    音色策略都从这里派生，不再散落在多个文件中。
     """
 
     key: str                          # 题型名，如 "信息获取"
     parser: type                      # BaseParser 子类
     color: str                        # 前端展示颜色
-    filename_keywords: tuple = ()     # detect_doc_type 的文件名包含关键词
-    filename_extensions: tuple = ()   # detect_doc_type 的扩展名匹配（优先于关键词）
-    content_markers: tuple = ()       # detect_types_in_content 的内容标记正则
-    force_female_categories: tuple = ()  # 强制默认女声的 category（如词汇的 单词/例句）
+    content_markers: tuple = ()       # 结构检测的注册表候选标记（非单独判据）
+    force_female_categories: tuple = ()  # 声线策略中的默认女声 category
 
 
 # ============================================================================
@@ -39,8 +37,8 @@ class BaseParser:
     _REQUIRES_DOCUMENT_BLOCKS = False
 
     def __init__(self, filepath, *, preloaded_paras=None):
-        # 阶段3 统一分段器：可注入已加载的段落（文档只读一次），
-        # 缺省行为不变（自行加载）。格式兼容
+        # 统一分段器：可注入已加载的段落（文档只读一次），缺省时自行
+        # 加载。预加载协议支持
         # (段落列表, 元数据列表) 与
         # (段落列表, 元数据列表, DocumentBlock 列表)。
         self.filepath = filepath

@@ -24,7 +24,7 @@ from api.workflow_routes import (
 )
 from db.migration_runner import MigrationError
 from workflow.fake_provider import FakeProvider
-from workflow.parser import LegacyWordParser
+from workflow.parser import DocumentParser
 from workflow.providers import ProviderError
 from workflow.repositories import IdempotencyInProgress, RepositoryError, WorkflowRepository
 from workflow.security import TicketExpired
@@ -138,6 +138,300 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(first.status_code, 201, first.text)
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertEqual(replay.json(), first.json())
+
+    def test_platform_template_catalog_route_supports_crud_and_replay(self) -> None:
+        full_root = Path(self.temp.name) / "platform-template-full"
+        full_app = FastAPI()
+        full_runtime = WorkflowRuntime.from_paths(
+            full_root / "workflow.db",
+            full_root / "artifacts",
+            capability="test-capability",
+            profile="full",
+        )
+        install_workflow_api(full_app, runtime=full_runtime)
+        with TestClient(full_app) as client:
+            full_runtime.ensure_initialized()
+            payload = {
+                "input_type": "paper",
+                "name": "模仿朗读",
+                "platform_template_id": "platform-mimic-reading",
+                "platform_template_version": "v1",
+            }
+            created = client.post(
+                "/api/v1/system-input/platform-templates",
+                headers=self._headers("platform-template-create-key"),
+                json=payload,
+            )
+            replay = client.post(
+                "/api/v1/system-input/platform-templates",
+                headers=self._headers("platform-template-create-key"),
+                json=payload,
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertEqual(replay.json(), created.json())
+            template_key = created.json()["platform_template_key"]
+
+            listed = client.get(
+                "/api/v1/system-input/platform-templates?input_type=paper",
+                headers={"X-Desktop-Capability": "test-capability"},
+            )
+            self.assertEqual(listed.status_code, 200, listed.text)
+            self.assertEqual([item["platform_template_key"] for item in listed.json()["templates"]], [template_key])
+
+            update_payload = {"name": "模仿朗读专项", "platform_template_version": "v2"}
+            updated = client.patch(
+                f"/api/v1/system-input/platform-templates/{template_key}",
+                headers=self._headers("platform-template-update-key"),
+                json=update_payload,
+            )
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(updated.json()["name"], "模仿朗读专项")
+            self.assertEqual(updated.json()["platform_template_version"], "v2")
+
+            deleted = client.request(
+                "DELETE",
+                f"/api/v1/system-input/platform-templates/{template_key}",
+                headers=self._headers("platform-template-delete-key"),
+                json={},
+            )
+            delete_replay = client.request(
+                "DELETE",
+                f"/api/v1/system-input/platform-templates/{template_key}",
+                headers=self._headers("platform-template-delete-key"),
+                json={},
+            )
+            self.assertEqual(deleted.status_code, 200, deleted.text)
+            self.assertTrue(deleted.json()["deleted"])
+            self.assertEqual(delete_replay.status_code, 200, delete_replay.text)
+            self.assertEqual(delete_replay.json(), deleted.json())
+            self.assertEqual(
+                client.get(
+                    "/api/v1/system-input/platform-templates?input_type=paper",
+                    headers={"X-Desktop-Capability": "test-capability"},
+                ).json()["templates"],
+                [],
+            )
+
+    def test_system_input_boundary_route_persists_user_decision_and_replays(self) -> None:
+        full_root = Path(self.temp.name) / "boundary-full"
+        full_app = FastAPI()
+        full_runtime = WorkflowRuntime.from_paths(
+            full_root / "workflow.db",
+            full_root / "artifacts",
+            capability="test-capability",
+            profile="full",
+        )
+        install_workflow_api(full_app, runtime=full_runtime)
+        with TestClient(full_app) as client:
+            full_runtime.ensure_initialized()
+            workflow = full_runtime.repository.create_workflow(
+                "tts",
+                {"source_filename": "boundary-api.docx", "input_type": "paper"},
+            )
+            item_ids = []
+            for sequence, unit_label in enumerate(("U1", "U1", "U2", "U2")):
+                item_ids.append(full_runtime.repository.create_item(
+                    workflow.workflow_id,
+                    item_type="imitation_reading",
+                    sequence=sequence,
+                    normalized_content=f"API boundary content {sequence + 1}",
+                    item_identity_key=f"api-boundary:{sequence + 1}",
+                    metadata={"unit": unit_label},
+                    status="SUCCEEDED",
+                    source_locator=f"paragraph:{sequence + 1}",
+                ))
+            initial = full_runtime.system_input.sync_projection(
+                workflow.workflow_id,
+                source_filename="boundary-api.docx",
+            )
+            candidates = initial["units"][0]["evidence"]["unit_grouping"]["candidate_boundaries"]
+            expected_state_version = full_runtime.repository.get_workflow(workflow.workflow_id).state_version
+            payload = {
+                "expected_state_version": expected_state_version,
+                "mode": "multiple",
+                "boundaries": [{"item_ids": candidate["item_ids"]} for candidate in candidates],
+            }
+            first = client.post(
+                f"/api/v1/workflows/{workflow.workflow_id}/system-input/boundaries",
+                headers=self._headers("api-boundary-confirm-key"),
+                json=payload,
+            )
+            replay = client.post(
+                f"/api/v1/workflows/{workflow.workflow_id}/system-input/boundaries",
+                headers=self._headers("api-boundary-confirm-key"),
+                json=payload,
+            )
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertEqual(replay.json(), first.json())
+            self.assertEqual(first.json()["boundary_decision"]["mode"], "multiple")
+            self.assertEqual(first.json()["system_input"]["unit_count_status"], "multiple_confirmed")
+            self.assertEqual(
+                {segment["item_id"] for segment in first.json()["system_input"]["content_segments"]},
+                set(item_ids),
+            )
+
+    def test_terminal_rerun_keeps_system_input_configuration_after_tts_patch(self) -> None:
+        """Stopping and starting again must not reset the input target form."""
+
+        from workflow.engine import WorkflowEngine
+
+        full_root = Path(self.temp.name) / "rerun-system-input-full"
+        full_app = FastAPI()
+        full_runtime = WorkflowRuntime.from_paths(
+            full_root / "workflow.db",
+            full_root / "artifacts",
+            capability="test-capability",
+            profile="full",
+            allow_real=False,
+            auto_retry_enabled=False,
+        )
+        install_workflow_api(full_app, runtime=full_runtime)
+        with TestClient(full_app) as client:
+            full_runtime.ensure_initialized()
+            workflow = full_runtime.repository.create_workflow(
+                "tts",
+                {
+                    "source_filename": "模仿朗读.docx",
+                    "generation_mode": "composite_cut",
+                    "preview": False,
+                    "input_type": "paper",
+                    "delivery_mode": "audio_and_input",
+                    "unit_count_override": "multiple",
+                },
+            )
+            sequence = 0
+            for unit_label in ("第1套", "第2套"):
+                for item_number in range(2):
+                    full_runtime.repository.create_item(
+                        workflow.workflow_id,
+                        item_type="imitation_reading",
+                        sequence=sequence,
+                        normalized_content=f"In 2017, the new railway was opened in Kenya. ({sequence + 1})",
+                        item_identity_key=f"mimic-reading-rerun:{sequence}",
+                        metadata={
+                            "unit": unit_label,
+                            "category": "模仿朗读",
+                            "type_path": ["模仿朗读", "教材"],
+                        },
+                    )
+                    sequence += 1
+            initial = full_runtime.system_input.sync_projection(
+                workflow.workflow_id,
+                source_filename="模仿朗读.docx",
+            )
+            unit_ids = [unit["unit_id"] for unit in initial["units"]]
+            self.assertEqual(len(unit_ids), 2)
+            saved = full_runtime.system_input.save_configuration(
+                workflow.workflow_id,
+                full_runtime.repository.get_workflow(workflow.workflow_id).state_version,
+                {
+                    "delivery_mode": "audio_and_input",
+                    "input_type": "paper",
+                    "paper_category": "题型专项",
+                    "unit_count_override": "multiple",
+                    "units": [
+                        {
+                            "unit_id": unit_ids[0],
+                            "paperName": "外研9上-U6-第1套",
+                            "paperCategory": "题型专项",
+                            "provinceId": {"id": "110000", "name": "北京市"},
+                            "cityId": {"id": "110100", "name": "北京市"},
+                            "stageId": {"id": "middle", "name": "初中"},
+                            "gradeId": {"id": "grade-9", "name": "九年级"},
+                            "year": 2026,
+                            "answerTimeMinutes": 20,
+                            "platformTemplateName": "模仿朗读",
+                        },
+                        {
+                            "unit_id": unit_ids[1],
+                            "paperName": "外研9上-U6-第2套",
+                            "paperCategory": "题型专项",
+                            "provinceId": {"id": "110000", "name": "北京市"},
+                            "cityId": {"id": "110100", "name": "北京市"},
+                            "stageId": {"id": "middle", "name": "初中"},
+                            "gradeId": {"id": "grade-9", "name": "九年级"},
+                            "year": 2026,
+                            "answerTimeMinutes": 20,
+                            "platformTemplateName": "模仿朗读",
+                        },
+                    ],
+                },
+            )
+            self.assertEqual(saved["projection"]["delivery_mode"], "audio_and_input")
+
+            terminal = WorkflowEngine(
+                full_runtime.repository,
+                full_runtime.artifacts,
+            ).run_tts(workflow.workflow_id, FakeProvider())
+            self.assertEqual(terminal.status, "SUCCEEDED")
+            source = full_runtime.repository.get_workflow(workflow.workflow_id)
+
+            rerun = client.post(
+                f"/api/v1/workflows/{workflow.workflow_id}/reruns",
+                headers=self._headers("rerun-system-input-regression-key"),
+                json={
+                    "expected_group_state_version": source.group_state_version,
+                    "source_workflow_id": workflow.workflow_id,
+                    "reason": "renderer-rerun",
+                },
+            )
+            self.assertEqual(rerun.status_code, 201, rerun.text)
+            rerun_id = rerun.json()["workflow"]["workflow_id"]
+            rerun_workspace = client.get(
+                f"/api/v1/workflows/{rerun_id}/workspace",
+                headers={"X-Desktop-Capability": "test-capability"},
+            ).json()["workspace"]
+            self.assertEqual(rerun_workspace["system_input"]["delivery_mode"], "audio_and_input")
+            self.assertEqual(len(rerun_workspace["system_input"]["units"]), 2)
+            self.assertEqual(
+                [unit["configuration"]["paperName"] for unit in rerun_workspace["system_input"]["units"]],
+                ["外研9上-U6-第1套", "外研9上-U6-第2套"],
+            )
+            self.assertEqual(rerun_workspace["system_input"]["input_status"], "pending_execute")
+            self.assertEqual(len(rerun_workspace["system_input"]["entries"]), 2)
+            self.assertEqual(
+                [entry["input_status"] for entry in rerun_workspace["system_input"]["entries"]],
+                ["pending_execute", "pending_execute"],
+            )
+            self.assertEqual(
+                [entry["configuration"]["paperName"] for entry in rerun_workspace["system_input"]["entries"]],
+                ["外研9上-U6-第1套", "外研9上-U6-第2套"],
+            )
+
+            # This is the renderer's ordinary TTS patch issued immediately
+            # before the next generate command. It must not replace the
+            # adjacent system-input form values.
+            patched = client.patch(
+                f"/api/v1/workflows/{rerun_id}/workspace",
+                headers=self._headers("patch-system-input-regression-key"),
+                json={
+                    "expected_state_version": rerun_workspace["snapshot"]["state_version"],
+                    "configuration_revision": rerun_workspace["configuration"]["configuration_revision"],
+                    "configuration": {
+                        "generation_mode": "composite_cut",
+                        "preview": False,
+                    },
+                },
+            )
+            self.assertEqual(patched.status_code, 200, patched.text)
+            patched_input = patched.json()["workspace"]["system_input"]
+            self.assertEqual(patched_input["delivery_mode"], "audio_and_input")
+            self.assertEqual(
+                patched_input["units"][0]["configuration"]["provinceId"]["name"],
+                "北京市",
+            )
+            self.assertEqual(
+                patched_input["units"][0]["configuration"]["answerTimeMinutes"],
+                20,
+            )
+            self.assertEqual(patched_input["input_status"], "pending_execute")
+            self.assertEqual(len(patched_input["entries"]), 2)
+            self.assertEqual(
+                [entry["configuration"]["platformTemplateName"] for entry in patched_input["entries"]],
+                ["模仿朗读", "模仿朗读"],
+            )
 
     def test_delete_unfinished_workflow_removes_local_facts_and_replays(self) -> None:
         workflow = self._create_workflow()

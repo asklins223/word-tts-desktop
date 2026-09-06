@@ -749,6 +749,15 @@ class DownloadMixin:
             raise XunfeiError("讯飞作品下载页未加载完成")
 
         _log(f"[xunfei] 下载页已打开: {page.url}")
+        # 下载页就绪不等于音频已合成完成；这里先按作品上报“等待就绪”
+        # 阶段，让 UI 在讯飞合成长等待期间仍有明确的阶段可展示。
+        for pending_item in pending_items:
+            _notify_batch_progress(progress_callback, {
+                "job_id": str(pending_item.get("job_id") or ""),
+                "works_id": str(pending_item.get("works_id") or ""),
+                "stage": "downloading",
+                "downloaded": False,
+            })
         ready = self._wait_for_pending_ready(
             page,
             pending_items,

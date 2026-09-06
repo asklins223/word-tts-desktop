@@ -105,9 +105,17 @@ class AtomicBridgeTest(unittest.TestCase):
             {"doc_type": "词汇"},
         ]
         self.assertIsNone(_explicit_type_code(results, "混合内容.docx"))
-        self.assertEqual(
-            _explicit_type_code(results, "课文跟读.docx"),
-            "text_reading",
+        # A misleading basename must not select an owner for a mixed result.
+        self.assertIsNone(_explicit_type_code(results, "课文跟读.docx"))
+
+    def test_structural_detector_can_keep_a_partially_parsed_mix_unresolved(self):
+        results = [{"doc_type": "信息获取"}]
+        self.assertIsNone(
+            _explicit_type_code(
+                results,
+                "misleading-paper-name.docx",
+                detected_type_codes={"info_acquisition", "listening_choice"},
+            )
         )
 
 

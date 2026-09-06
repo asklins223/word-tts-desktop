@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from docx import Document
+from docx.shared import RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -62,8 +63,8 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         self.assertEqual(
             [item["text"] for item in questions],
             [
-                "What is Amy doing?",
-                "Where is Tom?",
+                "What is Amy doing? (Reading. / Singing. / Running.)",
+                "Where is Tom? (At home. / At school. / In a park.)",
                 "Who helps Amy?",
                 "Why is Tom happy?",
             ],
@@ -92,8 +93,8 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         self.assertEqual(
             [text for _, text in synthesized_segments],
             [
-                "What is Amy doing?",
-                "Where is Tom?",
+                "What is Amy doing? (Reading. / Singing. / Running.)",
+                "Where is Tom? (At home. / At school. / In a park.)",
                 "Who helps Amy?",
                 "Why is Tom happy?",
             ],
@@ -190,6 +191,44 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         # 行内参考答案不得混入录音稿
         for script in scripts:
             self.assertNotIn("参考答案", script["text"])
+
+    def test_reference_answer_block_takes_priority_over_red_option(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "信息获取.docx")
+            document = Document()
+            document.add_paragraph("第一节 听选信息")
+            document.add_paragraph("1. How many subjects does Mary have at school?")
+            options = document.add_paragraph()
+            for text, is_red in [
+                ("(Four. / ", False),
+                ("Five.", True),
+                (" / Six.)", False),
+            ]:
+                run = options.add_run(text)
+                if is_red:
+                    run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+            document.add_paragraph("参考答案：")
+            document.add_paragraph("1. Five. / Five subjects.")
+            document.add_paragraph("2. What subject does Bill like best?")
+            fallback_options = document.add_paragraph("(Maths. / English. / ")
+            red_answer = fallback_options.add_run("Science.")
+            red_answer.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+            fallback_options.add_run(")")
+            document.add_paragraph("听力原文：")
+            document.add_paragraph("M: Mary has five subjects.")
+            document.save(path)
+            result = InfoAcquisitionParser(path).parse()
+
+        questions = result["questions"]
+        self.assertEqual(questions[0]["answer"], "B")
+        self.assertEqual(
+            questions[0]["reference_answers"],
+            ["Five.", "Five subjects."],
+        )
+        self.assertEqual(questions[0]["reference_answers_source"], "document")
+        self.assertEqual(questions[1]["answer"], "C")
+        self.assertEqual(questions[1]["reference_answers"], ["Science."])
+        self.assertEqual(questions[1]["reference_answers_source"], "red_option")
 
     def test_recording_prompt_and_script_marker_split_adjacent_groups(self):
         """没有答案行时，下一组录音提示也必须切断上一段录音。"""

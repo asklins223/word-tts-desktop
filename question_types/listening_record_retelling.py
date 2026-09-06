@@ -7,8 +7,14 @@
 """
 
 import re
+from collections.abc import Mapping
 
 from audio_naming import audio_filename_stem, is_exam_paper_bundle
+from document_profiles import (
+    RECORD_RETELLING_ENTRY_PROFILE,
+    RECORD_RETELLING_TABLE_SPECIAL_PROFILE,
+    RECORD_RETELLING_UNKNOWN_PROFILE,
+)
 from question_types.base import BaseParser
 from question_types.text_utils import (
     MAJOR_TYPE_HEADING_RE,
@@ -24,6 +30,7 @@ class ListeningRecordRetellingParser(BaseParser):
     """提取「听后记录并转述信息」第一节的听力短文。"""
 
     DOC_TYPE = "听后记录并转述信息"
+    _REQUIRES_DOCUMENT_BLOCKS = True
 
     # 标题可能带有“（共...）”等说明，但“第一节 听后记录”是稳定边界。
     RE_SECTION_START = re.compile(
@@ -58,6 +65,30 @@ class ListeningRecordRetellingParser(BaseParser):
         re.I,
     )
     RE_QUESTION_NUMBER = re.compile(r"(?<!\d)(\d+)\s*[.．、）)]")
+    # Only the record/retelling paper's second section is a retelling section.
+    # A mixed paper may contain an earlier legacy heading such as
+    # ``第二节 询问信息``; accepting any bare ``第二节`` here would switch the
+    # parser into retelling-answer mode too early and hide the later record
+    # table and listening script.
+    RE_RETELLING_SECTION = re.compile(
+        r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
+        r"第二节(?:\s*[：:]?\s*信息转述)?"
+    )
+    RE_SCORE_PER_ITEM = re.compile(
+        r"每小题\s*([0-9０-９]+(?:[.]\d+)?)\s*分"
+    )
+    RE_FULL_SCORE = re.compile(
+        r"满分\s*([0-9０-９]+(?:[.]\d+)?)\s*分"
+    )
+    RE_RETELLING_TIME = re.compile(
+        r"(?:答题(?:时间|时长)\s*(?:为|是)?|在)\s*"
+        r"([0-9０-９]+)\s*秒(?:钟)?"
+    )
+    RE_NUMBERED_ANSWER = re.compile(
+        r"(?P<number>\d+)\s*[.．、）)]\s*(?P<answer>.*?)"
+        r"(?=(?:\s+\d+\s*[.．、）)]\s*)|$)",
+        re.S,
+    )
 
     @classmethod
     def _is_script_boundary(cls, value: str) -> bool:
@@ -73,6 +104,40 @@ class ListeningRecordRetellingParser(BaseParser):
         # 英文正文末尾的句号属于朗读内容，不能和控制提示的分隔符一起删掉。
         return value[:match.start()].rstrip()
 
+    def _recording_table_index(self):
+        """Return the first table in the first recording section, if present.
+
+        The bundled paper places the listening-record table after the first
+        section's instructions and before the second section.  The document
+        block stream already carries the source table index, so the workflow
+        can later render and crop exactly this table instead of guessing from
+        all tables in the document (the imitation-reading table appears
+        earlier in the same file).
+        """
+
+        if not self.document_blocks:
+            return None
+        in_recording_section = False
+        for block in self.document_blocks:
+            value = str(block.text or '').strip()
+            if block.kind == 'paragraph':
+                if self.RE_SECTION_START.search(value):
+                    in_recording_section = True
+                    continue
+                if in_recording_section and self.RE_SECTION_END.search(value):
+                    break
+                continue
+            if not in_recording_section or block.kind != 'table':
+                continue
+            table_index = block.metadata.get('table_index') if isinstance(block.metadata, Mapping) else None
+            try:
+                table_index = int(table_index)
+            except (TypeError, ValueError):
+                table_index = None
+            if table_index is not None and table_index >= 0:
+                return table_index
+        return None
+
     def parse(self):
         items = []
         in_section = False
@@ -81,7 +146,46 @@ class ListeningRecordRetellingParser(BaseParser):
         current_lines = []
         script_idx = 0
         record_question_numbers = []
+        record_answers = {}
+        record_score = None
+        retelling_prompt = None
+        retelling_answers = []
+        retelling_score = None
+        retelling_answer_time = None
+        in_retelling_section = False
+        collecting_retelling_answers = False
         use_exam_naming = is_exam_paper_bundle(self.paras)
+        recording_table_index = self._recording_table_index()
+        record_section_score = None
+        major_section_score = None
+
+        def parse_score_value(raw):
+            normalized = str(raw or '').translate(
+                str.maketrans('０１２３４５６７８９', '0123456789')
+            )
+            try:
+                score = float(normalized)
+            except ValueError:
+                return None
+            return int(score) if score.is_integer() else score
+
+        def parse_numbered_answers(value):
+            answers = {}
+            for match in self.RE_NUMBERED_ANSWER.finditer(str(value or "")):
+                answer = sanitize(match.group("answer")).strip(" /")
+                if answer:
+                    answers[int(match.group("number"))] = answer
+            return answers
+
+        def parse_number(value):
+            raw = str(value or "").translate(
+                str.maketrans("０１２３４５６７８９", "0123456789")
+            )
+            try:
+                number = float(raw)
+            except (TypeError, ValueError):
+                return None
+            return int(number) if number.is_integer() else number
 
         def flush():
             nonlocal collecting, plain_script_pending, current_lines, script_idx
@@ -101,11 +205,83 @@ class ListeningRecordRetellingParser(BaseParser):
             if not value:
                 continue
 
+            score_match = self.RE_SCORE_PER_ITEM.search(value)
+            if score_match and record_score is None and (
+                in_section and not in_retelling_section
+                or self.RE_SECTION_START.search(value)
+            ):
+                record_score = parse_number(score_match.group(1))
+
+            full_score = self.RE_FULL_SCORE.search(value)
+            if full_score:
+                parsed_full_score = parse_score_value(full_score.group(1))
+                if self.RE_RETELLING_SECTION.match(value):
+                    if parsed_full_score is not None:
+                        retelling_score = parsed_full_score
+                elif self.RE_SECTION_START.search(value):
+                    if parsed_full_score is not None:
+                        record_section_score = parsed_full_score
+                elif self.RE_TYPE_TITLE.search(value) and parsed_full_score is not None:
+                    major_section_score = parsed_full_score
+
+            if self.RE_RETELLING_SECTION.match(value):
+                flush()
+                in_section = False
+                in_retelling_section = True
+                collecting_retelling_answers = False
+                full_score = self.RE_FULL_SCORE.search(value)
+                if full_score:
+                    retelling_score = parse_number(full_score.group(1))
+                continue
+
+            if in_retelling_section:
+                time_match = self.RE_RETELLING_TIME.search(value)
+                if time_match and retelling_answer_time is None:
+                    retelling_answer_time = parse_number(time_match.group(1))
+                # The prompt is the sentence with a blank line/underscore on
+                # the page, not the preceding computer-instruction paragraph.
+                if "_" in value and re.search(r"[A-Za-z]", value):
+                    prompt = re.sub(r"_+", "", value)
+                    prompt = re.sub(r"^\s*\d+\s*[.．、）)]\s*", "", prompt)
+                    prompt = sanitize(prompt).strip()
+                    # Some Word answer lines put one full stop before the
+                    # underscore rule and another at the end of the next
+                    # paragraph.  Keep the sentence punctuation, but do not
+                    # expose the layout seam as a double full stop.
+                    prompt = re.sub(r"\.{2,}\s*$", ".", prompt)
+                    retelling_prompt = prompt or retelling_prompt
+                    continue
+                if "参考答案" in value or match_script_marker(value):
+                    collecting_retelling_answers = "参考答案" in value
+                    remainder = re.sub(r"^.*?参考答案\s*[：:]?", "", value).strip()
+                    if collecting_retelling_answers and remainder:
+                        parsed = parse_numbered_answers(remainder)
+                        if parsed:
+                            retelling_answers.extend(parsed[index] for index in sorted(parsed))
+                        elif re.search(r"[A-Za-z]", remainder):
+                            retelling_answers.append(sanitize(remainder).strip(" /"))
+                    continue
+                if collecting_retelling_answers:
+                    answer_line = re.sub(r"^\s*/", "", value).strip()
+                    parsed = parse_numbered_answers(answer_line)
+                    if parsed:
+                        retelling_answers.extend(
+                            parsed[index] for index in sorted(parsed)
+                        )
+                    else:
+                        answer_line = re.sub(
+                            r"^\s*\d+\s*[.．、）)]\s*", "", answer_line
+                        )
+                        if answer_line and re.search(r"[A-Za-z]", answer_line):
+                            retelling_answers.append(sanitize(answer_line))
+                continue
+
             # “答题区域”本身会先结束第一节，参考答案常在下一段才出现；
             # 只要已经提取到本题听力稿，就继续读取这一行中的实际题号。
             if items and "参考答案" in value:
-                for match in self.RE_QUESTION_NUMBER.finditer(value):
-                    number = int(match.group(1))
+                parsed_answers = parse_numbered_answers(value)
+                for number, answer in parsed_answers.items():
+                    record_answers[number] = answer
                     if number not in record_question_numbers:
                         record_question_numbers.append(number)
 
@@ -195,4 +371,110 @@ class ListeningRecordRetellingParser(BaseParser):
                 })
             if record_question_numbers:
                 items[-1]["question_numbers"] = list(record_question_numbers)
-        return self._result(items)
+        if items:
+            recording_total = (
+                (record_score if record_score is not None else 1)
+                * len(record_answers)
+                if record_answers
+                else 0
+            )
+            retelling_total = (
+                retelling_score
+                if retelling_score is not None and (retelling_prompt or retelling_answers)
+                else 0
+            )
+            if recording_total or retelling_total:
+                # The audio item is the shared source for both sections, so
+                # its segment-level score is the total of the page facts.
+                items[-1]["score"] = recording_total + retelling_total
+            # A standalone专项 is opened for external entry only when it has
+            # the exact source facts required by the confirmed page flow:
+            # one table image source, three scored blanks, and a scored
+            # retelling prompt with reference answers.  Incomplete documents
+            # remain usable for audio generation but fail closed at the entry
+            # profile gate.
+            external_input_ready = bool(
+                recording_table_index is not None
+                and len(record_answers) == 3
+                and record_score is not None
+                and retelling_prompt
+                and retelling_score is not None
+                and retelling_answers
+            )
+            for item in items:
+                item.update({
+                    "major_section_profile": (
+                        RECORD_RETELLING_TABLE_SPECIAL_PROFILE
+                        if recording_table_index is not None
+                        else RECORD_RETELLING_UNKNOWN_PROFILE
+                    ),
+                    "entry_profile": (
+                        RECORD_RETELLING_ENTRY_PROFILE
+                        if external_input_ready
+                        else None
+                    ),
+                    "capabilities": {
+                        "parse": True,
+                        "audio": True,
+                        "normalize": True,
+                        "external_input": external_input_ready,
+                    },
+                })
+        result = self._result(items)
+        if record_answers:
+            result["recording_questions"] = [
+                {
+                    "number": number,
+                    "score": record_score if record_score is not None else 1,
+                    "answers": [answer],
+                }
+                for number, answer in sorted(record_answers.items())
+            ]
+        if items:
+            recording = {
+                "listening_text": items[0].get("text", ""),
+                "questions": result.get("recording_questions", []),
+            }
+            if recording_table_index is not None:
+                recording["table_image_required"] = True
+                recording["table_index"] = recording_table_index
+            result["recording"] = recording
+        if retelling_prompt or retelling_answers:
+            result["retelling"] = {
+                "prompt": retelling_prompt or "",
+                "score": retelling_score if retelling_score is not None else 0,
+                "answer_time": retelling_answer_time,
+                "reference_answers": retelling_answers,
+            }
+        computed_recording_score = sum(
+            question.get("score", 0)
+            for question in result.get("recording_questions", [])
+            if isinstance(question, Mapping)
+            and isinstance(question.get("score"), (int, float))
+        )
+        computed_retelling_score = (
+            retelling_score
+            if retelling_prompt or retelling_answers
+            else 0
+        )
+        if record_section_score is not None or computed_recording_score:
+            result["section_scores"] = {
+                "第一节听后记录": (
+                    record_section_score
+                    if record_section_score is not None
+                    else computed_recording_score
+                ),
+                "第二节信息转述": (
+                    computed_retelling_score
+                    if computed_retelling_score
+                    else 0
+                ),
+            }
+        if major_section_score is not None or computed_recording_score or computed_retelling_score:
+            result["section_score"] = (
+                major_section_score
+                if major_section_score is not None
+                else computed_recording_score + computed_retelling_score
+            )
+            result["computed_score"] = computed_recording_score + computed_retelling_score
+        return result

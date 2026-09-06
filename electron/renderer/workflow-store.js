@@ -60,6 +60,14 @@ function projectWorkflowSnapshot(workflow) {
             const value = Number(existingRuntime[field]);
             if (Number.isInteger(value) && value >= 0) runtime[field] = value;
         });
+        ['submitted_works', 'downloaded_works', 'total_works', 'item_count'].forEach((field) => {
+            const value = Number(existingRuntime[field]);
+            if (Number.isInteger(value) && value >= 0) runtime[field] = value;
+        });
+        const runtimeElapsed = Number(existingRuntime.elapsed_seconds);
+        if (Number.isFinite(runtimeElapsed) && runtimeElapsed >= 0) {
+            runtime.elapsed_seconds = Math.round(runtimeElapsed * 10) / 10;
+        }
     }
     const latest = workflow.latest_event;
     if (latest && typeof latest === 'object') {
@@ -76,6 +84,14 @@ function projectWorkflowSnapshot(workflow) {
                 const value = Number(payload[field]);
                 if (Number.isInteger(value) && value >= 0) runtime[field] = value;
             });
+            ['submitted_works', 'downloaded_works', 'total_works', 'item_count'].forEach((field) => {
+                const value = Number(payload[field]);
+                if (Number.isInteger(value) && value >= 0) runtime[field] = value;
+            });
+            const payloadElapsed = Number(payload.elapsed_seconds);
+            if (Number.isFinite(payloadElapsed) && payloadElapsed >= 0) {
+                runtime.elapsed_seconds = Math.round(payloadElapsed * 10) / 10;
+            }
         }
     }
     if (Object.keys(runtime).length > 0) projection.runtime = runtime;
@@ -173,6 +189,12 @@ function projectMetadata(metadata) {
                     ? item
                     : String(item).slice(0, 256)
             ));
+        } else if (safeKey === 'capabilities' && typeof value === 'object') {
+            const capabilities = {};
+            ['parse', 'audio', 'normalize', 'external_input'].forEach((field) => {
+                if (value[field] !== undefined) capabilities[field] = value[field] === true;
+            });
+            if (Object.keys(capabilities).length > 0) projected[safeKey] = capabilities;
         }
     });
     try {
@@ -328,6 +350,436 @@ function projectDelivery(delivery) {
     return projected;
 }
 
+function projectSystemInput(systemInput) {
+    if (!systemInput || typeof systemInput !== 'object' || Array.isArray(systemInput)) return null;
+    const projected = {};
+    ['delivery_mode', 'input_type', 'input_type_status', 'paper_category',
+        'paper_category_status', 'parse_coverage_status', 'unit_count_status',
+        'unit_count_override', 'input_status', 'error_code'].forEach((field) => {
+        const value = capWorkspaceText(systemInput[field], 128);
+        if (value !== null) projected[field] = value;
+    });
+    ['available', 'executor_available', 'supported_external_input'].forEach((field) => {
+        if (systemInput[field] !== undefined) projected[field] = systemInput[field] === true;
+    });
+    if (systemInput.configuration_editable !== undefined) {
+        projected.configuration_editable = systemInput.configuration_editable === true;
+    }
+    // 文档自动识别建议（录入类型/试卷分类/课文字段）。只透传安全字段，
+    // 供录入目标抽屉预填与呈现识别结果。
+    const suggested = systemInput.suggested_configuration;
+    if (suggested && typeof suggested === 'object' && !Array.isArray(suggested)) {
+        const projectedSuggested = {};
+        ['input_type', 'input_type_status', 'paper_category', 'paper_category_status'].forEach((field) => {
+            const value = capWorkspaceText(suggested[field], 128);
+            if (value !== null) projectedSuggested[field] = value;
+        });
+        const textbook = suggested.textbook;
+        if (textbook && typeof textbook === 'object' && !Array.isArray(textbook)) {
+            const projectedTextbook = {};
+            Object.entries(textbook).slice(0, 24).forEach(([key, value]) => {
+                if (!/^textbook/.test(String(key)) || !value || typeof value !== 'object') return;
+                projectedTextbook[String(key)] = {
+                    value: capWorkspaceText(value.value, 256) || '',
+                    source: capWorkspaceText(value.source, 32) || '',
+                    confidence: capWorkspaceText(value.confidence, 16) || '',
+                };
+            });
+            if (Object.keys(projectedTextbook).length) projectedSuggested.textbook = projectedTextbook;
+        }
+        if (projectedSuggested.input_type || projectedSuggested.paper_category) {
+            projected.suggested_configuration = projectedSuggested;
+        }
+    }
+    if (Array.isArray(systemInput.supported_external_input_types)) {
+        projected.supported_external_input_types = systemInput.supported_external_input_types
+            .slice(0, 16).map(value => capWorkspaceText(value, 64)).filter(Boolean);
+    }
+    if (Array.isArray(systemInput.input_type_capabilities)) {
+        projected.input_type_capabilities = systemInput.input_type_capabilities
+            .slice(0, 16)
+            .filter(row => row && typeof row === 'object' && !Array.isArray(row))
+            .map(row => {
+                const capability = {};
+                ['input_type', 'label', 'unit_label', 'platform', 'adapter_key',
+                    'config_schema_version', 'status', 'reason'].forEach((field) => {
+                    const value = capWorkspaceText(row[field], 256);
+                    if (value !== null) capability[field] = value;
+                });
+                if (row.external_supported !== undefined) {
+                    capability.external_supported = row.external_supported === true;
+                }
+                if (row.executor_available !== undefined) {
+                    capability.executor_available = row.executor_available === true;
+                }
+                return capability;
+            })
+            .filter(row => row.input_type);
+    }
+    const projectSmallObject = (value, depth = 0) => {
+        if (depth > 2 || value === null || value === undefined) return value ?? null;
+        if (typeof value === 'string') return value.slice(0, 2000);
+        if (typeof value === 'number' || typeof value === 'boolean') return value;
+        if (Array.isArray(value)) return value.slice(0, 64).map(item => projectSmallObject(item, depth + 1));
+        if (typeof value !== 'object') return null;
+        const result = {};
+        Object.entries(value).slice(0, 64).forEach(([key, item]) => {
+            const safe = projectSmallObject(item, depth + 1);
+            if (safe !== null && safe !== undefined) result[String(key).slice(0, 128)] = safe;
+        });
+        return result;
+    };
+    if (systemInput.document_entry_support
+        && typeof systemInput.document_entry_support === 'object'
+        && !Array.isArray(systemInput.document_entry_support)) {
+        const entrySupport = {};
+        ['schema_version', 'status', 'format', 'label', 'reason'].forEach((field) => {
+            const value = capWorkspaceText(systemInput.document_entry_support[field], 512);
+            if (value !== null) entrySupport[field] = value;
+        });
+        ['supported', 'structured_count', 'invalid_count',
+            'major_section_profile_invalid_count', 'entry_profile_invalid_count', 'entry_capability_invalid_count'].forEach((field) => {
+            if (systemInput.document_entry_support[field] !== undefined) {
+                if (field === 'supported') {
+                    entrySupport[field] = systemInput.document_entry_support[field] === true;
+                } else {
+                    const count = nonNegativeInteger(systemInput.document_entry_support[field]);
+                    if (count !== null) entrySupport[field] = count;
+                }
+            }
+        });
+        ['detected_types', 'document_types', 'expected_types'].forEach((field) => {
+            if (Array.isArray(systemInput.document_entry_support[field])) {
+                entrySupport[field] = systemInput.document_entry_support[field]
+                    .slice(0, 16)
+                    .map(value => capWorkspaceText(value, 128))
+                    .filter(Boolean);
+            }
+        });
+        // Keep the renderer contract binary even when it receives a stale
+        // projection written by an older backend. A missing/unknown status is
+        // fail-closed and therefore belongs to “暂不支持”.
+        // ``supported`` is the only authoritative gate.  An older/stale
+        // projection that contains only ``status: supported`` must not leak a
+        // third interpretation into the renderer or reopen the document flow.
+        entrySupport.status = systemInput.document_entry_support.supported === true
+            ? 'supported'
+            : 'unsupported';
+        projected.document_entry_support = entrySupport;
+    }
+    const projectPageInput = (pageInput) => {
+        if (!pageInput || typeof pageInput !== 'object' || Array.isArray(pageInput)) return null;
+        const projectedPageInput = {};
+        ['schema_version', 'input_type', 'type'].forEach((field) => {
+            const value = capWorkspaceText(pageInput[field], 128);
+            if (value !== null) projectedPageInput[field] = value;
+        });
+        const projectQuestion = (question) => {
+            if (!question || typeof question !== 'object' || Array.isArray(question)) return null;
+            const projectedQuestion = {};
+            ['number', 'prompt', 'listening_text', 'answer_prompt', 'prompt_audio_filename_stem', 'reference_answers_source'].forEach((field) => {
+                const value = capWorkspaceText(question[field], 16 * 1024);
+                if (value !== null) projectedQuestion[field] = value;
+            });
+            ['score', 'answer_time', 'times', 'gap'].forEach((field) => {
+                const value = finiteNumber(question[field]);
+                if (value !== null) projectedQuestion[field] = value;
+            });
+            if (question.answer !== undefined) {
+                projectedQuestion.answer = projectSmallObject(question.answer);
+            }
+            if (Array.isArray(question.options)) {
+                projectedQuestion.options = question.options.slice(0, 256).map((option) => {
+                    if (!option || typeof option !== 'object' || Array.isArray(option)) return null;
+                    const projectedOption = {};
+                    ['option_id', 'text'].forEach((field) => {
+                        const value = capWorkspaceText(option[field], 16 * 1024);
+                        if (value !== null) projectedOption[field] = value;
+                    });
+                    return Object.keys(projectedOption).length > 0 ? projectedOption : null;
+                }).filter(Boolean);
+            }
+            ['answers', 'reference_answers'].forEach((field) => {
+                if (Array.isArray(question[field])) {
+                    projectedQuestion[field] = question[field].slice(0, 256)
+                        .map(value => capWorkspaceText(value, 16 * 1024)).filter(Boolean);
+                }
+            });
+            return Object.keys(projectedQuestion).length > 0 ? projectedQuestion : null;
+        };
+        const projectQuestions = (questions) => Array.isArray(questions)
+            ? questions.slice(0, 256).map(projectQuestion).filter(Boolean)
+            : [];
+        if (pageInput.type === '听后选择' && Array.isArray(pageInput.materials)) {
+            projectedPageInput.materials = pageInput.materials.slice(0, 256).map((material) => {
+                if (!material || typeof material !== 'object' || Array.isArray(material)) return null;
+                const projectedMaterial = {};
+                ['section', 'audio_filename_stem', 'listening_text'].forEach((field) => {
+                    const value = capWorkspaceText(material[field], 16 * 1024);
+                    if (value !== null) projectedMaterial[field] = value;
+                });
+                ['times', 'gap'].forEach((field) => {
+                    const value = finiteNumber(material[field]);
+                    if (value !== null) projectedMaterial[field] = value;
+                });
+                projectedMaterial.questions = projectQuestions(material.questions);
+                return projectedMaterial;
+            }).filter(Boolean);
+        } else if (pageInput.type === '信息获取' && Array.isArray(pageInput.materials)) {
+            projectedPageInput.materials = pageInput.materials.slice(0, 256).map((material) => {
+                if (!material || typeof material !== 'object' || Array.isArray(material)) return null;
+                const projectedMaterial = {};
+                ['section', 'audio_filename_stem', 'listening_text'].forEach((field) => {
+                    const value = capWorkspaceText(material[field], 16 * 1024);
+                    if (value !== null) projectedMaterial[field] = value;
+                });
+                projectedMaterial.questions = projectQuestions(material.questions);
+                return projectedMaterial;
+            }).filter(Boolean);
+        } else if (pageInput.type === '听后应答' || pageInput.type === '模仿朗读') {
+            projectedPageInput.questions = projectQuestions(pageInput.questions);
+        } else if (pageInput.type === '听后记录并转述信息' || pageInput.type === '信息转述及询问') {
+            const recording = pageInput.recording;
+            if (recording && typeof recording === 'object' && !Array.isArray(recording)) {
+                const projectedRecording = {};
+                const listeningText = capWorkspaceText(recording.listening_text, 16 * 1024);
+                if (listeningText !== null) projectedRecording.listening_text = listeningText;
+                [
+                    'audio_filename_stem',
+                    'instruction_text',
+                    'instruction_audio_filename_stem',
+                    // The asking-information section has its own guidance
+                    // audio channel. Keep its page fact in the renderer
+                    // projection; otherwise workspaceItemsToParseResults()
+                    // replaces the parser metadata with a page_input object
+                    // that silently loses this field before the document
+                    // view renders it.
+                    'asking_instruction_text',
+                    'asking_instruction_audio_filename_stem',
+                ].forEach((field) => {
+                    const value = capWorkspaceText(recording[field], 16 * 1024);
+                    if (value !== null) projectedRecording[field] = value;
+                });
+                const imageId = capWorkspaceText(recording.image_artifact_id, 256);
+                if (imageId !== null) projectedRecording.image_artifact_id = imageId;
+                if (recording.table_image_required === true) projectedRecording.table_image_required = true;
+                if (recording.block_image_required === true) projectedRecording.block_image_required = true;
+                if (recording.block_kind === 'table' || recording.block_kind === 'drawing_group') {
+                    projectedRecording.block_kind = recording.block_kind;
+                }
+                const blockIndex = nonNegativeInteger(recording.block_index);
+                if (blockIndex !== null) projectedRecording.block_index = blockIndex;
+                const tableIndex = nonNegativeInteger(recording.table_index);
+                if (tableIndex !== null) projectedRecording.table_index = tableIndex;
+                const instructionOccurrence = nonNegativeInteger(recording.instruction_occurrence);
+                if (instructionOccurrence !== null) projectedRecording.instruction_occurrence = instructionOccurrence;
+                const askingInstructionOccurrence = nonNegativeInteger(recording.asking_instruction_occurrence);
+                if (askingInstructionOccurrence !== null) {
+                    projectedRecording.asking_instruction_occurrence = askingInstructionOccurrence;
+                }
+                projectedRecording.questions = projectQuestions(recording.questions);
+                projectedPageInput.recording = projectedRecording;
+            }
+            if (pageInput.retelling && typeof pageInput.retelling === 'object' && !Array.isArray(pageInput.retelling)) {
+                const retelling = {};
+                ['prompt', 'prompt_audio_filename_stem'].forEach((field) => {
+                    const value = capWorkspaceText(pageInput.retelling[field], 16 * 1024);
+                    if (value !== null) retelling[field] = value;
+                });
+                ['score', 'answer_time'].forEach((field) => {
+                    const value = finiteNumber(pageInput.retelling[field]);
+                    if (value !== null) retelling[field] = value;
+                });
+                if (Array.isArray(pageInput.retelling.reference_answers)) {
+                    retelling.reference_answers = pageInput.retelling.reference_answers.slice(0, 256)
+                        .map(value => capWorkspaceText(value, 16 * 1024)).filter(Boolean);
+                }
+                projectedPageInput.retelling = retelling;
+            }
+            projectedPageInput.asking = projectQuestions(pageInput.asking);
+        } else {
+            const fallback = projectSmallObject(pageInput);
+            if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
+                Object.assign(projectedPageInput, fallback);
+            }
+        }
+        return Object.keys(projectedPageInput).length > 0 ? projectedPageInput : null;
+    };
+    if (systemInput.input_capability && typeof systemInput.input_capability === 'object' && !Array.isArray(systemInput.input_capability)) {
+        projected.input_capability = projectSmallObject(systemInput.input_capability);
+    }
+    if (systemInput.page_content_status
+        && typeof systemInput.page_content_status === 'object'
+        && !Array.isArray(systemInput.page_content_status)) {
+        const pageContentStatus = {};
+        ['status', 'reason'].forEach((field) => {
+            const value = capWorkspaceText(systemInput.page_content_status[field], 512);
+            if (value !== null) pageContentStatus[field] = value;
+        });
+        ['structured_count', 'expected_count'].forEach((field) => {
+            const count = nonNegativeInteger(systemInput.page_content_status[field]);
+            if (count !== null) pageContentStatus[field] = count;
+        });
+        projected.page_content_status = pageContentStatus;
+    }
+    if (systemInput.unit_boundary_decision
+        && typeof systemInput.unit_boundary_decision === 'object'
+        && !Array.isArray(systemInput.unit_boundary_decision)) {
+        projected.unit_boundary_decision = projectSmallObject(systemInput.unit_boundary_decision);
+    }
+    if (systemInput.audio_batch
+        && typeof systemInput.audio_batch === 'object'
+        && !Array.isArray(systemInput.audio_batch)) {
+        const audioBatch = {};
+        ['audio_batch_id', 'manifest_hash', 'status'].forEach((field) => {
+            const value = capWorkspaceText(systemInput.audio_batch[field], 256);
+            if (value !== null) audioBatch[field] = value;
+        });
+        const revision = nonNegativeInteger(systemInput.audio_batch.audio_revision);
+        if (revision !== null) audioBatch.audio_revision = revision;
+        projected.audio_batch = audioBatch;
+    }
+    if (Array.isArray(systemInput.units)) {
+        projected.units = systemInput.units.slice(0, 256).map((unit) => {
+            if (!unit || typeof unit !== 'object') return null;
+            const value = {};
+            ['unit_id', 'label', 'input_type', 'unit_count_status', 'input_type_status',
+                'paper_category', 'paper_category_status', 'parse_coverage_status',
+                'ordinal', 'structure_revision'].forEach((field) => {
+                if (unit[field] !== undefined) value[field] = typeof unit[field] === 'number'
+                    ? unit[field] : capWorkspaceText(unit[field], 256);
+            });
+            if (unit.source_range && typeof unit.source_range === 'object') value.source_range = projectSmallObject(unit.source_range);
+            if (unit.evidence && typeof unit.evidence === 'object') value.evidence = projectSmallObject(unit.evidence);
+            if (unit.configuration && typeof unit.configuration === 'object') value.configuration = projectSmallObject(unit.configuration);
+            return value;
+        }).filter(Boolean);
+    } else projected.units = [];
+    if (Array.isArray(systemInput.structure_nodes)) {
+        projected.structure_nodes = systemInput.structure_nodes.slice(0, 2000).map((node) => {
+            if (!node || typeof node !== 'object') return null;
+            const value = {};
+            ['node_id', 'unit_id', 'parent_node_id', 'node_kind', 'label', 'source_locator'].forEach((field) => {
+                const text = capWorkspaceText(node[field], 512);
+                if (text !== null) value[field] = text;
+            });
+            ['ordinal', 'confidence'].forEach((field) => {
+                const number = finiteNumber(node[field]);
+                if (number !== null) value[field] = number;
+            });
+            if (Array.isArray(node.path)) value.path = node.path.slice(0, 16).map(item => capWorkspaceText(item, 256)).filter(Boolean);
+            return value;
+        }).filter(Boolean);
+    } else projected.structure_nodes = [];
+    if (Array.isArray(systemInput.content_segments)) {
+        projected.content_segments = systemInput.content_segments.slice(0, 4000).map((segment) => {
+            if (!segment || typeof segment !== 'object') return null;
+            const value = {};
+            ['segment_id', 'unit_id', 'node_id', 'item_id', 'content_item_id',
+                'source_locator', 'audio_artifact_id', 'category', 'filename_stem',
+                'audio_filename_stem'].forEach((field) => {
+                const text = capWorkspaceText(segment[field], 512);
+                if (text !== null) value[field] = text;
+            });
+            if (segment.audio_only_auxiliary !== undefined) {
+                value.audio_only_auxiliary = segment.audio_only_auxiliary === true;
+            }
+            ['ordinal', 'score', 'audio_revision'].forEach((field) => {
+                const number = finiteNumber(segment[field]);
+                if (number !== null) value[field] = number;
+            });
+            ['raw_text', 'tts_text'].forEach((field) => {
+                if (segment[field] !== undefined && segment[field] !== null) value[field] = String(segment[field]).slice(0, 16 * 1024);
+            });
+            if (segment.answer !== undefined) value.answer = projectSmallObject(segment.answer);
+            if (segment.page_input_status !== undefined) {
+                const status = capWorkspaceText(segment.page_input_status, 32);
+                if (status !== null) value.page_input_status = status;
+            }
+            if (segment.page_input !== undefined) {
+                const pageInput = projectPageInput(segment.page_input);
+                if (pageInput !== null) value.page_input = pageInput;
+            }
+            return value;
+        }).filter(Boolean);
+    } else projected.content_segments = [];
+    const gate = systemInput.audio_gate;
+    if (gate && typeof gate === 'object' && !Array.isArray(gate)) {
+        projected.audio_gate = {
+            technical_status: capWorkspaceText(gate.technical_status, 32) || 'failed',
+            audio_revision: nonNegativeInteger(gate.audio_revision) ?? 0,
+            manifest_hash: capWorkspaceText(gate.manifest_hash, 128) || null,
+            required_artifact_ids: Array.isArray(gate.required_artifact_ids)
+                ? gate.required_artifact_ids.slice(0, 4000).map(value => capWorkspaceText(value, 256)).filter(Boolean) : [],
+            missing_item_ids: Array.isArray(gate.missing_item_ids)
+                ? gate.missing_item_ids.slice(0, 4000).map(value => capWorkspaceText(value, 256)).filter(Boolean) : [],
+            conflict_item_ids: Array.isArray(gate.conflict_item_ids)
+                ? gate.conflict_item_ids.slice(0, 4000).map(value => capWorkspaceText(value, 256)).filter(Boolean) : [],
+        };
+    }
+    const acceptance = systemInput.audio_acceptance;
+    if (acceptance && typeof acceptance === 'object' && !Array.isArray(acceptance)) {
+        projected.audio_acceptance = {
+            status: capWorkspaceText(acceptance.status, 32) || 'pending',
+            acceptance_id: capWorkspaceText(acceptance.acceptance_id, 256),
+            audio_revision: nonNegativeInteger(acceptance.audio_revision) ?? 0,
+            manifest_hash: capWorkspaceText(acceptance.manifest_hash, 128),
+            accepted_at: capWorkspaceText(acceptance.accepted_at, 128),
+        };
+    }
+    if (Array.isArray(systemInput.entries)) {
+        projected.entries = systemInput.entries.slice(0, 256).map((entry) => {
+            if (!entry || typeof entry !== 'object') return null;
+            const value = {};
+            ['entry_id', 'unit_id', 'input_type', 'document_name', 'unit_label',
+                'configuration_revision', 'structure_revision',
+                'external_record_mapping_id', 'external_record_id', 'input_status',
+                'external_status', 'review_url', 'review_url_status', 'review_url_source',
+                'run_review_url'].forEach((field) => {
+                const text = capWorkspaceText(entry[field], 1024);
+                if (text !== null) value[field] = text;
+            });
+            if (entry.requires_reconcile !== undefined) value.requires_reconcile = entry.requires_reconcile === true;
+            if (entry.configuration && typeof entry.configuration === 'object') value.configuration = projectSmallObject(entry.configuration);
+            return value;
+        }).filter(Boolean);
+    } else projected.entries = [];
+    if (systemInput.input_run && typeof systemInput.input_run === 'object') {
+        projected.input_run = {};
+        ['input_run_id', 'workflow_id', 'input_type', 'status', 'audio_revision',
+            'artifact_manifest_hash', 'payload_hash', 'error_code', 'error_message',
+            'started_at', 'finished_at', 'created_at', 'updated_at'].forEach((field) => {
+            const text = capWorkspaceText(systemInput.input_run[field], 2000);
+            if (text !== null) projected.input_run[field] = text;
+        });
+        if (systemInput.input_run.control
+            && typeof systemInput.input_run.control === 'object'
+            && !Array.isArray(systemInput.input_run.control)) {
+            projected.input_run.control = {
+                pause_requested: systemInput.input_run.control.pause_requested === true,
+                stop_requested: systemInput.input_run.control.stop_requested === true,
+            };
+        }
+        if (Array.isArray(systemInput.input_run.attempts)) {
+            projected.input_run.attempts = systemInput.input_run.attempts.slice(0, 256).map((attempt) => {
+                if (!attempt || typeof attempt !== 'object' || Array.isArray(attempt)) return null;
+                const value = {};
+                ['attempt_id', 'entry_id', 'external_operation_id', 'status', 'side_effect_state',
+                    'error_code', 'error_message', 'started_at', 'finished_at', 'created_at', 'updated_at']
+                    .forEach((field) => {
+                        const text = capWorkspaceText(attempt[field], 2000);
+                        if (text !== null) value[field] = text;
+                    });
+                if (attempt.evidence && typeof attempt.evidence === 'object' && !Array.isArray(attempt.evidence)) {
+                    value.evidence = projectSmallObject(attempt.evidence);
+                }
+                return value;
+            }).filter(Boolean);
+        }
+    }
+    return projected;
+}
+
 function projectSync(sync) {
     if (!sync || typeof sync !== 'object' || Array.isArray(sync)) return {};
     const projected = {};
@@ -368,11 +820,13 @@ function projectProvider(provider) {
 function createWorkspaceState() {
     return {
         // items 计数来自服务端条目事实（item_count）；segments 计数来自
-        // 讯飞运行时的分段进度，两者单位不同，UI 按可用性择优展示。
+        // 讯飞运行时的分段进度；works 计数来自合并生成的作品阶段事件。
+        // 三者单位不同，UI 按可用性择优展示。
         items: { total: null, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
         segments: { completed: 0, total: 0 },
+        works: { total: 0, submitted: 0, downloaded: 0, items: 0 },
         phase: null,
-        runtime: { status: null, stage: null, message: null, itemId: null, updatedAt: null },
+        runtime: { status: null, stage: null, message: null, itemId: null, elapsedSeconds: null, updatedAt: null },
         executionState: null,
         controlState: null,
         resultStatus: null,
@@ -412,6 +866,7 @@ function projectWorkspaceData(workspace) {
         configuration: projectConfiguration(workspace.configuration),
         provider: projectProvider(workspace.provider),
         delivery: projectDelivery(workspace.delivery),
+        system_input: projectSystemInput(workspace.system_input),
         sync: projectSync(workspace.sync),
     };
 }
@@ -421,23 +876,101 @@ function workspaceProgressState(workspace, scalarState) {
     const snapshot = workspace?.snapshot && typeof workspace.snapshot === 'object'
         ? workspace.snapshot
         : {};
-    const nextState = {
+    let nextState = {
         ...scalarState,
+        executionState: snapshot.execution_state
+            ? String(snapshot.execution_state)
+            : scalarState.executionState,
         controlState: snapshot.control_state
             ? String(snapshot.control_state)
             : scalarState.controlState,
+        resultStatus: snapshot.result_status
+            ? String(snapshot.result_status)
+            : scalarState.resultStatus,
+        updatedAt: snapshot.updated_at || scalarState.updatedAt,
     };
-    if (!progress || typeof progress !== 'object') return nextState;
+    if (progress && typeof progress === 'object') {
+        nextState = {
+            ...nextState,
+            items: {
+                ...nextState.items,
+                total: Number.isFinite(Number(progress.total)) ? Number(progress.total) : nextState.items.total,
+                completed: Number.isFinite(Number(progress.completed)) ? Number(progress.completed) : nextState.items.completed,
+                failed: Number.isFinite(Number(progress.failed)) ? Number(progress.failed) : nextState.items.failed,
+                skipped: Number.isFinite(Number(progress.skipped)) ? Number(progress.skipped) : nextState.items.skipped,
+                cancelled: Number.isFinite(Number(progress.cancelled)) ? Number(progress.cancelled) : nextState.items.cancelled,
+            },
+        };
+    }
+
+    // Reconnects can legitimately receive only a snapshot (or no new event at
+    // all when Last-Event-ID is still current). Restore the scalar runtime
+    // projection from that snapshot so a single-item run does not fall back to
+    // 0% until the next provider event happens to arrive.
+    const projectedSnapshot = projectWorkflowSnapshot(snapshot);
+    const runtime = projectedSnapshot?.runtime;
+    if (!runtime || typeof runtime !== 'object') return nextState;
+    const nextRuntime = { ...nextState.runtime };
+    ['status', 'stage', 'message'].forEach((field) => {
+        if (runtime[field] !== undefined && runtime[field] !== null) {
+            nextRuntime[field] = String(runtime[field]);
+        }
+    });
+    if (runtime.item_id !== undefined && runtime.item_id !== null) {
+        nextRuntime.itemId = String(runtime.item_id);
+    }
+    if (Number.isFinite(Number(runtime.elapsed_seconds)) && Number(runtime.elapsed_seconds) >= 0) {
+        nextRuntime.elapsedSeconds = Number(runtime.elapsed_seconds);
+    }
+    if (snapshot.updated_at) nextRuntime.updatedAt = snapshot.updated_at;
+
+    const completedSegments = Number(runtime.completed_segments);
+    const totalSegments = Number(runtime.total_segments);
+    const nextSegments = { ...nextState.segments };
+    if (Number.isFinite(completedSegments) && Number.isFinite(totalSegments) && totalSegments > 0) {
+        nextSegments.completed = Math.max(0, completedSegments);
+        nextSegments.total = Math.max(0, totalSegments);
+    }
+
+    const totalWorks = Number(runtime.total_works);
+    const nextWorks = { ...nextState.works };
+    if (Number.isFinite(totalWorks) && totalWorks > 0) {
+        nextWorks.total = Math.max(0, Math.round(totalWorks));
+        ['submitted_works', 'downloaded_works'].forEach((field) => {
+            const value = Number(runtime[field]);
+            if (Number.isFinite(value) && value >= 0) {
+                const target = field === 'submitted_works' ? 'submitted' : 'downloaded';
+                nextWorks[target] = Math.min(nextWorks.total, Math.round(value));
+            }
+        });
+        const itemCount = Number(runtime.item_count);
+        if (Number.isFinite(itemCount) && itemCount >= 0) nextWorks.items = Math.round(itemCount);
+    }
+
+    const latestEventType = String(
+        snapshot.latest_event_type || projectedSnapshot.latest_event_type || '',
+    ).toUpperCase();
+    let phase = nextState.phase;
+    const runtimePhase = String(runtime.phase || '').toLowerCase();
+    const runtimeUiPhases = new Set([
+        'preparing', 'running', 'submitting', 'downloading', 'verifying', 'attention',
+    ]);
+    if (runtimeUiPhases.has(runtimePhase)) phase = runtimePhase;
+    else if (latestEventType === 'TTS_PLAN_PREPARED') phase = 'preparing';
+    else if (latestEventType === 'TTS_RUNTIME_STATUS' || latestEventType === 'TTS_RUNTIME_PROGRESS') phase = 'running';
+    else if (latestEventType === 'TTS_SUBMISSION_IN_FLIGHT') phase = 'submitting';
+    else if (latestEventType === 'PROVIDER_RECEIPT_OBSERVED') phase = 'downloading';
+    else if (latestEventType === 'TTS_OUTPUT_VERIFIED') phase = 'verifying';
+    else if (latestEventType === 'TTS_SUBMISSION_AMBIGUOUS'
+        || latestEventType === 'TTS_SUBMISSION_REJECTED'
+        || latestEventType === 'GENERATION_TASK_FAILED') phase = 'attention';
+
     return {
         ...nextState,
-        items: {
-            ...nextState.items,
-            total: Number.isFinite(Number(progress.total)) ? Number(progress.total) : nextState.items.total,
-            completed: Number.isFinite(Number(progress.completed)) ? Number(progress.completed) : nextState.items.completed,
-            failed: Number.isFinite(Number(progress.failed)) ? Number(progress.failed) : nextState.items.failed,
-            skipped: Number.isFinite(Number(progress.skipped)) ? Number(progress.skipped) : nextState.items.skipped,
-            cancelled: Number.isFinite(Number(progress.cancelled)) ? Number(progress.cancelled) : nextState.items.cancelled,
-        },
+        phase,
+        runtime: nextRuntime,
+        segments: nextSegments,
+        works: nextWorks,
     };
 }
 
@@ -446,11 +979,20 @@ function workspaceProgressState(workspace, scalarState) {
 function advanceWorkspaceWithEvent(workspace, event) {
     const type = String(event.event_type || '');
     const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+    // 心跳事件（TTS_RUNTIME_STATUS waiting）不携带 stage/item_id；保留上
+    // 一次的值，否则合并阶段的阶段信号会被每 2 秒的心跳抹掉。
     const runtimePatch = {
         status: capWorkspaceText(payload.status),
-        stage: capWorkspaceText(payload.stage),
+        stage: payload.stage === undefined
+            ? workspace.runtime.stage
+            : capWorkspaceText(payload.stage),
         message: capWorkspaceText(payload.message || payload.error),
-        itemId: capWorkspaceText(payload.item_id),
+        itemId: payload.item_id === undefined
+            ? workspace.runtime.itemId
+            : capWorkspaceText(payload.item_id),
+        elapsedSeconds: payload.elapsed_seconds === undefined
+            ? workspace.runtime.elapsedSeconds
+            : finiteNumber(payload.elapsed_seconds),
         updatedAt: event.created_at || workspace.runtime.updatedAt,
     };
     const touch = (phase) => {
@@ -508,6 +1050,26 @@ function advanceWorkspaceWithEvent(workspace, event) {
         if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
             workspace.segments = { completed: Math.max(0, completed), total: Math.max(0, total) };
         }
+        // 合并生成的作品阶段事件带作品计数；total_works 是合并模式的
+        // 标志字段，逐条模式的事件没有它，不会误入这里。
+        const totalWorks = Number(payload.total_works);
+        if (Number.isFinite(totalWorks) && totalWorks > 0) {
+            const submittedWorks = Number(payload.submitted_works);
+            const downloadedWorks = Number(payload.downloaded_works);
+            const workItemCount = Number(payload.item_count);
+            workspace.works = {
+                total: Math.max(0, Math.round(totalWorks)),
+                submitted: Number.isFinite(submittedWorks)
+                    ? Math.max(0, Math.round(submittedWorks))
+                    : workspace.works.submitted,
+                downloaded: Number.isFinite(downloadedWorks)
+                    ? Math.max(0, Math.round(downloadedWorks))
+                    : workspace.works.downloaded,
+                items: Number.isFinite(workItemCount)
+                    ? Math.max(0, Math.round(workItemCount))
+                    : workspace.works.items,
+            };
+        }
         touch('running');
     } else if (type === 'TTS_SUBMISSION_IN_FLIGHT') {
         touch('submitting');
@@ -544,6 +1106,30 @@ function advanceWorkspaceWithEvent(workspace, event) {
             lastErrorCode: 'WORKFLOW_CANCELLED',
             lastErrorMessage: payload.reason || payload.message || '任务已取消',
         });
+    } else if (type.startsWith('SYSTEM_INPUT_')) {
+        // System-input progress is projected through polling; these events
+        // still mark the runtime dirty so the shell re-renders (and the
+        // delivery card's scheduled refresh runs) without waiting a full
+        // poll cycle after a run starts or an external record is repaired.
+        const inputPhase = ['SYSTEM_INPUT_RUN_CREATED', 'SYSTEM_INPUT_RUN_RETRY_CREATED'].includes(type)
+            ? 'running'
+            : workspace.phase;
+        const message = capWorkspaceText(
+            payload.message
+            || (['SYSTEM_INPUT_RUN_CREATED', 'SYSTEM_INPUT_RUN_RETRY_CREATED'].includes(type)
+                ? '系统录入运行已创建，正在执行页面录入'
+                : null),
+            2000,
+        );
+        touch(inputPhase);
+        if (message !== null) {
+            workspace.runtime = { ...workspace.runtime, message, updatedAt: event.created_at || workspace.runtime.updatedAt };
+        }
+        const errorCode = capWorkspaceText(payload.error_code, 128);
+        if (errorCode !== null) {
+            workspace.lastErrorCode = errorCode;
+            controlPatch.last_error_code = errorCode;
+        }
     }
     return controlPatch;
 }
@@ -646,6 +1232,7 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
                 ...workspace,
                 items: { ...workspace.items },
                 segments: { ...workspace.segments },
+                works: { ...workspace.works },
                 runtime: { ...workspace.runtime },
             },
         };
@@ -666,11 +1253,19 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
         const useInitial = !persistedCursor && initialCursor && Number.isInteger(initialSeq) && initialSeq > 0;
         const cachedWorkspace = state.workspaceByWorkflow[normalizedWorkflowId] || null;
         const cachedSnapshot = cachedWorkspace?.snapshot || null;
+        const cachedWorkflow = state.workflowId === normalizedWorkflowId ? state.workflow : null;
+        const seedSnapshot = cachedSnapshot
+            ? { snapshot: cachedSnapshot }
+            : (cachedWorkflow
+                ? { snapshot: cachedWorkflow }
+                : (useInitial && initial?.workflow ? { snapshot: initial.workflow } : null));
         state = {
             ...state,
             workflow: cachedSnapshot
                 ? projectWorkflowSnapshot(cachedSnapshot)
-                : (useInitial && initial?.workflow ? projectWorkflowSnapshot(initial.workflow) : null),
+                : (cachedWorkflow
+                    ? projectWorkflowSnapshot(cachedWorkflow)
+                    : (useInitial && initial?.workflow ? projectWorkflowSnapshot(initial.workflow) : null)),
             workflowId: normalizedWorkflowId,
             lastEventId: persistedCursor || (useInitial ? initialCursor : null),
             lastSeq: persistedSeq || (useInitial ? initialSeq : 0),
@@ -678,8 +1273,9 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
             connected: false,
             error: null,
             // 切换 run 时 workspace 必须重置；旧 run 的分段进度绝不能
-            // 泄漏成新任务的初始显示。
-            workspace: workspaceProgressState(cachedWorkspace, createWorkspaceState()),
+            // 泄漏成新任务的初始显示。重连同一个 run 则从已缓存的快照
+            // 恢复运行时标量，避免 Last-Event-ID 没有新事件时回到 0%。
+            workspace: workspaceProgressState(seedSnapshot, createWorkspaceState()),
             workspaceData: cachedWorkspace,
             workspaceSyncByWorkflow: rememberWorkflowEntry(
                 state.workspaceSyncByWorkflow,
@@ -703,13 +1299,28 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
         const workflowId = String(projectedSnapshot?.workflow_id || state.workflowId || '');
         const isActiveWorkspace = !state.workflowId || workflowId === String(state.workflowId);
         const previous = workflowId ? state.workspaceByWorkflow[workflowId] : null;
-        const previousVersion = Number(previous?.snapshot?.state_version);
+        const previousSnapshot = previous?.snapshot || (isActiveWorkspace ? state.workflow : null);
+        const previousVersion = Number(previousSnapshot?.state_version);
         const nextVersion = Number(projectedSnapshot?.state_version);
-        if (
-            previous
-            && Number.isInteger(previousVersion)
+        const previousSeq = Number(previousSnapshot?.latest_seq);
+        const nextSeq = Number(projectedSnapshot?.latest_seq);
+        const hasPreviousFreshness = (
+            (Number.isInteger(previousVersion) && previousVersion >= 0)
+            || (Number.isInteger(previousSeq) && previousSeq >= 0)
+        );
+        const hasNextFreshness = (
+            (Number.isInteger(nextVersion) && nextVersion >= 0)
+            || (Number.isInteger(nextSeq) && nextSeq >= 0)
+        );
+        const olderByVersion = Number.isInteger(previousVersion)
             && Number.isInteger(nextVersion)
-            && nextVersion < previousVersion
+            && nextVersion < previousVersion;
+        const olderBySequence = Number.isInteger(previousSeq)
+            && Number.isInteger(nextSeq)
+            && nextSeq < previousSeq;
+        if (
+            previousSnapshot
+            && (olderByVersion || olderBySequence || (hasPreviousFreshness && !hasNextFreshness))
         ) {
             // The request that produced this snapshot is still complete even
             // when its payload lost a race with a newer workspace refresh.
@@ -911,15 +1522,29 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
             if (Number.isInteger(itemCount) && itemCount > 0) {
                 workspace.items.total = itemCount;
             }
-            workspace.executionState = snapshotState.execution_state ? String(snapshotState.execution_state) : workspace.executionState;
-            workspace.controlState = snapshotState.control_state ? String(snapshotState.control_state) : workspace.controlState;
-            workspace.resultStatus = snapshotState.result_status ? String(snapshotState.result_status) : workspace.resultStatus;
-            workspace.updatedAt = snapshotState.updated_at || workspace.updatedAt;
             const projectedSnapshot = projectWorkflowSnapshot(snapshotState);
+            const hydratedWorkspace = workspaceProgressState(
+                { snapshot: projectedSnapshot },
+                workspace,
+            );
+            if (Number.isInteger(itemCount) && itemCount > 0) {
+                hydratedWorkspace.items.total = itemCount;
+            }
+            hydratedWorkspace.executionState = snapshotState.execution_state
+                ? String(snapshotState.execution_state)
+                : hydratedWorkspace.executionState;
+            hydratedWorkspace.controlState = snapshotState.control_state
+                ? String(snapshotState.control_state)
+                : hydratedWorkspace.controlState;
+            hydratedWorkspace.resultStatus = snapshotState.result_status
+                ? String(snapshotState.result_status)
+                : hydratedWorkspace.resultStatus;
+            hydratedWorkspace.updatedAt = snapshotState.updated_at || hydratedWorkspace.updatedAt;
             state = {
                 ...state,
                 workflow: projectedSnapshot,
                 workflowId: snapshot.workflow_id,
+                workspace: hydratedWorkspace,
                 lastEventId: snapshot.snapshot_event_id || snapshot.state.latest_event_id || null,
                 lastSeq: snapshotSeq,
                 needsCatchup: false,
@@ -1035,7 +1660,7 @@ function createWorkflowStore({ storage = null, keyPrefix = STORAGE_PREFIX, works
     });
 }
 
-const workflowStoreExports = { createWorkflowStore, projectWorkflowSnapshot, projectWorkspaceData, STORAGE_PREFIX };
+const workflowStoreExports = { createWorkflowStore, projectWorkflowSnapshot, projectWorkspaceData, projectSystemInput, STORAGE_PREFIX };
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = workflowStoreExports;
 } else if (typeof globalThis !== 'undefined') {

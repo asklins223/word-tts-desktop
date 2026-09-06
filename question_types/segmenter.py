@@ -1,12 +1,11 @@
 """统一结构读取与分段（阶段 3 第一步）。
 
 现状：每个题型的 Parser 各自调用 ``load_paragraphs`` 重复加载并扫描
-全文（方案风险 13）。本模块先收口"结构读取"这一层：
+全文（方案风险 13）。本模块收口“结构读取”和题型路由：
 
 - ``load_document_once``：文档只加载一次，产出段落与元数据；
-- ``parse_document_once``：与 ``parse_document_auto`` 同判型、同解析器、
-  同输出结构，但所有解析器复用同一次加载结果（输出必须与既有路径
-  逐字节一致，测试以解析基线为对照）；
+- ``parse_document_once``：所有解析器复用同一次加载结果，并按结构证据
+  路由题型；
 - 后续分段切片（大题/材料范围划分 + 一次 owner 裁决）在此模块上继续
   演进，最终替代各 Parser 对全文的独立重扫。
 """
@@ -14,16 +13,18 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 
+from .detection import PaperCategoryEvidence, classify_paper_category
 from .text_utils import load_paragraphs
 
 
 def load_document_once(filepath, *, include_structure=False):
     """一次读取文档段落、元数据，以及可选的结构块流。
 
-    默认返回值仍是 ``(paragraphs, metadata)``，兼容现有调用方；解析主
-    链路请求 ``include_structure=True`` 时额外返回第三项 ``DocumentBlock``
-    序列，供文本框/表格题型复用同一次 Word 加载。
+    默认返回 ``(paragraphs, metadata)``；请求
+    ``include_structure=True`` 时额外返回第三项 ``DocumentBlock`` 序列，
+    供文本框/表格题型复用同一次 Word 加载。
     """
 
     return load_paragraphs(
@@ -33,55 +34,15 @@ def load_document_once(filepath, *, include_structure=False):
     )
 
 
-def _order_detected_types_by_source(paras, detected_types):
-    """按文档中的首次题型标记排列解析结果。
-
-    ``detect_types_in_content`` 的注册顺序是稳定的检测优先级，不能直接
-    改成文档顺序，否则会影响专项识别和外部调用方的兼容契约。套卷解析
-    需要的却是试卷顺序：解析结果会继续进入 ``LegacyWordParser``，并由
-    它分配持久化 sequence，最终决定核对页、交付页和 ZIP 中的顺序。
-    因此把“识别顺序”和“输出顺序”分成两个明确步骤。
-
-    题型标记按段落扫描而不是把全文拼成一个大字符串，避免跨段匹配
-    或段落中的换行改变排序；未找到标记的扩展题型稳定地排在原检测顺序
-    的末尾。
-    """
-    if not detected_types:
-        return []
-
-    from . import QUESTION_TYPE_MAP
-
-    paragraph_count = len(paras)
-    positions = {}
-    for doc_type in detected_types:
-        position = paragraph_count
-        question_type = QUESTION_TYPE_MAP.get(doc_type)
-        markers = getattr(question_type, "content_markers", ()) if question_type else ()
-        for index, paragraph in enumerate(paras):
-            text = str(paragraph[1] or "")
-            if any(marker.search(text) for marker in markers):
-                position = index
-                break
-        positions[doc_type] = position
-
-    return [
-        doc_type
-        for _, doc_type in sorted(
-            enumerate(detected_types),
-            key=lambda pair: (positions.get(pair[1], paragraph_count), pair[0]),
-        )
-    ]
-
-
 def _build_parser(parser_cls, filepath, preloaded):
-    """优先复用已加载段落；解析器未迁移（自定义 __init__）时照旧构建。"""
+    """优先复用已加载段落；扩展解析器可声明自己的构造协议。"""
     if preloaded is not None:
         try:
             params = inspect.signature(parser_cls.__init__).parameters
         except (TypeError, ValueError):
             # 某些扩展解析器（例如 C 扩展包装类）没有可反射的签名；
-            # 此时沿用旧的直接构造路径。构造器本身抛出的异常不能在这里
-            # 吞掉，否则真实 bug 会被伪装成一次兼容性回退并重复加载文件。
+            # 此时直接构造。构造器本身抛出的异常不能在这里吞掉，否则
+            # 真实 bug 会被伪装成一次静默回退并重复加载文件。
             return parser_cls(filepath)
 
         preloaded_param = params.get("preloaded_paras")
@@ -92,9 +53,8 @@ def _build_parser(parser_cls, filepath, preloaded):
         if preloaded_param is None and not accepts_kwargs:
             return parser_cls(filepath)
 
-        # 三元组是结构块的扩展协议。未声明需要结构块的旧解析器
-        # 继续收到原来的二元组，避免自定义解析器用二元解包时被
-        # 新字段破坏；需要表格/文本框的解析器显式开启该能力。
+        # 三元组是结构块的扩展协议。未声明需要结构块的解析器仍收到
+        # 二元组；需要表格/文本框的解析器显式开启该能力。
         parser_preloaded = preloaded
         if (
             len(preloaded) > 2
@@ -114,20 +74,56 @@ def _build_parser(parser_cls, filepath, preloaded):
     return parser_cls(filepath)
 
 
+def _annotate_paper_category(
+    result: Mapping[str, object],
+    decision: PaperCategoryEvidence,
+) -> dict[str, object]:
+    """Attach one document-level category decision to every parsed item."""
+
+    if decision.status == "not_applicable":
+        return dict(result)
+
+    evidence = decision.to_dict()
+    annotated = dict(result)
+    annotated["exam_form"] = decision.exam_form
+    annotated["paper_category_status"] = decision.status
+    annotated["paper_category_evidence"] = evidence
+    if decision.paper_category is not None:
+        annotated["paper_category"] = decision.paper_category
+
+    raw_items = result.get("items")
+    if not isinstance(raw_items, list):
+        return annotated
+    items: list[object] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, Mapping):
+            items.append(raw_item)
+            continue
+        item = dict(raw_item)
+        item["exam_form"] = decision.exam_form
+        item["paper_category_status"] = decision.status
+        item["paper_category_evidence"] = evidence
+        if decision.paper_category is not None:
+            item["paper_category"] = decision.paper_category
+        items.append(item)
+    annotated["items"] = items
+    return annotated
+
+
 def parse_document_once(filepath):
-    """与 parse_document_auto 等价，但文档只加载一次。
+    """一次加载、结构判型并解析文档。
 
-    返回 (results_list, summary_str)，结构与 auto 路径完全一致。
+    返回 ``(results_list, summary_str)``。
     """
-    import os
+    from . import PARSER_MAP
+    from .detection import detect_document_types
 
-    from . import PARSER_MAP, detect_doc_type, detect_types_in_content
-
-    # xlsx 词汇走专用分支（与 auto 路径一致，不经过 Word 结构读取）
+    # xlsx 词汇走专用分支（不经过 Word 结构读取）
     if str(filepath).lower().endswith(".xlsx"):
-        doc_type = detect_doc_type(os.path.basename(filepath))
-        if doc_type is None:
+        detected = detect_document_types(filepath)
+        if len(detected) != 1:
             return [], "未识别到任何题型内容"
+        doc_type = detected[0].doc_type
         parser = PARSER_MAP.get(doc_type)
         if parser is None:
             return [], f"未找到题型 {doc_type} 的解析器"
@@ -148,10 +144,18 @@ def parse_document_once(filepath):
     if not paras:
         return [], "文档内容为空"
 
-    detected_types = detect_types_in_content(paras)
-    if not detected_types:
+    detected_evidence = detect_document_types(
+        paragraphs=paras,
+        paragraph_metadata=metadata,
+        blocks=blocks,
+    )
+    if not detected_evidence:
         return [], "未识别到任何题型内容"
-    detected_types = _order_detected_types_by_source(paras, detected_types)
+    detected_types = [evidence.doc_type for evidence in detected_evidence]
+    paper_category = classify_paper_category(
+        paras,
+        evidences=detected_evidence,
+    )
     results = []
     errors = []
     preloaded = (paras, metadata, blocks)
@@ -163,7 +167,7 @@ def parse_document_once(filepath):
             parser = _build_parser(parser_cls, filepath, preloaded)
             result = parser.parse()
             if result["item_count"] > 0:
-                results.append(result)
+                results.append(_annotate_paper_category(result, paper_category))
         except Exception as exc:
             errors.append(f"{doc_type}: {exc}")
 

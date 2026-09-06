@@ -7,6 +7,7 @@ from question_types.base import BaseParser
 from question_types.text_utils import (
     MAJOR_SECTION_RE,
     SCRIPT_MARKER_RE,
+    has_red_text_in_range,
     is_chinese,
     is_major_section_heading,
     match_answer_marker,
@@ -15,109 +16,170 @@ from question_types.text_utils import (
 )
 
 
-# ============================================================================
-# 1. 信息获取解析器
-# ============================================================================
-
 class InfoAcquisitionParser(BaseParser):
-    """
-    解析「信息获取」文档。
-    提取「第一节 听选信息」和「第二节 回答问题」中的题目及每段录音稿。
+    """Parse the two sections of the legacy 信息获取 paper layout.
 
-    题目规则：
-      - 两节共用文档中的连续题号，题号不会在第二节重新开始
-      - 每道题单独生成一条结果，文本去掉题号
-      - 按题目出现顺序使用男声、女声交替朗读（第一题为男声）
-      - filename_stem 继续保留为"问题x"供历史身份兼容；套卷输出另用
-        audio_filename_stem 生成“题型-序号”文件名
-
-    文档结构示例:
-        第一节 听选信息
-          听第一段对话，回答第1—2两个问题。
-          1. Question?
-          (Options)
-          录音稿：
-          W: ...
-          M: ...
-          听第二段对话，回答第3—4两个问题。
-          ...
-        第二节 回答问题
-          听下面一段独白，录音播放两遍。
-          7. Question?
-          ...
-          录音稿：
-          (W) ...
-        参考答案（独立一行）                ← 进入答案区，直到下一组题目
-        （新格式中每题后可能紧跟「参考答案：xxx」行内答案，
-          该行不结束采集，会被跳过）
-        （「回答问题」题目也可能漏编号，按上一个题号自动顺延）
-
-    支持同一文件内包含多篇试题（多次出现「第一节 听选信息」）。
+    The source places questions before their listening script.  ``questions``
+    is therefore a semantic side channel: each question carries the ordinal
+    of the following script, while ``items`` remains the audio list used by
+    the existing audio view.
     """
 
     DOC_TYPE = "信息获取"
 
-    # 第一节 听选信息
     RE_SECTION_START = re.compile(
         r'第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*听选信息'
     )
-    # 第二节 回答问题
-    RE_SECTION2_START = re.compile(
-        r'第[二2２]节\s*[：:]?\s*回答问题'
-    )
-    # 参考答案（仅独立一行）→ 进入答案区；套卷中每段录音后都可能出现。
-    RE_SECTION_END = re.compile(r'^参考答案\s*[：:]?\s*$')
-    # 行内参考答案（每题附带答案）→ 直接跳过
-    RE_INLINE_ANSWER = re.compile(r'^参考答案\s*[：:]')
-    # 答案区之后的下一组录音提示，允许一个套卷包含多组对话/独白。
-    RE_RECORDING_PROMPT = re.compile(
-        r'(?:听下面|听第.+段|录音播放|各段播放|每段播放)'
-    )
-    # 漏编号的英文题目（新格式「回答问题」中 7-9 题可能没有题号）
-    RE_UNNUMBERED_QUESTION = re.compile(r'[?？]\s*$')
-    # 题号区间（如「回答第 7-10 个问题」「回答第1—2两个问题」），
-    # 用于给漏编号题目确定起始题号
-    RE_ANSWER_RANGE = re.compile(r'第\s*(\d+)\s*[-—~～至到]\s*(\d+)')
-    # 任何「第X节」标记（用于检测其他题型的章节边界）
+    RE_SECTION2_START = re.compile(r'第[二2２]节\s*[：:]?\s*回答问题')
     RE_ANY_SECTION = re.compile(r'第[一二三四五六七八九十百\d０-９]+节')
-    # 新旧题型混排时，兼容没有使用「第X节」而改用中文序号、Section
-    # 或独立题型标题的边界；按结构识别，不把某个 Section 名称写死。
-    RE_OTHER_MAJOR_HEADING = MAJOR_SECTION_RE
-    # 录音稿/听力原文：（可能后面紧跟内容，也可能单独一行）
+    RE_RECORDING_PROMPT = re.compile(r'(?:听下面|听第.+段|录音播放|各段播放|每段播放)')
+    RE_ANSWER_RANGE = re.compile(r'第\s*(\d+)\s*[-—~～至到]\s*(\d+)')
     RE_SCRIPT = SCRIPT_MARKER_RE
-    # 听第X段对话 → 上一段录音稿结束
-    RE_DIALOG = re.compile(r'听第.+段对话')
-    # 题目编号：1. / 1． / 1、 / 1) / 1）
     RE_QUESTION = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)')
     RE_SPEAKER_PREFIX = re.compile(r'^\s*(?:([WwMm])\s*[:：]|\(([WwMm])\))')
+    RE_PAGE_SPEAKER_MARKER = re.compile(
+        r'(?im)^[ \t]*(?:\([WwMm]\)(?:[ \t]*[:：])?|[WwMm][ \t]*[:：])[ \t]*'
+    )
+    RE_SCORE = re.compile(
+        r'每(?:小题|道题|题)\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
+        re.IGNORECASE,
+    )
+    RE_FULL_SCORE = re.compile(
+        r'满分\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _number_value(value):
+        raw = str(value or '').translate(
+            str.maketrans('０１２３４５６７８９', '0123456789')
+        )
+        try:
+            number = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return int(number) if number.is_integer() else number
+
+    @classmethod
+    def _options_from_line(cls, value):
+        text = str(value or '').strip()
+        if len(text) < 2 or text[0] not in '（(' or text[-1] not in '）)':
+            return []
+        body = text[1:-1].strip()
+        choices = [sanitize(part) for part in re.split(r'\s*/\s*', body)]
+        choices = [choice for choice in choices if choice]
+        return [
+            {"option_id": chr(ord('A') + index), "text": choice}
+            for index, choice in enumerate(choices)
+        ]
+
+    @staticmethod
+    def _question_prompt_with_options(prompt, options):
+        """Return the one-line prompt used by the legacy recording card.
+
+        The old page has no separate option editors for 信息获取.  Its
+        recording-card stem is one rich-text line in the form
+        ``Question? (Four. / Five. / Six.)``.  Keep the structured options on the
+        page-input question as well; this string is specifically the TTS and
+        legacy-card display form.
+        """
+
+        stem = sanitize(str(prompt or "")).strip()
+        option_texts = []
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            option_text = sanitize(str(option.get("text") or "")).strip()
+            if option_text:
+                option_texts.append(option_text)
+        return f"{stem} ({' / '.join(option_texts)})" if option_texts else stem
+
+    @classmethod
+    def _page_listening_text(cls, value):
+        """Remove only parenthesized speaker labels from page-visible text.
+
+        The raw ``text`` remains untouched for TTS speaker parsing.  The
+        separate ``listening_text`` field is consumed by page input and the
+        document review view, where ``(W)/(M)`` must not be shown.
+        """
+
+        return cls.RE_PAGE_SPEAKER_MARKER.sub('', sanitize(str(value or ''))).strip()
+
+    @classmethod
+    def _answer_line(cls, value):
+        match = cls.RE_QUESTION.match(str(value or '').strip())
+        if match is None:
+            return None, []
+        number = int(match.group(1))
+        answers = [sanitize(part) for part in re.split(r'\s*/\s*', match.group(2))]
+        return number, [answer for answer in answers if answer]
+
+    @classmethod
+    def _score(cls, pattern, value):
+        match = pattern.search(str(value or ''))
+        return cls._number_value(match.group('score')) if match else None
 
     def parse(self):
         items = []
-        in_section = False       # 是否在任一节内
-        current_category = ""    # 当前节的 category
-        collecting = False       # 是否正在收集录音稿
-        current_lines = []       # 当前录音稿的文本行
-        question_order = 0       # 当前试题内的题目顺序；第二节不重置
-        last_qnum = 0            # 上一个题目编号（用于漏编号题目顺延）
-        next_qnum = None         # 下一个待分配的题号（由说明行的题号区间设定）
-        answer_block = False     # 跳过每组录音后面的参考答案区
-        # 每节独立编号
-        idx_by_cat = {}          # {category: count}
+        questions = []
+        pending_questions = []
+        answer_map = {}
+        in_section = False
+        current_category = ""
+        current_section_name = ""
+        collecting = False
+        current_lines = []
+        script_idx = 0
+        question_order = 0
+        last_qnum = 0
+        next_qnum = None
+        answer_block = False
+        section_score = None
+        declared_item_scores = []
+        declared_section_scores = []
+        idx_by_cat = {}
+        script_idx_by_cat = {}
         use_exam_naming = is_exam_paper_bundle(self.paras)
+        question_audio_items = {}
+
+        def flush_questions(ordinal=None):
+            nonlocal pending_questions
+            for question in pending_questions:
+                question["script_ordinal"] = ordinal
+                questions.append(question)
+            pending_questions = []
 
         def flush():
-            nonlocal collecting, current_lines
+            nonlocal collecting, current_lines, script_idx
             if collecting and current_lines:
-                cat = current_category
-                idx_by_cat[cat] = idx_by_cat.get(cat, 0) + 1
+                script_idx += 1
+                category = current_category
                 item = {
-                    "category": cat,
-                    "index": idx_by_cat[cat],
+                    "category": category,
+                    "index": script_idx,
                     "text": sanitize('\n'.join(current_lines)),
                 }
+                if category == "回答问题录音稿":
+                    item["listening_text"] = self._page_listening_text(item["text"])
+                script_questions = [
+                    question for question in questions
+                    if question.get("script_ordinal") == script_idx
+                ]
+                if script_questions:
+                    item["question_numbers"] = [
+                        question["number"]
+                        for question in script_questions
+                        if question.get("number") is not None
+                    ]
+                    item["score"] = sum(
+                        question.get("score", 0)
+                        for question in script_questions
+                        if isinstance(question.get("score"), (int, float))
+                    )
                 if use_exam_naming:
+                    script_idx_by_cat[category] = script_idx_by_cat.get(category, 0) + 1
                     filename_stem = audio_filename_stem_for_category(
-                        cat, idx_by_cat[cat]
+                        category, script_idx_by_cat[category]
                     )
                     if filename_stem:
                         item.update({
@@ -128,165 +190,262 @@ class InfoAcquisitionParser(BaseParser):
             collecting = False
             current_lines = []
 
-        for _, text, _ in self.paras:
-            script_marker = match_script_marker(text)
-            answer_marker = match_answer_marker(text)
+        def add_question(value, number=None):
+            nonlocal question_order, last_qnum, next_qnum
+            question_order += 1
+            question_number = number
+            if question_number is None:
+                question_number = next_qnum if next_qnum is not None else last_qnum + 1
+            last_qnum = question_number
+            next_qnum = question_number + 1
+            stem = sanitize(value)
+            speaker_match = self.RE_SPEAKER_PREFIX.match(stem)
+            speaker = next(
+                (
+                    candidate.upper()
+                    for candidate in (
+                        speaker_match.group(1) if speaker_match else None,
+                        speaker_match.group(2) if speaker_match else None,
+                    )
+                    if candidate
+                ),
+                "M" if question_order % 2 else "W",
+            )
+            pending_questions.append({
+                "number": question_number,
+                "prompt": stem,
+                "stem": stem,
+                "options": [],
+                "answer": None,
+                "score": section_score,
+                "script_ordinal": None,
+            })
 
-            # ---- 第一节 听选信息 开始 ----
-            if self.RE_SECTION_START.search(text):
+            category = f"{current_section_name}题目"
+            idx_by_cat[category] = idx_by_cat.get(category, 0) + 1
+            question_item = {
+                "category": category,
+                "number": question_number,
+                "filename_stem": f"问题{question_number}",
+                "voice": "male" if speaker == "M" else "female",
+                "text": stem,
+                "audio_only_auxiliary": True,
+            }
+            if use_exam_naming:
+                filename_stem = audio_filename_stem_for_category(
+                    category, idx_by_cat[category]
+                )
+                if filename_stem:
+                    question_item.update({
+                        "audio_filename_stem": filename_stem,
+                        "type_path": [filename_stem.rsplit("-", 1)[0]],
+                    })
+            question = pending_questions[-1]
+            question["prompt_audio_filename_stem"] = (
+                question_item.get("audio_filename_stem")
+                or question_item.get("filename_stem")
+            )
+            question_audio_items[id(question)] = question_item
+            items.append(question_item)
+
+        for position, (_, text, _) in enumerate(self.paras):
+            value = str(text or '').strip()
+            script_marker = match_script_marker(value)
+            answer_marker = match_answer_marker(value)
+
+            if self.RE_SECTION_START.search(value):
                 flush()
+                flush_questions(None)
                 in_section = True
                 current_category = "听选信息录音稿"
+                current_section_name = "听选信息"
                 question_order = 0
                 last_qnum = 0
                 next_qnum = None
                 answer_block = False
+                section_score = self._score(self.RE_SCORE, value)
+                if section_score is not None:
+                    declared_item_scores.append(section_score)
+                full_score = self._score(self.RE_FULL_SCORE, value)
+                if full_score is not None:
+                    declared_section_scores.append(full_score)
                 continue
 
-            # ---- 第二节 回答问题 开始 ----
-            if self.RE_SECTION2_START.search(text):
+            if self.RE_SECTION2_START.search(value):
                 flush()
+                flush_questions(None)
                 in_section = True
                 current_category = "回答问题录音稿"
+                current_section_name = "回答问题"
                 answer_block = False
+                section_score = self._score(self.RE_SCORE, value)
+                if section_score is not None:
+                    declared_item_scores.append(section_score)
+                full_score = self._score(self.RE_FULL_SCORE, value)
+                if full_score is not None:
+                    declared_section_scores.append(full_score)
                 continue
 
-            # ---- 其他「第X节」→ 遇到其他题型的章节，停止采集 ----
-            if in_section and self.RE_ANY_SECTION.search(text):
-                # 不是自己的章节标记，停止采集
-                if not self.RE_SECTION_START.search(text) and not self.RE_SECTION2_START.search(text):
+            if in_section and self.RE_ANY_SECTION.search(value):
+                if not self.RE_SECTION_START.search(value) and not self.RE_SECTION2_START.search(value):
                     flush()
+                    flush_questions(None)
                     in_section = False
-                    current_category = ""
                     continue
-
-            if in_section and is_major_section_heading(text):
+            if in_section and is_major_section_heading(value):
                 flush()
+                flush_questions(None)
                 in_section = False
-                current_category = ""
                 continue
-
             if not in_section:
                 continue
 
-            # ---- 参考答案/答案/解析 → 跳过答案内容 ----
-            # 独立标签会开启答案区；录音后的行内答案也会开启答案区，
-            # 防止后面的“1. xxx”被误识别为下一道题。题目前置的行内
-            # 答案只跳过当前行，不影响随后真正的题干。
-            if answer_marker:
-                was_collecting = collecting
-                answer_text = (answer_marker.group(1) or '').strip()
-                flush()
-                if not answer_text or was_collecting:
+            if collecting:
+                if answer_marker:
+                    flush()
                     answer_block = True
+                    inline = (answer_marker.group(1) or '').strip()
+                    number, answers = self._answer_line(inline)
+                    if number is not None and answers:
+                        answer_map[number] = answers
+                    continue
+                if script_marker or self.RE_RECORDING_PROMPT.search(value):
+                    flush()
+                    answer_block = False
+                    continue
+                current_lines.append(value)
                 continue
 
-            # 套卷中“参考答案：”会重复出现，不能把后续大题静默丢掉。
-            # 优先使用明确的下一组录音提示恢复；没有提示时，只有比上一题
-            # 更大的显式题号才可能是下一组题目，答案行则继续跳过。
+            if answer_marker:
+                answer_block = True
+                inline = (answer_marker.group(1) or '').strip()
+                number, answers = self._answer_line(inline)
+                if number is not None and answers:
+                    answer_map[number] = answers
+                continue
+
             if answer_block:
-                if script_marker or self.RE_RECORDING_PROMPT.search(text):
+                if script_marker or self.RE_RECORDING_PROMPT.search(value):
+                    answer_block = False
+                elif (
+                    (question_match := self.RE_QUESTION.match(value)) is not None
+                    and re.search(r'[?？]\s*$', question_match.group(2))
+                ):
+                    # A numbered English prompt can follow an answer marker
+                    # on the next line.  Answer rows in the trailing answer
+                    # block normally do not end in a question mark.
                     answer_block = False
                 else:
-                    numbered = self.RE_QUESTION.match(text)
-                    if numbered is None or int(numbered.group(1)) <= last_qnum:
+                    number, answers = self._answer_line(value)
+                    if number is not None and answers:
+                        answer_map[number] = answers
                         continue
+                    # Inline/standalone answer blocks can be followed directly
+                    # by the next question.  Leave the current line for the
+                    # normal question matcher instead of swallowing it as an
+                    # answer-block line.
                     answer_block = False
 
-            # ---- 题号区间说明行（如「回答第 7-10 个问题」）→ 设定起始题号 ----
-            m_range = self.RE_ANSWER_RANGE.search(text)
-            if m_range:
-                next_qnum = int(m_range.group(1))
-
-            # ---- 题目：去题号，按出现顺序男/女交替 ----
-            # 只在非录音稿状态识别，避免把录音稿中偶然以数字开头的句子误判为题目。
-            question_number = None
-            question_text = ""
-            if not collecting:
-                m_q = self.RE_QUESTION.match(text)
-                if m_q:
-                    question_number = int(m_q.group(1))
-                    question_text = sanitize(m_q.group(2))
-                    # 有编号的题目推进待分配题号
-                    next_qnum = max(next_qnum or 0, question_number + 1)
-                elif self.RE_UNNUMBERED_QUESTION.search(text) and not is_chinese(text):
-                    # 新格式中题目可能漏编号（如 U2 的 7-9 题）：
-                    # 以英文问句（末尾 ?）兜底识别，题号按说明行区间顺延
-                    question_number = (
-                        next_qnum if next_qnum is not None else last_qnum + 1
-                    )
-                    if next_qnum is not None:
-                        next_qnum += 1
-                    question_text = sanitize(text)
-            if question_number is not None and question_text:
-                question_order += 1
-                last_qnum = question_number
-                speaker_match = self.RE_SPEAKER_PREFIX.match(question_text)
-                explicit_speaker = next(
-                    (
-                        value
-                        for value in (
-                            speaker_match.group(1) if speaker_match else None,
-                            speaker_match.group(2) if speaker_match else None,
-                        )
-                        if value
-                    ),
-                    None,
-                )
-                speaker = (
-                    explicit_speaker.upper()
-                    if explicit_speaker
-                    else ("M" if question_order % 2 == 1 else "W")
-                )
-                section_name = (
-                    "听选信息" if current_category == "听选信息录音稿" else "回答问题"
-                )
-                item_category = f"{section_name}题目"
-                idx_by_cat[item_category] = idx_by_cat.get(item_category, 0) + 1
-                item = {
-                    "category": item_category,
-                    "number": question_number,
-                    "filename_stem": f"问题{question_number}",
-                    "voice": "male" if speaker == "M" else "female",
-                    # Keep the source question verbatim apart from the parser's
-                    # normal whitespace cleanup.  The M/W marker is a source
-                    # fact when it exists, never a synthetic display prefix.
-                    "text": question_text,
-                }
-                if use_exam_naming:
-                    filename_stem = audio_filename_stem_for_category(
-                        item["category"], idx_by_cat[item["category"]]
-                    )
-                    if filename_stem:
-                        item.update({
-                            "audio_filename_stem": filename_stem,
-                            "type_path": [filename_stem.rsplit("-", 1)[0]],
-                        })
-                items.append(item)
-                continue
-
-            # ---- 录音稿标记 ----
             if script_marker:
-                flush()  # 先保存上一段录音稿
+                flush()
+                flush_questions(script_idx + 1)
                 collecting = True
                 remainder = (script_marker.group(1) or '').strip()
                 if remainder:
                     current_lines.append(remainder)
                 continue
 
-            # ---- 新对话开始 → 当前录音稿结束 ----
-            if collecting and (
-                self.RE_DIALOG.search(text)
-                or self.RE_RECORDING_PROMPT.search(text)
-            ):
-                flush()
+            if self.RE_RECORDING_PROMPT.search(value):
+                # Introductory instructions are template prose, not a prompt
+                # card. The following numbered rows are still collected.
+                m_range = self.RE_ANSWER_RANGE.search(value)
+                if m_range:
+                    next_qnum = int(m_range.group(1))
                 continue
 
-            # ---- 收集录音稿行 ----
-            if collecting:
-                current_lines.append(text)
+            question_match = self.RE_QUESTION.match(value)
+            if question_match:
+                add_question(question_match.group(2), int(question_match.group(1)))
+                continue
 
-        # 文档末尾兜底
+            # The 回答问题 section commonly numbers the range in its
+            # instruction while leaving each following English prompt
+            # unnumbered.  Once that range has supplied the next number, treat
+            # the prose line as the next question and advance the sequence.
+            if current_section_name == "回答问题" and next_qnum is not None:
+                add_question(value)
+                continue
+
+            if pending_questions:
+                options = self._options_from_line(value)
+                if options:
+                    question = pending_questions[-1]
+                    question["options"] = options
+                    metadata = (
+                        self.paragraph_metadata[position]
+                        if position < len(self.paragraph_metadata)
+                        else {}
+                    )
+                    search_start = 0
+                    red_option_ids = []
+                    for option in options:
+                        start = value.find(option["text"], search_start)
+                        if start < 0:
+                            start = search_start
+                        end = start + len(option["text"])
+                        if has_red_text_in_range(metadata, start, end):
+                            red_option_ids.append(option["option_id"])
+                        search_start = max(end, search_start)
+                    if len(red_option_ids) == 1:
+                        question["answer"] = red_option_ids[0]
+                        question["reference_answers"] = [
+                            option["text"]
+                            for option in options
+                            if option["option_id"] == red_option_ids[0]
+                        ]
+                    audio_item = question_audio_items.get(id(question))
+                    if audio_item is not None:
+                        audio_item["text"] = self._question_prompt_with_options(
+                            question["prompt"],
+                            options,
+                        )
+
         flush()
+        flush_questions(None)
 
-        return self._result(items)
+        for question in questions:
+            question_number = question.get("number")
+            references = answer_map.get(question_number)
+            if question_number in answer_map:
+                question["reference_answers"] = references
+                question["reference_answers_source"] = "document"
+            elif question.get("answer"):
+                fallback_references = [
+                    option["text"]
+                    for option in question.get("options", [])
+                    if option.get("option_id") == question.get("answer")
+                ]
+                if fallback_references:
+                    question["reference_answers"] = fallback_references
+                    question["reference_answers_source"] = "red_option"
+
+        result = self._result(items)
+        result["questions"] = questions
+        computed_score = sum(
+            question.get("score", 0)
+            for question in questions
+            if isinstance(question.get("score"), (int, float))
+        )
+        result["computed_score"] = computed_score
+        result["section_score"] = (
+            sum(declared_section_scores)
+            if declared_section_scores
+            else computed_score
+        )
+        if declared_item_scores:
+            result["score_per_item"] = (
+                declared_item_scores[0]
+                if len(set(declared_item_scores)) == 1
+                else None
+            )
+        return result

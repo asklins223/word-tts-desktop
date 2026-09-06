@@ -1,6 +1,6 @@
 """旧 Parser 结果 → 原子小题候选的抽取器（阶段 1）。
 
-本模块是只读消费者：输入 ``parse_document_auto`` 的单个题型结果，
+本模块是只读消费者：输入 ``parse_document_once`` 的单个题型结果，
 输出 ``ParseCandidate``，不改变旧解析结果本身（基线快照必须保持不变）。
 
 方案 4 节的映射约束在这里落地：
@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 
 from .model import (
     QUESTION_TYPE_CODES,
@@ -60,6 +61,22 @@ def _section_of(category: str) -> str:
         if category.endswith(suffix):
             return category[: -len(suffix)]
     return category
+
+
+def _profile_fact(result: dict, key: str) -> str | None:
+    """Return one unambiguous parser-owned profile fact for a candidate."""
+
+    values: list[str] = []
+    top_level = str(result.get(key) or "").strip()
+    if top_level:
+        values.append(top_level)
+    for raw in result.get("items") or ():
+        if not isinstance(raw, Mapping):
+            continue
+        value = str(raw.get(key) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values[0] if len(values) == 1 else None
 
 
 # category → 小题型；信息获取按听选信息/回答问题两个小题型产出
@@ -293,7 +310,25 @@ def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
         ))
 
     diagnostics = []
-    if not any(t.get("task_kind") == "retelling" for t in result.get("tasks", [])):
+    retelling_tasks = [
+        task for task in result.get("tasks", [])
+        if isinstance(task, dict) and task.get("task_kind") == "retelling"
+    ]
+    if not retelling_tasks:
+        retelling_tasks = [
+            task for task in result.get("retelling_tasks", [])
+            if isinstance(task, dict) and task.get("task_kind") == "retelling"
+        ]
+    if not retelling_tasks:
+        retelling = result.get("retelling")
+        references = retelling.get("reference_answers") if isinstance(retelling, dict) else []
+        if isinstance(references, list):
+            retelling_tasks = [
+                {"task_kind": "retelling", "reference_answer": reference}
+                for reference in references
+                if str(reference or "").strip()
+            ]
+    if not retelling_tasks:
         diagnostics.append("info_retelling_reference_not_extracted")
     if not questions:
         diagnostics.append("info_retelling_task_split_not_extracted")
@@ -373,6 +408,16 @@ def _extract_imitation_reading(result: dict, source_key: str) -> ParseCandidate:
         ))
 
     diagnostics = ["imitation_reading_task_details_not_extracted", "audio_only_candidate"]
+    capabilities = dict(CAPABILITIES_AUDIO_ONLY)
+    capabilities.update({
+        "parse": True,
+        "audio": True,
+        "normalize": True,
+        # The atomic extractor still emits Stimulus-only entities and does
+        # not construct the confirmed external page target.  Keep this false
+        # even when the source parser recognized an entry profile.
+        "external_input": False,
+    })
     return ParseCandidate(
         candidate_id=f"candidate:{type_code}:{source_key}",
         type_code=type_code,
@@ -380,7 +425,9 @@ def _extract_imitation_reading(result: dict, source_key: str) -> ParseCandidate:
         entities=tuple(stimuli),
         confidence=_confidence(diagnostics),
         diagnostics=tuple(diagnostics),
-        capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+        capabilities=capabilities,
+        major_section_profile=_profile_fact(result, "major_section_profile"),
+        entry_profile=_profile_fact(result, "entry_profile"),
     )
 
 

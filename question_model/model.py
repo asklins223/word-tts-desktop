@@ -40,30 +40,28 @@ class ResolutionState(str, Enum):
 # ============================================================================
 # 新增大题型/小题型只在这里 + 解析器切片（question_types）+ 抽取器
 # （question_model.extractors）登记；question_types 的 QuestionType、
-# 检测函数、颜色表、旧链路女声兼容全部由本注册表派生，
-# 不存在需要多处同步、漏改即报错的第二份注册表。
+# 结构检测、颜色表、音色视图全部由本注册表派生，不存在需要多处同步、
+# 漏改即报错的第二份注册表。
 
 @dataclass(frozen=True)
 class QuestionFamily:
-    """大题型（family）元数据：展示、文件名/内容检测、旧链路兼容视图。
+    """大题型（family）元数据：展示、结构检测与音色策略视图。
 
-    ``female_categories`` 是旧链路 force_female 判断的 category 兼容字段
-    （由音色策略 forced_female 派生的格式层视图），随解析器切片声明一次。
+    ``content_markers`` 是结构检测的候选标记，不是“命中一个字符串就
+    通过”的独立判据。``female_categories`` 是由音色策略派生的格式层
+    视图，随解析器切片声明一次。
     """
 
     code: str
     display_name: str                    # 中文题型名（= doc_type，展示用）
     color: str                           # 前端展示颜色
-    filename_keywords: tuple = ()
-    filename_extensions: tuple = ()      # 优先于 keywords
-    content_markers: tuple = ()          # detect_types_in_content 的正则
-    female_categories: tuple = ()        # 旧链路 force_female 兼容视图
+    content_markers: tuple = ()          # 结构检测的候选正则
+    female_categories: tuple = ()        # 声线策略中的默认女声 category
 
 
 FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     QuestionFamily(
         code="info_acquisition", display_name="信息获取", color="#0e7490",
-        filename_keywords=("信息获取",),
         content_markers=(
             re.compile(r'第一节\s*听选信息'),
             re.compile(r'听选信息'),
@@ -71,7 +69,6 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     ),
     QuestionFamily(
         code="listening_choice", display_name="听后选择", color="#2563eb",
-        filename_keywords=("听后选择",),
         content_markers=(
             # 与 ListeningSelectionParser.RE_SECTION_START 语义一致（re.I|re.M）
             re.compile(r'^(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?'
@@ -80,7 +77,6 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     ),
     QuestionFamily(
         code="listening_response", display_name="听后应答", color="#7c3aed",
-        filename_keywords=("听后应答",),
         content_markers=(
             re.compile(r'听后应答'),
             re.compile(r'计算机语音提示.*?听下面\s*'
@@ -90,7 +86,6 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     ),
     QuestionFamily(
         code="text_reading", display_name="课文跟读", color="#15803d",
-        filename_keywords=("课文跟读",),
         content_markers=(
             re.compile(r'句子跟读'),
             re.compile(r'段落跟读'),
@@ -99,7 +94,6 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     ),
     QuestionFamily(
         code="info_retelling", display_name="信息转述及询问", color="#b45309",
-        filename_keywords=("信息转述",),
         content_markers=(
             re.compile(r'第一节\s*信息转述'),
             # 新题型的“第二节：信息转述”不是本题型，避免同一文档
@@ -111,7 +105,6 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     QuestionFamily(
         code="listening_record_retelling", display_name="听后记录并转述信息",
         color="#0369a1",
-        filename_keywords=("听后记录并转述信息", "听后记录"),
         content_markers=(
             re.compile(r'第一节\s*[：:]?\s*听后记录'),
             re.compile(r'听后记录并转述信息'),
@@ -119,7 +112,6 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     ),
     QuestionFamily(
         code="imitation_reading", display_name="模仿朗读", color="#9f1239",
-        filename_keywords=("模仿朗读",),
         content_markers=(
             re.compile(r'模仿朗读'),
             re.compile(r'外网\s*[：:]'),
@@ -128,7 +120,6 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
     ),
     QuestionFamily(
         code="vocabulary", display_name="词汇", color="#1e40af",
-        filename_extensions=(".xlsx",),
         female_categories=("单词", "例句"),
     ),
 )}
@@ -473,6 +464,8 @@ class ParseCandidate:
     confidence: float = 0.95
     diagnostics: tuple[str, ...] = ()
     capabilities: Mapping[str, bool] = field(default_factory=dict)
+    major_section_profile: str | None = None
+    entry_profile: str | None = None
 
     def __post_init__(self):
         # 直接查实时注册表（而非导入期兼容映射），保证运行时注册的
@@ -506,4 +499,6 @@ class ParseCandidate:
             "confidence": self.confidence,
             "diagnostics": list(self.diagnostics),
             "capabilities": dict(self.capabilities),
+            "major_section_profile": self.major_section_profile,
+            "entry_profile": self.entry_profile,
         }

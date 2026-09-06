@@ -71,6 +71,43 @@ class JS:
     }
     """
 
+    CLICK_ENGLISH_VOICE_CONTINUE = """
+    () => {
+        const modals = document.querySelectorAll(
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
+            '.el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '');
+        for (const modal of modals) {
+            if (!visible(modal)) continue;
+            const text = normalize(modal.innerText || modal.textContent || '');
+            const isEnglishVoiceWarning = text.includes('英文发音人提示')
+                || (text.includes('英文发音人') && text.includes('继续提交'));
+            if (!isEnglishVoiceWarning) continue;
+            const buttons = modal.querySelectorAll(
+                'button, [role="button"], .ant-btn'
+            );
+            for (const button of buttons) {
+                if (!visible(button)) continue;
+                if (button.disabled || button.getAttribute('aria-disabled') === 'true') continue;
+                if (normalize(button.innerText || button.textContent) !== '继续提交') continue;
+                button.click();
+                return true;
+            }
+        }
+        return false;
+    }
+    """
+
     CLOSE_ALL_MODALS = """
     (excludeKeywords) => {
         const modals = document.querySelectorAll('.ant-modal');
@@ -875,6 +912,7 @@ class JS:
         const variants = Array.isArray(aiKeywordVariants) ? aiKeywordVariants : [];
         const bodyText = normalize(document.body?.innerText || '');
         let aiModal = false;
+        let englishVoiceWarning = false;
         let order = bodyText.includes('去下载');
         let free = false;
         let login = false;
@@ -904,6 +942,12 @@ class JS:
                 && group.every(keyword => text.includes(normalize(keyword)))
             ));
             if (isAi) aiModal = true;
+            if (
+                text.includes('英文发音人提示')
+                || (text.includes('英文发音人') && text.includes('继续提交'))
+            ) {
+                englishVoiceWarning = true;
+            }
             if (text.includes('本单免费') || text.includes('免费')) free = true;
             if (
                 text.includes('登录')
@@ -939,6 +983,7 @@ class JS:
 
         let state = null;
         if (aiModal) state = 'ai_modal';
+        else if (englishVoiceWarning) state = 'english_voice_warning';
         else if (bodyText.includes('余额不足') || bodyText.includes('次数不足') || bodyText.includes('额度不足')) {
             state = 'insufficient';
         } else if (bodyText.includes('操作频繁') || bodyText.includes('稍后再试') || bodyText.includes('请求过于频繁')) {
@@ -954,6 +999,7 @@ class JS:
         return {
             state,
             ai_modal: aiModal,
+            english_voice_warning: englishVoiceWarning,
             ai_switch: aiSwitch,
             order,
             free,

@@ -128,8 +128,33 @@ test('Store 可清除过期游标，下一次连接回到服务端 snapshot', ()
     } }).accepted, true);
 });
 
-test('Store 同时提供受限的工作流快照投影，不保留配置和完整事件载荷', () => {
+test('Store 投影 SYSTEM_INPUT_* 事件，运行创建进入 running 且不引入大字段', () => {
     const store = createWorkflowStore();
+    store.consume({ kind: 'snapshot', snapshot: {
+        workflow_id: 'workflow-1', snapshot_seq: 1, snapshot_event_id: 'event-1',
+        state: { workflow_id: 'workflow-1', latest_seq: 1, latest_event_id: 'event-1' },
+    } });
+    const systemInputEvent = (seq, eventType, payload) => ({ kind: 'event', event: {
+        event_id: `event-${seq}`, seq, workflow_id: 'workflow-1', mutation_id: `mutation-${seq}`,
+        schema_version: '1', correlation_id: `correlation-${seq}`, causation_id: null,
+        actor_type: 'USER', actor_id: 'desktop', event_type: eventType, phase: null,
+        payload, created_at: '2026-01-01T00:00:0Z', step_id: null, item_id: null, attempt_id: null,
+    } });
+    assert.equal(store.consume(systemInputEvent(2, 'SYSTEM_INPUT_RUN_CREATED', {
+        input_run_id: 'input-run-1',
+        target_snapshot: { units: [{ unit_id: 'unit-1' }] },
+    })).accepted, true);
+    assert.equal(store.getState().lastSeq, 2);
+    assert.equal(store.getState().workspace.phase, 'running');
+    assert.equal(store.getState().workspace.runtime.message, '系统录入运行已创建，正在执行页面录入');
+    assert.equal(store.getState().workspace.runtime.target_snapshot, undefined);
+    assert.equal(store.consume(systemInputEvent(3, 'SYSTEM_INPUT_EXTERNAL_OPERATION_RESOLVED', {
+        input_run_id: 'input-run-1', attempt_id: 'attempt-1', decision: 'NOT_SUBMITTED',
+    })).accepted, true);
+    assert.equal(store.getState().lastSeq, 3);
+});
+
+test('Store 同时提供受限的工作流快照投影，不保留配置和完整事件载荷', () => {    const store = createWorkflowStore();
     store.consume({ kind: 'snapshot', snapshot: {
         workflow_id: 'workflow-1', snapshot_seq: 2, snapshot_event_id: 'event-2',
             state: {
@@ -235,6 +260,30 @@ test('Store workspace 投影保留 xlsx 来源、条目修订字段与显式 Pro
     assert.equal(workspace.items[0].metadata.example, 'Do not abandon the plan.');
 });
 
+test('Store workspace 投影保留系统录入暂停和停止控制状态', () => {
+    const store = createWorkflowStore();
+    store.setWorkspace({
+        snapshot: { workflow_id: 'workflow-1', state_version: 12 },
+        system_input: {
+            available: true,
+            input_run: {
+                input_run_id: 'input-run-1',
+                status: 'RUNNING',
+                control: { pause_requested: true, stop_requested: false },
+            },
+        },
+        items: [],
+        artifacts: [],
+        blockers: [],
+        available_actions: [],
+    });
+
+    assert.deepEqual(store.getState().workspaceData.system_input.input_run.control, {
+        pause_requested: true,
+        stop_requested: false,
+    });
+});
+
 test('Store 的 workspace 快照缓存保持有界并保留当前工作流', () => {
     const store = createWorkflowStore();
     store.prepare('workflow-1');
@@ -303,6 +352,99 @@ test('workspace 投影按事件顺序推进阶段、分段计数与运行时消�
     assert.equal(workspace.runtime.itemId, 'item-3');
     assert.equal(workspace.executionState, 'RUNNING');
     assert.deepEqual(seen, ['preparing', 'running', 'running']);
+});
+
+test('合并生成的作品阶段计数进入投影，心跳不会抹掉阶段信号', () => {
+    const store = seededStore();
+
+    assert.equal(store.consume(typedEvent(2, 'TTS_RUNTIME_PROGRESS', {
+        status: 'submitted', stage: 'preparing', message: '正在讯飞编辑页填写并提交合并作品',
+        submitted_works: 0, downloaded_works: 0, total_works: 1, item_count: 12,
+        elapsed_seconds: 3.5,
+    })).accepted, true);
+    let workspace = store.getState().workspace;
+    assert.deepEqual(workspace.works, { total: 1, submitted: 0, downloaded: 0, items: 12 });
+    assert.equal(workspace.runtime.stage, 'preparing');
+    assert.equal(workspace.runtime.elapsedSeconds, 3.5);
+
+    store.consume(typedEvent(3, 'TTS_RUNTIME_PROGRESS', {
+        status: 'submitted', stage: 'submitted', message: '合并作品已提交，讯飞正在合成音频',
+        submitted_works: 1, downloaded_works: 0, total_works: 1, item_count: 12,
+        elapsed_seconds: 10,
+    }));
+    workspace = store.getState().workspace;
+    assert.deepEqual(workspace.works, { total: 1, submitted: 1, downloaded: 0, items: 12 });
+    assert.equal(workspace.runtime.stage, 'submitted');
+
+    // 心跳不带 stage/item_id/计数字段：保留阶段信号，只刷新等待时长与消息。
+    store.consume(typedEvent(4, 'TTS_RUNTIME_STATUS', {
+        status: 'waiting', message: '讯飞浏览器正在处理，任务仍在运行',
+        elapsed_seconds: 42.6,
+    }));
+    workspace = store.getState().workspace;
+    assert.equal(workspace.runtime.stage, 'submitted');
+    assert.equal(workspace.runtime.itemId, null);
+    assert.equal(workspace.runtime.elapsedSeconds, 42.6);
+    assert.deepEqual(workspace.works, { total: 1, submitted: 1, downloaded: 0, items: 12 });
+    assert.equal(store.getState().workflowProjection.runtime.stage, 'submitted');
+    assert.equal(store.getState().workflowProjection.runtime.elapsed_seconds, 42.6);
+
+    store.consume(typedEvent(5, 'TTS_RUNTIME_PROGRESS', {
+        status: 'downloaded', stage: 'downloaded', message: '合并音频已下载，正在按停顿切割',
+        submitted_works: 1, downloaded_works: 1, total_works: 1, item_count: 12,
+        elapsed_seconds: 60,
+    }));
+    assert.deepEqual(
+        store.getState().workspace.works,
+        { total: 1, submitted: 1, downloaded: 1, items: 12 },
+    );
+});
+
+test('snapshot 和重连准备会恢复运行时分段/作品进度', () => {
+    const store = createWorkflowStore();
+    store.consume({ kind: 'snapshot', snapshot: {
+        workflow_id: 'workflow-1', snapshot_seq: 5, snapshot_event_id: 'event-5',
+        state: {
+            workflow_id: 'workflow-1', latest_seq: 5, execution_state: 'RUNNING',
+            latest_event: {
+                event_type: 'TTS_RUNTIME_PROGRESS', seq: 5,
+                payload: {
+                    phase: 'provider', status: 'processing', stage: 'submitted', item_id: 'item-2',
+                    completed_segments: 4, total_segments: 10,
+                    total_works: 2, submitted_works: 1, downloaded_works: 0,
+                    item_count: 12, elapsed_seconds: 18,
+                },
+            },
+        },
+    } });
+
+    let workspace = store.getState().workspace;
+    assert.deepEqual(workspace.segments, { completed: 4, total: 10 });
+    assert.deepEqual(workspace.works, { total: 2, submitted: 1, downloaded: 0, items: 12 });
+    assert.equal(workspace.phase, 'running');
+    assert.equal(workspace.runtime.stage, 'submitted');
+    assert.equal(workspace.runtime.itemId, 'item-2');
+
+    // A reconnect with the current Last-Event-ID does not receive a new event;
+    // the cached snapshot must still keep the active progress visible.
+    store.prepare('workflow-1');
+    workspace = store.getState().workspace;
+    assert.deepEqual(workspace.segments, { completed: 4, total: 10 });
+    assert.deepEqual(workspace.works, { total: 2, submitted: 1, downloaded: 0, items: 12 });
+    assert.equal(workspace.executionState, 'RUNNING');
+});
+
+test('prepare 切换 run 时重置 workspace，旧进度不会泄漏成新任务的初值', () => {
+    const store = seededStore();
+    store.consume(typedEvent(2, 'TTS_RUNTIME_PROGRESS', { completed_segments: 9, total_segments: 12 }));
+    assert.equal(store.getState().workspace.segments.completed, 9);
+
+    store.prepare('workflow-2');
+    const workspace = store.getState().workspace;
+    assert.deepEqual(workspace.segments, { completed: 0, total: 0 });
+    assert.deepEqual(workspace.works, { total: 0, submitted: 0, downloaded: 0, items: 0 });
+    assert.equal(workspace.phase, null);
+    assert.equal(workspace.items.total, null);
 });
 
 test('workspace 投影同步工作流控制态，暂停后迟到的运行事件不能把状态改回运行中', () => {
@@ -399,4 +541,47 @@ test('陈旧 workspace 响应不会让对应同步状态永久停在 loading', a
     const state = store.getState();
     assert.equal(state.workspaceSyncByWorkflow['workflow-stale'].state, 'ready');
     assert.equal(state.workspaceData.snapshot.state_version, 5);
+});
+
+test('同版本但更旧的 workspace 事件序号不会覆盖实时运行态', () => {
+    const store = createWorkflowStore();
+    store.setWorkspace({
+        snapshot: { workflow_id: 'workflow-seq', state_version: 5, latest_seq: 5 },
+        items: [],
+        artifacts: [],
+    });
+    const runtimeEvent = typedEvent(6, 'TTS_RUNTIME_PROGRESS', {
+        status: 'processing', completed_segments: 7, total_segments: 10,
+    });
+    runtimeEvent.event.workflow_id = 'workflow-seq';
+    store.consume(runtimeEvent);
+
+    store.setWorkspace({
+        snapshot: { workflow_id: 'workflow-seq', state_version: 5, latest_seq: 5 },
+        items: [],
+        artifacts: [],
+    });
+    const state = store.getState();
+    assert.equal(state.workspace.segments.completed, 7);
+    assert.equal(state.workspaceData.snapshot.latest_seq, 6);
+});
+
+test('缺少版本或事件序号的 workspace 响应不会抹掉实时运行态', () => {
+    const store = seededStore();
+    store.consume(typedEvent(2, 'TTS_RUNTIME_PROGRESS', {
+        status: 'processing', completed_segments: 7, total_segments: 10,
+    }));
+
+    const state = store.setWorkspace({
+        // 模拟旧版/不完整工作区响应：没有 state_version/latest_seq，
+        // 不能让它覆盖刚刚由 SSE 投影出的运行时进度。
+        snapshot: { workflow_id: 'workflow-1', execution_state: 'RUNNING' },
+        progress: { total: 10, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+        items: [],
+        artifacts: [],
+    });
+
+    assert.equal(state.workspace.phase, 'running');
+    assert.deepEqual(state.workspace.segments, { completed: 7, total: 10 });
+    assert.equal(state.workspaceData, null);
 });

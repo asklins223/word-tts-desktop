@@ -1165,6 +1165,30 @@ class PageActionsMixin:
                 _log(f"[xunfei]   locator 点击确认合成失败: {error}")
         return False
 
+    @classmethod
+    def _click_english_voice_continue(cls, page):
+        """点击英文发音人提示中的“继续提交”，兼容动态弹窗 DOM。"""
+        if _safe_eval(page, JS.CLICK_ENGLISH_VOICE_CONTINUE):
+            return True
+
+        dialog = cls._find_visible_dialog(page, "英文发音人")
+        if dialog is None:
+            return False
+        try:
+            buttons = dialog.locator('button, [role="button"], .ant-btn')
+            for index in range(buttons.count()):
+                button = buttons.nth(index)
+                label = re.sub(r"\s+", "", button.inner_text(timeout=500)).strip()
+                if label != "继续提交":
+                    continue
+                if button.is_disabled():
+                    continue
+                button.click(force=True, timeout=3000)
+                return True
+        except Exception as error:
+            _log(f"[xunfei]   locator 点击“继续提交”失败: {error}")
+        return False
+
     # ------------------------------------------------------------------
     # 确认合成弹窗流程
     # ------------------------------------------------------------------
@@ -1178,7 +1202,8 @@ class PageActionsMixin:
             # 第一次确认后，确认按钮本身可能还没卸载；这里只接受真正的
             # AI/错误/订单状态，避免把旧的确认弹窗当成已完成。
             return state if state in {
-                "ai_modal", "insufficient", "rate_limited", "login", "order",
+                "ai_modal", "english_voice_warning", "insufficient",
+                "rate_limited", "login", "order",
             } else None
 
         result = _poll(
@@ -1196,7 +1221,8 @@ class PageActionsMixin:
             info = _probe_synth_state(page)
             state = (info or {}).get("state")
             result = state if state in {
-                "ai_modal", "insufficient", "rate_limited", "login", "order",
+                "ai_modal", "english_voice_warning", "insufficient",
+                "rate_limited", "login", "order",
             } else None
         result = result or "none"
         if result == "none":
@@ -1529,6 +1555,21 @@ class PageActionsMixin:
                 cancel_check=cancel_check,
             )
 
+        def continue_english_voice_warning():
+            _check_cancel_requested(cancel_check)
+            clicked = self._click_english_voice_continue(page)
+            _log(f"[xunfei]   英文发音人提示‘继续提交’: {'✓' if clicked else '✗'}")
+            if not clicked:
+                snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+                if snapshot:
+                    _log(
+                        "[xunfei]   英文发音人提示点击失败，当前可见弹窗: "
+                        + json.dumps(snapshot, ensure_ascii=False)[:1800]
+                    )
+                return False
+            self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
+            return True
+
         def handle_ai_flag(ensure_switch=False):
             kwargs = {"ensure_switch": ensure_switch}
             if cancel_check is not None:
@@ -1558,7 +1599,10 @@ class PageActionsMixin:
         def confirm_state():
             info = _probe_synth_state(page)
             state = (info or {}).get("state")
-            return state if state in {"confirm", "ai_modal", "order", "insufficient", "rate_limited", "login"} else None
+            return state if state in {
+                "confirm", "ai_modal", "english_voice_warning", "order",
+                "insufficient", "rate_limited", "login",
+            } else None
 
         appeared = _poll(
             confirm_state,
@@ -1572,6 +1616,35 @@ class PageActionsMixin:
         )
         if not appeared and self._visible_confirm_synth_buttons(page):
             appeared = "confirm"
+
+        # 讯飞在英文音色对应的文本包含中文时，会先展示一个独立的风险
+        # 提示，而不是“作品设置”弹窗。必须先按用户选择继续提交，后续
+        # 页面才会进入原有的作品设置/确认合成流程。
+        if appeared == "english_voice_warning":
+            if not continue_english_voice_warning():
+                return "failed"
+
+            def state_after_english_warning():
+                info = _probe_synth_state(page)
+                state = (info or {}).get("state")
+                if state == "english_voice_warning":
+                    return None
+                return state if state in {
+                    "confirm", "ai_modal", "order", "insufficient",
+                    "rate_limited", "login",
+                } else None
+
+            appeared = _poll(
+                state_after_english_warning,
+                timeout=15,
+                interval=0.35,
+                max_interval=1.0,
+                page=page,
+                cancel_check=cancel_check,
+            )
+            if not appeared and self._visible_confirm_synth_buttons(page):
+                appeared = "confirm"
+
         if not appeared:
             # 无弹窗也可能直接开始合成；若出现订单/错误则按其处理
             snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
@@ -1647,6 +1720,12 @@ class PageActionsMixin:
             if not handle_ai_flag(False):
                 _log("[xunfei]   AI 标识弹窗未完成确认，停止本次合成")
                 return uncertain_after_confirm("确认合成后 AI 标识弹窗未完成，提交结果不确定")
+        elif outcome == "english_voice_warning":
+            _log("[xunfei]   检测到英文发音人提示")
+            if not continue_english_voice_warning():
+                return uncertain_after_confirm(
+                    "确认合成后英文发音人提示未完成，提交结果不确定"
+                )
         elif outcome in ("order", "insufficient", "rate_limited"):
             if outcome == "order" and not ensure_ai_setting(allow_missing=True):
                 return uncertain_after_confirm(
@@ -1662,7 +1741,8 @@ class PageActionsMixin:
             info = _probe_synth_state(page)
             state = (info or {}).get("state")
             return state if state in {
-                "ai_modal", "insufficient", "rate_limited", "login", "order", "confirm",
+                "ai_modal", "english_voice_warning", "insufficient",
+                "rate_limited", "login", "order", "confirm",
             } else None
 
         followup = _poll(
@@ -1685,6 +1765,31 @@ class PageActionsMixin:
             followup = _poll(
                 probe_followup,
                 timeout=12,
+                interval=0.35,
+                max_interval=1.0,
+                page=page,
+                cancel_check=cancel_check,
+            )
+        if followup == "english_voice_warning":
+            _log("[xunfei]   二次确认阶段检测到英文发音人提示")
+            if not continue_english_voice_warning():
+                return uncertain_after_confirm(
+                    "确认合成后的英文发音人提示未完成，提交结果不确定"
+                )
+
+            def probe_after_english_warning():
+                info = _probe_synth_state(page)
+                state = (info or {}).get("state")
+                if state == "english_voice_warning":
+                    return None
+                return state if state in {
+                    "ai_modal", "insufficient", "rate_limited", "login",
+                    "order", "confirm",
+                } else None
+
+            followup = _poll(
+                probe_after_english_warning,
+                timeout=15,
                 interval=0.35,
                 max_interval=1.0,
                 page=page,

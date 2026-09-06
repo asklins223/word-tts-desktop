@@ -7,7 +7,7 @@ from pathlib import Path
 
 from workflow.artifact_store import ArtifactStore
 from workflow.audio import AudioError, AudioProcessor, AudioVerifier, SegmentBoundary, looks_like_mp3_bytes, validate_segment_boundaries
-from workflow.parser import LegacyWordParser, ParserError, document_hash, iter_json_items
+from workflow.parser import DocumentParser, ParserError, document_hash, iter_json_items
 
 
 class ParserAudioTests(unittest.TestCase):
@@ -34,7 +34,7 @@ class ParserAudioTests(unittest.TestCase):
                     }],
                 }], "ok")
 
-            parser = LegacyWordParser(parse_callable=parse, parser_version="14")
+            parser = DocumentParser(parse_callable=parse, parser_version="14")
             first = parser.parse(source)
             second = parser.parse(source)
             self.assertEqual(first.as_dict(), second.as_dict())
@@ -49,7 +49,7 @@ class ParserAudioTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
 
             with self.assertRaises(ParserError):
-                LegacyWordParser(parse_callable=parse).parse(source.with_suffix(".txt"))
+                DocumentParser(parse_callable=parse).parse(source.with_suffix(".txt"))
 
     def test_document_hash_and_json_item_iterator_keep_input_facts_stable(self) -> None:
         with tempfile.TemporaryDirectory(prefix="wordtts-parser-json-") as tmp:
@@ -59,6 +59,75 @@ class ParserAudioTests(unittest.TestCase):
             self.assertEqual(size, source.stat().st_size)
             self.assertEqual(len(digest), 64)
             self.assertEqual([item["text"] for item in iter_json_items(source)], ["one", "two"])
+
+    def test_legacy_imitation_page_input_cannot_survive_parser_normalization(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-parser-imitation-") as tmp:
+            source = Path(tmp) / "legacy.docx"
+            source.write_bytes(b"legacy source")
+
+            def parse(_path):
+                return ([{
+                    # The generic top-level type is intentional: the profile
+                    # gate must also inspect the specific category label.
+                    "doc_type": " document ",
+                    "items": [{
+                        "category": "模仿朗读-外网",
+                        "text": "Legacy passage.",
+                        "page_input": {"type": "模仿朗读", "questions": []},
+                        "input_payload": {"type": "模仿朗读", "questions": []},
+                    }],
+                }], "ok")
+
+            parsed = DocumentParser(parse_callable=parse).parse(source)
+
+            self.assertEqual(len(parsed.items), 1)
+            self.assertNotIn("page_input", parsed.items[0].metadata)
+            self.assertNotIn("input_payload", parsed.items[0].metadata)
+            self.assertEqual(parsed.items[0].normalized_content, "Legacy passage.")
+
+    def test_result_level_imitation_category_also_closes_legacy_page_input(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-parser-imitation-context-") as tmp:
+            source = Path(tmp) / "legacy-context.docx"
+            source.write_bytes(b"legacy context source")
+
+            def parse(_path):
+                return ([{
+                    # Some old parser envelopes put the specific family on
+                    # the result and leave each item with only generic facts.
+                    "doc_type": " document ",
+                    "category": "模仿朗读-教材",
+                    "items": [{
+                        "text": "Legacy textbook passage.",
+                        "page_input": {"type": "模仿朗读", "questions": []},
+                    }],
+                }], "ok")
+
+            parsed = DocumentParser(parse_callable=parse).parse(source)
+
+            self.assertEqual(len(parsed.items), 1)
+            self.assertNotIn("page_input", parsed.items[0].metadata)
+            self.assertEqual(parsed.items[0].normalized_content, "Legacy textbook passage.")
+
+    def test_page_input_imitation_label_cannot_hide_behind_generic_document_type(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="wordtts-parser-imitation-page-type-") as tmp:
+            source = Path(tmp) / "legacy-page-type.docx"
+            source.write_bytes(b"legacy page type source")
+
+            def parse(_path):
+                return ([{
+                    "doc_type": " document ",
+                    "items": [{
+                        "category": "普通材料",
+                        "text": "Legacy passage with a stale page fact.",
+                        "page_input": {"type": "imitation_reading", "questions": []},
+                    }],
+                }], "ok")
+
+            parsed = DocumentParser(parse_callable=parse).parse(source)
+
+            self.assertEqual(len(parsed.items), 1)
+            self.assertNotIn("page_input", parsed.items[0].metadata)
+            self.assertEqual(parsed.items[0].normalized_content, "Legacy passage with a stale page fact.")
 
     def test_audio_verifier_and_processor_are_streaming_and_content_addressed(self) -> None:
         chunks = (chunk for chunk in (b"a", b"b", b"c"))

@@ -213,8 +213,25 @@ function safeUpdateStatus() {
 
 function findPython() {
     const isWin = process.platform === 'win32';
+    const projectRoot = path.resolve(__dirname, '..');
+    // The document-image path is part of the normal paper-input workflow and
+    // uses the project Playwright/Chromium runtime. Prefer that interpreter so
+    // `npm run dev` cannot silently select a Homebrew/system Python that can
+    // parse DOCX but lacks the bundled browser integration.
+    const projectPythonCandidates = isWin
+        ? [
+            path.join(projectRoot, '.venv', 'Scripts', 'python.exe'),
+            path.join(projectRoot, 'venv', 'Scripts', 'python.exe'),
+        ]
+        : [
+            path.join(projectRoot, '.venv', 'bin', 'python3'),
+            path.join(projectRoot, '.venv', 'bin', 'python'),
+            path.join(projectRoot, 'venv', 'bin', 'python3'),
+            path.join(projectRoot, 'venv', 'bin', 'python'),
+        ];
     const candidates = [
         process.env.PYTHON_CMD,
+        ...projectPythonCandidates,
         // macOS / Linux
         '/usr/local/bin/python3',
         '/opt/homebrew/bin/python3',
@@ -322,6 +339,10 @@ function startPythonServer() {
             WORDTTS_DATA_DIR: app.getPath('userData'),
             WORDTTS_ENABLE_REAL_PROVIDER: realProviderEnabled ? '1' : '0',
             WORDTTS_AUTO_RETRY: realProviderEnabled ? '1' : '0',
+            // The integrated system-input branch is a visible page-only
+            // operation. Keep it enabled in the formal desktop app, while
+            // smoke mode remains strictly offline and never opens Chrome.
+            WORDTTS_SYSTEM_INPUT_ENABLED: realProviderEnabled ? '1' : '0',
             // 打包后复用 Electron 自带的 Node 启动 Playwright driver，
             // 避免在 Python 后端中再携带一份约 106MB 的 node/node.exe。
             ...(app.isPackaged ? {
@@ -1649,6 +1670,19 @@ function registerIpcHandlers() {
         }
         state.controller.abort();
         return { success: true };
+    });
+
+    ipcMain.handle('read-region-tree', async (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const regionPath = path.join(__dirname, 'renderer', 'data', 'region-tree.json');
+        try {
+            const content = await fs.promises.readFile(regionPath, 'utf8');
+            const value = JSON.parse(content);
+            return value && typeof value === 'object' ? value : { success: false, reason: 'invalid-region-tree' };
+        } catch (error) {
+            smokeLog(`region-tree read failed: ${error.stack || error.message}`);
+            return { success: false, reason: 'region-tree-unavailable' };
+        }
     });
 
     // 检查服务器是否就绪

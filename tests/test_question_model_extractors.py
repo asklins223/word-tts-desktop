@@ -184,6 +184,25 @@ class TestImitationReading:
         candidate, _ = extract_from_baseline("模仿朗读-7上-U5-U6")
         return candidate
 
+    def test_profiles_are_carried_without_granting_atomic_entry(self):
+        result = {
+            "items": [{
+                "category": "模仿朗读-框内英文",
+                "unit": "Unit 1",
+                "text": "A short reading passage.",
+                "major_section_profile": "imitation_boxed_special",
+                "entry_profile": "imitation_reading_v1",
+                "capabilities": {"external_input": True},
+            }],
+        }
+
+        candidate = extract_candidate("模仿朗读", result, "synthetic")
+
+        assert candidate.major_section_profile == "imitation_boxed_special"
+        assert candidate.entry_profile == "imitation_reading_v1"
+        assert candidate.capabilities["external_input"] is False
+        assert candidate.capabilities["audio"] is True
+
     def test_one_passage_stimulus_per_item(self, candidate):
         assert candidate.type_code == "imitation_reading"
         assert len(candidate.entities) == 6
@@ -276,7 +295,6 @@ class TestRegistryAlignment:
         for qt in QUESTION_TYPES:
             family = FAMILY_REGISTRY[QUESTION_TYPE_CODES[qt.key]]
             assert qt.color == family.color
-            assert qt.filename_keywords == family.filename_keywords
             assert qt.force_female_categories == family.female_categories
 
     def test_new_family_without_extractor_degrades_gracefully(self):

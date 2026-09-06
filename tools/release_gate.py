@@ -70,11 +70,22 @@ def _node_version() -> tuple[int, str]:
 
 
 def _forbidden_scan(path: Path, needles: Sequence[str]) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return [f"cannot read {path}: {exc}"]
-    return [needle for needle in needles if needle in text]
+    paths = sorted(path.rglob("*.js")) if path.is_dir() else [path]
+    hits: list[str] = []
+    for source_path in paths:
+        try:
+            text = source_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            hits.append(f"cannot read {source_path}: {exc}")
+            continue
+        for needle in needles:
+            if needle in text:
+                try:
+                    display_path = source_path.relative_to(ROOT)
+                except ValueError:
+                    display_path = source_path
+                hits.append(f"{display_path}: {needle}")
+    return hits
 
 
 def run_release_gate(*, apply_waivers: bool = True) -> dict[str, Any]:
@@ -119,7 +130,7 @@ def run_release_gate(*, apply_waivers: bool = True) -> dict[str, Any]:
         checks.append(_check("data-format-version", False, str(exc)))
 
     forbidden = {
-        "renderer": (ROOT / "electron" / "renderer" / "app.js", (
+        "renderer": (ROOT / "electron" / "renderer", (
             "?token=", "EventSource", "history_id", "zip_path", "file_path",
             "saveFileByPath", "apiUrl", "backend.url", "backend.token", "/api/",
         )),

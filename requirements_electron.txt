@@ -14,8 +14,7 @@ playwright==1.56.0
 python-docx>=1.0.0
 openpyxl>=3.1.0
 lxml>=5.0.0
-# 仅供 scripts/build_app_icons.py 构建图标；固定版本确保 CI 生成的 PNG/ICNS/ICO 可复现。
-# PyInstaller 后端明确排除 PIL。
+# DOCX 文档块由内置 Chromium 直接截图；Pillow 负责多片段拼接和图标构建。
 Pillow>=11.0.0
 
 # ---- 音频处理 ----

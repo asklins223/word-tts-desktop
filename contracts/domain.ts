@@ -444,6 +444,11 @@ export interface WorkflowHistoryRecord {
   created_at: string;
   completed_at: string;
   updated_at: string;
+  delivery_mode: 'audio_only' | 'audio_and_input';
+  input_status: string;
+  input_type: string | null;
+  input_units_total: number;
+  input_units_succeeded: number;
 }
 
 declare global {

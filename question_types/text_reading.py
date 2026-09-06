@@ -117,6 +117,63 @@ class TextReadingParser(BaseParser):
     _SUB_SECTION_NAMES = frozenset({SUB_SENTENCE, SUB_PARAGRAPH, SUB_DISCOURSE})
 
     # ------------------------------------------------------------------
+    # 中文翻译回填
+    # ------------------------------------------------------------------
+    # 课文文档的通用排版是“英文正文行 + 紧跟的「中文：」翻译行”。
+    # 解析主流程按音频边界切分条目时会把翻译行丢弃；这里在结果出口
+    # 处把每条翻译挂回它前面最近的英文正文对应的条目，供课文页面
+    # 录入的必填“译文”使用。识别不到翻译的条目保持无 translation 字段。
+    _TRANSLATION_NUMBERED_RE = re.compile(r'^(\d+)\s*[.、）)]\s*(.+)')
+    _TRANSLATION_PREFIX_RE = re.compile(r'^中文\s*[：:]\s*')
+
+    @classmethod
+    def _translation_key(cls, value):
+        text = sanitize(str(value or ''))
+        numbered = cls._TRANSLATION_NUMBERED_RE.match(text)
+        if numbered:
+            text = numbered.group(2)
+        return re.sub(r'\s+', ' ', text).strip().casefold()
+
+    def _attach_translations(self, items):
+        """按“英文行 → 紧跟的中文行”把译文挂回解析条目。"""
+
+        if not items:
+            return items
+        pairs = {}
+        last_key = ''
+        for _, paragraph_text, _ in getattr(self, 'paras', None) or []:
+            for line in str(paragraph_text or '').split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                chinese = self._TRANSLATION_PREFIX_RE.match(line)
+                if chinese:
+                    translation = line[chinese.end():].strip()
+                    if last_key and translation:
+                        pairs.setdefault(last_key, translation)
+                    last_key = ''
+                    continue
+                if is_chinese(line):
+                    continue
+                key = self._translation_key(line)
+                if key:
+                    last_key = key
+        if not pairs:
+            return items
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = self._translation_key(item.get('text'))
+            if key and key in pairs and not item.get('translation'):
+                item['translation'] = pairs[key]
+        return items
+
+    def _result(self, items):
+        """构造标准输出结构（课文条目附带中文翻译）。"""
+        return super()._result(self._attach_translations(items))
+
+
+    # ------------------------------------------------------------------
     # Section A/B 新版课文跟读格式
     # ------------------------------------------------------------------
     # 新版样本中 Section A/B 和子题型有时只是 Normal 样式，不能依赖
@@ -580,7 +637,15 @@ class TextReadingParser(BaseParser):
                 })
             sentence_buf = []
 
-        def append_new_block_item(category, text, conversation_number=None, role=None):
+        def append_new_block_item(
+            category,
+            text,
+            conversation_number=None,
+            role=None,
+            article_title=None,
+            article_theme=None,
+            section_override=None,
+        ):
             clean = sanitize(text)
             if not clean:
                 return
@@ -611,11 +676,17 @@ class TextReadingParser(BaseParser):
                 filename_stem = f"{current_audio_prefix}{category[:2]}{sequence}"
             item = {
                 "category": category,
-                "section": current_section,
+                "section": section_override or current_section,
                 "number": sequence,
                 "filename_stem": filename_stem,
                 "text": clean,
             }
+            # 文章标题/主题是录入切分与命名的结构事实；标题行本身不再
+            # 生成音频条目。
+            if article_title:
+                item["article_title"] = article_title
+            if article_theme:
+                item["article_theme"] = article_theme
             # 对话可能有多个角色，不能给整条结果写死男女声；未知角色
             # 在合成阶段按默认女声处理，已选择的角色由 role_voices 覆盖。
             if role:
@@ -756,29 +827,110 @@ class TextReadingParser(BaseParser):
                         role, _ = role_segments[0] if role_segments else (None, cleaned_unit)
                         append_new_block_item(self.SUB_DISCOURSE, cleaned_unit, role=role)
                 return
+            # 文章切分：标题行（显式 //、标题格式，或短且无句末标点的行）
+            # 不再作为独立音频，而是把后续正文切分成一篇文章；连续标题链
+            # 中除最后一个外的首个标题视为主题（如 “Making new friends”
+            # “Reading Plus”），主题命中 Reading Plus 时后续条目归入该节。
+            articles = []
+            pending_titles = []
+            block_theme = None
+            current_article = None
+
+            def flush_article():
+                nonlocal current_article, pending_titles, block_theme
+                if current_article is None:
+                    # 还在累积连续标题链（主题 → 文章标题）：不能清空，
+                    # 否则主题会丢。
+                    return
+                if current_article["sentences"]:
+                    if current_article["theme"]:
+                        # 建组时已从标题链确定主题（如 “Reading Plus”），
+                        # 不能被后续块主题覆盖。
+                        article_theme = current_article["theme"]
+                    elif len(pending_titles) >= 2:
+                        article_theme = pending_titles[0]
+                        block_theme = block_theme or article_theme
+                    else:
+                        article_theme = block_theme
+                    articles.append({
+                        "title": current_article["title"],
+                        "theme": article_theme,
+                        "sentences": current_article["sentences"],
+                    })
+                # 发出一篇文章后链条重置；下一篇文章的主题重新累积。
+                pending_titles = []
+                current_article = None
+
             for unit_index, (unit, formatting_hint) in enumerate(article_units):
                 cleaned_unit = self._new_clean_text([unit])
                 if not cleaned_unit:
                     continue
                 heading_text, is_explicit = self._article_heading(cleaned_unit)
-                # 显式 //、Word 格式提示或符合首段无标点短标题规则的段落视为标题
-                is_heading = self._looks_like_article_heading(
-                    cleaned_unit,
-                    formatting_hint=formatting_hint,
-                    is_first_unit=unit_index == 0,
-                )
-                if is_heading:
-                    # 标题单独一个音频，去掉 // 前缀后的标题文本
-                    text_to_append = heading_text if is_explicit else cleaned_unit
-                    if text_to_append:
-                        append_new_block_item(self.SUB_DISCOURSE, text_to_append)
+                title_like = False
+                title_text = ''
+                if heading_text and (is_explicit or formatting_hint):
+                    title_like = True
+                    title_text = heading_text
+                elif (
+                    heading_text
+                    and not self._role_label(heading_text)
+                    and len(heading_text) <= 48
+                    and len(re.split(r'\s+', heading_text)) <= 8
+                    and not re.match(r'^\d+\s*[.、）)]', heading_text)
+                    and not re.search(r'[.!?。！？,，;；]', heading_text)
+                ):
+                    # 无格式提示时的保守兜底：短、无任何句读标点、非角色
+                    # 行、非编号行。组首沿用原有宽松规则；组内标题额外
+                    # 要求实词首字母大写（如 “Pauline Lee”
+                    # “Reading Plus”），避免把无标点的普通短正文误当标题。
+                    group_initial = unit_index == 0
+                    if group_initial:
+                        title_like = True
+                        title_text = heading_text
+                    else:
+                        stopwords = {
+                            'at', 'of', 'the', 'a', 'an', 'and', 'to',
+                            'in', 'for', 'with', 'on', 'from',
+                        }
+                        words = re.split(r'\s+', heading_text)
+                        if all(
+                            word[:1].isupper() or word.lower() in stopwords
+                            for word in words
+                        ):
+                            title_like = True
+                            title_text = heading_text
+                if title_like:
+                    flush_article()
+                    pending_titles.append(title_text)
                     continue
-                # 正文：按句拆分，一句一个音频
+                if current_article is None:
+                    current_article = {
+                        "title": pending_titles[-1] if pending_titles else None,
+                        "theme": pending_titles[0] if len(pending_titles) >= 2 else None,
+                        "sentences": [],
+                    }
+                    if current_article["theme"]:
+                        block_theme = block_theme or current_article["theme"]
+                    pending_titles = []
                 sentences = split_sentences(cleaned_unit)
                 if not sentences:
                     sentences = [cleaned_unit]
                 for sent in sentences:
-                    append_new_block_item(self.SUB_DISCOURSE, sent)
+                    current_article["sentences"].append(sent)
+            flush_article()
+
+            for article in articles:
+                section_override = None
+                if article["theme"] and self.RE_CONTENT_HEADING.match(str(article["theme"])):
+                    section_override = article["theme"]
+                for sent in article["sentences"]:
+                    append_new_block_item(
+                        self.SUB_DISCOURSE,
+                        sent,
+                        article_title=article["title"],
+                        article_theme=article["theme"],
+                        section_override=section_override,
+                    )
 
         def flush_discourse():
             nonlocal discourse_current_lines, discourse_current_number

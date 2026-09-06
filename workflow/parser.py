@@ -1,9 +1,8 @@
-"""Stable parser port and normalized document model.
+"""Stable document parser port and normalized document model.
 
-The legacy parser remains the implementation of the supported Word/Excel
-formats for now.  This module gives the workflow layer one deterministic
-intermediate representation and keeps parser-specific fields out of the
-database identity and cache rules.
+This module gives the workflow layer one deterministic intermediate
+representation and keeps parser-specific fields out of database identity and
+cache rules.
 """
 
 from __future__ import annotations
@@ -16,7 +15,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, TextIO
 
+from document_profiles import is_imitation_item
+
 from .domain import DomainError, canonical_json, content_hash
+from .system_input_content import (
+    PageInputFactsError,
+    build_page_input_facts,
+    sanitize_page_input,
+)
 
 
 PARSER_MODEL_VERSION = "1"
@@ -145,7 +151,7 @@ def normalize_item(
     source_basis: str,
     document_type: str = "document",
 ) -> ParsedItem:
-    """Normalize one legacy parser item with deterministic identity."""
+    """Normalize one parser item with deterministic identity."""
 
     text = str(raw.get("text") or raw.get("normalized_content") or "").strip()
     if not text:
@@ -158,13 +164,26 @@ def normalize_item(
     basis = explicit_id or filename_stem or f"{category}:{number}:{content_hash(text)[:16]}"
     identity = f"{source_basis}:{document_type}:{basis}"
     locator = str(raw.get("source_locator") or f"{document_type}/{category}/{number}")
+    page_input = None
+    if raw.get("page_input") is not None or raw.get("input_payload") is not None:
+        try:
+            page_input = sanitize_page_input(
+                raw.get("page_input") or raw.get("input_payload")
+            )
+        except PageInputFactsError as exc:
+            raise ParserError(
+                "PARSER_ERROR",
+                f"parsed item {sequence} has invalid page-input facts",
+            ) from exc
     metadata = _safe_mapping({
         "doc_type": document_type,
         "category": category,
         "section": raw.get("section"),
+        "source": raw.get("source"),
         "number": raw.get("number"),
         "filename_stem": filename_stem or None,
         "audio_filename_stem": audio_filename_stem or None,
+        "audio_only_auxiliary": raw.get("audio_only_auxiliary") is True,
         "question_numbers": raw.get("question_numbers"),
         "conversation_number": raw.get("conversation_number"),
         # Preserve parser-owned display facts for the review workbench.  The
@@ -179,7 +198,63 @@ def normalize_item(
         "question_type": raw.get("question_type"),
         "sub_type_code": raw.get("sub_type_code"),
         "type_path": raw.get("type_path") or raw.get("type_hierarchy"),
+        # These fields are the source-side facts used by the independent
+        # system-input projection.  They are deliberately metadata only:
+        # ``normalized_content`` remains the TTS input and no external write
+        # is implied by retaining them here.
+        "unit": raw.get("unit"),
+        "unit_id": raw.get("unit_id"),
+        "unit_label": raw.get("unit_label"),
+        "set_number": raw.get("set_number"),
+        "paper_set": raw.get("paper_set"),
+        "set": raw.get("set"),
+        "material_source": raw.get("material_source"),
+        "raw_text": raw.get("raw_text") or raw.get("listening_text"),
+        "score": raw.get("score"),
+        "answer": raw.get("answer"),
+        "reference_answer": raw.get("reference_answer"),
+        "paper_category": raw.get("paper_category"),
+        "paper_category_status": raw.get("paper_category_status"),
+        "paper_category_evidence": raw.get("paper_category_evidence"),
+        "exam_form": raw.get("exam_form"),
+        "parse_coverage_status": raw.get("parse_coverage_status"),
+        "confidence": raw.get("confidence"),
+        "major_section_profile": raw.get("major_section_profile"),
+        "entry_profile": raw.get("entry_profile"),
+        "capabilities": raw.get("capabilities"),
+        # This is a bounded, paper-only semantic side channel consumed by the
+        # trusted visible-page adapter.  It is intentionally kept out of the
+        # TTS text and out of the renderer's configuration projection.
+        "page_input": page_input,
     })
+    # ``_safe_mapping`` intentionally caps generic parser metadata at 32
+    # entries per collection.  Page-input facts have their own sanitizer and
+    # a larger, explicit 256-item contract; running them through the generic
+    # cap would silently drop later questions/reference answers in a complete
+    # paper.  Reattach the already-sanitized fact unchanged.
+    if page_input is not None:
+        metadata["page_input"] = page_input
+    # ``_safe_mapping`` deliberately caps the generic metadata envelope at
+    # 32 keys.  These three parser-owned facts are part of the document-entry
+    # contract, though, and currently sit after that cap in the envelope.
+    # Reattach them through the same sanitizer so the cap cannot silently
+    # turn an otherwise supported full paper or imitation-reading special
+    # into an unsupported document.
+    metadata.update(_safe_mapping({
+        "major_section_profile": raw.get("major_section_profile"),
+        "entry_profile": raw.get("entry_profile"),
+        "capabilities": raw.get("capabilities"),
+        # 课文页面的必填“译文”显示事实；与页面事实一样绕过通用 32 键
+        # 上限，避免整包被截断时静默丢掉译文。
+        "translation": raw.get("translation"),
+        # 角色是独立列，但课文“角色扮演/同步课文”建议依赖 metadata 里
+        # 的角色事实；一并透传，保持单一事实来源。
+        "role": raw.get("role"),
+        # 课文文章切分的结构事实：文章标题/主题驱动录入单元切分与
+        # 课文记录命名。
+        "article_title": raw.get("article_title"),
+        "article_theme": raw.get("article_theme"),
+    }))
     return ParsedItem(
         identity_key=identity,
         item_type=category,
@@ -192,14 +267,14 @@ def normalize_item(
     )
 
 
-class LegacyWordParser(ParserPort):
+class DocumentParser(ParserPort):
     """Adapter around the question_types registry implementation."""
 
     def __init__(
         self,
         *,
         parse_callable: Callable[[str], tuple[list[Mapping[str, Any]], str]] | None = None,
-        parser_version: str = "18",
+        parser_version: str = "19",
     ) -> None:
         self.parse_callable = parse_callable
         self.parser_version = str(parser_version)
@@ -230,10 +305,43 @@ class LegacyWordParser(ParserPort):
             raw_items = result.get("items")
             if not isinstance(raw_items, list):
                 continue
-            for raw in raw_items:
+            parse_auxiliary_audio = kwargs.get("include_auxiliary_audio") is True
+            selected_items = list(raw_items)
+            if parse_auxiliary_audio:
+                auxiliary_items = result.get("audio_items")
+                if isinstance(auxiliary_items, list):
+                    selected_items.extend(auxiliary_items)
+            for raw_index, raw in enumerate(selected_items):
                 if not isinstance(raw, Mapping):
                     continue
-                items.append(normalize_item(raw, sequence=len(items), source_basis=source_basis, document_type=document_type))
+                raw_for_item = dict(raw)
+                try:
+                    page_input = build_page_input_facts(
+                        document_type,
+                        result,
+                        raw_for_item,
+                        raw_index,
+                    )
+                except PageInputFactsError as exc:
+                    raise ParserError(
+                        "PARSER_ERROR",
+                        f"{document_type} page-input facts are invalid",
+                    ) from exc
+                if page_input is None and is_imitation_item(
+                    document_type,
+                    raw_for_item,
+                    context=result,
+                ):
+                    # An unsupported imitation-reading profile must not keep
+                    # an explicit legacy page_input/input_payload supplied by
+                    # an older parser projection.  Audio content remains in
+                    # the normalized item; only the executable entry fact is
+                    # removed.
+                    raw_for_item.pop("page_input", None)
+                    raw_for_item.pop("input_payload", None)
+                if page_input is not None:
+                    raw_for_item["page_input"] = page_input
+                items.append(normalize_item(raw_for_item, sequence=len(items), source_basis=source_basis, document_type=document_type))
         if not items:
             raise ParserError("DEPENDENCY_NOT_READY", str(summary or "no supported items were parsed"))
         requested_filename = str(kwargs.get("source_filename") or "").strip()
@@ -254,12 +362,10 @@ class LegacyWordParser(ParserPort):
             metadata={"summary": str(summary or "")[:500]},
         )
 
-
 def _load_parse_callable() -> Callable[[str], tuple[list[Mapping[str, Any]], str]]:
     """返回题型注册表的文档解析入口。
 
-    方案阶段3：统一结构读取（``parse_document_once``，文档只加载一次），
-    输出与 ``parse_document_auto`` 逐字节等价（tests/test_segmenter.py 锁定）。
+    统一结构读取（``parse_document_once``，文档只加载一次）。
     """
     try:
         from question_types.segmenter import parse_document_once
@@ -290,7 +396,7 @@ def _safe_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
-    "LegacyWordParser", "ParsedDocument", "ParsedItem", "ParserError",
+    "DocumentParser", "ParsedDocument", "ParsedItem", "ParserError",
     "ParserPort", "PARSER_MODEL_VERSION", "PARSER_NORMALIZATION_VERSION",
     "document_hash", "iter_json_items", "normalize_item",
 ]

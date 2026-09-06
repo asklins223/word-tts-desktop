@@ -14,8 +14,8 @@
 | 字段 | 含义 |
 | --- | --- |
 | `sha256` | 源文档内容哈希 |
-| `parse_results` | 应用路径 `parse_document_auto`（内容识别，可多题型）完整结果 |
-| `cli_result` / `cli_filename_type` / `cli_error` | CLI 路径（`detect_doc_type` 文件名识别）单题型解析结果 |
+| `parse_results` | 应用路径 `parse_document_once`（结构识别，可多题型）完整结果 |
+| `cli_result` / `cli_filename_type` / `cli_error` | CLI 路径（`detect_document_type` 结构识别）单题型解析结果；`cli_filename_type` 是历史快照字段名 |
 | `progress_items` | 旧链路 `wordtts/progress.py: build_progress` 派生的音频条目（id/category/seq/文件名/音色），已剔除运行时字段与时间戳 |
 
 `manifest.json`：代码版本（commit、parser_version、audio_algorithm_version、
@@ -24,14 +24,14 @@
 
 ## 本次基线（20260829-pre-atomic-model）记录的已知异常
 
-生成时全部 13 份文档的「内容识别路径」与「CLI 文件名识别路径」结果完全一致，
+生成时全部 13 份文档的两条结构识别路径结果完全一致，
 总计 465 条，与 git 内 `examples/parsed/parsed_results.json` 吻合。已知的
 当前规则边界（不是回归，改造时如行为变化需显式说明）：
 
 1. **`词汇-G7-u1.docx` 解析出 0 条**。该文档是 Word 版词汇表，格式为
    `（01） without /wɪðˈaʊt/ prep. 缺乏，没有` + `例句：…` + `翻译：…`。
-   `词汇` 题型只注册了 `.xlsx` 扩展名、无内容标记，`detect_doc_type`
-   返回 None，两条路径均不产出。若原子模型阶段开始抽取 Word 词汇，
+   `词汇` 题型只支持符合表头结构的 `.xlsx` 模板，`detect_document_type`
+   对 Word 版词汇表返回 None，两条路径均不产出。若原子模型阶段开始抽取 Word 词汇，
    属于新能力而非回归，需在差异报告中标明。
 2. **`信息转述及询问信息 7上- U1.docx` 仅产出 1 条**（整段录音稿），
    符合当前「信息转述只出录音稿、不拆任务」的规则边界。

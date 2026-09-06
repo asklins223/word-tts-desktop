@@ -7,6 +7,9 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://openstorage.xfyousheng.com https://pygfile.peiyinge.com; media-src 'self' blob: data: https://pygfile.peiyinge.com http://ceph.xfyousheng.com; font-src 'self' data:; connect-src 'self' blob:">
     <title>小猪wordTTS · 文档配音工作台</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="task-subpages.css">
+    <link rel="stylesheet" href="target-editor.css">
+    <link rel="stylesheet" href="target-editor-overrides.css">
 </head>
 <body>
     <div class="window-drag-region" aria-hidden="true"></div>
@@ -20,22 +23,41 @@
                 <button type="button" id="restart-btn" class="new-task-button" title="清空当前任务并重新开始"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>新建任务</span></button>
             </div>
             <div class="station-process">
-                <div class="station-process-caption"><span>制作流程</span><span>文档 → 声音 → 交付</span></div>
+                <div class="station-process-caption"><span>制作流程</span><span>5 个主阶段 · 录入为可选步骤</span></div>
                 <nav id="stepper" class="workflow-nav" aria-label="音频生成进度">
                     <button type="button" class="step-indicator" data-step="1" data-workspace="import" aria-label="导入文档"><span class="step-circle"><span class="step-num">1</span></span><span class="step-copy"><span class="step-label">导入文档</span><span class="step-meta">选择源文档</span></span></button>
                     <span class="step-line" data-line="1" aria-hidden="true"></span>
-                    <button type="button" class="step-indicator" data-step="2" data-workspace="review" aria-label="核对内容"><span class="step-circle"><span class="step-num">2</span></span><span class="step-copy"><span class="step-label">核对内容</span><span class="step-meta">确认解析结构</span></span></button>
+                    <button type="button" class="step-indicator" data-step="2" data-workspace="review" aria-label="内容核对"><span class="step-circle"><span class="step-num">2</span></span><span class="step-copy"><span class="step-label">内容核对</span><span class="step-meta">确认解析结构</span></span></button>
                     <span class="step-line" data-line="review-voice" aria-hidden="true"></span>
-                    <button type="button" class="step-indicator" data-step="2" data-workspace="voice" aria-label="配置声音"><span class="step-circle"><span class="step-num">3</span></span><span class="step-copy"><span class="step-label">配置声音</span><span class="step-meta">选择音色与输出</span></span></button>
+                    <button type="button" class="step-indicator" data-step="2" data-workspace="voice" aria-label="配置中心"><span class="step-circle"><span class="step-num">3</span></span><span class="step-copy"><span class="step-label">配置中心</span><span class="step-meta">音频与交付方式</span></span></button>
                     <span class="step-line" data-line="voice-generation" aria-hidden="true"></span>
                     <button type="button" class="step-indicator" data-step="3" data-workspace="generation" aria-label="生成任务"><span class="step-circle"><span class="step-num">4</span></span><span class="step-copy"><span class="step-label">生成任务</span><span class="step-meta">实时跟踪处理</span></span></button>
                     <span class="step-line" data-line="generation-delivery" aria-hidden="true"></span>
-                    <button type="button" class="step-indicator" data-step="4" data-workspace="delivery" aria-label="交付中心"><span class="step-circle"><span class="step-num">5</span></span><span class="step-copy"><span class="step-label">交付中心</span><span class="step-meta">试听、核验与下载</span></span></button>
+                    <button type="button" class="step-indicator" data-step="4" data-workspace="delivery" aria-label="交付中心"><span class="step-circle"><span class="step-num">5</span></span><span class="step-copy"><span class="step-label">交付中心</span><span class="step-meta">音频 · 可选录入</span></span></button>
+                </nav>
+                <nav class="delivery-stage-rail" id="delivery-stage-rail" aria-label="交付阶段" hidden>
+                    <div class="delivery-stage-rail-heading"><span>交付阶段</span><small id="delivery-stage-rail-note">录入为可选步骤</small></div>
+                    <div class="delivery-stage-track">
+                        <button type="button" class="delivery-stage-button" data-delivery-stage="audio" aria-label="音频交付">
+                            <span class="delivery-stage-mark" aria-hidden="true">1</span>
+                            <span class="delivery-stage-copy"><strong>音频交付</strong><small class="delivery-stage-state">试听 / 下载</small></span>
+                        </button>
+                        <span class="delivery-stage-line" data-delivery-line="audio-input" aria-hidden="true"></span>
+                        <button type="button" class="delivery-stage-button" data-delivery-stage="input" aria-label="系统录入，可选">
+                            <span class="delivery-stage-mark" aria-hidden="true">2</span>
+                            <span class="delivery-stage-copy"><strong>系统录入 <em>可选</em></strong><small class="delivery-stage-state">按需开启</small></span>
+                        </button>
+                        <span class="delivery-stage-line" data-delivery-line="input-result" aria-hidden="true"></span>
+                        <button type="button" class="delivery-stage-button" data-delivery-stage="result" aria-label="最终结果">
+                            <span class="delivery-stage-mark" aria-hidden="true">3</span>
+                            <span class="delivery-stage-copy"><strong>最终结果</strong><small class="delivery-stage-state">汇总查看</small></span>
+                        </button>
+                    </div>
                 </nav>
             </div>
             <div class="station-utilities">
                 <div class="utility-heading"><span>任务中心</span><span class="utility-rule"></span></div>
-                <button type="button" class="history-nav-btn" id="history-nav-btn" aria-controls="page-history"><span class="history-nav-icon history-nav-icon-history" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg></span><span class="history-nav-copy"><strong>历史记录</strong><small>最近生成的音频任务</small></span><span class="history-nav-count" id="history-nav-count">0</span></button>
+                <button type="button" class="history-nav-btn" id="history-nav-btn" aria-controls="page-history"><span class="history-nav-icon history-nav-icon-history" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg></span><span class="history-nav-copy"><strong>历史记录</strong><small>最近的音频与录入任务</small></span><span class="history-nav-count" id="history-nav-count">0</span></button>
                 <button type="button" class="history-nav-btn version-nav-btn" id="version-nav-btn" aria-controls="page-version"><span class="history-nav-icon history-nav-icon-version" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4-8 4-8-4 8-4Z"/><path d="m4 12 8 4 8-4"/><path d="m4 16 8 4 8-4"/></svg></span><span class="history-nav-copy"><strong>版本中心</strong><small>检查更新与查看更新日志</small></span><span class="history-nav-count version-nav-badge" id="version-nav-badge" hidden>新</span></button>
                 <div class="active-task-hint" id="active-task-hint" hidden><span class="active-task-hint-dot" aria-hidden="true"></span><span id="active-task-hint-text">有任务需要处理</span></div>
             </div>
@@ -59,11 +81,11 @@
                     </div></div>
                 </section>
 
-                <section class="step-page" id="page-2" aria-label="内容核对与声音配置">
+                <section class="step-page" id="page-2" aria-label="内容核对与配置中心">
                     <div class="page-scroll"><div class="workspace-frame review-frame">
                         <div class="workspace-view content-review-view" id="content-review-view" hidden><header class="workspace-heading"><div><h1 id="review-title" tabindex="-1">核对解析内容</h1><p>确认文档被怎样理解。这里只展示结构、正文和来源，不加载音频。</p></div><span class="review-readonly-badge">生成前可编辑</span></header><div class="review-workbench"><aside class="review-outline-panel" aria-labelledby="review-outline-title"><div class="panel-heading"><div><span class="panel-kicker">DOCUMENT MAP</span><h2 id="review-outline-title">文档结构</h2></div><span class="review-count" id="review-summary">等待解析</span></div><div class="review-outline" id="review-outline" aria-label="按题型层级和具体题目浏览解析内容"></div><p class="panel-note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>核对阶段不加载波形，也不触发试听请求。</p></aside><section class="review-list-panel" aria-labelledby="review-items-title"><div class="panel-heading"><div><span class="panel-kicker">PARSED CONTENT</span><h2 id="review-items-title">解析出的内容</h2></div><span class="review-item-count" id="review-item-count">0 条</span></div><div class="review-list-toolbar"><span>顺序 / 正文摘要</span><span>来源定位</span></div><div class="review-items" id="review-items" role="list" aria-label="解析条目列表"></div><div class="empty-state review-empty" id="review-empty" hidden><strong>暂时没有可展示的条目</strong><p>请重新解析文档，或检查源文件是否包含可读文本。</p></div></section><aside class="review-inspector" id="review-inspector" aria-labelledby="review-inspector-title" aria-live="polite"><div class="inspector-empty" id="review-inspector-empty"><span class="inspector-mark" aria-hidden="true"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/></svg></span><h2 id="review-inspector-title">选择一条内容</h2><p>查看完整正文、来源定位和解析状态。角色与声音配置会在下一个工作区处理。</p></div><div class="review-inspector-content" id="review-inspector-content" hidden><div class="inspector-heading"><span class="review-inspector-index" id="review-inspector-index">01</span><div><span class="panel-kicker">ITEM DETAIL</span><h2 id="review-inspector-item-title">解析条目</h2></div></div><dl class="inspector-facts"><div><dt>题型层级</dt><dd id="review-inspector-type">未提供</dd></div><div><dt>默认音色</dt><dd id="review-inspector-voice">默认女声</dd></div><div><dt>解析状态</dt><dd id="review-inspector-status">待处理</dd></div><div><dt>来源定位</dt><dd id="review-inspector-source">未提供</dd></div></dl><div class="inspector-body"><span>原文</span><p id="review-inspector-body">选择条目后显示正文。</p></div></div></aside></div></div>
 
-                        <div class="workspace-view voice-config-view" id="voice-config-view" hidden><header class="workspace-heading voice-heading"><div><h1 id="config-title" tabindex="-1">编排声音</h1><p>先选角色，再从目录挑选音色。每个角色保留独立的语速、语调和音量。</p></div><button type="button" class="source-file-chip" id="change-file-btn" title="更换源文档"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span><small id="source-file-meta">当前文档</small><strong id="source-file-name">已导入的文档</strong></span><svg class="chip-action" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 0 15 6.7L21 16M21 21v-5h-5M21 12A9 9 0 0 0 6 5.3L3 8M8 8H3V3"/></svg></button></header><div class="voice-workbench"><aside class="voice-role-panel" aria-labelledby="voice-role-title"><div class="panel-heading"><div><span class="panel-kicker">ROLE PATCHES</span><h2 id="voice-role-title">文本角色</h2></div><span id="voice-role-count">2 个默认角色</span></div><div class="voice-role-list" id="voice-role-list" role="group" aria-label="选择要配置的角色"></div><p class="voice-role-note">无角色标识的内容使用默认女声；单词和例句始终使用默认女声。</p></aside><section class="voice-directory-panel" aria-labelledby="voice-directory-title"><div class="directory-heading"><div><span class="panel-kicker">VOICE LIBRARY</span><h2 id="voice-directory-title">选择一个音色</h2></div><span class="auto-badge"><span></span>可试听</span></div><div class="voice-picker-toolbar"><label class="voice-search-field" for="voice-search-input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><span class="sr-only">搜索音色</span><input type="search" id="voice-search-input" placeholder="搜索名称、语言或风格" autocomplete="off"></label></div><div class="voice-filter-controls" id="voice-filter-controls"><div class="voice-filter-row" id="voice-filter-row" role="group" aria-label="常用音色分类"></div><div class="voice-filter-overflow" id="voice-filter-overflow" role="group" aria-label="更多音色分类" hidden></div></div><div class="voice-browser-layout"><div class="voice-browser-main"><div class="voice-browser-grid" id="voice-browser-grid" role="list" aria-label="音色列表"></div><div class="voice-browser-empty" id="voice-browser-empty" hidden>没有匹配的音色，请换个关键词或分类。</div></div><aside class="voice-detail-panel" id="voice-detail-panel" aria-label="音色详细配置" aria-live="polite"><button type="button" class="voice-detail-toggle" id="voice-detail-toggle" aria-controls="voice-detail-content" aria-expanded="true" aria-label="收起详细配置" title="收起详细配置"><svg class="voice-detail-toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg><span class="voice-detail-toggle-label sr-only">收起详细配置</span></button><div class="voice-detail-content" id="voice-detail-content"><div class="voice-detail-heading"><div class="voice-avatar voice-avatar-large" id="voice-detail-avatar" aria-hidden="true">A</div><div class="voice-detail-title"><span class="voice-detail-role" id="voice-detail-role">默认女声</span><h3 id="voice-detail-name">英语-Amanda</h3><p id="voice-detail-meta">英语 · 女声</p></div><button type="button" class="voice-preview-btn" id="voice-preview-btn" title="试听当前音色" aria-label="试听当前音色" aria-pressed="false"><svg class="icon-play" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><svg class="icon-pause" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none"><path d="M6 19h4V5H6v14h4z"/></svg></button></div><div class="detail-section-heading"><strong>声音参数</strong><span>0–100 · 默认 50</span></div><div class="voice-param-list"><div class="voice-param-row"><div class="voice-param-label"><span>语速</span><small>慢 · 快</small></div><div class="voice-param-control"><input type="range" id="voice-rate" min="0" max="100" step="1" value="50" aria-label="当前音色语速"><input type="number" id="voice-rate-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色语速数值"><button type="button" class="voice-param-reset" data-voice-param-reset="rate" title="恢复语速默认值" aria-label="恢复语速默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button></div></div><div class="voice-param-row"><div class="voice-param-label"><span>语调</span><small>低 · 高</small></div><div class="voice-param-control"><input type="range" id="voice-pitch" min="0" max="100" step="1" value="50" aria-label="当前音色语调"><input type="number" id="voice-pitch-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色语调数值"><button type="button" class="voice-param-reset" data-voice-param-reset="pitch" title="恢复语调默认值" aria-label="恢复语调默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button></div></div><div class="voice-param-row"><div class="voice-param-label"><span>音量</span><small>小 · 大</small></div><div class="voice-param-control"><input type="range" id="voice-volume" min="0" max="100" step="1" value="50" aria-label="当前音色音量"><input type="number" id="voice-volume-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色音量数值"><button type="button" class="voice-param-reset" data-voice-param-reset="volume" title="恢复音量默认值" aria-label="恢复音量默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button></div></div></div><div class="voice-recent-block"><div class="voice-recent-heading"><strong>最近使用</strong><span id="voice-recent-count">0</span></div><div class="voice-recent-list" id="voice-recent-list"></div><p class="voice-recent-empty" id="voice-recent-empty">暂无最近使用音色</p></div></div></aside></div></section></div><section class="production-plan" aria-labelledby="production-plan-title"><div class="production-plan-heading"><div><span class="panel-kicker">OUTPUT PATCH</span><h2 id="production-plan-title">确认生成计划</h2></div><span class="plan-revision">配置会保存到当前任务</span></div><div class="plan-grid"><div class="plan-settings"><section class="plan-block preset-section"><div class="plan-block-heading"><strong>配置方案</strong><span>加载或保存常用设置</span></div><div class="preset-bar"><label class="sr-only" for="preset-select">已保存的配置</label><select id="preset-select" class="preset-select" title="选择已保存的配置" aria-label="已保存的配置"><option value="">选择已保存的配置</option></select><button type="button" class="btn-secondary btn-sm" id="apply-preset-btn" title="应用到当前表单">应用</button><button type="button" class="btn-text btn-sm" id="save-preset-btn" title="保存当前配置">保存</button><button type="button" class="btn-icon btn-danger-ghost" id="delete-preset-btn" title="删除选中配置" aria-label="删除选中的配置"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg></button></div></section><section class="plan-block"><div class="plan-block-heading"><strong>生成方式</strong><span>默认按人工停顿切割</span></div><div class="generation-mode-options" role="radiogroup" aria-label="音频生成方式"><label class="generation-mode-option is-recommended"><input type="radio" name="generation-mode" value="composite_cut" checked><span class="generation-mode-radio" aria-hidden="true"></span><span class="generation-mode-copy"><strong>全部生成后切割</strong><small>整批提交后按安全停顿切回每段，减少提交次数。</small></span><span class="generation-mode-badge">推荐</span></label><label class="generation-mode-option"><input type="radio" name="generation-mode" value="single_segment"><span class="generation-mode-radio" aria-hidden="true"></span><span class="generation-mode-copy"><strong>单条单条生成</strong><small>每个逻辑片段独立生成，边界最直接。</small></span><span class="generation-mode-badge is-legacy">原有方式</span></label></div><p class="generation-mode-note">无法确认边界时会保留合并音频并报告异常。</p></section><section class="plan-block"><div class="plan-block-heading"><strong>输出文件</strong><span>当前只交付已验证的 MP3</span></div><div class="config-grid output-grid"><div class="config-field"><span class="field-label">音频格式<small>固定 MP3</small></span><select id="format" aria-label="音频格式" disabled><option value="mp3" selected>MP3 · 通用格式</option></select></div><div class="config-field"><span class="field-label">音频质量<small>MP3 码率</small></span><select id="quality" aria-label="音频质量"><option value="48 kbps（低）">48 kbps · 小体积</option><option value="128 kbps（标准）" selected>128 kbps · 标准</option><option value="192 kbps（高）">192 kbps · 高质量</option><option value="320 kbps（极高）">320 kbps · 极高质量</option></select></div></div></section></div><aside class="plan-summary" aria-label="当前生成设置"><div class="plan-summary-heading"><span class="summary-icon" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span><div><span class="panel-kicker">SESSION READOUT</span><strong>生成设置摘要</strong></div></div><div class="summary-list"><div><span class="summary-key">文档内容</span><strong class="summary-value" id="summary-document">等待解析</strong></div><div><span class="summary-key">音色</span><strong class="summary-value" id="summary-voice">女 英语-Amanda · 男 英语-George</strong></div><div><span class="summary-key">语速 / 语调 / 音量</span><strong class="summary-value" id="summary-params">50 / 50 / 50</strong></div><div><span class="summary-key">生成方式</span><strong class="summary-value" id="summary-mode">全部生成后切割</strong></div><div><span class="summary-key">输出</span><strong class="summary-value" id="summary-output">MP3 · 128 kbps</strong></div><div><span class="summary-key">生成范围</span><strong class="summary-value" id="summary-scope">完整文档</strong></div></div><div class="provider-status" id="provider-status" role="status" aria-live="polite"><span class="provider-status-dot" aria-hidden="true"></span><span><strong>讯飞服务</strong><small id="provider-status-text">正在检查可用性</small></span><button type="button" class="btn-text btn-sm provider-action-btn" id="provider-action-btn" hidden>重新检测</button></div><label class="preview-option preview-option-promoted"><input type="checkbox" id="preview"><span class="toggle-control"></span><span><strong>先试听 3 条</strong><small>确认声音后，再决定是否生成全文</small></span></label><div class="summary-note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>生成期间请保持应用开启</div><button type="button" class="btn-primary btn-generate" id="start-generate-btn"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><span id="generate-button-label">开始生成音频</span></button><button type="button" class="btn-text btn-defaults" id="skip-config-btn">恢复推荐设置</button><button type="button" class="btn-text" id="back-to-upload-btn">更换文档</button></aside></div></section></div>
+                        <div class="workspace-view voice-config-view" id="voice-config-view" hidden><header class="workspace-heading voice-heading"><div><h1 id="config-title" tabindex="-1">配置中心</h1><p>先配置音色和生成方式；需要系统录入时，再设置录入目标。</p></div><button type="button" class="source-file-chip" id="change-file-btn" title="更换源文档"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span><small id="source-file-meta">当前文档</small><strong id="source-file-name">已导入的文档</strong></span><svg class="chip-action" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 0 15 6.7L21 16M21 21v-5h-5M21 12A9 9 0 0 0 6 5.3L3 8M8 8H3V3"/></svg></button></header><div class="voice-workbench"><aside class="voice-role-panel" aria-labelledby="voice-role-title"><div class="panel-heading"><div><span class="panel-kicker">ROLE PATCHES</span><h2 id="voice-role-title">文本角色</h2></div><span id="voice-role-count">2 个默认角色</span></div><div class="voice-role-list" id="voice-role-list" role="group" aria-label="选择要配置的角色"></div><p class="voice-role-note">无角色标识的内容使用默认女声；单词和例句始终使用默认女声。</p></aside><section class="voice-directory-panel" aria-labelledby="voice-directory-title"><div class="directory-heading"><div><span class="panel-kicker">VOICE LIBRARY</span><h2 id="voice-directory-title">选择一个音色</h2></div><span class="auto-badge"><span></span>可试听</span></div><div class="voice-picker-toolbar"><label class="voice-search-field" for="voice-search-input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><span class="sr-only">搜索音色</span><input type="search" id="voice-search-input" placeholder="搜索名称、语言或风格" autocomplete="off"></label></div><div class="voice-filter-controls" id="voice-filter-controls"><div class="voice-filter-row" id="voice-filter-row" role="group" aria-label="常用音色分类"></div><div class="voice-filter-overflow" id="voice-filter-overflow" role="group" aria-label="更多音色分类" hidden></div></div><div class="voice-browser-layout"><div class="voice-browser-main"><div class="voice-browser-grid" id="voice-browser-grid" role="list" aria-label="音色列表"></div><div class="voice-browser-empty" id="voice-browser-empty" hidden>没有匹配的音色，请换个关键词或分类。</div></div><aside class="voice-detail-panel" id="voice-detail-panel" aria-label="音色详细配置" aria-live="polite"><button type="button" class="voice-detail-toggle" id="voice-detail-toggle" aria-controls="voice-detail-content" aria-expanded="true" aria-label="收起详细配置" title="收起详细配置"><svg class="voice-detail-toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg><span class="voice-detail-toggle-label sr-only">收起详细配置</span></button><div class="voice-detail-content" id="voice-detail-content"><div class="voice-detail-heading"><div class="voice-avatar voice-avatar-large" id="voice-detail-avatar" aria-hidden="true">A</div><div class="voice-detail-title"><span class="voice-detail-role" id="voice-detail-role">默认女声</span><h3 id="voice-detail-name">英语-Amanda</h3><p id="voice-detail-meta">英语 · 女声</p></div><button type="button" class="voice-preview-btn" id="voice-preview-btn" title="试听当前音色" aria-label="试听当前音色" aria-pressed="false"><svg class="icon-play" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><svg class="icon-pause" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none"><path d="M6 19h4V5H6v14h4z"/></svg></button></div><div class="detail-section-heading"><strong>声音参数</strong><span>0–100 · 默认 50</span></div><div class="voice-param-list"><div class="voice-param-row"><div class="voice-param-label"><span>语速</span><small>慢 · 快</small></div><div class="voice-param-control"><input type="range" id="voice-rate" min="0" max="100" step="1" value="50" aria-label="当前音色语速"><input type="number" id="voice-rate-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色语速数值"><button type="button" class="voice-param-reset" data-voice-param-reset="rate" title="恢复语速默认值" aria-label="恢复语速默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button></div></div><div class="voice-param-row"><div class="voice-param-label"><span>语调</span><small>低 · 高</small></div><div class="voice-param-control"><input type="range" id="voice-pitch" min="0" max="100" step="1" value="50" aria-label="当前音色语调"><input type="number" id="voice-pitch-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色语调数值"><button type="button" class="voice-param-reset" data-voice-param-reset="pitch" title="恢复语调默认值" aria-label="恢复语调默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button></div></div><div class="voice-param-row"><div class="voice-param-label"><span>音量</span><small>小 · 大</small></div><div class="voice-param-control"><input type="range" id="voice-volume" min="0" max="100" step="1" value="50" aria-label="当前音色音量"><input type="number" id="voice-volume-number" min="0" max="100" step="1" value="50" inputmode="numeric" aria-label="当前音色音量数值"><button type="button" class="voice-param-reset" data-voice-param-reset="volume" title="恢复音量默认值" aria-label="恢复音量默认值"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button></div></div></div><div class="voice-recent-block"><div class="voice-recent-heading"><strong>最近使用</strong><span id="voice-recent-count">0</span></div><div class="voice-recent-list" id="voice-recent-list"></div><p class="voice-recent-empty" id="voice-recent-empty">暂无最近使用音色</p></div></div></aside></div></section></div><section class="production-plan" aria-labelledby="production-plan-title"><div class="production-plan-heading"><div><span class="panel-kicker">OUTPUT PATCH</span><h2 id="production-plan-title">确认生成计划</h2></div><span class="plan-revision">配置会保存到当前任务</span></div><div class="plan-grid"><div class="plan-settings"><section class="plan-block preset-section"><div class="plan-block-heading"><strong>配置方案</strong><span>加载或保存常用设置</span></div><div class="preset-bar"><label class="sr-only" for="preset-select">已保存的配置</label><select id="preset-select" class="preset-select" title="选择已保存的配置" aria-label="已保存的配置"><option value="">选择已保存的配置</option></select><button type="button" class="btn-secondary btn-sm" id="apply-preset-btn" title="应用到当前表单">应用</button><button type="button" class="btn-text btn-sm" id="save-preset-btn" title="保存当前配置">保存</button><button type="button" class="btn-icon btn-danger-ghost" id="delete-preset-btn" title="删除选中配置" aria-label="删除选中的配置"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg></button></div></section><section class="plan-block"><div class="plan-block-heading"><strong>生成方式</strong><span>默认按人工停顿切割</span></div><div class="generation-mode-options" role="radiogroup" aria-label="音频生成方式"><label class="generation-mode-option is-recommended"><input type="radio" name="generation-mode" value="composite_cut" checked><span class="generation-mode-radio" aria-hidden="true"></span><span class="generation-mode-copy"><strong>全部生成后切割</strong><small>整批提交后按安全停顿切回每段，减少提交次数。</small></span><span class="generation-mode-badge">推荐</span></label><label class="generation-mode-option"><input type="radio" name="generation-mode" value="single_segment"><span class="generation-mode-radio" aria-hidden="true"></span><span class="generation-mode-copy"><strong>单条单条生成</strong><small>每个逻辑片段独立生成，边界最直接。</small></span><span class="generation-mode-badge is-legacy">原有方式</span></label></div><p class="generation-mode-note">无法确认边界时会保留合并音频并报告异常。</p></section><section class="plan-block"><div class="plan-block-heading"><strong>输出文件</strong><span>当前只交付已验证的 MP3</span></div><div class="config-grid output-grid"><div class="config-field"><span class="field-label">音频格式<small>固定 MP3</small></span><select id="format" aria-label="音频格式" disabled><option value="mp3" selected>MP3 · 通用格式</option></select></div><div class="config-field"><span class="field-label">音频质量<small>MP3 码率</small></span><select id="quality" aria-label="音频质量"><option value="48 kbps（低）">48 kbps · 小体积</option><option value="128 kbps（标准）" selected>128 kbps · 标准</option><option value="192 kbps（高）">192 kbps · 高质量</option><option value="320 kbps（极高）">320 kbps · 极高质量</option></select></div></div></section></div><aside class="plan-summary" aria-label="当前生成设置"><div class="plan-summary-heading"><span class="summary-icon" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span><div><span class="panel-kicker">SESSION READOUT</span><strong>生成设置摘要</strong></div></div><div class="summary-list"><div><span class="summary-key">文档内容</span><strong class="summary-value" id="summary-document">等待解析</strong></div><div><span class="summary-key">音色</span><strong class="summary-value" id="summary-voice">女 英语-Amanda · 男 英语-George</strong></div><div><span class="summary-key">语速 / 语调 / 音量</span><strong class="summary-value" id="summary-params">50 / 50 / 50</strong></div><div><span class="summary-key">生成方式</span><strong class="summary-value" id="summary-mode">全部生成后切割</strong></div><div><span class="summary-key">输出</span><strong class="summary-value" id="summary-output">MP3 · 128 kbps</strong></div><div><span class="summary-key">生成范围</span><strong class="summary-value" id="summary-scope">完整文档</strong></div></div><div class="provider-status" id="provider-status" role="status" aria-live="polite"><span class="provider-status-dot" aria-hidden="true"></span><span><strong>讯飞服务</strong><small id="provider-status-text">正在检查可用性</small></span><button type="button" class="btn-text btn-sm provider-action-btn" id="provider-action-btn" hidden>重新检测</button></div><label class="preview-option preview-option-promoted"><input type="checkbox" id="preview"><span class="toggle-control"></span><span><strong>先试听 3 条</strong><small>确认声音后，再决定是否生成全文</small></span></label><div class="summary-note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>生成期间请保持应用开启</div><button type="button" class="btn-primary btn-generate" id="start-generate-btn"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><span id="generate-button-label">开始生成音频</span></button><button type="button" class="btn-text btn-defaults" id="skip-config-btn">恢复推荐设置</button><button type="button" class="btn-text" id="back-to-upload-btn">更换文档</button></aside></div></section></div>
                     </div></div>
                 </section>
 
@@ -237,9 +259,208 @@
 
                 <section class="step-page" id="page-4" aria-labelledby="result-title"><button type="button" class="result-scroll-top" id="result-scroll-top" hidden aria-label="回到结果页顶部" title="回到顶部"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg><span>顶部</span></button><div class="page-scroll"><div class="workspace-frame delivery-frame"><div class="result-hero" id="result-hero"><div class="result-overview"><div class="delivery-heading"><div class="result-heading-copy"><div class="result-success-icon"><svg class="result-check-mark" width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><svg class="result-error-mark" width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div><div><span class="panel-kicker" id="result-eyebrow">任务已完成</span><h1 id="result-title" tabindex="-1">音频已经准备好了</h1><p class="result-summary" id="result-summary"></p></div></div><div class="result-header-actions"><button type="button" class="btn-text" id="back-to-history-btn" hidden>返回历史记录</button><button type="button" class="btn-primary" id="generate-full-btn" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>继续生成完整文档</button><button type="button" class="btn-text" id="rerun-task-btn" hidden>重新运行此任务</button><button type="button" class="btn-secondary" id="new-file-btn">处理新文档</button></div></div><div class="result-metrics" aria-label="本次生成摘要"><div class="result-metric result-metric-success"><span id="result-success-label">已生成</span><strong id="result-success-count">0</strong><small id="result-success-caption">音频文件</small></div><div class="result-metric"><span id="result-secondary-label">未完成</span><strong id="result-failed-count">0</strong><small id="result-secondary-caption">待处理内容</small></div><div class="result-metric result-metric-cancelled"><span>已取消</span><strong id="result-cancelled-count">0</strong><small>未纳入交付</small></div><div class="result-metric"><span>输出格式</span><strong id="result-format-value">MP3</strong><small>单文件可试听</small></div></div></div><div class="zip-card" id="zip-card"><div class="zip-visual" aria-hidden="true"><span></span><span></span><div class="zip-icon"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg></div></div><div class="zip-info"><span class="zip-kicker">DELIVERY MANIFEST</span><div class="zip-name">下载已验证音频</div><div class="zip-desc" id="zip-desc">点击后由服务端按事实整理 ZIP</div><div class="delivery-scope" id="delivery-scope">等待交付范围核验</div><div class="delivery-exclusion-note" id="delivery-exclusion-note" hidden></div><ul class="delivery-exclusion-list" id="delivery-exclusion-list" hidden aria-label="未纳入交付的条目"></ul><div class="artifact-transfer" id="artifact-transfer" hidden role="status" aria-live="polite"><div class="artifact-transfer-heading"><span id="artifact-transfer-label">准备下载</span><strong id="artifact-transfer-value">0%</strong></div><progress id="artifact-transfer-bar" max="100" value="0" aria-label="交付文件传输进度"></progress><button type="button" class="btn-text btn-sm" id="cancel-artifact-transfer-btn">取消下载</button></div></div><button type="button" class="btn-primary btn-download" id="download-zip-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>准备交付包</button></div></div><div class="result-warning" id="result-warning" role="status" hidden><div class="result-warning-main"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 1 1.71 3h16.94a2 2 0 0 1-1.71-3L13.71 3.86a2 2 0 0 1-3.42 0zM12 9v4M12 17h.01"/></svg><div class="result-warning-copy"><p id="result-warning-text">部分内容未能生成，你可以调整设置后再次尝试。</p><ul class="result-failure-list" id="result-failure-list" hidden></ul></div></div><div class="result-warning-actions"><button type="button" class="btn-primary btn-sm" id="retry-failed-btn" hidden>沿用设置重试失败项</button><button type="button" class="btn-text btn-sm" id="result-return-config-btn">返回配置</button></div></div><section class="audio-list-section" aria-labelledby="audio-list-title"><div class="audio-list-header"><div><span class="panel-kicker">VERIFIED AUDIO</span><h2 class="section-heading" id="audio-list-title">逐条试听与下载</h2></div><span class="audio-count" id="audio-count">0 个文件</span></div><div class="audio-toolbar" id="audio-toolbar"><label class="audio-search-field" for="audio-search-input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><span class="sr-only">筛选音频文件</span><input type="search" id="audio-search-input" placeholder="搜索文件名、题型或内容" autocomplete="off"></label><label class="sr-only" for="audio-type-filter">按题型筛选</label><select id="audio-type-filter" class="audio-type-filter" aria-label="按题型筛选"><option value="">全部题型</option></select></div><div class="audio-list" id="audio-list"><div class="audio-empty">暂无音频文件</div></div><div class="audio-filter-empty" id="audio-filter-empty" hidden>没有符合当前筛选条件的音频</div></section></div></div></div></section>
 
-                <section class="step-page history-page" id="page-history" aria-labelledby="history-title"><div class="page-scroll"><div class="workspace-frame history-frame"><header class="workspace-heading history-heading"><div><h1 id="history-title" tabindex="-1">历史记录</h1><p>从任务事实回到正确的工作区：继续、处理问题，或查看已验证结果。</p></div><div class="history-heading-actions"><button type="button" class="btn-text" id="history-back-btn">返回当前任务</button><div class="history-limit-card" aria-label="历史记录容量"><strong id="history-count">0 / 20</strong><small>最近 20 条 · 本地保留</small></div></div></header><div class="history-toolbar" role="search"><label class="history-search-field" for="history-search-input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><span class="sr-only">搜索任务</span><input type="search" id="history-search-input" placeholder="搜索文档名" autocomplete="off"></label><label class="sr-only" for="history-status-filter">按状态筛选</label><select id="history-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="active">进行中</option><option value="attention">需要处理</option><option value="done">已完成</option></select><label class="sr-only" for="history-sort-order">排序方式</label><select id="history-sort-order" aria-label="排序方式"><option value="updated">最近更新</option><option value="created">最近创建</option></select></div><div class="history-list" id="history-list" aria-live="polite"></div><div class="history-empty" id="history-empty" hidden><span class="history-empty-mark" aria-hidden="true"></span><h2>还没有生成记录</h2><p>完成一次音频生成后，结果会自动保存在这里。</p><button type="button" class="btn-primary" id="history-start-btn">开始生成音频</button></div></div></div></section>
+<section class="step-page task-subpage" id="page-system-input" aria-labelledby="system-input-page-title">
+    <div class="page-scroll">
+        <div class="workspace-frame task-subpage-frame system-input-progress-frame system-input-rebuild">
+            <header class="task-subpage-heading system-input-rebuild-heading">
+                <div class="task-subpage-heading-copy">
+                    <button type="button" class="task-subpage-back" id="system-input-page-back-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+                        <span>音频交付</span>
+                    </button>
+                    <h1 id="system-input-page-title" tabindex="-1">系统录入</h1>
+                    <p id="system-input-page-summary">沿用当前已验证音频，按录入单元继续完成外部系统录入。</p>
+                </div>
+                <div class="task-subpage-header-actions">
+                    <span class="system-input-page-status" id="system-input-page-status">待开始</span>
+                </div>
+            </header>
+
+            <div class="system-input-console-grid">
+                <section class="system-input-command-center" aria-labelledby="system-input-progress-title">
+                    <div class="system-input-progress-overview">
+                        <div class="system-input-progress-layout">
+                            <div class="system-input-progress-copy">
+                                <span class="system-input-live-state"><i aria-hidden="true"></i>服务端实时状态</span>
+                                <h2 id="system-input-progress-title">等待开始录入</h2>
+                                <p id="system-input-progress-message">系统会在这里展示服务端返回的真实状态、录入 ID 和可搜索的审阅文档名。</p>
+                            </div>
+                            <div class="system-input-progress-meter">
+                                <div class="system-input-progress-meter-heading"><span>完成度</span><strong id="system-input-progress-percent">0%</strong></div>
+                                <div class="system-input-progress-track" id="system-input-progress-track" role="progressbar" aria-label="系统录入进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0% 待开始"><span id="system-input-progress-fill"></span></div>
+                                <div class="system-input-progress-totals">
+                                    <span id="system-input-progress-complete">0 个已完成</span>
+                                    <span id="system-input-progress-running">0 个录入中</span>
+                                    <span id="system-input-progress-pending">0 个待处理</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <section class="system-input-page-action-bar rebuild-action-bar" aria-live="polite">
+                        <p id="system-input-page-action-note">本页只负责确认、启动和追踪；需要修改录入目标请返回音频交付中心。</p>
+                        <div class="system-input-page-actions">
+                            <button type="button" class="btn-secondary" id="system-input-page-accept-btn">确认整批音频</button>
+                            <button type="button" class="btn-primary" id="system-input-page-start-btn">开始录入系统</button>
+                            <button type="button" class="btn-secondary" id="system-input-page-pause-btn" hidden>暂停录入</button>
+                            <button type="button" class="btn-secondary" id="system-input-page-resume-btn" hidden>恢复录入</button>
+                            <button type="button" class="btn-danger-ghost" id="system-input-page-stop-btn" hidden>停止录入</button>
+                        </div>
+                    </section>
+                    <section class="system-input-reconcile-panel" id="system-input-reconcile-panel" hidden aria-labelledby="system-input-reconcile-title" aria-live="polite">
+                        <div class="system-input-reconcile-heading">
+                            <div>
+                                <span class="panel-kicker">EXTERNAL CHECK</span>
+                                <h3 id="system-input-reconcile-title">先处理这次页面录入结果</h3>
+                                <p id="system-input-reconcile-message">页面执行在提交边界后中断，服务端不会自动重试，避免重复创建外部记录。</p>
+                            </div>
+                            <span class="system-input-reconcile-status" id="system-input-reconcile-status">待核验</span>
+                        </div>
+                        <div class="system-input-reconcile-actions">
+                            <button type="button" class="btn-primary btn-sm" id="system-input-reconcile-verify-btn">自动核验平台记录</button>
+                            <button type="button" class="btn-ghost btn-sm" id="system-input-reconcile-not-submitted-btn">平台确实没有记录，直接开放重试</button>
+                        </div>
+                        <small class="system-input-reconcile-hint" id="system-input-reconcile-hint">核验是只读的：只打开平台试卷列表按名称查询，不会新增、编辑或提交任何内容；发现一条同名记录会自动绑定并开放安全重试。</small>
+                    </section>
+                </section>
+
+                <aside class="system-input-run-sidebar" aria-label="系统录入路径和运行事实">
+                    <div class="system-input-route-heading">
+                        <div><h2>录入路径</h2><p>系统录入是可选步骤，不会重新生成音频。</p></div>
+                        <span>4 步</span>
+                    </div>
+                    <ol class="system-input-subflow rebuild-route-rail" id="system-input-subflow" aria-label="系统录入流程">
+                        <li data-system-input-stage="audio" aria-current="false">
+                            <span class="system-input-subflow-mark" aria-hidden="true">1</span>
+                            <div><strong>音频已生成</strong><small>待核验</small></div>
+                        </li>
+                        <li data-system-input-stage="acceptance" aria-current="false">
+                            <span class="system-input-subflow-mark" aria-hidden="true">2</span>
+                            <div><strong>整批验收</strong><small>待确认</small></div>
+                        </li>
+                        <li data-system-input-stage="input" aria-current="false">
+                            <span class="system-input-subflow-mark" aria-hidden="true">3</span>
+                            <div><strong>系统录入</strong><small>待开始</small></div>
+                        </li>
+                        <li data-system-input-stage="review" aria-current="false">
+                            <span class="system-input-subflow-mark" aria-hidden="true">4</span>
+                            <div><strong>结果回读</strong><small>待获取</small></div>
+                        </li>
+                    </ol>
+                    <section class="system-input-page-facts-panel" aria-labelledby="system-input-page-facts-title">
+                        <div class="system-input-facts-heading"><h2 id="system-input-page-facts-title">本次运行</h2><span>只读</span></div>
+                        <dl class="system-input-page-facts" id="system-input-page-facts"></dl>
+                        <p class="system-input-page-facts-note" id="system-input-page-facts-note">尚未创建系统录入运行。</p>
+                    </section>
+                </aside>
+            </div>
+
+            <div class="system-input-detail-grid">
+                <section class="bench-panel system-input-page-gates-panel rebuild-surface" aria-labelledby="system-input-page-gates-title">
+                    <div class="bench-panel-heading">
+                        <div><h2 id="system-input-page-gates-title">开始前检查</h2><p class="system-input-panel-description">每一项都由当前任务工作区的服务端状态决定。</p></div>
+                        <span class="panel-code">4 项校验</span>
+                    </div>
+                    <div class="system-input-page-gates" id="system-input-page-gates"></div>
+                </section>
+
+                <section class="bench-panel system-input-page-units-panel rebuild-surface" aria-labelledby="system-input-page-units-title">
+                    <div class="bench-panel-heading">
+                        <div><h2 id="system-input-page-units-title">录入单元</h2><p class="system-input-panel-description">展示试卷或课文的审阅文档名，可直接复制到平台搜索。</p></div>
+                        <span class="panel-code" id="system-input-page-units-count">0 个单元</span>
+                    </div>
+                    <div class="system-input-page-units" id="system-input-page-units"></div>
+                </section>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="step-page task-subpage" id="page-final-delivery" aria-labelledby="final-delivery-title">
+    <div class="page-scroll">
+        <div class="workspace-frame task-subpage-frame final-delivery-frame final-delivery-rebuild">
+            <header class="task-subpage-heading final-delivery-rebuild-heading">
+                <div class="task-subpage-heading-copy">
+                    <button type="button" class="task-subpage-back" id="final-delivery-back-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+                        <span>音频交付</span>
+                    </button>
+                    <h1 id="final-delivery-title" tabindex="-1">最终结果</h1>
+                    <p id="final-delivery-summary">音频和系统录入的最终结果会集中展示在这里。</p>
+                </div>
+                <div class="task-subpage-header-actions">
+                    <span class="system-input-page-status" id="final-delivery-header-status">等待同步</span>
+                </div>
+            </header>
+
+            <div class="final-delivery-overview-grid">
+                <section class="final-delivery-status-card" id="final-delivery-status-card" aria-labelledby="final-delivery-status-title">
+                    <div class="final-delivery-status-mark" id="final-delivery-status-mark" aria-hidden="true">
+                        <svg class="final-delivery-status-check" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        <svg class="final-delivery-status-warning" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg>
+                        <svg class="final-delivery-status-error" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </div>
+                    <div class="final-delivery-status-copy">
+                        <h2 id="final-delivery-status-title">等待同步</h2>
+                        <p id="final-delivery-status-message">正在读取当前任务的音频与系统录入结果。</p>
+                    </div>
+                    <div class="final-delivery-status-metrics" aria-label="最终交付摘要">
+                        <div><span>音频文件</span><strong id="final-audio-count">0</strong></div>
+                        <div><span>录入单元</span><strong id="final-input-unit-count">—</strong></div>
+                    </div>
+                </section>
+
+                <section class="final-delivery-action-bar rebuild-action-bar" aria-live="polite">
+                    <p id="final-delivery-action-note">完整交付页保留当前任务的可追溯信息。</p>
+                    <div class="final-delivery-panel-actions">
+                        <button type="button" class="btn-text" id="final-delivery-new-file-btn">处理新文档</button>
+                        <button type="button" class="btn-secondary" id="final-delivery-back-bottom-btn">返回音频交付</button>
+                    </div>
+                </section>
+            </div>
+
+            <div class="final-delivery-grid rebuild-delivery-grid">
+                <section class="bench-panel final-delivery-audio-panel rebuild-surface" aria-labelledby="final-delivery-audio-title">
+                    <div class="bench-panel-heading">
+                        <div><h2 id="final-delivery-audio-title">音频交付</h2><p class="system-input-panel-description">已验证、可下载、可逐条试听的音频产物。</p></div>
+                        <span class="panel-code">已核验</span>
+                    </div>
+                    <div class="rebuild-asset-callout"><strong>音频文件</strong><span>所有下载内容都以服务端交付核验为准。</span></div>
+                    <dl class="final-delivery-facts" id="final-delivery-audio-facts"></dl>
+                    <div class="final-delivery-panel-actions">
+                        <button type="button" class="btn-secondary" id="final-view-audio-btn">查看音频交付</button>
+                        <button type="button" class="btn-primary" id="final-download-audio-btn">准备交付包</button>
+                    </div>
+                </section>
+
+                <section class="bench-panel final-delivery-input-panel rebuild-surface" aria-labelledby="final-delivery-input-title" hidden>
+                    <div class="bench-panel-heading">
+                        <div><h2 id="final-delivery-input-title">系统录入</h2><p class="system-input-panel-description">可选路线的外部系统结果与追踪信息。</p></div>
+                        <span class="panel-code">可选</span>
+                    </div>
+                    <div class="rebuild-asset-callout is-optional"><strong>外部录入</strong><span>未启用时不会阻塞音频交付。</span></div>
+                    <dl class="final-delivery-facts" id="final-delivery-input-facts"></dl>
+                    <p class="final-delivery-input-note" id="final-delivery-input-note">本次未启用系统录入。</p>
+                </section>
+
+                <section class="bench-panel final-delivery-entries-panel rebuild-surface" aria-labelledby="final-delivery-entries-title" hidden>
+                    <div class="bench-panel-heading">
+                        <div><h2 id="final-delivery-entries-title">逐单元对账</h2><p class="system-input-panel-description">每个录入单元都保留明确的回读状态与审阅文档名。</p></div>
+                        <div class="final-delivery-entries-heading-actions">
+                            <button type="button" class="btn-text btn-sm system-input-copy-document-button" id="final-delivery-copy-all-names-btn" data-copy-system-input-document="all" disabled aria-label="复制全部审阅文档名" title="当前没有可复制的审阅文档名"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span data-copy-label>复制全部文档名</span></button>
+                            <span class="panel-code" id="final-delivery-entries-count">未启用</span>
+                        </div>
+                    </div>
+                    <div class="final-delivery-entries" id="final-delivery-entries"></div>
+                </section>
+            </div>
+        </div>
+    </div>
+</section>
+
+                <section class="step-page history-page" id="page-history" aria-labelledby="history-title"><div class="page-scroll"><div class="workspace-frame history-frame"><header class="workspace-heading history-heading"><div><h1 id="history-title" tabindex="-1">历史记录</h1><p>从任务事实回到正确的工作区：继续、处理问题，或查看已验证结果。</p></div><div class="history-heading-actions"><button type="button" class="btn-text" id="history-back-btn">返回当前任务</button><div class="history-limit-card" aria-label="历史记录容量"><strong id="history-count">0 / 20</strong><small>最近 20 条 · 本地保留</small></div></div></header><div class="history-toolbar" role="search"><label class="history-search-field" for="history-search-input"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><span class="sr-only">搜索任务</span><input type="search" id="history-search-input" placeholder="搜索文档名" autocomplete="off"></label><label class="sr-only" for="history-status-filter">按状态筛选</label><select id="history-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="active">进行中</option><option value="attention">需要处理</option><option value="done">已完成</option><option value="input">录入任务</option></select><label class="sr-only" for="history-sort-order">排序方式</label><select id="history-sort-order" aria-label="排序方式"><option value="updated">最近更新</option><option value="created">最近创建</option></select></div><div class="history-list" id="history-list" aria-live="polite"></div><div class="history-empty" id="history-empty" hidden><span class="history-empty-mark" aria-hidden="true"></span><h2>还没有生成记录</h2><p>完成一次音频生成后，结果会自动保存在这里。</p><button type="button" class="btn-primary" id="history-start-btn">开始生成音频</button></div></div></div></section>
                 <section class="step-page version-page" id="page-version" aria-labelledby="version-title"><div class="page-scroll"><div class="workspace-frame version-frame"><header class="workspace-heading version-heading"><div><h1 id="version-title" tabindex="-1">版本中心</h1><p>查看当前安装版本、更新策略和更新日志。桌面端更新包来自 GitHub Releases，文档与任务记录仍保存在本机。</p></div><div class="heading-readout"><span>INSTALLED</span><strong id="version-current">v—</strong><small>当前安装版本</small></div></header><div class="version-layout"><section class="bench-panel version-monitor-panel" aria-labelledby="version-monitor-title"><div class="bench-panel-heading"><div><span class="panel-kicker">UPDATE MONITOR</span><h2 id="version-monitor-title">更新状态</h2></div><span class="panel-code" id="version-status-code">IDLE</span></div><article class="version-status-card" id="version-status-card" data-update-status="idle"><div class="version-status-mark" id="version-status-mark" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></div><div class="version-status-copy"><span class="panel-kicker" id="version-status-kicker">UPDATE MONITOR</span><h3 id="version-status-title">等待检查更新</h3><p id="version-status-message" role="status" aria-live="polite">应用会在启动后自动检查，也可以随时手动检查。</p></div></article><div class="version-status-actions"><button type="button" class="btn-primary btn-sm" id="version-check-btn">检查更新</button><button type="button" class="btn-primary btn-sm" id="version-download-btn" hidden>下载更新</button><button type="button" class="btn-primary btn-sm" id="version-install-btn" hidden>重启并安装</button><button type="button" class="btn-text btn-sm" id="version-open-release-btn">打开 GitHub Releases</button></div><div class="version-progress" id="version-progress" hidden role="status" aria-live="polite"><div class="version-progress-heading"><span id="version-progress-label">正在下载更新</span><strong id="version-progress-value">0%</strong></div><progress id="version-progress-bar" max="100" value="0" aria-label="更新下载进度"></progress><small id="version-progress-detail">等待传输</small></div><div class="version-last-checked"><span>最近检查</span><strong id="version-last-checked">尚未检查</strong></div></section><aside class="bench-panel version-facts-panel" aria-labelledby="version-facts-title"><div class="bench-panel-heading"><div><span class="panel-kicker">LOCAL APP</span><h2 id="version-facts-title">安装信息</h2></div><span class="panel-code">SAFE</span></div><dl class="version-fact-list"><div><dt>当前版本</dt><dd id="version-fact-current">v—</dd></div><div><dt>最新版本</dt><dd id="version-fact-latest">暂无</dd></div><div><dt>更新类型</dt><dd id="version-fact-mode">—</dd></div><div><dt>最低支持</dt><dd id="version-fact-minimum">不设下限</dd></div><div><dt>运行平台</dt><dd id="version-fact-platform">桌面端</dd></div></dl><p class="version-local-note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 2.9 8.4 7 10 4.1-1.6 7-5.6 7-10V6l-7-3z"/><path d="m9 12 2 2 4-4"/></svg><span>更新只替换应用安装包，不会清空本机文档、任务记录或用户偏好。</span></p></aside></div><section class="bench-panel version-notes-panel" aria-labelledby="version-release-title"><div class="version-notes-heading"><div><span class="panel-kicker">RELEASE NOTES</span><h2 id="version-release-title">暂无待安装版本</h2></div><span class="version-mode-badge" id="version-update-mode-badge" hidden>可选更新</span></div><div class="version-release-summary" id="version-release-summary" hidden><span>最新版本</span><strong id="version-release-version">v—</strong><span>发布时间</span><strong id="version-release-date">—</strong></div><div class="version-release-message" id="version-release-message" hidden></div><div class="version-release-notes" id="version-release-notes"><p class="version-empty-note">检查到新版本后，更新说明会显示在这里。</p></div></section><p class="version-policy-note"><span class="version-policy-mark" aria-hidden="true">/</span><span><strong>发布规则</strong> 可选更新不会打断当前任务；强制更新会要求先完成安装。规则由每次 GitHub Release 的元数据决定，发布前由 CI 校验版本号、安装包和校验值。</span></p></div></div></section>
-                <div class="workspace-action-dock review-actions" aria-label="核对内容操作"><button type="button" class="btn-text" id="review-reprocess-btn">重新导入</button><button type="button" class="btn-primary" id="review-next-btn">进入声音配置</button></div>
+                <div class="workspace-action-dock review-actions" aria-label="内容核对操作"><button type="button" class="btn-text" id="review-reprocess-btn">重新导入</button><button type="button" class="btn-primary" id="review-next-btn">进入配置中心</button></div>
             </main>
             <footer id="statusbar"><div class="status-left"><span class="status-dot" aria-hidden="true"></span><span id="status-text" aria-live="off">就绪</span></div><div class="status-right" id="stats-bar"></div></footer>
         </div>
@@ -255,8 +476,223 @@
 
     <div class="update-required-overlay" id="update-required-overlay" hidden aria-hidden="true" role="alertdialog" aria-modal="true" aria-labelledby="update-required-title" aria-describedby="update-required-message"><div class="update-required-panel"><div class="update-required-heading"><span class="update-required-mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2.8 19h18.4L12 3z"/><path d="M12 9v4M12 16h.01"/></svg></span><div><span class="panel-kicker">REQUIRED UPDATE</span><h2 id="update-required-title">请先完成版本更新</h2></div></div><p id="update-required-message">当前版本已停止支持。下载并安装新版本后，才能继续使用工作台。</p><div class="update-required-progress" id="update-required-progress" hidden><div><span id="update-required-progress-label">准备下载</span><strong id="update-required-progress-value">0%</strong></div><progress id="update-required-progress-bar" max="100" value="0" aria-label="强制更新下载进度"></progress></div><div class="update-required-actions"><button type="button" class="btn-primary" id="update-required-download">下载并更新</button><button type="button" class="btn-primary" id="update-required-install" hidden>重启并安装</button><button type="button" class="btn-text" id="update-required-retry" hidden>重试检查</button><button type="button" class="btn-text" id="update-required-open-release">打开 Release 页面</button></div><small class="update-required-footnote">更新包会从项目 GitHub Releases 下载；本机文档和任务数据不会被删除。</small></div></div>
 
+    <template id="system-input-delivery-template">
+        <section class="system-input-card delivery-route-panel" id="system-input-card" aria-labelledby="system-input-title">
+            <div class="system-input-card-heading">
+                <div><h2 id="system-input-title">后续交付方式</h2><p id="system-input-summary">音频验收后，可按录入单元继续录入系统。</p></div>
+                <span class="system-input-status" id="system-input-status" aria-live="polite">未启用</span>
+            </div>
+            <div class="system-input-route-guidance" aria-live="polite">
+                <span class="system-input-route-guidance-mark" aria-hidden="true">→</span>
+                <div><strong id="system-input-route-title">录入是可选步骤</strong><span id="system-input-route-note">可以只交付音频，也可以在验收后继续录入系统；不会重新生成音频。</span></div>
+            </div>
+            <div class="system-input-actions">
+                <button type="button" class="btn-secondary btn-sm" id="system-input-config-btn">编辑录入目标</button>
+                <button type="button" class="btn-primary btn-sm system-input-combined-action" id="system-input-start-btn">确认音频并开始录入</button>
+            </div>
+            <small class="system-input-actions-hint" id="system-input-actions-hint" hidden aria-live="polite"></small>
+            <div class="system-input-readout" id="system-input-readout" aria-live="polite"></div>
+            <div class="system-input-units" id="system-input-units"></div>
+        </section>
+        <div class="system-input-drawer" id="system-input-drawer" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="system-input-drawer-title">
+            <aside class="system-input-drawer-panel">
+                <header class="system-input-drawer-heading">
+                    <div>
+                        <h2 id="system-input-drawer-title" tabindex="-1">录入目标</h2>
+                        <p>统一在目标清单中核对和编辑；保存后由录入流程提交。</p>
+                    </div>
+                    <button type="button" class="btn-icon" id="system-input-drawer-close" aria-label="关闭录入目标设置"><span class="target-close-icon" aria-hidden="true"></span></button>
+                </header>
+                <div class="system-input-drawer-context" aria-live="polite">
+                    <div><span>当前文档</span><strong id="system-input-drawer-source">—</strong></div>
+                    <div><span>录入条目</span><strong id="system-input-drawer-unit-count">—</strong></div>
+                    <span class="system-input-drawer-context-note" id="system-input-drawer-context-note">不会重新生成音频</span>
+                </div>
+                <form id="system-input-form" class="system-input-form">
+                    <input type="hidden" id="system-input-delivery-mode" value="audio_only">
+                    <div class="system-input-type-strip" id="system-input-type-fields" aria-labelledby="system-input-type-heading">
+                        <div class="system-input-type-strip-copy">
+                            <strong id="system-input-type-heading">录入类型</strong>
+                            <span class="system-input-type-current" id="system-input-type-summary">试卷</span>
+                            <small id="system-input-type-status">当前类型已接入页面录入适配器</small>
+                        </div>
+                        <input type="hidden" id="system-input-type" value="paper">
+                        <div class="system-input-type-tag-group" data-system-input-choice-group="system-input-type" role="radiogroup" aria-label="录入类型">
+                            <button type="button" class="system-input-type-tag" role="radio" data-value="paper" aria-checked="true">试卷</button>
+                            <button type="button" class="system-input-type-tag" role="radio" data-value="textbook" aria-checked="false" title="根据文档结构自动识别课文跟读">课文</button>
+                            <button type="button" class="system-input-type-tag" role="radio" data-value="vocabulary" aria-checked="false" title="词汇配置可保存，页面录入适配器待接入">词汇</button>
+                        </div>
+                        <p class="system-input-type-detected" id="system-input-type-detected" aria-live="polite" hidden></p>
+                    </div>
+
+                    <details class="system-input-form-section system-input-unit-section system-input-disclosure" id="system-input-unit-section" hidden data-system-input-disclosure aria-labelledby="system-input-unit-heading">
+                        <summary class="system-input-section-heading">
+                            <div class="system-input-section-heading-copy"><h3 id="system-input-unit-heading">多套录入单元</h3><p>选择要编辑的单元；名称和题型模板按单元独立保存；应用模板可选勾选条目或全部单元。</p></div>
+                            <div class="system-input-section-meta"><span class="system-input-section-summary" id="system-input-unit-progress">0 / 0 已补齐</span><span class="system-input-section-detail" id="system-input-unit-detail" aria-live="polite" hidden></span></div>
+                        </summary>
+                        <div class="system-input-unit-section-body">
+                            <div class="system-input-unit-field" id="system-input-unit-field">
+                                <input type="hidden" id="system-input-unit-select">
+                                <div class="system-input-unit-field-actions">
+                                    <span class="system-input-unit-selection-note">点击下方卡片切换要编辑的录入单元</span>
+                                    <button type="button" class="btn-secondary btn-sm" id="system-input-apply-all-units-btn">同步当前配置到全部单元</button>
+                                </div>
+                                <div class="system-input-unit-overview" id="system-input-unit-overview" role="list" aria-label="选择要编辑的录入单元"></div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <section class="system-input-boundary-review" id="system-input-boundary-review" hidden aria-labelledby="system-input-boundary-review-title">
+                        <div class="system-input-boundary-heading">
+                            <div><span class="panel-kicker">UNIT BOUNDARIES</span><h3 id="system-input-boundary-review-title">确认录入单元</h3></div>
+                            <span class="system-input-boundary-status" id="system-input-boundary-status">待确认</span>
+                        </div>
+                        <p class="system-input-boundary-note" id="system-input-boundary-note">检测到多个候选范围。请先确认边界，确认后才能保存平台配置并开始系统录入。</p>
+                        <div class="system-input-boundary-candidates" id="system-input-boundary-candidates"></div>
+                        <div class="system-input-boundary-actions">
+                            <button type="button" class="btn-secondary btn-sm" id="system-input-boundary-split-btn">按候选边界拆分</button>
+                            <button type="button" class="btn-ghost btn-sm" id="system-input-boundary-merge-btn">合并为一个单元</button>
+                        </div>
+                    </section>
+
+                    <details class="system-input-form-section system-input-disclosure" id="system-input-textbook-fields" hidden data-system-input-disclosure aria-labelledby="system-input-textbook-heading">
+                        <summary class="system-input-section-heading">
+                            <div class="system-input-section-heading-copy"><h3 id="system-input-textbook-heading">课文分类信息</h3><p>与平台“新增课文”表单一致；能从文档自动识别的项已预填，其余请补齐。</p></div>
+                            <div class="system-input-section-meta"><span class="system-input-section-summary" id="system-input-textbook-summary">待补充</span><span class="system-input-section-detail" id="system-input-textbook-detail" hidden></span></div>
+                        </summary>
+                        <div class="system-input-section-body">
+                            <div class="system-input-textbook-toolbar" aria-live="polite">
+                                <div class="system-input-textbook-toolbar-copy">
+                                    <div><strong>教材目录</strong><span id="system-input-textbook-catalog-status">尚未同步</span></div>
+                                    <small id="system-input-textbook-catalog-note">首次使用请手动同步教材列表，系统不会自动读取平台数据。</small>
+                                </div>
+                                <button type="button" class="btn-secondary btn-sm" id="system-input-textbook-sync-btn">同步教材列表</button>
+                            </div>
+                            <div class="system-input-form-grid">
+                                <label class="system-input-form-field is-required"><span>课文名称（中文） <small>必填</small></span><textarea id="system-input-textbook-name-zh" rows="2" autocomplete="off" placeholder="请输入课文名称（中文）"></textarea></label>
+                                <label class="system-input-form-field is-required"><span>课文名称（英文） <small>必填</small></span><textarea id="system-input-textbook-name-en" rows="2" autocomplete="off" placeholder="请输入课文名称（英文）"></textarea></label>
+                                <label class="system-input-form-field is-required"><span>课文形式 <small>必填</small></span><input type="hidden" id="system-input-textbook-form" value="同步课文">
+                                    <div class="system-input-choice-group system-input-choice-group-tags" data-system-input-choice-group="system-input-textbook-form" role="radiogroup" aria-label="课文形式">
+                                        <button type="button" role="radio" data-value="同步课文" aria-checked="true">同步课文</button>
+                                        <button type="button" role="radio" data-value="角色扮演" aria-checked="false">角色扮演</button>
+                                    </div>
+                                </label>
+                                <label class="system-input-form-field is-required"><span>版本 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-version"><input id="system-input-textbook-version" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索教材版本"><div class="system-input-picker-menu" id="system-input-textbook-version-menu" role="listbox" aria-label="版本选项" hidden></div></div></label>
+                                <label class="system-input-form-field is-required"><span>学段 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-stage"><input id="system-input-textbook-stage" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索学段"><div class="system-input-picker-menu" id="system-input-textbook-stage-menu" role="listbox" aria-label="学段选项" hidden></div></div></label>
+                                <label class="system-input-form-field is-required"><span>年级 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-grade"><input id="system-input-textbook-grade" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索年级"><div class="system-input-picker-menu" id="system-input-textbook-grade-menu" role="listbox" aria-label="年级选项" hidden></div></div></label>
+                                <label class="system-input-form-field is-required"><span>册别 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-volume"><input id="system-input-textbook-volume" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索册别"><div class="system-input-picker-menu" id="system-input-textbook-volume-menu" role="listbox" aria-label="册别选项" hidden></div></div></label>
+                                <label class="system-input-form-field is-required"><span>单元 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-unit"><input id="system-input-textbook-unit" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索单元"><div class="system-input-picker-menu" id="system-input-textbook-unit-menu" role="listbox" aria-label="单元选项" hidden></div></div></label>
+                                <label class="system-input-form-field is-required"><span>课时 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-lesson"><input id="system-input-textbook-lesson" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索课时"><div class="system-input-picker-menu" id="system-input-textbook-lesson-menu" role="listbox" aria-label="课时选项" hidden></div></div></label>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="system-input-form-section system-input-disclosure" id="system-input-paper-fields" open data-system-input-disclosure aria-labelledby="system-input-paper-heading">
+                        <summary class="system-input-section-heading">
+                            <div class="system-input-section-heading-copy"><h3 id="system-input-paper-heading">试卷信息</h3><p>填写创建平台试卷所需字段；题干和音频来自当前录入内容。</p></div>
+                            <div class="system-input-section-meta"><span class="system-input-section-summary" id="system-input-paper-summary">待补充</span><span class="system-input-section-detail" id="system-input-paper-detail" hidden></span></div>
+                        </summary>
+                        <div class="system-input-section-body">
+                            <div class="system-input-form-grid">
+                            <label class="system-input-form-field system-input-form-wide is-required"><span>试卷名称 <small>必填</small></span><input id="system-input-paper-name" autocomplete="off" placeholder="例如：外研9上-U6"></label>
+                            <div class="system-input-form-field is-required" id="system-input-paper-category-field" data-system-input-paper-only>
+                                <span>试卷分类 <small>必填</small></span>
+                                <input type="hidden" id="system-input-paper-category" value="题型专项">
+                                <p class="system-input-form-hint" id="system-input-paper-category-detected" aria-live="polite" hidden></p>
+                                <div class="system-input-choice-group system-input-choice-group-tags" data-system-input-choice-group="system-input-paper-category" role="radiogroup" aria-label="试卷分类">
+                                    <button type="button" role="radio" data-value="题型专项" aria-checked="true">题型专项</button>
+                                    <button type="button" role="radio" data-value="听说考试" aria-checked="false">听说考试</button>
+                                </div>
+                            </div>
+                            <div class="system-input-form-field system-input-form-wide is-required" id="system-input-platform-template-field" data-system-input-paper-only>
+                                <div class="system-input-textbook-toolbar system-input-platform-template-toolbar" aria-live="polite">
+                                    <div class="system-input-textbook-toolbar-copy">
+                                        <div><strong>平台模板目录</strong><span id="system-input-platform-template-catalog-status">尚未同步</span></div>
+                                        <small id="system-input-platform-template-catalog-note">专项模板按省/市筛选；试卷模板按省/市、学段、年级筛选。</small>
+                                    </div>
+                                    <button type="button" class="btn-secondary btn-sm" id="system-input-platform-template-sync-btn">同步模板数据</button>
+                                </div>
+                                <span id="system-input-platform-template-label">专项题型模板 <small>必填</small></span>
+                                <input type="hidden" id="system-input-platform-template">
+                                <div class="system-input-template-picker">
+                                    <div class="system-input-picker" data-system-input-picker-for="system-input-platform-template-search">
+                                        <input id="system-input-platform-template-search" autocomplete="off" role="combobox" aria-autocomplete="none" aria-expanded="false" aria-readonly="true" readonly aria-label="专项题型模板" aria-describedby="system-input-platform-template-note" placeholder="选择平台题型模板">
+                                        <div class="system-input-picker-menu" id="system-input-platform-template-search-menu" role="listbox" aria-label="平台题型模板选项" hidden></div>
+                                    </div>
+                                </div>
+                                <div class="system-input-template-meta">
+                                    <small class="system-input-form-hint" id="system-input-platform-template-note" aria-live="polite">先在“发布范围”选择省份和城市，再从已同步的平台题型模板中选择；模板来自同步目录，不支持自定义新建。</small>
+                                </div>
+                            </div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="system-input-form-section system-input-disclosure" id="system-input-paper-type-section" hidden data-system-input-disclosure aria-labelledby="system-input-paper-type-heading">
+                        <summary class="system-input-section-heading">
+                            <div class="system-input-section-heading-copy"><h3 id="system-input-paper-type-heading">听说考试类型</h3><p>仅在试卷分类为听说考试时填写。</p></div>
+                            <div class="system-input-section-meta"><span class="system-input-section-summary" id="system-input-paper-type-summary">待补充</span><span class="system-input-section-detail" id="system-input-paper-type-detail" hidden></span></div>
+                        </summary>
+                        <div class="system-input-section-body">
+                            <input type="hidden" id="system-input-paper-type">
+                            <div class="system-input-form-field is-required system-input-paper-type-control"><span>考试类型 <small>必填</small></span><div class="system-input-picker system-input-picker-narrow" data-system-input-picker-for="system-input-paper-type-search"><input id="system-input-paper-type-search" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-label="听说考试类型" placeholder="搜索考试类型"><div class="system-input-picker-menu" id="system-input-paper-type-search-menu" role="listbox" aria-label="听说考试类型选项" hidden></div></div></div>
+                        </div>
+                    </details>
+
+
+                    <details class="system-input-form-section system-input-disclosure" id="system-input-range-fields" data-system-input-paper-only data-system-input-disclosure aria-labelledby="system-input-range-heading">
+                        <summary class="system-input-section-heading">
+                            <div class="system-input-section-heading-copy"><h3 id="system-input-range-heading">发布范围</h3><p>先设置省市、学段和年级，再选择与范围匹配的平台模板；区县可多选。</p></div>
+                            <div class="system-input-section-meta"><span class="system-input-section-summary" id="system-input-range-summary">待补充</span><span class="system-input-section-detail" id="system-input-range-detail" hidden></span></div>
+                        </summary>
+                        <div class="system-input-section-body">
+                            <div class="system-input-form-grid">
+                            <div class="system-input-form-field is-required"><label for="system-input-province">省份 <small>必填</small></label><div class="system-input-picker" data-system-input-picker-for="system-input-province"><input id="system-input-province" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-label="省份" placeholder="搜索省份"><div class="system-input-picker-menu" id="system-input-province-menu" role="listbox" aria-label="省份选项" hidden></div></div></div>
+                            <div class="system-input-form-field is-required"><label for="system-input-city">城市 <small>必填</small></label><div class="system-input-picker is-disabled" data-system-input-picker-for="system-input-city"><input id="system-input-city" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-disabled="true" aria-label="城市" placeholder="先选择省份，再搜索城市" disabled><div class="system-input-picker-menu" id="system-input-city-menu" role="listbox" aria-label="城市选项" hidden></div></div></div>
+                            <div class="system-input-form-field system-input-form-wide"><label for="system-input-districts">区县 <small>可多选</small></label><div class="system-input-picker system-input-picker-multi is-disabled" data-system-input-picker-for="system-input-districts"><div class="system-input-picker-control"><div class="system-input-chips" id="system-input-district-chips"></div><input id="system-input-districts" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-disabled="true" aria-label="区县，可多选" placeholder="先选择城市，再搜索区县" disabled></div><div class="system-input-picker-menu" id="system-input-districts-menu" role="listbox" aria-label="区县选项" hidden></div></div></div>
+                            <div class="system-input-form-field is-required"><label for="system-input-stage">学段 <small>必填</small></label><div class="system-input-picker" data-system-input-picker-for="system-input-stage"><input id="system-input-stage" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-label="学段" placeholder="搜索学段"><div class="system-input-picker-menu" id="system-input-stage-menu" role="listbox" aria-label="学段选项" hidden></div></div></div>
+                            <div class="system-input-form-field is-required"><label for="system-input-grade">年级 <small>必填</small></label><div class="system-input-picker is-disabled" data-system-input-picker-for="system-input-grade"><input id="system-input-grade" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-disabled="true" aria-label="年级" placeholder="先选择学段，再搜索年级" disabled><div class="system-input-picker-menu" id="system-input-grade-menu" role="listbox" aria-label="年级选项" hidden></div></div></div>
+                            <label class="system-input-form-field is-required"><span>年份 <small>必填</small></span><input id="system-input-year" inputmode="numeric" autocomplete="off" placeholder="例如：2026"></label>
+                            <label class="system-input-form-field is-required"><span>答题时间（分钟） <small>必填</small></span><input id="system-input-answer-time" inputmode="numeric" autocomplete="off" placeholder="1–60"></label>
+                            </div>
+                        </div>
+                    </details>
+
+
+                    <details class="system-input-form-section system-input-disclosure" id="system-input-optional-fields" data-system-input-disclosure aria-labelledby="system-input-optional-heading">
+                        <summary class="system-input-section-heading">
+                            <div class="system-input-section-heading-copy"><h3 id="system-input-optional-heading">常用录入方案</h3><p>选择已保存方案，先查看将写入哪些字段和条目，再确认应用。</p></div>
+                            <div class="system-input-section-meta"><span class="system-input-section-summary" id="system-input-optional-summary">可选</span><span class="system-input-section-detail" id="system-input-optional-detail" hidden></span></div>
+                        </summary>
+                        <div class="system-input-section-body">
+                            <div class="system-input-template-apply-row">
+                                <div class="system-input-form-field"><label for="system-input-app-template">选择已保存方案 <small>可选</small></label><div class="system-input-picker" data-system-input-picker-for="system-input-app-template"><input id="system-input-app-template" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-label="选择已保存方案" placeholder="搜索方案名称"><div class="system-input-picker-menu" id="system-input-app-template-menu" role="listbox" aria-label="已保存方案选项" hidden></div></div></div>
+                                <div class="system-input-template-scope" id="system-input-app-template-scope-field" hidden role="group" aria-labelledby="system-input-app-template-scope-label">
+                                    <span class="system-input-template-scope-label" id="system-input-app-template-scope-label">应用范围</span>
+                                    <input type="hidden" id="system-input-app-template-scope" value="">
+                                    <div class="system-input-choice-group system-input-choice-group-compact" data-system-input-choice-group="system-input-app-template-scope" role="radiogroup" aria-label="应用模板范围">
+                                        <button type="button" role="radio" data-value="selected" aria-checked="false"><strong>勾选条目</strong><small>只应用到清单中已勾选的条目</small></button><button type="button" role="radio" data-value="all" aria-checked="false"><strong>全部单元</strong><small id="system-input-app-template-scope-all-note">应用到全部录入单元</small></button>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn-secondary btn-sm system-input-apply-template-btn" id="system-input-apply-app-template-btn">应用模板</button>
+                            </div>
+                            <small class="system-input-form-hint system-input-featured-hint">常用方案用于填写表单；平台模板来自同步目录，并会按地区、学段和年级核对。</small>
+                        </div>
+                    </details>
+
+                    <div class="system-input-validation-summary" id="system-input-validation-summary" role="alert" aria-live="assertive" hidden>
+                        <strong>还需要补充</strong><span id="system-input-validation-message"></span>
+                    </div>
+
+
+                </form>
+                <div class="system-input-drawer-actions"><button type="button" class="btn-text" id="system-input-drawer-cancel">返回，保留草稿</button><button type="button" class="btn-secondary" id="system-input-save-template-btn" title="把当前表单保存为本机可复用模板；不会开启录入，之后可在“常用录入方案”中带入">保存为常用方案</button><button type="submit" form="system-input-form" class="btn-primary" id="system-input-save-btn" title="保存目标并关闭；生成时按此提交到平台，不会重新生成音频">保存录入目标</button></div>
+            </aside>
+        </div>
+    </template>
     <input type="file" id="hidden-file-input" accept=".docx,.xlsx" hidden>
     <dialog class="app-dialog" id="app-dialog" aria-modal="true" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message"><div class="app-dialog-heading"><span class="app-dialog-icon" aria-hidden="true"><span id="app-dialog-icon-symbol">i</span></span><div><span class="app-dialog-kicker" id="app-dialog-kicker">需要确认</span><h2 class="app-dialog-title" id="app-dialog-title">确认操作</h2></div></div><p class="app-dialog-message" id="app-dialog-message"></p><div class="app-dialog-detail" id="app-dialog-detail" hidden></div><label class="app-dialog-field" id="app-dialog-field" for="app-dialog-input" hidden><span id="app-dialog-input-label">名称</span><input type="text" class="app-dialog-input" id="app-dialog-input" autocomplete="off"></label><div class="app-dialog-actions"><button type="button" class="btn-text btn-sm" id="app-dialog-cancel">取消</button><button type="button" class="btn-primary btn-sm app-dialog-confirm" id="app-dialog-confirm">继续</button></div></dialog>
+    <dialog class="review-image-dialog" id="review-image-dialog" aria-modal="true" aria-labelledby="review-image-dialog-title" aria-describedby="review-image-dialog-caption"><header class="review-image-dialog-heading"><div><h2 id="review-image-dialog-title">表格图片预览</h2><p id="review-image-dialog-caption">听后记录表格截取</p></div><button type="button" class="btn-icon review-image-dialog-close" data-review-image-action="close" aria-label="关闭表格图片预览" title="关闭预览"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></header><div class="review-image-dialog-toolbar" role="group" aria-label="图片缩放"><button type="button" class="btn-secondary btn-sm" data-review-image-action="zoom-out">缩小</button><button type="button" class="btn-ghost btn-sm" id="review-image-dialog-zoom" data-review-image-action="reset">100%</button><button type="button" class="btn-secondary btn-sm" data-review-image-action="zoom-in">放大</button></div><div class="review-image-dialog-stage"><img id="review-image-dialog-image" alt="表格图片放大预览"></div></dialog>
 
     <script src="vendor/wavesurfer.min.js"></script>
     <script src="ui-components.js"></script>
@@ -265,6 +701,68 @@
     <script src="workflow-reducer.js"></script>
     <script src="workflow-adapter.js"></script>
     <script src="workflow-command-coordinator.js"></script>
+    <script src="modules/core/module-bridge.js"></script>
+    <script src="modules/core/runtime-state.js"></script>
+    <script src="modules/core/runtime-context.js"></script>
+    <script src="modules/config/presets.js"></script>
+    <script src="modules/updates/update-center.js"></script>
+    <script src="modules/voice/config-domain.js"></script>
+    <script src="modules/voice/assets.js"></script>
+    <script src="modules/voice/ui.js"></script>
+    <script src="modules/workflow/generation-start.js"></script>
+    <script src="modules/core/dom.js"></script>
+    <script src="modules/workflow/view-model.js"></script>
+    <script src="modules/system-input/normalizers.js"></script>
+    <script src="modules/system-input/cascade.js"></script>
+    <script src="modules/system-input/picker.js"></script>
+    <script src="modules/system-input/regions.js"></script>
+    <script src="modules/system-input/textbook-catalog.js"></script>
+    <script src="modules/system-input/platform-templates.js"></script>
+    <script src="modules/system-input/surface.js"></script>
+    <script src="modules/system-input/draft-storage.js"></script>
+    <script src="modules/system-input/batch-model.js"></script>
+    <script src="modules/system-input/units.js"></script>
+    <script src="modules/system-input/disclosures.js"></script>
+    <script src="modules/system-input/configuration.js"></script>
+    <script src="modules/system-input/delivery.js"></script>
+    <script src="modules/system-input/pages.js"></script>
+    <script src="modules/system-input/target-editor.js"></script>
+    <script src="modules/workflow/shell.js"></script>
+    <script src="modules/review/model.js"></script>
+    <script src="modules/review/document.js"></script>
+    <script src="modules/review/outline-model.js"></script>
+    <script src="modules/review/domain.js"></script>
+    <script src="modules/review/actions.js"></script>
+    <script src="modules/review/outline-view.js"></script>
+    <script src="modules/review/page.js"></script>
+    <script src="modules/workflow/workspace.js"></script>
+    <script src="modules/source/feedback.js"></script>
+    <script src="modules/generation/recovery.js"></script>
+    <script src="modules/generation/runtime-view.js"></script>
+    <script src="modules/workflow/snapshot-actions.js"></script>
+    <script src="modules/workflow/service.js"></script>
+    <script src="modules/app/bootstrap.js"></script>
+    <script src="modules/app/config-loader.js"></script>
+    <script src="modules/app/navigation.js"></script>
+    <script src="modules/history/model.js"></script>
+    <script src="modules/history/view.js"></script>
+    <script src="modules/history/restore.js"></script>
+    <script src="modules/source/file-controller.js"></script>
+    <script src="modules/source/transport.js"></script>
+    <script src="modules/workflow/config.js"></script>
+    <script src="modules/generation/sse.js"></script>
+    <script src="modules/generation/log.js"></script>
+    <script src="modules/generation/progress.js"></script>
+    <script src="modules/delivery/file-list.js"></script>
+    <script src="modules/delivery/completion.js"></script>
+    <script src="modules/delivery/audio-list.js"></script>
+    <script src="modules/delivery/artifacts.js"></script>
+    <script src="modules/delivery/result-page.js"></script>
+    <script src="modules/delivery/player.js"></script>
+    <script src="modules/delivery/transfer.js"></script>
+    <script src="modules/workflow/restart.js"></script>
+    <script src="modules/core/notifications.js"></script>
+    <script src="modules/workflow/store-renderer.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

@@ -81,8 +81,235 @@ def _safe_source_filename(value: Any, fallback: str = "未命名文档.docx") ->
     return name[:256] or fallback
 
 
+_SYSTEM_INPUT_ARTIFACT_REF_KEYS = frozenset(
+    {
+        "image_artifact_id",
+        "table_image_artifact_id",
+    }
+)
+
+
+def _collect_system_input_artifact_refs(value: Any, refs: set[str]) -> None:
+    """Collect page-image artifact references from public work-item metadata."""
+
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if str(key) in _SYSTEM_INPUT_ARTIFACT_REF_KEYS and nested not in (None, ""):
+                normalized = str(nested).strip()
+                if normalized:
+                    refs.add(normalized)
+                continue
+            _collect_system_input_artifact_refs(nested, refs)
+        return
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            _collect_system_input_artifact_refs(nested, refs)
+
+
+def _rewrite_system_input_artifact_refs(
+    value: Any,
+    artifact_id_map: Mapping[str, str],
+) -> Any:
+    """Rebind page-image artifact references after a workflow is cloned."""
+
+    if isinstance(value, Mapping):
+        rewritten: dict[Any, Any] = {}
+        for key, nested in value.items():
+            if str(key) in _SYSTEM_INPUT_ARTIFACT_REF_KEYS and nested not in (None, ""):
+                normalized = str(nested).strip()
+                rewritten[key] = artifact_id_map.get(normalized, nested)
+            else:
+                rewritten[key] = _rewrite_system_input_artifact_refs(nested, artifact_id_map)
+        return rewritten
+    if isinstance(value, list):
+        return [_rewrite_system_input_artifact_refs(nested, artifact_id_map) for nested in value]
+    if isinstance(value, tuple):
+        return tuple(_rewrite_system_input_artifact_refs(nested, artifact_id_map) for nested in value)
+    return value
+
+
+def _allowed_system_input_artifact_workflows(
+    con: sqlite3.Connection,
+    workflow_id: str,
+) -> set[str]:
+    allowed = {workflow_id}
+    ancestor_id: Any = workflow_id
+    seen: set[str] = set()
+    while ancestor_id:
+        row = con.execute(
+            "SELECT parent_workflow_id FROM workflows WHERE workflow_id=?",
+            (ancestor_id,),
+        ).fetchone()
+        ancestor_id = row["parent_workflow_id"] if row is not None else None
+        if not ancestor_id:
+            break
+        ancestor_id = str(ancestor_id)
+        if ancestor_id in seen:
+            break
+        seen.add(ancestor_id)
+        allowed.add(ancestor_id)
+    return allowed
+
+
+def _clone_system_input_artifacts_in_transaction(
+    con: sqlite3.Connection,
+    source_workflow_id: str,
+    target_workflow_id: str,
+    artifact_refs: set[str],
+    *,
+    now: str,
+) -> dict[str, str]:
+    """Clone referenced page images into a target workflow and return a map."""
+
+    allowed_source_workflows = _allowed_system_input_artifact_workflows(con, source_workflow_id)
+    artifact_id_map: dict[str, str] = {}
+    for source_image_id in sorted(artifact_refs):
+        source_image = con.execute(
+            """SELECT a.*, b.lifecycle_state AS blob_lifecycle_state
+               FROM artifacts a
+               JOIN artifact_blobs b ON b.blob_id=a.blob_id
+               WHERE a.artifact_id=?
+                 AND a.artifact_type='system-input-image'
+                 AND a.lifecycle_state='READY'
+                 AND a.verified=1
+                 AND b.lifecycle_state='READY'""",
+            (source_image_id,),
+        ).fetchone()
+        if source_image is None or str(source_image["workflow_id"]) not in allowed_source_workflows:
+            raise RepositoryError(
+                "source work item references an unavailable system-input-image Artifact",
+                code="PERSISTENCE_ERROR",
+                details={
+                    "artifact_id": source_image_id,
+                    "source_workflow_id": source_workflow_id,
+                },
+            )
+        if str(source_image["workflow_id"]) == target_workflow_id:
+            artifact_id_map[source_image_id] = source_image_id
+            continue
+
+        new_image_id = new_id("artifact")
+        con.execute(
+            """INSERT INTO artifacts(
+                artifact_id, workflow_id, item_id, step_id, attempt_id,
+                work_unit_id, work_unit_segment_id, source_import_id,
+                source_import_generation, source_import_generation_id, blob_id,
+                staging_ref, artifact_type, sha256, size_bytes, format,
+                producer, producer_version, verified, verified_at,
+                lifecycle_state, schema_version, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (new_image_id, target_workflow_id, None, None, None, None, None,
+             None, None, None, source_image["blob_id"], None, "system-input-image",
+             source_image["sha256"], source_image["size_bytes"], source_image["format"],
+             "workflow-rerun", "1", 1, now, "READY", source_image["schema_version"], now, now),
+        )
+        con.execute(
+            """INSERT INTO artifact_derivations(
+                derivation_id, parent_artifact_id, child_artifact_id,
+                relation_type, derivation_version, derivation_context_hash, created_at
+            ) VALUES (?,?,?,?,?,?,?)""",
+            (new_id("derivation"), source_image["artifact_id"], new_image_id,
+             "CACHE_REUSE", "1", content_hash({
+                 "source_workflow_id": source_image["workflow_id"],
+                 "source_artifact_id": source_image["artifact_id"],
+                 "target_workflow_id": target_workflow_id,
+                 "purpose": "system-input-image",
+             }), now),
+        )
+        artifact_id_map[source_image_id] = new_image_id
+    return artifact_id_map
+
+
+def repair_system_input_artifacts_in_transaction(
+    con: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    now: str,
+) -> dict[str, str]:
+    """Repair legacy ancestor-owned page-image references in place."""
+
+    source_items = con.execute(
+        "SELECT item_id, metadata_json FROM work_items WHERE workflow_id=? ORDER BY sequence, item_id",
+        (workflow_id,),
+    ).fetchall()
+    metadata_by_item: list[tuple[str, Mapping[str, Any]]] = []
+    artifact_refs: set[str] = set()
+    for item in source_items:
+        try:
+            metadata = json.loads(str(item["metadata_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        metadata = redact_public_json(metadata)
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+        _collect_system_input_artifact_refs(metadata, artifact_refs)
+        metadata_by_item.append((str(item["item_id"]), metadata))
+
+    artifact_id_map = _clone_system_input_artifacts_in_transaction(
+        con,
+        workflow_id,
+        workflow_id,
+        artifact_refs,
+        now=now,
+    )
+    for item_id, metadata in metadata_by_item:
+        rewritten = _rewrite_system_input_artifact_refs(metadata, artifact_id_map)
+        if rewritten != metadata:
+            con.execute(
+                "UPDATE work_items SET metadata_json=?, updated_at=? WHERE workflow_id=? AND item_id=?",
+                (canonical_json(rewritten), now, workflow_id, item_id),
+            )
+    return artifact_id_map
+
+
 _CONFIGURATION_REVISION_KEY = "_workflow_configuration_revision"
 _SKIP_REASON_KEY = "_workflow_skip_reason"
+
+# System-input is an adjacent projection, but its saved form values live in
+# the workflow configuration snapshot.  The desktop voice editor submits a
+# TTS-only configuration patch, so these fields must not disappear merely
+# because the user starts a new generation run.
+_SYSTEM_INPUT_CONFIGURATION_KEYS = frozenset({
+    "delivery_mode",
+    "input_type",
+    "app_template_id",
+    "unit_count_override",
+    "paper_category",
+    "paperCategory",
+    "paperType",
+    "provinceId",
+    "cityId",
+    "districtIds",
+    "stageId",
+    "gradeId",
+    "year",
+    "answerTimeMinutes",
+    "platformTemplateId",
+    "platformTemplateVersion",
+    "platformTemplateName",
+    "units",
+    "system_input",
+})
+
+
+def _preserve_system_input_configuration(
+    current: Mapping[str, Any],
+    requested: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep adjacent system-input fields in an ordinary workflow patch.
+
+    ``patch_draft`` intentionally accepts a complete replacement for the
+    TTS-facing configuration.  System-input settings are saved through their
+    own endpoint, however the renderer subsequently patches TTS settings when
+    starting a rerun.  Preserve omitted system-input keys so that operation
+    cannot reset the delivery choice or the platform form values.
+    """
+
+    merged = dict(requested)
+    for key in _SYSTEM_INPUT_CONFIGURATION_KEYS:
+        if key not in merged and key in current:
+            merged[key] = current[key]
+    return merged
 
 
 def _configuration_public(
@@ -172,6 +399,95 @@ def _table_columns(con: sqlite3.Connection, table_name: str) -> set[str]:
     if not _table_exists(con, table_name):
         return set()
     return {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _history_system_input_facts(
+    con: sqlite3.Connection,
+    workflow_id: str,
+    configuration: Mapping[str, Any],
+    *,
+    input_tables_ready: bool,
+) -> dict[str, Any]:
+    """Project the bounded system-input facts a history card may display.
+
+    The history list renders without hydrating a workspace, so delivery mode
+    and input phase must come from the same durable facts the system-input
+    projection reads.  The result stays limited to non-sensitive phase data:
+    no unit configurations, external ids or run payloads leave the repository.
+    """
+
+    # Top-level fields are the canonical representation; a stale nested copy
+    # must not override them (same precedence as the system-input service).
+    nested = configuration.get("system_input")
+    if isinstance(nested, Mapping):
+        raw_delivery_mode = configuration.get("delivery_mode", nested.get("delivery_mode"))
+    else:
+        raw_delivery_mode = configuration.get("delivery_mode")
+    delivery_mode = str(raw_delivery_mode or "").strip()
+    if delivery_mode not in {"audio_only", "audio_and_input"}:
+        delivery_mode = "audio_only"
+    facts: dict[str, Any] = {
+        "delivery_mode": delivery_mode,
+        "input_status": "not_enabled",
+        "input_type": None,
+        "input_units_total": 0,
+        "input_units_succeeded": 0,
+    }
+    if delivery_mode != "audio_and_input" or not input_tables_ready:
+        # Without the system-input graph the saved configuration alone cannot
+        # describe a runnable input phase.
+        return facts
+
+    run_row = con.execute(
+        """SELECT status FROM input_runs WHERE workflow_id=?
+           ORDER BY created_at DESC, input_run_id DESC LIMIT 1""",
+        (workflow_id,),
+    ).fetchone()
+    entry_rows = con.execute(
+        "SELECT input_status FROM input_entries WHERE workflow_id=?",
+        (workflow_id,),
+    ).fetchall()
+    statuses = {str(entry_row["input_status"]) for entry_row in entry_rows}
+    run_status = str(run_row["status"]) if run_row is not None else ""
+    # The phase decision mirrors SystemInputService._projection_from_connection
+    # so the history card never disagrees with the delivery workspace.
+    if run_status == "RUNNING":
+        input_status = "running"
+    elif run_status == "SUCCEEDED":
+        input_status = "succeeded"
+    elif run_status == "AMBIGUOUS":
+        input_status = "needs_reconcile"
+    elif "pending_config" in statuses or not statuses:
+        input_status = "pending_config"
+    elif "running" in statuses:
+        input_status = "running"
+    elif statuses and statuses.issubset({"succeeded"}):
+        input_status = "succeeded"
+    elif "needs_reconcile" in statuses:
+        input_status = "needs_reconcile"
+    elif "failed_retryable" in statuses or "failed" in statuses:
+        input_status = "failed_retryable"
+    else:
+        input_status = "pending_execute"
+
+    unit_total = 0
+    input_type: str | None = None
+    if input_tables_ready:
+        unit_rows = con.execute(
+            "SELECT input_type FROM input_units WHERE workflow_id=? ORDER BY ordinal, unit_id",
+            (workflow_id,),
+        ).fetchall()
+        unit_total = len(unit_rows)
+        input_type = str(unit_rows[0]["input_type"]) if unit_rows else None
+    return {
+        "delivery_mode": delivery_mode,
+        "input_status": input_status,
+        "input_type": input_type,
+        "input_units_total": unit_total,
+        "input_units_succeeded": sum(
+            1 for entry_row in entry_rows if str(entry_row["input_status"]) == "succeeded"
+        ),
+    }
 
 
 def _idempotency_request_fingerprint(
@@ -837,6 +1153,8 @@ class WorkflowRepository:
         A rerun never resets the source run's id, sequence or terminal facts.
         It clones only the immutable input graph and references the same
         content-addressed source Blob through a new run-local Artifact row.
+        Referenced system-input page images are likewise rebound to
+        workflow-local Artifact rows, including legacy ancestor references.
         Attempts, WorkUnits, receipts and generated artifacts remain owned by
         the source run and are intentionally not copied.
         """
@@ -914,13 +1232,13 @@ class WorkflowRepository:
                 (new_workflow_id, now),
             )
 
-            item_map: dict[str, str] = {}
-            for item in con.execute(
+            source_items = con.execute(
                 "SELECT * FROM work_items WHERE workflow_id=? ORDER BY sequence, item_id",
                 (source_workflow_id,),
-            ).fetchall():
-                new_item_id = new_id("item")
-                item_map[str(item["item_id"])] = new_item_id
+            ).fetchall()
+            copied_items: list[tuple[Any, Mapping[str, Any]]] = []
+            image_artifact_refs: set[str] = set()
+            for item in source_items:
                 try:
                     copied_metadata = json.loads(str(item["metadata_json"] or "{}"))
                 except (TypeError, json.JSONDecodeError):
@@ -928,6 +1246,26 @@ class WorkflowRepository:
                 copied_metadata = redact_public_json(copied_metadata)
                 if not isinstance(copied_metadata, Mapping):
                     copied_metadata = {}
+                _collect_system_input_artifact_refs(copied_metadata, image_artifact_refs)
+                copied_items.append((item, copied_metadata))
+
+            # Reruns get their own workflow-local page-image artifacts.  Older
+            # reruns may still point at an ancestor artifact, so accept an
+            # ancestor as the source but never carry that foreign owner into
+            # the new run.
+            image_artifact_map = _clone_system_input_artifacts_in_transaction(
+                con,
+                source_workflow_id,
+                new_workflow_id,
+                image_artifact_refs,
+                now=now,
+            )
+
+            item_map: dict[str, str] = {}
+            for item, copied_metadata in copied_items:
+                new_item_id = new_id("item")
+                item_map[str(item["item_id"])] = new_item_id
+                copied_metadata = _rewrite_system_input_artifact_refs(copied_metadata, image_artifact_map)
                 con.execute(
                     """INSERT INTO work_items(
                         item_id, workflow_id, item_identity_key, item_type, sequence,
@@ -1073,7 +1411,10 @@ class WorkflowRepository:
             requested_configuration = (
                 current_configuration
                 if configuration is None
-                else _configuration_public(configuration, reject_sensitive=True)
+                else _preserve_system_input_configuration(
+                    current_configuration,
+                    _configuration_public(configuration, reject_sensitive=True),
+                )
             )
             configuration_changed = canonical_json(requested_configuration) != canonical_json(current_configuration)
 
@@ -3296,6 +3637,13 @@ class WorkflowRepository:
         limit = min(max(1, int(limit)), 500)
         records: list[dict[str, Any]] = []
         with self.database.read_transaction() as con:
+            # Schema provisioning is a database-wide fact; probe it once instead
+            # of paying a sqlite_master round trip inside the row loop.
+            input_tables_ready = (
+                _table_exists(con, "input_runs")
+                and _table_exists(con, "input_entries")
+                and _table_exists(con, "input_units")
+            )
             workflow_rows = con.execute(
                 """SELECT * FROM workflows
                    WHERE status <> 'CLOSED'
@@ -3438,6 +3786,12 @@ class WorkflowRepository:
                             "text_preview": str(item["normalized_content"] or "")[:160],
                         })
                 first_format = str(artifact_rows[0]["format"] or configuration.get("format") or "mp3") if artifact_rows else str(configuration.get("format") or "mp3")
+                system_input_facts = _history_system_input_facts(
+                    con,
+                    workflow_id,
+                    configuration,
+                    input_tables_ready=input_tables_ready,
+                )
                 records.append({
                     "id": workflow_id,
                     "workflow_id": workflow_id,
@@ -3468,6 +3822,7 @@ class WorkflowRepository:
                     "created_at": str(row["created_at"]),
                     "completed_at": row["finished_at"] or row["updated_at"],
                     "updated_at": snapshot.updated_at,
+                    **system_input_facts,
                 })
         return records
 

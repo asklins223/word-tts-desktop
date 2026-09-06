@@ -1198,6 +1198,14 @@ export interface components {
             completed_at: string;
             /** Format: date-time */
             updated_at: string;
+            /** @enum {string} */
+            delivery_mode: "audio_only" | "audio_and_input";
+            /** @enum {string} */
+            input_status: "not_enabled" | "pending_config" | "pending_execute" | "running" | "succeeded" | "needs_reconcile" | "failed_retryable" | "failed";
+            /** @enum {string|null} */
+            input_type: "paper" | "textbook" | "vocabulary" | null;
+            input_units_total: number;
+            input_units_succeeded: number;
         };
         WorkflowListResponse: {
             workflows: components["schemas"]["WorkflowHistoryRecord"][];

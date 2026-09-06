@@ -49,29 +49,38 @@ def _atomic_model_available(database) -> bool:
         return False
 
 
-def _explicit_type_code(results: list[dict[str, Any]], filename: str) -> str | None:
-    """Return a uniquely detected type instead of guessing from result order.
+def _explicit_type_code(
+    results: list[dict[str, Any]],
+    filename: str,
+    *,
+    detected_type_codes: set[str] | frozenset[str] | None = None,
+) -> str | None:
+    """Return a uniquely detected type without trusting the filename.
 
-    ``parse_document_auto`` already uses ``detect_types_in_content`` for Word
-    documents.  A single returned result is therefore an unambiguous content
-    detection; multiple results are deliberately left without an explicit
-    owner so the adjudicator can preserve a real mixed-document conflict.  A
-    filename marker is a stronger explicit signal and may select one owner in
-    a mixed document.
+    ``parse_document_once`` returns only results that passed the shared
+    content/structure detector and yielded actual parser items.  A single
+    result is therefore an unambiguous owner; multiple results deliberately
+    remain unresolved so the adjudicator can preserve a real mixed-document
+    conflict.  ``filename`` is retained in the signature for compatibility
+    with callers, but it is not an input to classification.  When the full
+    detector result is available, ``detected_type_codes`` also prevents a
+    parser that yielded zero items for one detected section from making a
+    mixed document look like a single-type document.
     """
     from question_model import QUESTION_TYPE_CODES
-    from question_types import detect_doc_type
 
     candidate_type_codes = {
         QUESTION_TYPE_CODES.get(str(result.get("doc_type") or ""))
         for result in results
     }
     candidate_type_codes.discard(None)
-    detected_name = detect_doc_type(os.path.basename(str(filename)))
-    if detected_name is None and len(results) == 1:
-        detected_name = results[0].get("doc_type")
-    detected_code = QUESTION_TYPE_CODES.get(str(detected_name or ""))
-    return detected_code if detected_code in candidate_type_codes else None
+    if detected_type_codes is not None and set(detected_type_codes) != candidate_type_codes:
+        return None
+    if detected_type_codes is not None and len(detected_type_codes) != 1:
+        return None
+    if len(candidate_type_codes) != 1 or len(results) != 1:
+        return None
+    return next(iter(candidate_type_codes))
 
 
 def bridge_parse_to_atomic_model(
@@ -88,27 +97,30 @@ def bridge_parse_to_atomic_model(
     返回桥接摘要（document_revision_id、plan_id、任务数、会话登记）；
     桥接失败时返回 ``{"bridged": False, "error": ...}``，主流程继续。
     """
-    from question_model import (
-        create_audio_tasks,
-        create_operation_plan,
-        extract_candidate,
-        persist_parse,
-        sync_sub_type_registry,
-    )
-    from question_types import parse_document_auto
-    from wordtts.config import PARSER_VERSION
-
     try:
+        from question_model import (
+            create_audio_tasks,
+            create_operation_plan,
+            extract_candidate,
+            persist_parse,
+            sync_sub_type_registry,
+        )
+        from question_types import detect_document_types
+        from question_types.segmenter import parse_document_once
+        from wordtts.config import PARSER_VERSION
+
         if not _atomic_model_available(database):
             return {
                 "bridged": False,
                 "reason": "atomic model schema is not installed",
                 "error": "atomic model schema is not installed (requires migration v0006)",
             }
-        results, _ = parse_document_auto(str(source_path))
+        results, _ = parse_document_once(str(source_path))
         if not results:
             # 无可解析内容（含源文件不可读）：不建文档身份，不桥接
             return {"bridged": False, "error": "no parseable items"}
+        detected_evidence = detect_document_types(str(source_path))
+        detected_type_codes = frozenset(evidence.code for evidence in detected_evidence)
         candidates = [
             extract_candidate(result["doc_type"], result, Path(filename).stem)
             for result in results
@@ -119,7 +131,11 @@ def bridge_parse_to_atomic_model(
         if candidates:
             adjudicated = adjudicate(
                 candidates,
-                explicit_type_code=_explicit_type_code(results, filename),
+                explicit_type_code=_explicit_type_code(
+                    results,
+                    filename,
+                    detected_type_codes=detected_type_codes,
+                ),
             )
 
         # The atomic-model helpers intentionally accept a connection and do

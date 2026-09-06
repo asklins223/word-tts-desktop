@@ -10,6 +10,8 @@ from wordtts.config import (
     FEMALE_VOICE,
     GENERATION_MODES,
     MALE_VOICE,
+    QUESTION_STEM_ROLE_CONFIG_KEY,
+    QUESTION_STEM_VOICE_PARAMS,
     QUALITY_BITRATE,
     ROLE_CONFIG_PREFIX,
     TTS_CONFIG_VERSION,
@@ -147,7 +149,15 @@ def normalize_tts_config(config=None):
             normalized_key = normalize_role_config_key(key)
             if normalized_key:
                 # 按角色区分默认语速：男声默认 35，女声及其他角色默认 50
-                fallback = male_base_params if normalized_key == DEFAULT_MALE_ROLE_KEY else female_base_params if normalized_key == DEFAULT_FEMALE_ROLE_KEY else base_params
+                fallback = (
+                    male_base_params
+                    if normalized_key == DEFAULT_MALE_ROLE_KEY
+                    else female_base_params
+                    if normalized_key == DEFAULT_FEMALE_ROLE_KEY
+                    else QUESTION_STEM_VOICE_PARAMS
+                    if normalized_key == QUESTION_STEM_ROLE_CONFIG_KEY
+                    else base_params
+                )
                 role_configs[normalized_key] = _normalize_voice_params(value, fallback)
     def legacy_params_for_role(voice_key, fallback):
         # 男女默认槽位允许选择同一个音色。此时不能从已经规范化的共享

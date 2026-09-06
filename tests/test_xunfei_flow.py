@@ -2534,6 +2534,92 @@ class XunfeiFlowTests(unittest.TestCase):
             self.assertEqual(page.locator('.ant-modal').count(), 0)
             browser.close()
 
+    def test_english_voice_warning_is_detected_and_continued(self):
+        """英文音色混入中文时，必须点击提示弹窗的“继续提交”。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div role="dialog" aria-modal="true" class="ant-modal"
+             style="display:block;width:420px;height:320px">
+          <div class="ant-modal-content">
+            <div class="ant-modal-header">
+              <div class="ant-modal-title">英文发音人提示</div>
+            </div>
+            <div class="ant-modal-body">
+              <p>以下英文发音人的文本中包含中文内容，可能导致合成失败或者效果不佳：</p>
+              <div>Amanda 你将听到一段 Li Ling 的自我介绍。</div>
+            </div>
+            <div class="ant-modal-footer">
+              <button id="continue" type="button"
+                      onclick="document.querySelector('.ant-modal').remove()">
+                继续提交
+              </button>
+              <button type="button">返回修改</button>
+            </div>
+          </div>
+        </div>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+
+            state = page.evaluate(
+                xunfei.JS.PROBE_SYNTH_STATE,
+                xunfei.AI_FLAG_KEYWORD_VARIANTS,
+            )
+            self.assertEqual(state["state"], "english_voice_warning")
+            self.assertTrue(state["english_voice_warning"])
+            self.assertTrue(page.evaluate(xunfei.JS.CLICK_ENGLISH_VOICE_CONTINUE))
+            self.assertEqual(page.locator(".ant-modal").count(), 0)
+            browser.close()
+
+    def test_confirm_synth_continues_english_voice_warning_before_settings(self):
+        """提示弹窗关闭后仍继续走原有作品设置和确认合成流程。"""
+        session = XunFeiSession()
+        states = iter(("english_voice_warning", "confirm"))
+
+        class FakePage:
+            def evaluate(self, script, arg=None):
+                if script == xunfei.JS.PROBE_SYNTH_STATE:
+                    state = next(states, "confirm")
+                    return {
+                        "state": state,
+                        "ai_modal": False,
+                        "english_voice_warning": state == "english_voice_warning",
+                        "ai_switch": "off",
+                    }
+                return None
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        page = FakePage()
+        with mock.patch.object(
+            session,
+            "_click_english_voice_continue",
+            return_value=True,
+        ) as continue_button, mock.patch.object(
+            session,
+            "_ensure_mp3_format",
+            return_value=True,
+        ), mock.patch.object(
+            session,
+            "_ensure_ai_switch_off",
+            return_value="off",
+        ), mock.patch.object(
+            session,
+            "_click_confirm_synth_button",
+            return_value=True,
+        ), mock.patch.object(
+            session,
+            "_observe_after_first_confirm",
+            return_value="order",
+        ):
+            self.assertEqual(session._confirm_synth(page), "ok")
+
+        continue_button.assert_called_once_with(page)
+
     def test_download_rows_use_order_no_when_names_are_duplicate(self):
         """下载页两个同名作品必须按订单号选择对应行。"""
         from playwright.sync_api import sync_playwright
@@ -3129,6 +3215,120 @@ class XunfeiFlowTests(unittest.TestCase):
             "wordtts_composite_paid",
         )
         self.assertTrue(any(event.get("ambiguous_works_id") for event in events))
+
+    def test_composite_progress_reports_stage_and_work_counters(self):
+        """合并模式进度事件带阶段与作品计数，供 UI 在长合成等待期展示。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        events = []
+
+        def fake_generate(work, **_kwargs):
+            return {
+                "works_id": "composite-works-1",
+                "output_path": "/tmp/composite-works-1.mp3",
+                "works_name": work.get("works_name") or "composite",
+                "work_id": "composite-1",
+                "job_id": "composite-1",
+                "item_count": 3,
+            }
+
+        def fake_download(pending, progress_callback=None, **_kwargs):
+            for item in pending:
+                if callable(progress_callback):
+                    progress_callback({
+                        "job_id": str(item.get("job_id") or ""),
+                        "works_id": str(item.get("works_id") or ""),
+                        "downloaded": True,
+                        "stage": "downloaded",
+                    })
+                    progress_callback({
+                        "job_id": str(item.get("job_id") or ""),
+                        "works_id": str(item.get("works_id") or ""),
+                        "downloaded": True,
+                        "stage": "saved",
+                    })
+            return {
+                str(item.get("works_id") or ""): {**item, "downloaded": True}
+                for item in pending
+            }
+
+        session._generate_pending_composite = fake_generate
+        session._download_pending_batch = fake_download
+        result = session.synth_composite([{
+            "work_id": "composite-1",
+            "works_name": "wordtts_composite_progress",
+            "items": [],
+            "item_count": 3,
+        }], progress_callback=events.append)
+
+        self.assertTrue(result["composite-1"]["downloaded"])
+        stages = [str(event.get("stage") or "") for event in events]
+        self.assertEqual(stages[0], "preparing")
+        self.assertIn("submitted", stages)
+        self.assertIn("downloaded", stages)
+        self.assertLess(stages.index("preparing"), stages.index("submitted"))
+        self.assertLess(stages.index("submitted"), stages.index("downloaded"))
+
+        preparing = events[0]
+        self.assertEqual(preparing["total_works"], 1)
+        self.assertEqual(preparing["submitted_works"], 0)
+        self.assertEqual(preparing["downloaded_works"], 0)
+        self.assertEqual(preparing["item_count"], 3)
+
+        submitted = next(event for event in events if event.get("stage") == "submitted")
+        self.assertEqual(submitted["submitted_works"], 1)
+        self.assertEqual(submitted["downloaded_works"], 0)
+        self.assertEqual(submitted["item_count"], 3)
+
+        downloaded = next(event for event in events if event.get("stage") == "downloaded")
+        self.assertEqual(downloaded["submitted_works"], 1)
+        self.assertEqual(downloaded["downloaded_works"], 1)
+
+    def test_download_batch_reports_downloading_stage_before_ready_wait(self):
+        """下载页等待就绪前先上报 downloading 阶段，UI 才能区分等待与失败。"""
+        session = XunFeiSession()
+        session._page = mock.Mock()
+        events = []
+        pending = [{
+            "job_id": "job-download-stage",
+            "works_id": "works-download-stage",
+            "works_name": "download-stage",
+            "output_path": "/tmp/download-stage.mp3",
+        }]
+
+        def run_probe(_check, **_kwargs):
+            return "ready"
+
+        with mock.patch.object(
+            xunfei_downloads,
+            "_safe_eval",
+            return_value=True,
+        ), mock.patch.object(
+            xunfei_downloads,
+            "_poll",
+            side_effect=run_probe,
+        ), mock.patch.object(
+            session,
+            "_wait_for_pending_ready",
+            return_value={},
+        ), mock.patch.object(
+            session,
+            "_fetch_works_list_pages",
+            return_value=[],
+        ), mock.patch.object(
+            session,
+            "_fetch_sign_url_in_page",
+            return_value=None,
+        ):
+            session._download_pending_batch(
+                pending,
+                progress_callback=events.append,
+            )
+
+        stages = [str(event.get("stage") or "") for event in events]
+        self.assertEqual(stages[0], "downloading")
+        self.assertIn("saved", stages)
+        self.assertLess(stages.index("downloading"), stages.index("saved"))
 
     def test_pending_ready_scans_later_works_list_pages(self):
         session = XunFeiSession()

@@ -68,6 +68,20 @@ DEFAULT_FEMALE_ROLE_KEY = "__default_female__"
 DEFAULT_MALE_ROLE_KEY = "__default_male__"
 ROLE_CONFIG_PREFIX = "role:"
 
+# 信息转述题干是独立的中文音频通道。使用 common/list 的稳定身份，而不是
+# 某个具体变体的 speaker:<id>，这样在线目录刷新后仍能正确迁移选择。
+QUESTION_STEM_ROLE_KEY = "题干音色"
+QUESTION_STEM_ROLE_CONFIG_KEY = f"{ROLE_CONFIG_PREFIX}{QUESTION_STEM_ROLE_KEY.casefold()}"
+QUESTION_STEM_VOICE = "common:10000023"  # 晓燕
+QUESTION_STEM_VOICE_PARAMS = {"rate": 40, "volume": 50, "pitch": 50}
+# 信息转述及询问的“题干”包含三条辅助音频。它们共享同一可编辑角色；
+# 信息转述录音稿和询问信息小题本身不在这个集合内。
+QUESTION_STEM_ITEM_TYPES = frozenset({
+    "信息转述题目指导文字",
+    "信息转述题干",
+    "询问信息题干",
+})
+
 # 生成方式。composite_cut 使用讯飞多人配音作品一次提交，再按人工停顿
 # 安全切割；single_segment 保留原有逐逻辑片段生成流程。
 GENERATION_MODE_COMPOSITE = "composite_cut"

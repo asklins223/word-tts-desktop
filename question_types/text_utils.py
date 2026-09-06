@@ -398,6 +398,84 @@ def _table_fragments(table):
     return tuple(fragments)
 
 
+def _paragraph_colored_runs(paragraph):
+    """Return explicit run colors with paragraph-local character offsets.
+
+    ``Paragraph.text`` flattens all runs and loses the formatting that marks
+    answer keys in the supplied exam documents.  Keep only explicit RGB
+    colors here (rather than inheriting theme colors or styles) so this
+    metadata remains small, JSON-safe, and conservative.  Parsers can then
+    decide whether a red span is a correct answer without treating a visual
+    color guess as content.
+    """
+
+    colored_runs = []
+    offset = 0
+    for run in paragraph.runs:
+        text = str(run.text or "")
+        start = offset
+        offset += len(text)
+        if not text:
+            continue
+        try:
+            rgb = run.font.color.rgb
+        except (AttributeError, TypeError, ValueError):
+            rgb = None
+        if rgb is None:
+            continue
+        colored_runs.append({
+            "start": start,
+            "end": offset,
+            "text": text,
+            "rgb": str(rgb).upper(),
+        })
+    return colored_runs
+
+
+def is_red_color(value):
+    """Return whether an explicit RGB color is recognisably red."""
+
+    raw = str(value or "").strip().lstrip("#").upper()
+    if len(raw) == 3:
+        raw = "".join(char * 2 for char in raw)
+    if len(raw) != 6 or not re.fullmatch(r"[0-9A-F]{6}", raw):
+        return False
+    red, green, blue = (
+        int(raw[index:index + 2], 16)
+        for index in (0, 2, 4)
+    )
+    return red >= 180 and green <= 110 and blue <= 110 and red >= green + 70 and red >= blue + 70
+
+
+def has_red_text_in_range(metadata, start=0, end=None):
+    """Check whether a paragraph metadata range contains red non-space text."""
+
+    if not isinstance(metadata, Mapping):
+        return False
+    colored_runs = metadata.get("colored_runs")
+    if not isinstance(colored_runs, (list, tuple)):
+        return False
+    for span in colored_runs:
+        if not isinstance(span, Mapping) or not is_red_color(span.get("rgb")):
+            continue
+        try:
+            span_start = int(span.get("start", 0))
+            span_end = int(span.get("end", span_start))
+        except (TypeError, ValueError):
+            continue
+        overlap_start = max(int(start), span_start)
+        overlap_end = span_end if end is None else min(int(end), span_end)
+        if overlap_end <= overlap_start:
+            continue
+        text = str(span.get("text") or "")
+        local_start = max(0, overlap_start - span_start)
+        local_end = max(local_start, overlap_end - span_start)
+        overlap = text[local_start:local_end]
+        if re.search(r"[A-Za-z0-9\u3400-\u9fff]", overlap):
+            return True
+    return False
+
+
 def _build_document_blocks(document):
     """从同一个 ``Document`` 实例构建顺序稳定的结构块流。"""
 
@@ -405,6 +483,9 @@ def _build_document_blocks(document):
     paragraph_index = 0
     block_index = 0
     body = document.element.body
+    table_index = 0
+    drawing_group_index = -1
+    drawing_group_open = False
     for child in body.iterchildren():
         if child.tag == qn('w:p'):
             paragraph = Paragraph(child, document)
@@ -423,18 +504,29 @@ def _build_document_blocks(document):
 
             textbox_fragments = _textbox_fragments(child)
             if textbox_fragments:
+                if not drawing_group_open:
+                    drawing_group_index += 1
+                drawing_group_open = True
                 blocks.append(DocumentBlock(
                     kind='textbox',
                     index=block_index,
                     text='\n\n'.join(textbox_fragments),
                     fragments=textbox_fragments,
-                    metadata={'paragraph_index': paragraph_index},
+                    metadata={
+                        'paragraph_index': paragraph_index,
+                        'drawing_group_index': drawing_group_index,
+                    },
                 ))
                 block_index += 1
+            # Empty paragraphs between anchored shapes are layout rows in the
+            # same visual group. Normal text is the semantic group boundary.
+            if text:
+                drawing_group_open = False
             paragraph_index += 1
             continue
 
         if child.tag == qn('w:tbl'):
+            drawing_group_open = False
             table = Table(child, document)
             fragments = _table_fragments(table)
             if fragments:
@@ -443,8 +535,10 @@ def _build_document_blocks(document):
                     index=block_index,
                     text='\n'.join(fragments),
                     fragments=fragments,
+                    metadata={'table_index': table_index},
                 ))
                 block_index += 1
+            table_index += 1
 
     return tuple(blocks)
 
@@ -487,6 +581,9 @@ def load_paragraphs(filepath, *, include_metadata=False, include_blocks=False):
         paragraph_metadata = {
             "heading_hint": _paragraph_heading_hint(para),
         }
+        colored_runs = _paragraph_colored_runs(para)
+        if colored_runs:
+            paragraph_metadata["colored_runs"] = colored_runs
         if numbering_number is not None:
             paragraph_metadata["numbering_number"] = numbering_number
         metadata.append(paragraph_metadata)

@@ -54,6 +54,25 @@ datas = [
     (os.path.join(SPEC_DIR, 'resources', 'voices.json'), 'resources'),
 ]
 
+# The DOCX block renderer is a small, pinned browser bundle installed by the
+# Electron npm workspace. Copy only its runtime UMD files into the frozen
+# backend; Chromium is already staged separately for Playwright.
+_DOCX_NODE_MODULES = os.path.join(SPEC_DIR, 'electron', 'node_modules')
+_DOCX_RENDERER_DATA = [
+    (os.path.join(_DOCX_NODE_MODULES, 'lodash', 'lodash.min.js'), 'workflow/docx_renderer_assets'),
+    (os.path.join(_DOCX_NODE_MODULES, 'konva', 'konva.min.js'), 'workflow/docx_renderer_assets'),
+    (os.path.join(_DOCX_NODE_MODULES, 'jszip', 'dist', 'jszip.min.js'), 'workflow/docx_renderer_assets'),
+    (os.path.join(_DOCX_NODE_MODULES, 'docx-renderer', 'dist', 'docx-renderer.umd.js'), 'workflow/docx_renderer_assets'),
+    (os.path.join(_DOCX_NODE_MODULES, 'lodash', 'LICENSE'), 'workflow/docx_renderer_assets/licenses/lodash'),
+    (os.path.join(_DOCX_NODE_MODULES, 'konva', 'LICENSE'), 'workflow/docx_renderer_assets/licenses/konva'),
+    (os.path.join(_DOCX_NODE_MODULES, 'jszip', 'LICENSE.markdown'), 'workflow/docx_renderer_assets/licenses/jszip'),
+    (os.path.join(_DOCX_NODE_MODULES, 'docx-renderer', 'LICENSE'), 'workflow/docx_renderer_assets/licenses/docx-renderer'),
+]
+for _source, _destination in _DOCX_RENDERER_DATA:
+    if not os.path.isfile(_source):
+        raise RuntimeError(f'DOCX renderer asset is missing: {_source}')
+datas += _DOCX_RENDERER_DATA
+
 # Playwright 官方 hook（playwright/_impl/__pyinstaller/）在某些 PyInstaller
 # 版本下可能不被自动发现。显式收集 playwright 数据文件（含 driver/package/cli.js），
 # 确保打包后同步 driver 可用。
@@ -65,10 +84,12 @@ hiddenimports = [
     # openpyxl 在 question_types.vocabulary 中是 try/except 导入。
     'docx',
     'openpyxl',
+    'PIL',
     # 题型切片包：wordtts.config 静态导入 question_types，正常会被 Analysis
     # 跟随；显式列出以防切片被误判为可选依赖。
     'question_types',
     'question_types.base',
+    'question_types.detection',
     'question_types.text_utils',
     'question_types.info_acquisition',
     'question_types.listening_selection',
@@ -96,6 +117,15 @@ hiddenimports = [
     # 只使用同步 Playwright API。playwright 自带的官方 PyInstaller hook
     # 会收集 driver/package；下方在 Analysis 后剔除重复的 Node 可执行文件。
     'playwright.sync_api',
+    'workflow.docx_table_image',
+    'workflow.textbook_catalog',
+    # 外部平台页面录入链路（platform_entry）。Analysis 通常能跟随静态
+    # 导入；显式列出以防打包环境误判为可选依赖。
+    'platform_entry',
+    'platform_entry.paper_input',
+    'platform_entry.text_input',
+    'platform_entry.adapter',
+    'platform_entry.adapter.textbook_page',
     # FastAPI 在注册 UploadFile 路由时动态验证这两个兼容导入路径。
     'python_multipart',
     'multipart',
@@ -123,7 +153,6 @@ a = Analysis(
         # 不需要旧版桌面/UI 框架
         'webview', 'bottle', 'proxy_tools',
         # 构建工具/可选 Web 功能不属于后端运行时。
-        'PIL',
         'httpx', 'httpcore', 'safehttpx',
         'jinja2', 'Jinja2', 'markdown', 'markdown_it', 'mdit_py_plugins',
         'aiofiles', 'ffmpy',
@@ -176,6 +205,20 @@ if not any(
     for entry in _analysis_entries
 ):
     raise RuntimeError('Playwright driver/package/cli.js 未被收集，无法启动同步 driver')
+_required_docx_renderer_assets = {
+    'workflow/docx_renderer_assets/lodash.min.js',
+    'workflow/docx_renderer_assets/konva.min.js',
+    'workflow/docx_renderer_assets/jszip.min.js',
+    'workflow/docx_renderer_assets/docx-renderer.umd.js',
+}
+_staged_docx_renderer_assets = {
+    _normalized_target(entry)
+    for entry in _analysis_entries
+    if _normalized_target(entry).startswith('workflow/docx_renderer_assets/')
+}
+if not _required_docx_renderer_assets.issubset(_staged_docx_renderer_assets):
+    missing = sorted(_required_docx_renderer_assets - _staged_docx_renderer_assets)
+    raise RuntimeError(f'DOCX renderer assets were not collected: {missing}')
 if not any(
     _normalized_target(entry).startswith('imageio_ffmpeg/binaries/ffmpeg')
     for entry in _analysis_entries

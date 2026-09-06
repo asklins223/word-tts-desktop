@@ -10,7 +10,7 @@ from docx import Document
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from question_types import TextReadingParser, detect_doc_type, split_sentences  # noqa: E402
+from question_types import TextReadingParser, detect_document_type, split_sentences  # noqa: E402
 
 
 class TextReadingRuleTests(unittest.TestCase):
@@ -50,7 +50,7 @@ class TextReadingRuleTests(unittest.TestCase):
             "语篇跟读：",
             "// Welcome",
             "A short introduction.",
-            "The first story",
+            "The First Story",
             "The first story text is here.",
             "A second paragraph follows.",
         ]
@@ -119,15 +119,23 @@ class TextReadingRuleTests(unittest.TestCase):
             ],
         )
 
+        # 标题行是文章分组结构：不再生成音频条目，正文挂 article_title。
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
-            ["SB语篇1", "SB语篇2", "SB语篇3", "SB语篇4", "SB语篇5"],
+            ["SB语篇1", "SB语篇2", "SB语篇3"],
         )
-        self.assertEqual(discourses[0]["text"], "Welcome")
-        self.assertEqual(discourses[1]["text"], "A short introduction.")
-        self.assertEqual(discourses[2]["text"], "The first story")
-        self.assertEqual(discourses[3]["text"], "The first story text is here.")
-        self.assertEqual(discourses[4]["text"], "A second paragraph follows.")
+        self.assertEqual(
+            [item["text"] for item in discourses],
+            [
+                "A short introduction.",
+                "The first story text is here.",
+                "A second paragraph follows.",
+            ],
+        )
+        self.assertEqual(
+            [item["article_title"] for item in discourses],
+            ["Welcome", "The First Story", "The First Story"],
+        )
 
     def test_legacy_format_keeps_legacy_sentence_splitting(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -312,13 +320,20 @@ class TextReadingRuleTests(unittest.TestCase):
             result = TextReadingParser(path).parse()
 
         discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        # 标题（RP title / //Small title）是分组结构，不再单独成条。
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
-            ["RP语篇1", "RP语篇2", "RP语篇3", "RP语篇4"],
+            ["RP语篇1", "RP语篇2"],
         )
         self.assertTrue(all(item["section"] == "Reading Plus" for item in discourses))
-        self.assertEqual(discourses[1]["text"], "Small title")
-        self.assertEqual(discourses[2]["text"], "Small title paragraph.")
+        self.assertEqual(
+            [item["text"] for item in discourses],
+            ["Small title paragraph.", "Last paragraph."],
+        )
+        self.assertEqual(
+            [item["article_title"] for item in discourses],
+            ["Small title", "Small title"],
+        )
 
     def test_sentence_splitter_keeps_common_english_abbreviations_together(self):
         self.assertEqual(
@@ -335,10 +350,11 @@ class TextReadingRuleTests(unittest.TestCase):
         )
 
     def test_vocabulary_type_is_only_detected_for_excel_templates(self):
-        self.assertEqual(detect_doc_type("U6单词导入模板.xlsx"), "词汇")
-        self.assertIsNone(detect_doc_type("词汇-G7-u1.docx"))
+        root = Path(__file__).resolve().parents[1] / "examples" / "documents"
+        self.assertEqual(detect_document_type(root / "U6单词导入模板.xlsx"), "词汇")
+        self.assertIsNone(detect_document_type("词汇-G7-u1.docx"))
 
-    def test_unformatted_short_body_is_not_treated_as_a_heading(self):
+    def test_bold_title_becomes_article_title_instead_of_audio_item(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir, "课文跟读-标题格式提示样本.docx")
             document = Document()
@@ -353,14 +369,18 @@ class TextReadingRuleTests(unittest.TestCase):
             result = TextReadingParser(path).parse()
 
         discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        # 粗体标题是文章分组结构：正文条目挂 article_title，标题不朗读。
         self.assertEqual(
             [item["text"] for item in discourses],
             [
-                "Article title",
                 "This is a short paragraph.",
                 "Another clause",
                 "Final sentence.",
             ],
+        )
+        self.assertEqual(
+            [item["article_title"] for item in discourses],
+            ["Article title", "Article title", "Article title"],
         )
 
     def test_content_before_first_conversation_is_not_dropped(self):
@@ -427,10 +447,12 @@ class TextReadingRuleTests(unittest.TestCase):
             result = TextReadingParser(path).parse()
 
         discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        # 格式提示只作用于段内第一个单元：标题成为文章结构，正文照常。
         self.assertEqual(
             [item["text"] for item in discourses],
-            ["Small title", "The body remains a sentence."],
+            ["The body remains a sentence."],
         )
+        self.assertEqual(discourses[0]["article_title"], "Small title")
 
 
 if __name__ == "__main__":

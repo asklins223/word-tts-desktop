@@ -14,6 +14,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
 
@@ -25,6 +26,14 @@ from audio_naming import (
 )
 from workflow.artifact_store import ArtifactStore, ArtifactStoreError
 from workflow.domain import DomainError, canonical_json, content_hash
+from workflow.docx_table_image import (
+    TABLE_IMAGE_DEFAULT_DPI,
+    TABLE_IMAGE_DEFAULT_PADDING_POINTS,
+    TABLE_IMAGE_MAX_BYTES,
+    TABLE_IMAGE_RENDERER_VERSION,
+    DocxTableImageError,
+    render_docx_block_image,
+)
 from workflow.engine import TTSRunResult, WorkflowEngine
 from workflow.parser import ParsedDocument, ParserPort
 from workflow.providers import ProviderCapabilityError, ProviderRegistry, TTSProviderPort
@@ -134,6 +143,8 @@ class WorkflowApplicationService:
         filename = self._source_filename(workflow_id, source_id)
 
         parsed: ParsedDocument
+        block_image_artifact_ids: dict[tuple[str, int], str] = {}
+        new_block_image_artifacts: list[tuple[str, Any]] = []
         with tempfile.TemporaryDirectory(prefix="wordtts-parse-") as temp_dir:
             suffix = Path(filename).suffix.lower()
             if suffix not in {".docx", ".xlsx"}:
@@ -152,7 +163,98 @@ class WorkflowApplicationService:
                     temp_path,
                     source_basis=source["sha256"][:32],
                     source_filename=filename,
+                    include_auxiliary_audio=True,
                 )
+
+                # A paper can carry a Word table or one adjacent group of
+                # positioned drawings that must be uploaded to the visible
+                # page as an image. Render the selected block while the
+                # managed source still exists, then bind the
+                # content-addressed Blob to the workflow before publishing
+                # page facts.  The page adapter receives only the internal
+                # artifact id; it never receives a local source path.
+                block_requests = self._block_image_requests(parsed)
+                if block_requests:
+                    if temp_path.suffix.casefold() != ".docx":
+                        raise WorkflowApplicationError(
+                            "PARSER_ERROR",
+                            "文档块图片只支持 DOCX 源文档",
+                        )
+                    for block_kind, block_index in block_requests:
+                        artifact_id = self._block_image_artifact_id(
+                            workflow_id,
+                            source_sha256=str(source["sha256"]),
+                            block_kind=block_kind,
+                            block_index=block_index,
+                        )
+                        block_image_artifact_ids[(block_kind, block_index)] = artifact_id
+                        try:
+                            cached_image = self.repository.get_artifact_storage(
+                                artifact_id,
+                                workflow_id=workflow_id,
+                            )
+                        except NotFoundError:
+                            cached_image = None
+                        if cached_image is not None:
+                            self._validate_cached_block_image(
+                                artifact_id,
+                                cached_image,
+                            )
+                            continue
+
+                        rendered_path = Path(temp_dir) / f"{block_kind}-{block_index}.png"
+                        try:
+                            render_docx_block_image(
+                                temp_path,
+                                rendered_path,
+                                block_kind=block_kind,
+                                block_index=block_index,
+                            )
+                            expected_size = rendered_path.stat().st_size
+                            with rendered_path.open("rb") as image_handle:
+                                staged_image = self.artifact_store.stage_stream(
+                                    image_handle,
+                                    expected_size=expected_size,
+                                )
+                            image_blob = self.artifact_store.promote(
+                                staged_image,
+                                format="png",
+                            )
+                        except DocxTableImageError as exc:
+                            # Preserve the concrete renderer reason so the
+                            # entry profile gate is actionable.
+                            reason = str(exc).strip() or "文档块图片提取失败"
+                            details = {
+                                "block_kind": block_kind,
+                                "block_index": block_index,
+                                "reason": reason,
+                            }
+                            if block_kind == "table":
+                                details["table_index"] = block_index
+                            raise WorkflowApplicationError(
+                                "PARSER_ERROR",
+                                f"文档块图片提取失败：{reason}",
+                                details=details,
+                            ) from exc
+                        new_block_image_artifacts.append((artifact_id, image_blob))
+
+                    parsed = self._with_block_image_artifacts(
+                        parsed,
+                        block_image_artifact_ids,
+                    )
+                    # The artifact row is intentionally created before the
+                    # parse projection references its id.  The operation is
+                    # idempotent, so a safe parse replay never creates a
+                    # second image artifact for the same source/block pair.
+                    for artifact_id, image_blob in new_block_image_artifacts:
+                        self.repository.attach_imported_artifact(
+                            workflow_id,
+                            artifact_id=artifact_id,
+                            blob=image_blob,
+                            artifact_type="system-input-image",
+                            producer="docx-block-image",
+                            producer_version=TABLE_IMAGE_RENDERER_VERSION,
+                        )
 
                 # 方案 6.4 桥接：必须在临时源文件仍然存在时执行。桥接会
                 # 重新读取同一份源文档，失败仍然不阻断 workflow 主链路。
@@ -192,6 +294,16 @@ class WorkflowApplicationService:
             "source_filename": parsed.source_filename,
             "source_artifact_id": source_id,
             "parsed_artifact_id": f"artifact-parse-{content_hash(f'{workflow_id}:{parsed.source_sha256}')[:32]}",
+            # Keep the old response field as a compatibility alias while new
+            # clients can use the semantically correct block-image name. The
+            # legacy alias remains table-only when a document contains mixed
+            # block kinds.
+            "block_image_artifact_ids": list(block_image_artifact_ids.values()),
+            "table_image_artifact_ids": [
+                artifact_id
+                for (block_kind, _), artifact_id in block_image_artifact_ids.items()
+                if block_kind == "table"
+            ],
         }
 
     def start_generation(
@@ -737,6 +849,139 @@ class WorkflowApplicationService:
         # provider-facing configuration read.  The repository still exposes
         # the revision separately for conditional command validation.
         return self.repository.get_configuration(workflow_id)
+
+    @staticmethod
+    def _block_image_requests(parsed: ParsedDocument) -> list[tuple[str, int]]:
+        """Collect parser-owned DOCX block selectors requiring an image."""
+
+        requests: set[tuple[str, int]] = set()
+        for item in parsed.items:
+            metadata = item.metadata if isinstance(item.metadata, Mapping) else {}
+            page_input = metadata.get("page_input")
+            if not isinstance(page_input, Mapping):
+                continue
+            recording = page_input.get("recording")
+            if not isinstance(recording, Mapping):
+                continue
+            if recording.get("block_image_required") is True:
+                block_kind = str(recording.get("block_kind") or "")
+                block_index = recording.get("block_index")
+            elif recording.get("table_image_required") is True:
+                block_kind = "table"
+                block_index = recording.get("table_index")
+            else:
+                continue
+            if block_kind not in {"table", "drawing_group"}:
+                raise WorkflowApplicationError(
+                    "PARSER_ERROR",
+                    "文档块图片缺少有效的块类型，不能开始录入",
+                )
+            if (
+                isinstance(block_index, bool)
+                or not isinstance(block_index, int)
+                or block_index < 0
+            ):
+                raise WorkflowApplicationError(
+                    "PARSER_ERROR",
+                    "文档块图片缺少有效的块序号，不能开始录入",
+                )
+            requests.add((block_kind, block_index))
+        return sorted(requests)
+
+    @staticmethod
+    def _block_image_artifact_id(
+        workflow_id: str,
+        *,
+        source_sha256: str,
+        block_kind: str,
+        block_index: int,
+    ) -> str:
+        """Return a cache-safe id for one deterministic block rendering."""
+
+        fingerprint = content_hash({
+            "workflow_id": workflow_id,
+            "source_sha256": source_sha256,
+            "block_kind": block_kind,
+            "block_index": block_index,
+            "renderer_version": TABLE_IMAGE_RENDERER_VERSION,
+            "dpi": TABLE_IMAGE_DEFAULT_DPI,
+            "padding_points": TABLE_IMAGE_DEFAULT_PADDING_POINTS,
+        })
+        return f"artifact-system-input-image-{fingerprint[:32]}"
+
+    def _validate_cached_block_image(
+        self,
+        artifact_id: str,
+        storage: Mapping[str, Any],
+    ) -> None:
+        """Reject stale/corrupt rows instead of treating them as cache hits."""
+
+        storage_key = str(storage.get("storage_key") or "")
+        try:
+            size_bytes = int(storage.get("size_bytes") or 0)
+        except (TypeError, ValueError, OverflowError):
+            size_bytes = 0
+        signature = b""
+        if storage_key:
+            try:
+                with self.artifact_store.read(storage_key) as cached_image:
+                    signature = cached_image.read(8)
+            except (ArtifactStoreError, OSError):
+                pass
+        if (
+            str(storage.get("artifact_type") or "") != "system-input-image"
+            or str(storage.get("format") or "").casefold().lstrip(".") != "png"
+            or not 0 < size_bytes <= TABLE_IMAGE_MAX_BYTES
+            or signature != b"\x89PNG\r\n\x1a\n"
+        ):
+            raise WorkflowApplicationError(
+                "ARTIFACT_INVALID",
+                "已缓存的文档块图片不可用",
+                details={"artifact_id": artifact_id},
+            )
+
+    @staticmethod
+    def _with_block_image_artifacts(
+        parsed: ParsedDocument,
+        artifact_ids: Mapping[tuple[str, int], str],
+    ) -> ParsedDocument:
+        """Add only internal block-image ids to the immutable parsed facts."""
+
+        updated_items = []
+        for item in parsed.items:
+            metadata = dict(item.metadata) if isinstance(item.metadata, Mapping) else {}
+            page_input = metadata.get("page_input")
+            if not isinstance(page_input, Mapping):
+                updated_items.append(item)
+                continue
+            recording = page_input.get("recording")
+            if not isinstance(recording, Mapping):
+                updated_items.append(item)
+                continue
+            if recording.get("block_image_required") is True:
+                block_kind = str(recording.get("block_kind") or "")
+                block_index = recording.get("block_index")
+            elif recording.get("table_image_required") is True:
+                block_kind = "table"
+                block_index = recording.get("table_index")
+            else:
+                block_kind = ""
+                block_index = None
+            artifact_id = (
+                artifact_ids.get((block_kind, block_index))
+                if isinstance(block_index, int) and not isinstance(block_index, bool)
+                else None
+            )
+            if not artifact_id:
+                updated_items.append(item)
+                continue
+            next_recording = dict(recording)
+            next_recording["image_artifact_id"] = artifact_id
+            next_page_input = dict(page_input)
+            next_page_input["recording"] = next_recording
+            metadata["page_input"] = next_page_input
+            updated_items.append(replace(item, metadata=metadata))
+        return replace(parsed, items=tuple(updated_items))
 
     def _source_filename(self, workflow_id: str, source_artifact_id: str) -> str:
         # Source-import metadata is deliberately not public, but the parser

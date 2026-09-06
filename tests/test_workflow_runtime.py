@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from workflow.artifact_store import ArtifactIntegrityError, ArtifactStore, ArtifactStoreError, StagedFile
 from workflow.database import WorkflowDatabase
-from workflow.domain import content_hash
+from workflow.domain import content_hash, utc_now
 from workflow.event_store import CursorExpired, EventStore, EventStoreError
 from workflow.engine import WorkflowEngine
 from workflow.fake_provider import AmbiguousProviderError, FakeProvider
@@ -27,6 +27,7 @@ from workflow.repositories import (
     LeaseConflict,
     RepositoryError,
     WorkflowRepository,
+    repair_system_input_artifacts_in_transaction,
 )
 from workflow.scheduler import PersistentScheduler
 from workflow.security import OneTimeTicketManager, TicketExpired, TicketError
@@ -2700,6 +2701,92 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 "SELECT blob_id FROM artifacts WHERE artifact_id=?", (rerun.source_artifact_id,)
             ).fetchone()[0]
         self.assertEqual(rerun_blob, source_blob)
+
+    def test_terminal_rerun_rebinds_page_image_artifacts_to_new_workflow(self) -> None:
+        snapshot = self.repository.create_workflow("tts", {"mode": "composite_cut"})
+        artifacts = ArtifactStore(Path(self.temp.name) / "rerun-page-image-artifacts")
+        item_id = self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="listening_recording",
+            sequence=0,
+            normalized_content="record and retell",
+            item_identity_key="recording:0",
+            role="default",
+            voice_key="fake",
+            metadata={
+                "page_input": {
+                    "schema_version": "paper-page-input-v1",
+                    "input_type": "paper",
+                    "type": "听后记录并转述信息",
+                    "recording": {"image_artifact_id": "source-page-image"},
+                },
+            },
+        )
+        staged = artifacts.stage_stream(io.BytesIO(b"fake-png"))
+        image_blob = artifacts.promote(staged, format="png")
+        self.repository.attach_imported_artifact(
+            snapshot.workflow_id,
+            artifact_id="source-page-image",
+            blob=image_blob,
+            artifact_type="system-input-image",
+            producer="test",
+            producer_version="1",
+            item_id=item_id,
+        )
+        terminal = WorkflowEngine(self.repository, artifacts).run_tts(snapshot.workflow_id, FakeProvider())
+        source = self.repository.get_workflow(snapshot.workflow_id)
+        rerun = self.repository.create_rerun(
+            snapshot.workflow_id,
+            expected_group_state_version=source.group_state_version,
+            reason="page-image regression",
+        )
+
+        self.assertEqual(terminal.status, "SUCCEEDED")
+        with self.database.read_transaction() as con:
+            item = con.execute(
+                "SELECT item_id, metadata_json FROM work_items WHERE workflow_id=? ORDER BY sequence LIMIT 1",
+                (rerun.workflow_id,),
+            ).fetchone()
+            self.assertIsNotNone(item)
+            metadata = json.loads(item["metadata_json"])
+            copied_image_id = metadata["page_input"]["recording"]["image_artifact_id"]
+            derivation = con.execute(
+                """SELECT parent_artifact_id, child_artifact_id
+                   FROM artifact_derivations
+                   WHERE child_artifact_id=? AND relation_type='CACHE_REUSE'""",
+                (copied_image_id,),
+            ).fetchone()
+
+        self.assertNotEqual(copied_image_id, "source-page-image")
+        self.assertEqual(derivation["parent_artifact_id"], "source-page-image")
+        self.assertEqual(derivation["child_artifact_id"], copied_image_id)
+        storage = self.repository.get_artifact_storage(copied_image_id, workflow_id=rerun.workflow_id)
+        self.assertEqual(storage["artifact_type"], "system-input-image")
+        self.assertEqual(storage["sha256"], image_blob.sha256)
+
+        # Simulate the historical rerun bug and verify the retry-path repair
+        # can migrate an already-created workflow before a new input run.
+        with self.database.transaction() as con:
+            con.execute(
+                "UPDATE work_items SET metadata_json=? WHERE workflow_id=? AND item_id=?",
+                (json.dumps({
+                    "page_input": {
+                        "type": "听后记录并转述信息",
+                        "recording": {"image_artifact_id": "source-page-image"},
+                    },
+                }, ensure_ascii=False), rerun.workflow_id, item["item_id"]),
+            )
+            repaired = repair_system_input_artifacts_in_transaction(
+                con,
+                rerun.workflow_id,
+                now=utc_now(),
+            )
+        self.assertNotEqual(repaired["source-page-image"], "source-page-image")
+        repaired_storage = self.repository.get_artifact_storage(
+            repaired["source-page-image"],
+            workflow_id=rerun.workflow_id,
+        )
+        self.assertEqual(repaired_storage["sha256"], image_blob.sha256)
 
 
 if __name__ == "__main__":

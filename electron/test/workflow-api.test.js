@@ -54,6 +54,33 @@ test('取消命令也支持固定幂等键，重试不会制造第二次控制�
     assert.equal(cancelCall.headers['X-Idempotency-Key'], 'renderer-cancel-fixed-key');
 });
 
+test('系统录入运行控制通过专用接口发送动作和幂等键', async () => {
+    const transport = createTransport();
+    const api = createWorkflowApi({ request: transport.request });
+    await api.controlSystemInputRun(
+        'workflow-1',
+        {
+            input_run_id: 'input-run-1',
+            expected_state_version: 4,
+            action: 'pause',
+            reason: '用户暂停系统录入',
+            requested_by: 'desktop',
+        },
+        { idempotencyKey: 'renderer-input-control-fixed-key' },
+    );
+    const controlCall = transport.calls.find(call => call.pathname.endsWith('/system-input/run-control'));
+    assert.ok(controlCall);
+    assert.equal(controlCall.method, 'POST');
+    assert.equal(controlCall.headers['X-Idempotency-Key'], 'renderer-input-control-fixed-key');
+    assert.deepEqual(controlCall.body, {
+        input_run_id: 'input-run-1',
+        expected_state_version: 4,
+        action: 'pause',
+        reason: '用户暂停系统录入',
+        requested_by: 'desktop',
+    });
+});
+
 test('删除未完成工作流使用 DELETE，并保留幂等键在请求头', async () => {
     const transport = createTransport();
     const api = createWorkflowApi({ request: transport.request });
