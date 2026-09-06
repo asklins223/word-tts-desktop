@@ -20,6 +20,7 @@ from workflow.docx_table_image import (
 ROOT = Path(__file__).resolve().parents[1]
 DRAWING_FIXTURE = ROOT / "examples/documents/信息转述及询问信息 7上- U1.docx"
 GROUPED_DRAWING_FIXTURE = ROOT / "examples/documents/佛山七上Starter 1.docx"
+TABLE_FIXTURE = ROOT / "examples/documents/七上Starter Unit1 Hello模仿朗读专项.docx"
 
 
 def test_renderer_assets_are_pinned_and_available():
@@ -65,15 +66,15 @@ def test_drawing_group_uses_document_grid_and_anchor_positions():
     assert shapes[1].line_color == "#4874CB"
 
 
-def test_mixed_paper_exposes_both_table_blocks(tmp_path: Path):
-    root, _theme = _read_document_xml(DRAWING_FIXTURE)
-    assert _table_paths(root) == ("body/43", "body/49")
+def test_recording_paper_exposes_both_table_blocks(tmp_path: Path):
+    root, _theme = _read_document_xml(TABLE_FIXTURE)
+    assert _table_paths(root) == ("body/5", "body/14")
 
     outputs = []
     for table_index in (0, 1):
         output = tmp_path / f"table-{table_index}.png"
         result = render_docx_table_image(
-            DRAWING_FIXTURE,
+            TABLE_FIXTURE,
             output,
             table_index=table_index,
         )
@@ -83,7 +84,7 @@ def test_mixed_paper_exposes_both_table_blocks(tmp_path: Path):
         assert result["size_bytes"] == output.stat().st_size
         assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
-    assert outputs[0]["width"] > outputs[1]["width"]
+    assert outputs[0]["width"] == outputs[1]["width"]
     assert outputs[0]["height"] > outputs[1]["height"]
 
 
