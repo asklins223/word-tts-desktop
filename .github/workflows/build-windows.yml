@@ -136,6 +136,8 @@ jobs:
       - name: Run full Windows browser scenario matrix
         env:
           FULL_SCENARIO_OUTPUT: windows-full-scenario-results.json
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
         run: python tools/windows_full_scenario_diagnostic.py
 
       - name: Upload full Windows browser scenario results
