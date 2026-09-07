@@ -295,7 +295,7 @@ class PlatformInputAssetMixin:
             rendered,
             f"{description}{label}上传后页面没有显示文件",
             timeout_seconds=60,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def _upload_audio_in_scope(

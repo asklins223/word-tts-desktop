@@ -207,7 +207,12 @@ class PlatformInputCardMixin:
                 editor,
                 timeout_ms=self.action_timeout_ms,
             )
-            editor.press("Backspace", timeout=self.action_timeout_ms)
+            _press_focused_key(
+                self.page,
+                editor,
+                "Backspace",
+                timeout_ms=self.action_timeout_ms,
+            )
             # 逐字符 type 每个字符都是一次驱动往返，长文本在 Windows 上
             # 尤其慢。一次性 insertText 触发同样的 input 事件链；若个别
             # 编辑器只认逐字击键，回读不一致时再退回原路径兜底。
@@ -215,16 +220,31 @@ class PlatformInputCardMixin:
                 insert_text(str(value))
             else:
                 editor.type(value, timeout=self.action_timeout_ms)
-            editor.press("Tab", timeout=self.action_timeout_ms)
+            _press_focused_key(
+                self.page,
+                editor,
+                "Tab",
+                timeout_ms=self.action_timeout_ms,
+            )
             actual = _normalise_text(editor.inner_text(timeout=self.action_timeout_ms))
             if expected and expected not in actual:
                 # Replay the original char-by-char path before failing; some
                 # editor builds only persist state on real keystrokes.
                 editor.click(timeout=self.action_timeout_ms)
                 editor.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
-                editor.press("Backspace", timeout=self.action_timeout_ms)
+                _press_focused_key(
+                    self.page,
+                    editor,
+                    "Backspace",
+                    timeout_ms=self.action_timeout_ms,
+                )
                 editor.type(value, timeout=self.action_timeout_ms)
-                editor.press("Tab", timeout=self.action_timeout_ms)
+                _press_focused_key(
+                    self.page,
+                    editor,
+                    "Tab",
+                    timeout_ms=self.action_timeout_ms,
+                )
                 actual = _normalise_text(
                     editor.inner_text(timeout=self.action_timeout_ms)
                 )
@@ -243,8 +263,18 @@ class PlatformInputCardMixin:
                 editor,
                 timeout_ms=self.action_timeout_ms,
             )
-            editor.press("Backspace", timeout=self.action_timeout_ms)
-            editor.press("Tab", timeout=self.action_timeout_ms)
+            _press_focused_key(
+                self.page,
+                editor,
+                "Backspace",
+                timeout_ms=self.action_timeout_ms,
+            )
+            _press_focused_key(
+                self.page,
+                editor,
+                "Tab",
+                timeout_ms=self.action_timeout_ms,
+            )
             actual = _normalise_text(
                 _text_without_html(editor.inner_text(timeout=self.action_timeout_ms))
             )

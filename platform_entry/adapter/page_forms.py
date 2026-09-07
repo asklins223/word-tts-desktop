@@ -109,7 +109,12 @@ class PlatformInputFormMixin:
             # older controls additionally depend on keydown/keyup, so the
             # keyboard path remains a bounded fallback.
             input_locator.fill(text, timeout=self.action_timeout_ms)
-            input_locator.press("Tab", timeout=self.action_timeout_ms)
+            _press_focused_key(
+                getattr(self, "page", None),
+                input_locator,
+                "Tab",
+                timeout_ms=self.action_timeout_ms,
+            )
             actual = input_locator.input_value(timeout=self.action_timeout_ms)
             if _comparable_input_text(actual) != _comparable_input_text(text):
                 input_locator.click(timeout=self.action_timeout_ms)
@@ -258,7 +263,7 @@ class PlatformInputFormMixin:
             ready,
             f"等待“{title}”下拉选项“{name}”超时",
             timeout_seconds=10,
-            interval_ms=100,
+            interval_ms=50,
         )
         if option is None:
             raise PlatformInputUiError(f"“{title}”下拉框中没有选项“{name}”")
@@ -493,6 +498,7 @@ class PlatformInputFormMixin:
             selected,
             f"选择“{title}={name}”后页面没有显示已选值",
             timeout_seconds=10,
+            interval_ms=50,
         )
 
     def _select_many(self, title: str, choices: Sequence[Mapping[str, Any]]) -> None:
@@ -559,13 +565,14 @@ class PlatformInputFormMixin:
                 selected,
                 f"选择“{title}={name}”后页面没有显示已选值",
                 timeout_seconds=10,
+                interval_ms=50,
             )
         self.page.keyboard.press("Escape")
         self._wait_until(
             lambda: self._multi_selection_matches(title, wanted_names),
             f"填写“{title}”后页面选中值与输入不一致",
             timeout_seconds=10,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def fill_base_form(self) -> None:

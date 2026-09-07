@@ -355,6 +355,29 @@ def _select_all_editable_text(
     editor.press("ControlOrMeta+A", timeout=timeout_ms)
 
 
+def _press_focused_key(
+    page: Any,
+    editor: Any,
+    key: str,
+    *,
+    timeout_ms: int | None = None,
+) -> None:
+    """Press a key on the already-focused editor without another locator hop."""
+
+    keyboard = getattr(page, "keyboard", None)
+    press = getattr(keyboard, "press", None) if keyboard is not None else None
+    if callable(press):
+        try:
+            press(key)
+            return
+        except Exception:
+            pass
+    if timeout_ms is None:
+        editor.press(key)
+    else:
+        editor.press(key, timeout=timeout_ms)
+
+
 # The page mixins use this as their intentionally shared action context.  Keep
 # private compatibility helpers available as well as public types/constants;
 # the mixins are implementation modules, not a user-facing wildcard API.

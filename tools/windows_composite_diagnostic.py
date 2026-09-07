@@ -257,7 +257,11 @@ def _fill_content_with_stages(
     uploads_ms = 0.0
     for index, item in enumerate(record["items"]):
         card = cards.nth(index)
-        card.scroll_into_view_if_needed()
+        if not optimized:
+            # The optimized production path lets select_text() scroll the
+            # editor only when needed; retain the old explicit scroll in the
+            # comparison path so the A/B measures the shipped change.
+            card.scroll_into_view_if_needed()
         editors = card.locator(
             '.rich-text-editor .editor-content[contenteditable="true"]'
         )

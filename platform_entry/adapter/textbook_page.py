@@ -22,7 +22,7 @@ from .constants import (
     TEXTBOOK_MANAGEMENT_URL,
     TEXTBOOK_PAGE_PATH,
 )
-from .page_shared import _select_all_editable_text
+from .page_shared import _press_focused_key, _select_all_editable_text
 
 
 def _text(value: Any, *, limit: int = 1024) -> str:
@@ -540,7 +540,7 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
 
     try:
         _select_all_editable_text(editor)
-        editor.press("Backspace")
+        _press_focused_key(page, editor, "Backspace")
         if value:
             keyboard = getattr(page, "keyboard", None)
             insert_text = (
@@ -552,7 +552,7 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
                 insert_text(str(value))
             else:
                 editor.type(value)
-        editor.press("Tab")
+        _press_focused_key(page, editor, "Tab")
         actual = re.sub(r"\s+", " ", str(editor.inner_text() or "")).strip()
         if not readback_matches(actual):
             # A few historical editor builds only committed text after the
@@ -561,10 +561,10 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
             # paragraph one event per character.
             editor.click()
             editor.press("ControlOrMeta+A")
-            editor.press("Backspace")
+            _press_focused_key(page, editor, "Backspace")
             if value:
                 editor.type(value)
-            editor.press("Tab")
+            _press_focused_key(page, editor, "Tab")
             actual = re.sub(
                 r"\s+", " ", str(editor.inner_text() or "")
             ).strip()
@@ -669,9 +669,21 @@ def _select_option(page: Any, index: int, value: str) -> None:
     option = page.locator("li:visible, [role='option']:visible").filter(
         has_text=option_text
     ).last
+    dispatched = False
     try:
-        # Let Playwright wait and click in one browser-side action.
-        option.click(timeout=2_500)
+        # The option is already visible and resolved.  A DOM click avoids a
+        # second Windows actionability/hit-test round trip; if this page
+        # variant ignores synthetic clicks, the normal Playwright click below
+        # remains the compatibility path.
+        dispatch_event = getattr(option, "dispatch_event", None)
+        if callable(dispatch_event):
+            try:
+                dispatch_event("click")
+                dispatched = True
+            except Exception:
+                pass
+        if not dispatched:
+            option.click(timeout=2_500)
     except Exception:
         selector.click(timeout=2_500)
         try:
@@ -704,6 +716,19 @@ def _select_option(page: Any, index: int, value: str) -> None:
             shown = ""
         expected = re.sub(r"\s+", "", value).casefold()
         if expected not in shown.casefold():
+            if dispatched:
+                # Some older page builds ignore a synthetic click.  Only
+                # replay the real click after the fast path failed its
+                # readback, so the normal path never pays for two clicks.
+                try:
+                    option.click(timeout=2_500)
+                    selector.filter(has_text=selected_text).wait_for(
+                        state="visible",
+                        timeout=3_000,
+                    )
+                    return
+                except Exception as fallback_exc:
+                    exc = fallback_exc
             raise RuntimeError(
                 f"下拉框回读不一致：期望 {value!r}，实际 {shown!r}"
             ) from exc
@@ -740,7 +765,6 @@ def _fill_content(
         if control_check is not None:
             control_check()
         card = cards.nth(index)
-        card.scroll_into_view_if_needed()
         editors = card.locator(
             '.rich-text-editor .editor-content[contenteditable="true"]'
         )
@@ -770,7 +794,9 @@ def _fill_content(
                     break
             except Exception:
                 pass
-            page.wait_for_timeout(250)
+            # The filename is rendered asynchronously, but a quarter-second
+            # polling interval makes every upload pay a visible Windows tax.
+            page.wait_for_timeout(50)
         else:
             raise RuntimeError(f"第 {index + 1} 条音频回读失败：{stem}")
         if control_check is not None:
