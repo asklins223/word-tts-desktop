@@ -39,6 +39,10 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    # Release CI must never open a real external-provider session. Platform
+    # input coverage is exercised by the page-free logical smoke below.
+    env:
+      WORDTTS_ENABLE_REAL_PROVIDER: '0'
     outputs:
       version: ${{ steps.version.outputs.version }}
 
@@ -146,7 +150,7 @@ jobs:
         working-directory: electron
         run: npm run check:contracts
 
-      - name: Run logical workflow smoke (no page/network)
+      - name: Run simulated workflow smoke (no page/network/login)
         run: python tools/xunfei_smoke.py --logical-only --source "examples/documents/信息转述及询问信息 7上- U1.docx" --max-items 100
 
       - name: Audit packaged runtime dependencies
