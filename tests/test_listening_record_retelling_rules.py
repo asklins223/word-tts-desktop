@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from pydub import AudioSegment
 
 from question_model import extract_candidate
@@ -12,6 +13,7 @@ from question_types import (
     detect_document_type,
 )
 from question_types.segmenter import parse_document_once
+from question_types.text_utils import DocumentBlock
 from wordtts import synthesis
 from wordtts.progress import build_progress
 from wordtts.synthesis import build_synthesis_segments
@@ -23,6 +25,24 @@ FIXTURE = ROOT / (
     "examples/documents/七上Starter Unit 1 Hello听后记录并转述信息专项-"
     "答案扩展(1).docx"
 )
+
+
+def _retelling_parser(prompt_paragraphs, *, blocks=()):
+    paragraphs = [
+        (0, "第一节 听后记录", "Normal"),
+        (1, "(W) first", "Normal"),
+        (2, "第二节：信息转述（共1题，满分5分）", "Normal"),
+    ]
+    paragraphs.extend(
+        (index, value, "Normal")
+        for index, value in enumerate(prompt_paragraphs, start=3)
+    )
+    paragraphs.append((len(paragraphs), "参考答案：1. Lisa starts here.", "Normal"))
+    metadata = [{"heading_hint": False} for _ in paragraphs]
+    return ListeningRecordRetellingParser(
+        "synthetic.docx",
+        preloaded_paras=(paragraphs, metadata, blocks),
+    )
 
 
 def test_sample_extracts_only_the_first_section_listening_script():
@@ -118,6 +138,66 @@ def test_single_synthesis_path_never_submits_gender_markers_to_engine():
         ("Female line.", "amanda"),
         ("Male line.", "george"),
     ]
+
+
+@pytest.mark.parametrize(
+    "prompt_paragraphs",
+    [
+        ["Lisa starts here."],
+        ["Lisa starts here.\n____________________."],
+        ["Lisa starts here.", "____________________"],
+        ["Lisa starts here.", "＿"],
+    ],
+)
+def test_retelling_prompt_does_not_depend_on_underscore_layout(
+    prompt_paragraphs,
+):
+    result = _retelling_parser(prompt_paragraphs).parse()
+
+    assert result["retelling"]["prompt"] == "Lisa starts here."
+
+
+def test_retelling_prompt_falls_back_to_structural_blocks():
+    blocks = (
+        DocumentBlock(kind="paragraph", index=0, text="第一节 听后记录"),
+        DocumentBlock(kind="paragraph", index=1, text="(W) first"),
+        DocumentBlock(
+            kind="paragraph",
+            index=2,
+            text="第二节：信息转述（共1题，满分5分）",
+        ),
+        DocumentBlock(
+            kind="table",
+            index=3,
+            text="Lisa starts here.\n＿",
+            fragments=("Lisa starts here.", "＿"),
+        ),
+    )
+    result = _retelling_parser([], blocks=blocks).parse()
+
+    assert result["retelling"]["prompt"] == "Lisa starts here."
+
+
+def test_retelling_heading_does_not_accept_another_second_section():
+    result = _retelling_parser(
+        ["第二节 询问信息", "Lisa should not be treated as a prompt."]
+    ).parse()
+
+    assert "retelling" not in result
+
+
+def test_retelling_prompt_stops_before_the_next_section():
+    result = _retelling_parser(
+        [
+            "Lisa starts here.",
+            "第三节 模仿朗读",
+            "Later content must not replace the prompt. ______",
+            "参考答案：1. leaked",
+        ]
+    ).parse()
+
+    assert result["retelling"]["prompt"] == "Lisa starts here."
+    assert result["retelling"]["reference_answers"] == []
 
 
 def test_composite_fallback_also_strips_gender_markers_before_ui_input():

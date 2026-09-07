@@ -23,7 +23,10 @@ try:
         PlatformInputCardMixin,
         _QUESTION_CARD_LEVEL_JS,
     )
-    from platform_entry.adapter.page_forms import PlatformInputFormMixin
+    from platform_entry.adapter.page_forms import (
+        PlatformInputFormMixin,
+        _selected_multi_texts,
+    )
     from platform_entry.adapter.page_navigation import PlatformInputNavigationMixin
     from platform_entry.adapter.page_shared import _closest_visible_level
     from platform_entry.adapter.page_shared import _closest_count_level
@@ -267,6 +270,53 @@ class FindDropdownOptionBatchTests(unittest.TestCase):
         self.assertEqual(options.count_calls, 1)
 
 
+class WaitForDropdownOptionTests(unittest.TestCase):
+    def test_reuses_the_option_found_by_the_successful_poll(self) -> None:
+        owner = object.__new__(PlatformInputFormMixin)
+        expected = object()
+        results = iter((None, expected))
+        calls: list[str] = []
+
+        def find(name: str) -> object | None:
+            calls.append(name)
+            return next(results)
+
+        def wait_until(predicate: object, *_args: object, **_kwargs: object) -> None:
+            while not predicate():
+                pass
+
+        owner._find_dropdown_option = find
+        owner._wait_until = wait_until
+
+        actual = owner._wait_for_dropdown_option("地区", "江苏省")
+
+        self.assertIs(actual, expected)
+        self.assertEqual(calls, ["江苏省", "江苏省"])
+
+
+class SelectedMultiTextsTests(unittest.TestCase):
+    def test_reads_all_label_variants_once_and_deduplicates_nested_text(self) -> None:
+        class Labels:
+            @staticmethod
+            def all_inner_texts() -> list[str]:
+                return ["天河区", "天河区", "越秀区"]
+
+        class Component:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def locator(self, _selector: str) -> Labels:
+                self.calls += 1
+                return Labels()
+
+        component = Component()
+        self.assertEqual(
+            _selected_multi_texts(component),
+            ["天河区", "越秀区"],
+        )
+        self.assertEqual(component.calls, 1)
+
+
 class ClosestVisibleLevelTests(unittest.TestCase):
     def test_returns_probe_level(self) -> None:
         node = _FakeNode(evaluate_result=3)
@@ -407,6 +457,10 @@ class _FakeRichEditor:
         self._readback_values = list(readback_values)
         self.type_calls: list[str] = []
         self.click_calls = 0
+        self.select_text_calls = 0
+
+    def select_text(self, timeout: object = None) -> None:
+        self.select_text_calls += 1
 
     def scroll_into_view_if_needed(self, timeout: object = None) -> None:
         return None
@@ -441,13 +495,15 @@ class ReplaceRichTextTests(unittest.TestCase):
         self.assertEqual(keyboard.insert_text_calls, ["目标内容"])
         # The char-by-char path replays exactly once after the mismatch.
         self.assertEqual(editor.type_calls, ["目标内容"])
-        self.assertEqual(editor.click_calls, 2)
+        self.assertEqual(editor.select_text_calls, 1)
+        self.assertEqual(editor.click_calls, 1)
 
     def test_missing_keyboard_attribute_still_fills_via_type(self) -> None:
         editor = _FakeRichEditor(readback_values=["目标内容"])
         self._run(_PageWithoutKeyboard(), editor)
         self.assertEqual(editor.type_calls, ["目标内容"])
-        self.assertEqual(editor.click_calls, 1)
+        self.assertEqual(editor.select_text_calls, 1)
+        self.assertEqual(editor.click_calls, 0)
 
     def test_persistent_mismatch_raises_ui_error(self) -> None:
         keyboard = _FakeKeyboard()

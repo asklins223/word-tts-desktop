@@ -173,7 +173,6 @@ class PlatformInputNavigationMixin:
         if candidate is None:
             raise PlatformInputUiError(f"页面上没有可点击的“{text}”")
         try:
-            candidate.scroll_into_view_if_needed()
             candidate.click(timeout=timeout_ms or self.action_timeout_ms)
         except Exception as exc:
             raise PlatformInputUiError(f"点击“{text}”失败: {exc}") from exc
@@ -269,7 +268,6 @@ class PlatformInputNavigationMixin:
             self.page.get_by_text("试卷管理", exact=True)
         )
         if menu is not None:
-            menu.scroll_into_view_if_needed()
             menu.click(timeout=self.action_timeout_ms)
             return True
 
@@ -279,7 +277,6 @@ class PlatformInputNavigationMixin:
             self.page.get_by_text("资源管理", exact=True)
         )
         if resource is not None:
-            resource.scroll_into_view_if_needed()
             resource.click(timeout=self.action_timeout_ms)
             return True
         return False
@@ -542,7 +539,6 @@ class PlatformInputNavigationMixin:
                 f"试卷列表中没有可编辑的既有试卷（{target_description}）；为避免重复创建，本次不新增试卷"
             )
         try:
-            edit.scroll_into_view_if_needed()
             edit.click(timeout=self.action_timeout_ms)
         except Exception as exc:
             raise PlatformInputUiError(f"打开既有试卷“{title}”失败: {exc}") from exc
@@ -720,14 +716,11 @@ class PlatformInputNavigationMixin:
             raise PlatformInputUiError(f"第二步没有找到“{group_type}”题目导航入口")
         try:
             _debug_dom_snapshot(self, f"before-click:{group_type}")
-            target.scroll_into_view_if_needed()
             target.click(timeout=self.action_timeout_ms)
-            self.page.wait_for_timeout(300)
             _debug_dom_snapshot(self, f"after-click:{group_type}")
         except Exception as exc:
             try:
                 target.click(force=True, timeout=self.action_timeout_ms)
-                self.page.wait_for_timeout(300)
                 _debug_dom_snapshot(self, f"after-force-click:{group_type}")
             except Exception as force_exc:
                 raise PlatformInputUiError(
@@ -761,7 +754,6 @@ class PlatformInputNavigationMixin:
             raise PlatformInputUiError("第二步没有找到信息转述录音题导航入口")
         target = candidates[-1]
         try:
-            target.scroll_into_view_if_needed()
             target.click(timeout=self.action_timeout_ms)
         except Exception as exc:
             try:

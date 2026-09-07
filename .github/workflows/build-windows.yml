@@ -133,6 +133,19 @@ jobs:
       - name: Install Playwright browsers
         run: python -m playwright install chromium
 
+      - name: Run full Windows browser scenario matrix
+        env:
+          FULL_SCENARIO_OUTPUT: windows-full-scenario-results.json
+        run: python tools/windows_full_scenario_diagnostic.py
+
+      - name: Upload full Windows browser scenario results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-full-scenario-results
+          path: windows-full-scenario-results.json
+          if-no-files-found: warn
+
       # ======================================================================
       # 6. 安装 Electron 依赖
       # ======================================================================

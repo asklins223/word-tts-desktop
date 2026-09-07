@@ -14,12 +14,43 @@ PAPER_TITLE_PLACEHOLDER = (
 # One round-trip instead of count + nth + inner_text per option; matching
 # still happens in Python with the shared _normalise_text helper.
 _DROPDOWN_TEXTS_JS = "(nodes) => nodes.map((node) => String(node.innerText || ''))"
+_MULTI_LABEL_SELECTOR = (
+    ".el-select__selected-item .el-select__tags-text:visible, "
+    ".el-select__tags-text:visible, "
+    ".el-tag__content:visible"
+)
 
 
 def _comparable_input_text(raw: Any) -> str:
     """Compare page input values without deleting meaningful inner spaces."""
 
     return re.sub(r"\s+", " ", str(raw or "")).strip()
+
+
+def _dispatch_click(locator: Any) -> bool:
+    """Use a DOM click when the browser already resolved a visible control."""
+
+    dispatch = getattr(locator, "dispatch_event", None)
+    if not callable(dispatch):
+        return False
+    try:
+        dispatch("click", timeout=500)
+        return True
+    except Exception:
+        return False
+
+
+def _selected_multi_texts(component: Any) -> list[str]:
+    if component is None:
+        return []
+    try:
+        values = component.locator(_MULTI_LABEL_SELECTOR).all_inner_texts()
+    except Exception:
+        return []
+    # Element Plus versions can expose both a tag wrapper and its nested text
+    # node.  A CSS union returns both; preserving the first occurrence keeps
+    # the old priority behavior without paying up to three browser calls.
+    return list(dict.fromkeys(str(value) for value in values))
 
 
 class PlatformInputFormMixin:
@@ -34,9 +65,8 @@ class PlatformInputFormMixin:
         ):
             try:
                 roots = self.page.locator(selector).filter(has_text=title)
-                candidate = self._first_visible(roots)
-                if candidate is not None:
-                    return candidate
+                if roots.count():
+                    return roots.first
             except Exception:
                 continue
         return None
@@ -102,16 +132,19 @@ class PlatformInputFormMixin:
         text = str(value)
 
         try:
-            input_locator.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
-            input_locator.click(timeout=self.action_timeout_ms)
-            input_locator.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
             # ``fill`` dispatches the native input event that the Vue model
-            # listens for, while still preserving an internal space such as
-            # the one in “Starter Unit1”.  Some older controls additionally
-            # depend on keydown/keyup, so the keyboard path remains a bounded
-            # fallback instead of being the only way to set the value.
+            # listens for and already scrolls, focuses, and replaces the old
+            # value.  Avoid three redundant driver actions on the normal
+            # path; Windows pays noticeably more for each round-trip.  Some
+            # older controls additionally depend on keydown/keyup, so the
+            # keyboard path remains a bounded fallback.
             input_locator.fill(text, timeout=self.action_timeout_ms)
-            input_locator.press("Tab", timeout=self.action_timeout_ms)
+            _press_focused_key(
+                getattr(self, "page", None),
+                input_locator,
+                "Tab",
+                timeout_ms=self.action_timeout_ms,
+            )
             actual = input_locator.input_value(timeout=self.action_timeout_ms)
             if _comparable_input_text(actual) != _comparable_input_text(text):
                 input_locator.click(timeout=self.action_timeout_ms)
@@ -168,14 +201,31 @@ class PlatformInputFormMixin:
             placeholder=PAPER_TITLE_PLACEHOLDER,
         )
 
-    def _open_select(self, title: str) -> Any:
-        component = self._field_component(title)
+    def _open_select(
+        self,
+        title: str,
+        component: Any | None = None,
+        *,
+        force_real: bool = False,
+    ) -> Any:
+        if component is None:
+            component = self._field_component(title)
         if component is None:
             raise PlatformInputUiError(f"页面上没有“{title}”下拉框")
-        select = self._first_visible(component.locator(".el-select"))
-        target = select or component
+        wrappers = component.locator(".el-select__wrapper:visible")
+        wrapper = wrappers.first if wrappers.count() else None
+        select = None
+        if wrapper is None:
+            selects = component.locator(".el-select:visible")
+            select = selects.first if selects.count() else None
+        target = wrapper or select or component
         try:
-            target.click(timeout=self.action_timeout_ms)
+            # The Element Plus wrapper owns the Vue click handler.  If a
+            # legacy build has only the outer ``.el-select`` node, keep the
+            # trusted click path instead of dispatching an event at the wrong
+            # ancestor.
+            if force_real or wrapper is None or not _dispatch_click(target):
+                target.click(timeout=self.action_timeout_ms)
         except Exception as exc:
             raise PlatformInputUiError(f"打开“{title}”下拉框失败: {exc}") from exc
         return component
@@ -183,14 +233,13 @@ class PlatformInputFormMixin:
     def _search_select(self, component: Any, value: str) -> None:
         """在页面下拉框内搜索显示值，避免依赖完整选项列表的即时加载。"""
 
-        search = self._first_visible(
-            component.locator(
-                'input.el-select__input:visible, '
-                'input[role="combobox"]:visible'
-            )
+        searches = component.locator(
+            'input.el-select__input:visible, '
+            'input[role="combobox"]:visible'
         )
-        if search is None:
+        if not searches.count():
             return
+        search = searches.first
         try:
             search.fill(value)
         except Exception as exc:
@@ -245,26 +294,33 @@ class PlatformInputFormMixin:
                     continue
         return None
 
+    def _wait_for_dropdown_option(self, title: str, name: str) -> Any:
+        """Wait for one option and reuse the locator found by the last poll."""
+
+        option = None
+
+        def ready() -> bool:
+            nonlocal option
+            option = self._find_dropdown_option(name)
+            return option is not None
+
+        self._wait_until(
+            ready,
+            f"等待“{title}”下拉选项“{name}”超时",
+            timeout_seconds=10,
+            interval_ms=50,
+        )
+        if option is None:
+            raise PlatformInputUiError(f"“{title}”下拉框中没有选项“{name}”")
+        return option
+
     @staticmethod
     def _selected_multi_count(component: Any) -> int:
         """读取 Element Plus 多选框的已选数量，包含折叠的“+ N”标签。"""
 
         if component is None:
             return 0
-        selectors = (
-            ".el-select__selected-item .el-select__tags-text:visible",
-            ".el-select__tags-text:visible",
-            ".el-tag__content:visible",
-        )
-        labels: list[str] = []
-        for selector in selectors:
-            try:
-                candidate = component.locator(selector).all_inner_texts()
-            except Exception:
-                continue
-            if candidate:
-                labels = [str(value) for value in candidate]
-                break
+        labels = _selected_multi_texts(component)
         if not labels:
             return 0
 
@@ -281,20 +337,7 @@ class PlatformInputFormMixin:
 
         if component is None:
             return set(), 0, True
-        selectors = (
-            ".el-select__selected-item .el-select__tags-text:visible",
-            ".el-select__tags-text:visible",
-            ".el-tag__content:visible",
-        )
-        labels: list[str] = []
-        for selector in selectors:
-            try:
-                candidate = component.locator(selector).all_inner_texts()
-            except Exception:
-                continue
-            if candidate:
-                labels = [str(value) for value in candidate]
-                break
+        labels = _selected_multi_texts(component)
         selected: set[str] = set()
         count = 0
         complete = True
@@ -335,8 +378,9 @@ class PlatformInputFormMixin:
         self,
         title: str,
         wanted_names: Sequence[str],
+        component: Any | None = None,
     ) -> bool:
-        component = self._field_component(title)
+        component = component or self._field_component(title)
         if component is None:
             return False
         labels, count, complete = self._selected_multi_labels(component)
@@ -442,49 +486,78 @@ class PlatformInputFormMixin:
                 if _normalise_text(name) in _normalise_text(current.inner_text()):
                     return
             except Exception:
-                pass
-        component = self._open_select(title)
+                # Do not reuse a locator that could not be read during a
+                # dependent form rerender; resolve it once in _open_select.
+                current = None
+        component = self._open_select(title, current)
         self._search_select(component, name)
         # Element Plus 的下拉层先挂载、后异步渲染选项；不能在 click 后
         # 立即读取，否则会把尚未出现的合法选项误判为不存在。
-        self._wait_until(
-            lambda: self._find_dropdown_option(name) is not None,
-            f"等待“{title}”下拉选项“{name}”超时",
-            timeout_seconds=10,
-            interval_ms=100,
-        )
-        option = self._find_dropdown_option(name)
-        if option is None:
-            raise PlatformInputUiError(f"“{title}”下拉框中没有选项“{name}”")
         try:
-            option.click(timeout=self.action_timeout_ms)
-        except Exception as exc:
-            # Element Plus 的 teleport 下拉层在表单布局变化时可能持续触发
-            # “element is not stable”。先确认是否已经选中；如果没有，
-            # 用页面控件对应的 force click 完成同一个用户点击动作。
+            option = self._wait_for_dropdown_option(title, name)
+        except PlatformInputUiError:
+            # A page build that ignores synthetic clicks leaves no visible
+            # dropdown.  Only then replay the real wrapper click; if the
+            # dropdown is visible but still loading, keep the original error
+            # instead of toggling it closed.
+            if self._first_visible(
+                self.page.locator(".el-select-dropdown:visible")
+            ) is not None:
+                raise
+            component = self._open_select(title, current, force_real=True)
+            self._search_select(component, name)
+            option = self._wait_for_dropdown_option(title, name)
+
+        fast_clicked = _dispatch_click(option)
+        if not fast_clicked:
             try:
-                current = self._field_component(title)
-                if current is not None and _normalise_text(name) in _normalise_text(
-                    current.inner_text()
-                ):
-                    return
-                option.click(force=True, timeout=self.action_timeout_ms)
-            except Exception as force_exc:
-                raise PlatformInputUiError(
-                    f"选择“{title}={name}”失败: {force_exc}"
-                ) from exc
+                option.click(timeout=self.action_timeout_ms)
+            except Exception as exc:
+                # Element Plus 的 teleport 下拉层在表单布局变化时可能持续触发
+                # “element is not stable”。先确认是否已经选中；如果没有，
+                # 用页面控件对应的 force click 完成同一个用户点击动作。
+                try:
+                    if _normalise_text(name) in _normalise_text(component.inner_text()):
+                        return
+                    option.click(force=True, timeout=self.action_timeout_ms)
+                except Exception as force_exc:
+                    raise PlatformInputUiError(
+                        f"选择“{title}={name}”失败: {force_exc}"
+                    ) from exc
 
         def selected() -> bool:
-            component = self._field_component(title)
-            return component is not None and _normalise_text(name) in _normalise_text(
+            return _normalise_text(name) in _normalise_text(
                 component.inner_text()
             )
 
-        self._wait_until(
-            selected,
-            f"选择“{title}={name}”后页面没有显示已选值",
-            timeout_seconds=10,
-        )
+        try:
+            self._wait_until(
+                selected,
+                f"选择“{title}={name}”后页面没有显示已选值",
+                timeout_seconds=10,
+                interval_ms=50,
+            )
+        except PlatformInputUiError as exc:
+            if not fast_clicked:
+                raise
+            # Synthetic events are the fast path, not a correctness shortcut.
+            # If a legacy build ignored the event, replay one trusted click;
+            # first read the component so a successful event is never toggled
+            # back off.
+            try:
+                if selected():
+                    return
+                option.click(timeout=self.action_timeout_ms)
+                self._wait_until(
+                    selected,
+                    f"选择“{title}={name}”后页面没有显示已选值",
+                    timeout_seconds=10,
+                    interval_ms=50,
+                )
+            except Exception as fallback_exc:
+                raise PlatformInputUiError(
+                    f"选择“{title}={name}”后页面没有显示已选值"
+                ) from fallback_exc
 
     def _select_many(self, title: str, choices: Sequence[Mapping[str, Any]]) -> None:
         wanted_names: list[str] = []
@@ -497,18 +570,18 @@ class PlatformInputFormMixin:
             seen.add(key)
             wanted_names.append(name)
 
-        if self._multi_selection_matches(title, wanted_names):
+        current = self._field_component(title)
+        if self._multi_selection_matches(title, wanted_names, current):
             self.page.keyboard.press("Escape")
             return
-        if self._selected_multi_count(self._field_component(title)):
+        if self._selected_multi_count(current):
             self._clear_multi_selection(title)
 
         # Element Plus 多选框在某些版本点击一个选项后会关闭下拉层，因此每
         # 个值都重新打开；这是页面点击，不是批量构造请求。
         for name in wanted_names:
-            dropdown = self._first_visible(
-                self.page.locator(".el-select-dropdown:visible")
-            )
+            dropdowns = self.page.locator(".el-select-dropdown:visible")
+            dropdown = dropdowns.first if dropdowns.count() else None
             component = (
                 self._field_component(title)
                 if dropdown is not None
@@ -516,56 +589,74 @@ class PlatformInputFormMixin:
             )
             if component is not None:
                 self._search_select(component, name)
-            self._wait_until(
-                lambda: self._find_dropdown_option(name) is not None,
-                f"等待“{title}”下拉选项“{name}”超时",
-                timeout_seconds=10,
-                interval_ms=100,
-            )
-            option = self._find_dropdown_option(name)
-            if option is None:
-                raise PlatformInputUiError(f"“{title}”下拉框中没有选项“{name}”")
-            before = self._selected_multi_count(self._field_component(title))
+            try:
+                option = self._wait_for_dropdown_option(title, name)
+            except PlatformInputUiError:
+                if self._first_visible(
+                    self.page.locator(".el-select-dropdown:visible")
+                ) is not None:
+                    raise
+                component = self._open_select(title, force_real=True)
+                self._search_select(component, name)
+                option = self._wait_for_dropdown_option(title, name)
+            before = self._selected_multi_count(component)
             if self._option_is_selected(option):
                 # 该值可能是页面回填的既有选择；重复点击会把它取消。
                 self.page.keyboard.press("Escape")
                 continue
-            try:
-                option.click(timeout=self.action_timeout_ms)
-            except Exception as exc:
-                try:
-                    option.click(force=True, timeout=self.action_timeout_ms)
-                except Exception as force_exc:
-                    raise PlatformInputUiError(
-                        f"选择“{title}={name}”失败: {force_exc}"
-                    ) from exc
 
             def selected() -> bool:
-                option = self._find_dropdown_option(name)
-                if self._option_is_selected(option):
-                    return True
-                current = self._field_component(title)
-                if current is None:
+                if component is None:
                     return False
-                labels, _count, complete = self._selected_multi_labels(current)
+                labels, _count, complete = self._selected_multi_labels(component)
                 if _normalise_text(name).casefold() in labels:
                     return True
                 # If the UI collapses labels, only the count is available. It
                 # must increase relative to the state immediately before this
                 # click, not relative to a stale count from a previous run.
-                return self._selected_multi_count(current) > before
+                return self._selected_multi_count(component) > before
 
-            self._wait_until(
-                selected,
-                f"选择“{title}={name}”后页面没有显示已选值",
-                timeout_seconds=10,
-            )
+            fast_clicked = _dispatch_click(option)
+            if not fast_clicked:
+                try:
+                    option.click(timeout=self.action_timeout_ms)
+                except Exception as exc:
+                    try:
+                        option.click(force=True, timeout=self.action_timeout_ms)
+                    except Exception as force_exc:
+                        raise PlatformInputUiError(
+                            f"选择“{title}={name}”失败: {force_exc}"
+                        ) from exc
+            try:
+                self._wait_until(
+                    selected,
+                    f"选择“{title}={name}”后页面没有显示已选值",
+                    timeout_seconds=10,
+                    interval_ms=50,
+                )
+            except PlatformInputUiError as exc:
+                if not fast_clicked:
+                    raise
+                try:
+                    if selected():
+                        continue
+                    option.click(timeout=self.action_timeout_ms)
+                    self._wait_until(
+                        selected,
+                        f"选择“{title}={name}”后页面没有显示已选值",
+                        timeout_seconds=10,
+                        interval_ms=50,
+                    )
+                except Exception as fallback_exc:
+                    raise PlatformInputUiError(
+                        f"选择“{title}={name}”后页面没有显示已选值"
+                    ) from fallback_exc
         self.page.keyboard.press("Escape")
         self._wait_until(
             lambda: self._multi_selection_matches(title, wanted_names),
             f"填写“{title}”后页面选中值与输入不一致",
             timeout_seconds=10,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def fill_base_form(self) -> None:
@@ -655,12 +746,16 @@ class PlatformInputFormMixin:
         self._search_template_if_needed()
         card = find_card()
         if card is None:
+            def card_ready() -> bool:
+                nonlocal card
+                card = find_card()
+                return card is not None
+
             self._wait_until(
-                lambda: find_card() is not None,
+                card_ready,
                 f"没有找到题型模板“{self.spec.template_name}”",
                 timeout_seconds=20,
             )
-            card = find_card()
         if card is None:
             raise PlatformInputUiError(f"没有找到题型模板“{self.spec.template_name}”")
 
@@ -914,7 +1009,6 @@ class PlatformInputFormMixin:
                 except Exception:
                     control = None
             control = control or card
-            control.scroll_into_view_if_needed()
             check = getattr(control, "check", None)
             if callable(check):
                 try:

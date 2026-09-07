@@ -22,6 +22,7 @@ from .constants import (
     TEXTBOOK_MANAGEMENT_URL,
     TEXTBOOK_PAGE_PATH,
 )
+from .page_shared import _press_focused_key, _select_all_editable_text
 
 
 def _text(value: Any, *, limit: int = 1024) -> str:
@@ -498,7 +499,6 @@ def _click_exact(page: Any, text: str, *, timeout: int = 15_000) -> None:
     candidate = _visible_exact(page, text)
     if candidate is None:
         raise RuntimeError(f"页面上没有找到可点击文本：{text}")
-    candidate.scroll_into_view_if_needed(timeout=timeout)
     candidate.click(timeout=timeout)
 
 
@@ -511,7 +511,7 @@ def _wait_for_cards(page: Any, count: int, timeout: int = 30_000) -> Any:
                 return cards
         except Exception:
             pass
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(50)
     raise RuntimeError(f"等待课文句子卡片超时：需要 {count} 个")
 
 
@@ -526,7 +526,6 @@ def _ensure_card_count(page: Any, count: int) -> Any:
         button = _visible_exact(page, "继续添加下一句") or _visible_exact(page, "继续添加句子")
         if button is None:
             raise RuntimeError(f"无法继续添加句子：当前 {current} / {count}")
-        button.scroll_into_view_if_needed()
         button.click()
         cards = _wait_for_cards(page, current + 1)
         current = cards.count()
@@ -540,10 +539,8 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
         return expected in actual if expected else not actual
 
     try:
-        editor.scroll_into_view_if_needed()
-        editor.click()
-        editor.press("ControlOrMeta+A")
-        editor.press("Backspace")
+        _select_all_editable_text(editor)
+        _press_focused_key(page, editor, "Backspace")
         if value:
             keyboard = getattr(page, "keyboard", None)
             insert_text = (
@@ -555,7 +552,7 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
                 insert_text(str(value))
             else:
                 editor.type(value)
-        editor.press("Tab")
+        _press_focused_key(page, editor, "Tab")
         actual = re.sub(r"\s+", " ", str(editor.inner_text() or "")).strip()
         if not readback_matches(actual):
             # A few historical editor builds only committed text after the
@@ -564,10 +561,10 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
             # paragraph one event per character.
             editor.click()
             editor.press("ControlOrMeta+A")
-            editor.press("Backspace")
+            _press_focused_key(page, editor, "Backspace")
             if value:
                 editor.type(value)
-            editor.press("Tab")
+            _press_focused_key(page, editor, "Tab")
             actual = re.sub(
                 r"\s+", " ", str(editor.inner_text() or "")
             ).strip()
@@ -654,46 +651,109 @@ def _find_dropdown_option(page: Any, value: str) -> Any | None:
 
 def _select_option(page: Any, index: int, value: str) -> None:
     selectors = page.locator(".el-select__wrapper:visible")
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and selectors.count() <= index:
-        page.wait_for_timeout(200)
-    if selectors.count() <= index:
-        raise RuntimeError(f"创建页面下拉框数量不足，无法选择第 {index + 1} 项：{value}")
-
     selector = selectors.nth(index)
-    selector.scroll_into_view_if_needed()
-    # 弹层渲染有延迟；若一直没有选项，可能是下拉没有展开，重新点击。
-    option = None
-    open_deadline = time.monotonic() + 12
-    next_retry = time.monotonic() + 2.5
-    selector.click()
-    while time.monotonic() < open_deadline:
-        option = _find_dropdown_option(page, value)
-        if option is not None:
-            break
-        if time.monotonic() >= next_retry:
-            selector.click()
-            next_retry = time.monotonic() + 2.5
-        page.wait_for_timeout(250)
-    if option is None:
-        visible_texts = page.locator(".el-select-dropdown__item:visible").all_inner_texts()
+    try:
+        # The wrapper is visible and already resolved.  Dispatching its click
+        # avoids a Windows hit-test round trip; a real click remains the
+        # fallback for page builds that reject synthetic events.
+        dispatch_open = getattr(selector, "dispatch_event", None)
+        opened_dispatched = False
+        if callable(dispatch_open):
+            try:
+                dispatch_open("click", timeout=500)
+                opened_dispatched = True
+            except Exception:
+                pass
+        if not opened_dispatched:
+            selector.click(timeout=15_000)
+    except Exception as exc:
         raise RuntimeError(
-            f"下拉框中没有找到选项：{value}；当前可见选项={visible_texts[:20]}"
+            f"创建页面下拉框数量不足，无法选择第 {index + 1} 项：{value}"
+        ) from exc
+
+    # 弹层渲染有延迟；若一直没有选项，可能是下拉没有展开，重新点击。
+    escaped_parts = [re.escape(part) for part in value.split()]
+    option_text = re.compile(
+        r"^\s*" + r"\s+".join(escaped_parts) + r"\s*$",
+        re.IGNORECASE,
+    )
+    option = page.locator("li:visible, [role='option']:visible").filter(
+        has_text=option_text
+    ).last
+    dispatched = False
+    try:
+        # The option is already visible and resolved.  A DOM click avoids a
+        # second Windows actionability/hit-test round trip; if this page
+        # variant ignores synthetic clicks, the normal Playwright click below
+        # remains the compatibility path.
+        dispatch_event = getattr(option, "dispatch_event", None)
+        if callable(dispatch_event):
+            try:
+                dispatch_event("click", timeout=500)
+                dispatched = True
+            except Exception:
+                pass
+        if not dispatched:
+            option.click(timeout=2_500)
+    except Exception:
+        try:
+            if not opened_dispatched:
+                raise RuntimeError("synthetic open was not used")
+            # The synthetic open may have worked even if the option event did
+            # not.  Try the real option click before toggling the wrapper.
+            if option.count():
+                option.click(timeout=2_500)
+            else:
+                selector.click(timeout=2_500)
+                option.click(timeout=9_500)
+        except Exception:
+            try:
+                selector.click(timeout=2_500)
+                option.click(timeout=9_500)
+            except Exception as exc:
+                # Keep the older DOM variants as a compatibility fallback,
+                # but do not charge the normal path repeated Python scans.
+                option = _find_dropdown_option(page, value)
+                if option is None:
+                    visible_texts = page.locator(
+                        ".el-select-dropdown__item:visible"
+                    ).all_inner_texts()
+                    raise RuntimeError(
+                        f"下拉框中没有找到选项：{value}；当前可见选项={visible_texts[:20]}"
+                    ) from exc
+                option.click()
+    selected_text = re.compile(
+        r"\s*".join(escaped_parts),
+        re.IGNORECASE,
+    )
+    try:
+        selector.filter(has_text=selected_text).wait_for(
+            state="visible",
+            timeout=3_000,
         )
-    option.click()
-    expected_normalized = re.sub(r"\s+", "", value).casefold()
-    shown = ""
-    selected_deadline = time.monotonic() + 3
-    while time.monotonic() < selected_deadline:
+    except Exception as exc:
         try:
             shown = re.sub(r"\s+", "", str(selector.inner_text() or ""))
         except Exception:
             shown = ""
-        if expected_normalized in shown.casefold():
-            return
-        page.wait_for_timeout(50)
-    if expected_normalized not in shown.casefold():
-        raise RuntimeError(f"下拉框回读不一致：期望 {value!r}，实际 {shown!r}")
+        expected = re.sub(r"\s+", "", value).casefold()
+        if expected not in shown.casefold():
+            if dispatched:
+                # Some older page builds ignore a synthetic click.  Only
+                # replay the real click after the fast path failed its
+                # readback, so the normal path never pays for two clicks.
+                try:
+                    option.click(timeout=2_500)
+                    selector.filter(has_text=selected_text).wait_for(
+                        state="visible",
+                        timeout=3_000,
+                    )
+                    return
+                except Exception as fallback_exc:
+                    exc = fallback_exc
+            raise RuntimeError(
+                f"下拉框回读不一致：期望 {value!r}，实际 {shown!r}"
+            ) from exc
 
 
 def _fill_classification(page: Any, record: Mapping[str, Any]) -> None:
@@ -727,7 +787,6 @@ def _fill_content(
         if control_check is not None:
             control_check()
         card = cards.nth(index)
-        card.scroll_into_view_if_needed()
         editors = card.locator(
             '.rich-text-editor .editor-content[contenteditable="true"]'
         )
@@ -757,7 +816,9 @@ def _fill_content(
                     break
             except Exception:
                 pass
-            page.wait_for_timeout(250)
+            # The filename is rendered asynchronously, but a quarter-second
+            # polling interval makes every upload pay a visible Windows tax.
+            page.wait_for_timeout(50)
         else:
             raise RuntimeError(f"第 {index + 1} 条音频回读失败：{stem}")
         if control_check is not None:
@@ -946,7 +1007,6 @@ def verify_live(
 
             _open_text_list(page, max(1, int(login_timeout)))
             search = page.locator("input[placeholder*='课文名称']").first
-            search.scroll_into_view_if_needed()
             search.fill(title)
             page.keyboard.press("Enter")
             page.wait_for_timeout(2500)

@@ -159,7 +159,6 @@ class PlatformInputAssetMixin:
             if deletes.count() == 0:
                 return
             delete = deletes.first
-            delete.scroll_into_view_if_needed()
             delete.click(timeout=self.action_timeout_ms)
         except Exception as exc:
             raise PlatformInputUiError(
@@ -179,7 +178,7 @@ class PlatformInputAssetMixin:
             cleared,
             f"{description}清除{label}后页面仍显示旧音频",
             timeout_seconds=15,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def _audio_delete_near_label(
@@ -225,6 +224,7 @@ class PlatformInputAssetMixin:
                     is not None,
                     f"清除第 {occurrence + 1} 个音频后上传控件没有出现",
                     timeout_seconds=15,
+                    interval_ms=50,
                 )
                 input_locator = self._file_input_near_label(
                     occurrence,
@@ -296,7 +296,7 @@ class PlatformInputAssetMixin:
             rendered,
             f"{description}{label}上传后页面没有显示文件",
             timeout_seconds=60,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def _upload_audio_in_scope(
@@ -319,7 +319,6 @@ class PlatformInputAssetMixin:
             try:
                 delete = region.locator(".deleteBtn img:visible")
                 if delete.count():
-                    delete.first.scroll_into_view_if_needed()
                     delete.first.click(timeout=self.action_timeout_ms)
             except Exception as exc:
                 raise PlatformInputUiError(
@@ -329,7 +328,7 @@ class PlatformInputAssetMixin:
                 lambda: self._audio_file_input_in_scope(scope, label) is not None,
                 f"{description}清除已有{label}后上传控件没有出现",
                 timeout_seconds=15,
-                interval_ms=100,
+                interval_ms=50,
             )
             input_locator = self._audio_file_input_in_scope(scope, label)
         if input_locator is None:
@@ -401,6 +400,7 @@ class PlatformInputAssetMixin:
             rendered,
             f"第 {occurrence + 1} 个音频上传后页面没有显示文件",
             timeout_seconds=60,
+            interval_ms=50,
         )
 
     def _file_input_near_text(
@@ -513,7 +513,6 @@ class PlatformInputAssetMixin:
         if image is None:
             return
         try:
-            image.scroll_into_view_if_needed()
             # 页面菜单由图片悬浮状态控制。这里只移动鼠标来挂载菜单，不能
             # 点击图片：点击会触发浏览器原生的文件选择器。真正的上传统一
             # 通过后面的 input[type=file].set_input_files 完成。
@@ -526,7 +525,7 @@ class PlatformInputAssetMixin:
             lambda: self._image_region(occurrence) is not None,
             f"第 {occurrence + 1} 个已有信息记录表图片没有出现替换控件",
             timeout_seconds=10,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def _image_delete(self, occurrence: int = 0) -> Any | None:
@@ -576,7 +575,6 @@ class PlatformInputAssetMixin:
             delete = self._image_delete(occurrence)
             if delete is not None:
                 try:
-                    delete.scroll_into_view_if_needed()
                     delete.click(timeout=self.action_timeout_ms)
                 except Exception as exc:
                     raise PlatformInputUiError("清除已有信息记录表图片失败") from exc
@@ -588,6 +586,7 @@ class PlatformInputAssetMixin:
                     == 1,
                     f"清除第 {occurrence + 1} 个信息记录表图片后上传控件没有出现",
                     timeout_seconds=15,
+                    interval_ms=50,
                 )
                 region = self._image_region(occurrence)
                 if region is not None:
@@ -625,4 +624,5 @@ class PlatformInputAssetMixin:
             rendered,
             f"第 {occurrence + 1} 个信息记录表图片上传后页面没有显示图片",
             timeout_seconds=60,
+            interval_ms=50,
         )

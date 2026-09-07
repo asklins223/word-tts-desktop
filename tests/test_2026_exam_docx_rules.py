@@ -96,7 +96,10 @@ def test_full_2026_exam_is_supported(path):
     assert build_synthesis_segments(
         record_item["text"], 50, 50, 50
     )[0]["voice_key"] == "amanda"
-    assert by_type["听后记录并转述信息"]["retelling"]["answer_time"] == 90
+    retelling = by_type["听后记录并转述信息"]["retelling"]
+    assert retelling["prompt"]
+    assert not retelling["prompt"].endswith(" .")
+    assert retelling["answer_time"] == 90
 
     imitation_items = by_type["模仿朗读"]["items"]
     assert len(imitation_items) == 1

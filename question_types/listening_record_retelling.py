@@ -72,7 +72,8 @@ class ListeningRecordRetellingParser(BaseParser):
     # table and listening script.
     RE_RETELLING_SECTION = re.compile(
         r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
-        r"第二节(?:\s*[：:]?\s*信息转述)?"
+        r"第二节\s*[：:]?\s*信息转述"
+        r"(?:\s*[（(【\[].*?[）)】\]]\s*)?$"
     )
     RE_SCORE_PER_ITEM = re.compile(
         r"每小题\s*([0-9０-９]+(?:[.]\d+)?)\s*分"
@@ -136,6 +137,66 @@ class ListeningRecordRetellingParser(BaseParser):
                 table_index = None
             if table_index is not None and table_index >= 0:
                 return table_index
+        return None
+
+    @classmethod
+    def _retelling_prompt_candidate(cls, value):
+        """从转述区的一行或一个结构块中提取英文题干。
+
+        Word 的横线可能是实际下划线、全角下划线、段落底边框或单独的
+        空白段落，不能把某一种排版形式当成题干存在的必要条件。
+        """
+
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+
+        # 没有中文控制文字时保留同一段落中的换行，兼容题干与横线在同一
+        # 段落、以及英文题干被显式换行的情况；含中文的结构块则逐行筛选。
+        candidates = [raw] if not is_chinese(raw) else raw.splitlines()
+        for candidate in candidates:
+            candidate = str(candidate or '').strip()
+            if not candidate:
+                continue
+            if '参考答案' in candidate or cls.RE_CONTROL.search(candidate):
+                continue
+            if match_script_marker(candidate):
+                continue
+
+            prompt = re.sub(r'^\s*\d+\s*[.．、）)]\s*', '', candidate)
+            prompt = re.sub(r'[_＿]+', '', prompt)
+            prompt = sanitize(prompt).strip()
+            prompt = re.sub(r'\s+([.,!?;:])', r'\1', prompt)
+            # 清理题干与版式横线/换行拼接出的重复句号。
+            prompt = re.sub(r'(?:\.\s*){2,}$', '.', prompt)
+            if re.search(r'[A-Za-z]', prompt):
+                return prompt
+        return None
+
+    def _retelling_prompt_from_blocks(self):
+        """在普通段落未覆盖的表格/文本框中兜底寻找转述题干。"""
+
+        active = False
+        for block in self.document_blocks or ():
+            for value in str(block.text or '').splitlines() or ['']:
+                value = value.strip()
+                if not value:
+                    continue
+                if self.RE_RETELLING_SECTION.match(value):
+                    active = True
+                    continue
+                if not active:
+                    continue
+                if '参考答案' in value:
+                    return None
+                if (
+                    self.RE_ANY_SECTION.match(value)
+                    or is_major_section_heading(value)
+                ):
+                    return None
+                prompt = self._retelling_prompt_candidate(value)
+                if prompt:
+                    return prompt
         return None
 
     def parse(self):
@@ -235,22 +296,18 @@ class ListeningRecordRetellingParser(BaseParser):
                 continue
 
             if in_retelling_section:
+                # 转述区也必须在下一节/下一题型开始时停止，否则后续英文
+                # 内容会覆盖题干或被错误地收进参考答案。
+                if (
+                    self.RE_ANY_SECTION.match(value)
+                    or is_major_section_heading(value)
+                ):
+                    in_retelling_section = False
+                    collecting_retelling_answers = False
+                    continue
                 time_match = self.RE_RETELLING_TIME.search(value)
                 if time_match and retelling_answer_time is None:
                     retelling_answer_time = parse_number(time_match.group(1))
-                # The prompt is the sentence with a blank line/underscore on
-                # the page, not the preceding computer-instruction paragraph.
-                if "_" in value and re.search(r"[A-Za-z]", value):
-                    prompt = re.sub(r"_+", "", value)
-                    prompt = re.sub(r"^\s*\d+\s*[.．、）)]\s*", "", prompt)
-                    prompt = sanitize(prompt).strip()
-                    # Some Word answer lines put one full stop before the
-                    # underscore rule and another at the end of the next
-                    # paragraph.  Keep the sentence punctuation, but do not
-                    # expose the layout seam as a double full stop.
-                    prompt = re.sub(r"\.{2,}\s*$", ".", prompt)
-                    retelling_prompt = prompt or retelling_prompt
-                    continue
                 if "参考答案" in value or match_script_marker(value):
                     collecting_retelling_answers = "参考答案" in value
                     remainder = re.sub(r"^.*?参考答案\s*[：:]?", "", value).strip()
@@ -274,6 +331,10 @@ class ListeningRecordRetellingParser(BaseParser):
                         )
                         if answer_line and re.search(r"[A-Za-z]", answer_line):
                             retelling_answers.append(sanitize(answer_line))
+                # The prompt is a structural slot in the retelling section;
+                # blank-line characters are only optional layout markers.
+                elif retelling_prompt is None:
+                    retelling_prompt = self._retelling_prompt_candidate(value)
                 continue
 
             # “答题区域”本身会先结束第一节，参考答案常在下一段才出现；
@@ -360,6 +421,8 @@ class ListeningRecordRetellingParser(BaseParser):
                     current_lines.append(payload)
 
         flush()
+        if retelling_prompt is None:
+            retelling_prompt = self._retelling_prompt_from_blocks()
         if use_exam_naming and items:
             type_path = ["听后记录并转述信息", "第一节听后记录"]
             for ordinal, item in enumerate(items, start=1):
