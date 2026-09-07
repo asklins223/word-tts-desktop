@@ -140,6 +140,13 @@ jobs:
           DIAGNOSTIC_ROUNDS: '5'
         run: python tools/windows_composite_diagnostic.py
 
+      - name: Run Windows editor fill probe
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
+          DIAGNOSTIC_ROUNDS: '5'
+        run: python tools/windows_editor_fill_probe.py
+
       - name: Run focused Windows regression tests
         run: python -m unittest tests.test_textbook_page tests.test_platform_input tests.test_platform_input_batch_probe
 
@@ -151,6 +158,7 @@ jobs:
           path: |
             windows-speed-results.json
             windows-speed-trace.zip
+            windows-editor-fill-results.json
           retention-days: 7
           if-no-files-found: warn
 
