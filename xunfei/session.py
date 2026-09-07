@@ -26,6 +26,7 @@ from .config import (
     _platform_user_agent,
     configure_playwright_runtime,
     playwright_runtime_diagnostics,
+    shared_chrome_launch_args,
 )
 from .errors import (
     XunfeiBrowserLaunchError,
@@ -363,23 +364,13 @@ class SessionLifecycleMixin:
         bundled_chromium = _find_bundled_chromium()
         launch_args = [
             "--disable-blink-features=AutomationControlled",
-            "--no-first-run",
-            "--no-default-browser-check",
             "--window-size=1440,1000",
             "--lang=zh-CN",
             "--mute-audio",
             # 自动化只需要当前讯飞页面，不需要 Chrome 的后台同步、组件
             # 更新、扩展和通知。这些服务在低配电脑上会持续占用网络、内存
             # 和后台线程，但不会影响登录、合成或下载。
-            "--disable-background-networking",
-            "--disable-background-mode",
-            "--disable-component-update",
-            "--disable-default-apps",
-            "--disable-extensions",
-            "--disable-notifications",
-            "--disable-sync",
-            "--metrics-recording-only",
-            "--no-pings",
+            *shared_chrome_launch_args(),
         ]
         # 仅 Linux 容器/沙箱需要这个兼容参数。macOS/Windows 没有 /dev/shm，
         # 强制走磁盘反而可能降低 Chromium 的渲染和页面交互速度。

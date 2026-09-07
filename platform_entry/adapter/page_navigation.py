@@ -5,6 +5,33 @@ from __future__ import annotations
 from .page_shared import *  # noqa: F403,F401
 
 
+# One-shot visibility probe: instead of paying one protocol round-trip per
+# candidate (count + nth + is_visible), evaluate_all resolves every match
+# inside the browser and returns the first plausibly visible index.  The
+# Python side still verifies the winner with the real Playwright
+# ``is_visible`` so the effective semantics cannot drift from the
+# per-candidate loop on engines whose visibility rules differ.
+_FIRST_VISIBLE_INDEX_JS = """
+(nodes) => {
+    for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        if (!node || typeof node.getBoundingClientRect !== 'function') {
+            continue;
+        }
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+            continue;
+        }
+        if (window.getComputedStyle(node).visibility === 'hidden') {
+            continue;
+        }
+        return index;
+    }
+    return -1;
+}
+"""
+
+
 class PlatformInputNavigationMixin:
     """Open new/existing papers and activate lazy-loaded page sections."""
 
@@ -54,11 +81,34 @@ class PlatformInputNavigationMixin:
                 pass
 
     def _first_visible(self, locator: Any) -> Any | None:
+        # Fast path: resolve the first visible candidate in a single
+        # round-trip, then confirm it with the real ``is_visible``.  Test
+        # shims and engines without ``evaluate_all`` simply fall through to
+        # the original per-candidate loop below.
+        batch_probe = getattr(locator, "evaluate_all", None)
+        start_index = 0
+        if callable(batch_probe):
+            try:
+                found = int(batch_probe(_FIRST_VISIBLE_INDEX_JS))
+            except Exception:
+                found = -1
+            if found >= 0:
+                try:
+                    candidate = locator.nth(found)
+                    if candidate.is_visible():
+                        return candidate
+                except Exception:
+                    pass
+                # The in-browser approximation disagreed with the engine, so
+                # it cannot be trusted to have skipped only invisible earlier
+                # candidates; rescan from the very first element to keep the
+                # returned node identical to the plain loop's choice.
+                start_index = 0
         try:
             count = locator.count()
         except Exception:
             return None
-        for index in range(count):
+        for index in range(start_index, count):
             try:
                 candidate = locator.nth(index)
                 if candidate.is_visible():

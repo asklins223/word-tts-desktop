@@ -28,6 +28,9 @@ let targetSelectSequence = 0;
 // 否则共享的 scroll 监听会把菜单内部滚动误判为页面滚动而直接收起。
 const districtPickers = new Set();
 let districtDocumentBound = false;
+let targetActionDockObserver = null;
+let targetActionDockFallbackTimer = null;
+let targetActionDockResizeBound = false;
 function copy(value, seen = new WeakMap()) {
     // Target values are plain configuration data, but they may temporarily
     // contain undefined fields while a cascade is being rebuilt. Cloning via
@@ -852,6 +855,7 @@ function targetEditorClosed({ saved = false } = {}) {
         panel.setAttribute('aria-hidden', 'false');
     }
     drawer?.setAttribute('aria-hidden', 'true');
+    teardownTargetActionDock();
     state = null;
 }
 function targetEditorRecordManual(configuration) {
@@ -934,6 +938,195 @@ function targetEditorShouldPreserveInlineFocus(body) {
         || active.closest('.target-select, .target-number'),
     );
 }
+function ensureTargetActionDock() {
+    let dock = $('target-action-dock');
+    if (dock) return dock;
+    const panel = document.querySelector('.is-workspace .system-input-drawer-panel');
+    if (!panel) return null;
+    dock = el('div', 'target-action-dock');
+    dock.id = 'target-action-dock';
+    dock.hidden = true;
+    dock.setAttribute('aria-label', '批量工具悬浮入口');
+    dock.setAttribute('role', 'toolbar');
+    dock.setAttribute('aria-hidden', 'true');
+    const createDockBtn = (action, iconClass, label) => {
+        const btn = el('button', 'target-action-dock-btn');
+        btn.type = 'button';
+        btn.dataset.dockAction = action;
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+        btn.dataset.tooltip = label;
+        const icon = el('span', `target-action-icon ${iconClass}`);
+        icon.setAttribute('aria-hidden', 'true');
+        btn.append(icon);
+        return btn;
+    };
+    const commonBtn = createDockBtn('common', 'is-common', '批次共用设置');
+    const templateBtn = createDockBtn('template', 'is-template', '常用录入方案');
+    const batchBtn = createDockBtn('batch', 'is-batch', '批量修改');
+    commonBtn.addEventListener('click', () => {
+        const origin = $('target-common-open');
+        if (!origin || origin.hidden || origin.disabled) return;
+        state.lastModalTrigger = commonBtn;
+        openTargetModal($('target-common'));
+        renderCommon();
+    });
+    templateBtn.addEventListener('click', () => {
+        const origin = $('target-template-open');
+        if (!origin || origin.hidden || origin.disabled) return;
+        const optional = document.querySelector('.target-template-modal');
+        if (!optional) return;
+        state.lastModalTrigger = templateBtn;
+        openTargetModal(optional);
+        optional.open = true;
+    });
+    batchBtn.addEventListener('click', () => {
+        const origin = $('target-batch-open');
+        if (!origin || origin.hidden || origin.disabled) return;
+        prepareBatch();
+    });
+    dock.append(commonBtn, templateBtn, batchBtn);
+    panel.append(dock);
+    return dock;
+}
+
+function syncTargetActionDock() {
+    const dock = $('target-action-dock') || ensureTargetActionDock();
+    if (!dock || !state) return;
+    const bar = document.querySelector('.target-action-bar');
+    const overview = $('target-overview');
+    const hideByType = !bar || bar.hidden || overview?.classList.contains('is-empty') || overview?.hidden;
+    if (hideByType) {
+        dock.hidden = true;
+        dock.classList.remove('is-visible');
+        dock.setAttribute('aria-hidden', 'true');
+        return;
+    }
+    const commonOrigin = $('target-common-open');
+    const templateOrigin = $('target-template-open');
+    const batchOrigin = $('target-batch-open');
+    const commonBtn = dock.querySelector('[data-dock-action="common"]');
+    const templateBtn = dock.querySelector('[data-dock-action="template"]');
+    const batchBtn = dock.querySelector('[data-dock-action="batch"]');
+    if (commonBtn && commonOrigin) {
+        const label = commonOrigin.getAttribute('title') || commonOrigin.getAttribute('aria-label') || '批次共用设置';
+        commonBtn.title = label;
+        commonBtn.dataset.tooltip = commonOrigin.dataset.tooltip || label;
+        commonBtn.setAttribute('aria-label', commonOrigin.getAttribute('aria-label') || label);
+        commonBtn.hidden = commonOrigin.hidden;
+        commonBtn.disabled = Boolean(commonOrigin.disabled);
+    }
+    if (templateBtn && templateOrigin) {
+        const label = templateOrigin.getAttribute('title') || templateOrigin.getAttribute('aria-label') || '常用录入方案';
+        templateBtn.title = label;
+        templateBtn.dataset.tooltip = templateOrigin.dataset.tooltip || label;
+        templateBtn.setAttribute('aria-label', templateOrigin.getAttribute('aria-label') || label);
+        templateBtn.hidden = templateOrigin.hidden;
+        templateBtn.disabled = Boolean(templateOrigin.disabled);
+    }
+    if (batchBtn && batchOrigin) {
+        const label = batchOrigin.getAttribute('title') || batchOrigin.getAttribute('aria-label') || '批量修改';
+        batchBtn.title = label;
+        batchBtn.dataset.tooltip = batchOrigin.dataset.tooltip || label;
+        batchBtn.setAttribute('aria-label', batchOrigin.getAttribute('aria-label') || label);
+        batchBtn.hidden = batchOrigin.hidden;
+        batchBtn.disabled = Boolean(batchOrigin.disabled);
+    }
+    // 可见性由 IntersectionObserver 决定；若无 Observer 则用 fallback
+    if (!targetActionDockObserver) updateTargetActionDockVisibilityFallback();
+}
+
+function updateTargetActionDockVisibilityFallback() {
+    const dock = $('target-action-dock');
+    const bar = document.querySelector('.target-action-bar');
+    const form = $('system-input-form');
+    const overview = $('target-overview');
+    if (!dock || !bar || !form || !overview || overview.hidden || overview.classList.contains('is-empty') || bar.hidden) {
+        if (dock) { dock.hidden = true; dock.classList.remove('is-visible'); dock.setAttribute('aria-hidden', 'true'); }
+        return;
+    }
+    const formRect = form.getBoundingClientRect();
+    const barRect = bar.getBoundingClientRect();
+    // jsdom / 无布局环境下 rect 均为 0，视为可见以避免测试中误显示悬浮
+    const hasLayout = formRect.width || formRect.height || barRect.width || barRect.height;
+    if (!hasLayout) {
+        dock.hidden = true;
+        dock.classList.remove('is-visible');
+        dock.setAttribute('aria-hidden', 'true');
+        return;
+    }
+    // 当工具栏完全滚出可视区（顶部或底部不可见）时显示悬浮组
+    const isVisible = barRect.bottom > formRect.top + 8 && barRect.top < formRect.bottom - 8;
+    const shouldShow = !isVisible;
+    dock.hidden = !shouldShow;
+    dock.classList.toggle('is-visible', shouldShow);
+    dock.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
+}
+
+function ensureTargetActionDockObserver() {
+    const dock = ensureTargetActionDock();
+    const bar = document.querySelector('.target-action-bar');
+    const form = $('system-input-form');
+    if (!dock || !bar || !form) return;
+    if (targetActionDockObserver) targetActionDockObserver.disconnect();
+    // 优先使用 IntersectionObserver（以表单为 root）
+    if (typeof IntersectionObserver === 'function') {
+        try {
+            targetActionDockObserver = new IntersectionObserver(entries => {
+                const entry = entries[0];
+                const overview = $('target-overview');
+                if (!entry || !dock) return;
+                if (!overview || overview.hidden || overview.classList.contains('is-empty') || bar.hidden) {
+                    dock.hidden = true;
+                    dock.classList.remove('is-visible');
+                    dock.setAttribute('aria-hidden', 'true');
+                    return;
+                }
+                const visible = Boolean(entry.isIntersecting && entry.intersectionRatio > 0);
+                const shouldShow = !visible;
+                dock.hidden = !shouldShow;
+                dock.classList.toggle('is-visible', shouldShow);
+                dock.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
+                syncTargetActionDock();
+            }, { root: form, threshold: 0, rootMargin: '-4px 0px 0px 0px' });
+            targetActionDockObserver.observe(bar);
+            // 初始化同步一次（此时 observer 已建立，不再走 fallback）
+            // 保持隐藏直到 observer 回调确认不可见
+            dock.hidden = true;
+            dock.classList.remove('is-visible');
+            dock.setAttribute('aria-hidden', 'true');
+            syncTargetActionDock();
+            if (!targetActionDockResizeBound) {
+                window.addEventListener('resize', syncTargetActionDock);
+                targetActionDockResizeBound = true;
+            }
+            // 移除可能残留的 fallback 监听，避免与 observer 冲突
+            form.removeEventListener('scroll', updateTargetActionDockVisibilityFallback);
+            return;
+        } catch (_) {
+            // 回退到 scroll 方案
+        }
+    }
+    // Fallback：纯 scroll/resize 监听
+    targetActionDockObserver = null;
+    if (targetActionDockFallbackTimer) clearInterval(targetActionDockFallbackTimer);
+    updateTargetActionDockVisibilityFallback();
+    form.removeEventListener('scroll', updateTargetActionDockVisibilityFallback);
+    form.addEventListener('scroll', updateTargetActionDockVisibilityFallback, { passive: true });
+    if (!targetActionDockResizeBound) {
+        window.addEventListener('resize', updateTargetActionDockVisibilityFallback);
+        targetActionDockResizeBound = true;
+    }
+}
+
+function teardownTargetActionDock() {
+    const dock = $('target-action-dock');
+    if (dock) { dock.hidden = true; dock.classList.remove('is-visible'); dock.setAttribute('aria-hidden', 'true'); }
+    if (targetActionDockObserver) { try { targetActionDockObserver.disconnect(); } catch (_) {} targetActionDockObserver = null; }
+    const form = $('system-input-form');
+    if (form) form.removeEventListener('scroll', updateTargetActionDockVisibilityFallback);
+}
+
 function markChanged(id) { if (state) state.changed.add(String(id)); }
 function commitInline(id, key, value) {
     if (!targetEditorCanSave()) return;
@@ -1678,6 +1871,10 @@ function refreshSystemInputTargetEditor({ force = false } = {}) {
         // recreates one hidden native option per server record.
         $('target-platform-names').replaceChildren();
     } finally { rendering = false; }
+    // 同步右侧悬浮图标组状态与可见性（图标形式 + hover 提示）
+    syncTargetActionDock();
+    // 首次渲染后确保观察者已绑定，滚动时自动切换悬浮显示
+    requestAnimationFrame(() => ensureTargetActionDockObserver());
 }
 // Async catalog/region/template reads can finish after the drawer and one of
 // its child dialogs are already open. Repaint the shared fields in place so
@@ -1699,6 +1896,10 @@ function targetEditorRefreshAfterDataLoad() {
 function refreshSelection() {
     $('target-selection-note').textContent = `已选 ${state.selected.size} 条用于批量修改`;
     $('target-batch-open').disabled = !state.selected.size;
+    const batchTip = state.selected.size ? `已选 ${state.selected.size} 条用于批量修改` : '先勾选条目';
+    $('target-batch-open').dataset.tooltip = `批量修改 · ${batchTip}`;
+    $('target-batch-open').title = `批量修改：${batchTip}`;
+    syncTargetActionDock();
     updateSystemInputAppTemplateAction?.(systemInputInteractionWorkspace()?.system_input);
     if (state.batch && targetModalIsOpen($('target-batch'))) {
         renderTargetBatchCategory();
@@ -2527,6 +2728,8 @@ function mountSystemInputTargetEditor() {
     [common, batch, detail, source, optional].filter(Boolean).forEach(node => node.addEventListener('click', event => { if (event.target === node) closeTargetEditorSurface(node); }));
     document.querySelector('#sidebar')?.addEventListener('click', event => { if (targetEditorActive() && event.target.closest('button')) closeSystemInputConfigDrawer(); }, true);
     window.addEventListener('beforeunload', targetEditorPersist);
+    ensureTargetActionDock();
+    ensureTargetActionDockObserver();
 }
 function openSystemInputTargetEditor(workspace, draft = null) {
     mountSystemInputTargetEditor();
@@ -2577,6 +2780,9 @@ function openSystemInputTargetEditor(workspace, draft = null) {
     document.querySelectorAll('#app, #sidebar, #toolbar, #content > .step-page.active, #content > .workspace-action-dock').forEach(node => { if (!node.inert) { node.inert = true; node.dataset.targetEditorInert = 'true'; } });
     $('system-input-drawer-title')?.focus({ preventScroll: true });
     targetEditorSyncBoundaryReview();
+    ensureTargetActionDock();
+    syncTargetActionDock();
+    requestAnimationFrame(() => ensureTargetActionDockObserver());
 }
 
 root.systemInputTargetFocusField = targetEditorFocusField;

@@ -11,6 +11,10 @@ PAPER_TITLE_PLACEHOLDER = (
     "请输入完整试卷名称，例如：2026年佛山市南海区初二上学期英语听说期中考试"
 )
 
+# One round-trip instead of count + nth + inner_text per option; matching
+# still happens in Python with the shared _normalise_text helper.
+_DROPDOWN_TEXTS_JS = "(nodes) => nodes.map((node) => String(node.innerText || ''))"
+
 
 def _comparable_input_text(raw: Any) -> str:
     """Compare page input values without deleting meaningful inner spaces."""
@@ -49,6 +53,14 @@ class PlatformInputFormMixin:
                 node = labels.nth(label_index)
                 if not node.is_visible():
                     continue
+                hit_level = _closest_visible_level(node, "input:visible", max_level=7)
+                if hit_level > 0:
+                    inputs = _ancestor_at_level(node, hit_level).locator(
+                        "input:visible"
+                    )
+                    if inputs.count() == 1:
+                        matches.append(inputs.first)
+                        continue
                 parent = node
                 for _level in range(7):
                     parent = parent.locator("xpath=..")
@@ -193,6 +205,30 @@ class PlatformInputFormMixin:
         )
         for selector in selectors:
             options = self.page.locator(selector)
+            # Fast path: one round-trip collects every option text, then the
+            # exact same Python normalisation decides the match.  The winner
+            # is re-read through the engine before returning, so a stale
+            # snapshot can never return an option that no longer matches.
+            batch_texts = getattr(options, "evaluate_all", None)
+            if callable(batch_texts):
+                try:
+                    texts = batch_texts(_DROPDOWN_TEXTS_JS)
+                except Exception:
+                    texts = None
+                if isinstance(texts, list):
+                    matched = False
+                    for index, text in enumerate(texts):
+                        if _normalise_text(text) != wanted:
+                            continue
+                        matched = True
+                        option = options.nth(index)
+                        try:
+                            if _normalise_text(option.inner_text()) == wanted:
+                                return option
+                        except Exception:
+                            continue
+                    if matched or texts:
+                        continue
             try:
                 count = options.count()
             except Exception:

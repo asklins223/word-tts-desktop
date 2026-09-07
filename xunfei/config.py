@@ -263,6 +263,32 @@ def _platform_user_agent():
     )
 
 
+def shared_chrome_launch_args():
+    """Return Chrome flags that cut background services for automation.
+
+    A single-page automation session never benefits from background sync,
+    component updates, extensions, or notifications; those services keep
+    network, disk, and thread pools busy, which hurts most on Windows where
+    real-time scanners amplify every background touch.  Both visible-browser
+    launch paths (the Xunfei provider and the platform input adapter) share
+    this list so the two runtimes cannot drift apart again.
+    """
+
+    return [
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-background-mode",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-notifications",
+        "--disable-sync",
+        "--metrics-recording-only",
+        "--no-pings",
+    ]
+
+
 def _electron_executable_for_backend():
     """Resolve the sibling Electron executable used as Playwright's Node."""
 

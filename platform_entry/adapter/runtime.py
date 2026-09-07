@@ -52,6 +52,7 @@ def _launch_browser(playwright: Any, profile_dir: Path) -> Any:
         _find_bundled_chromium,
         _find_chrome,
         configure_playwright_runtime,
+        shared_chrome_launch_args,
     )
 
     configure_playwright_runtime()
@@ -67,6 +68,10 @@ def _launch_browser(playwright: Any, profile_dir: Path) -> Any:
         "headless": False,
         "viewport": None,
         "locale": "zh-CN",
+        # Cut Chrome's background sync/update/extension services exactly
+        # like the Xunfei launch path; on Windows they otherwise keep disks
+        # and network busy behind every page action.
+        "args": shared_chrome_launch_args(),
     }
     if executable:
         options["executable_path"] = executable

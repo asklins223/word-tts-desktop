@@ -123,6 +123,8 @@ class TextReadingParser(BaseParser):
     # 解析主流程按音频边界切分条目时会把翻译行丢弃；这里在结果出口
     # 处把每条翻译挂回它前面最近的英文正文对应的条目，供课文页面
     # 录入的必填“译文”使用。识别不到翻译的条目保持无 translation 字段。
+    # 配对按子题型（句子/段落/语篇跟读）区域隔离，避免语篇中与句子
+    # 跟读相同的句子顺承继承句子的译文。
     _TRANSLATION_NUMBERED_RE = re.compile(r'^(\d+)\s*[.、）)]\s*(.+)')
     _TRANSLATION_PREFIX_RE = re.compile(r'^中文\s*[：:]\s*')
 
@@ -135,22 +137,35 @@ class TextReadingParser(BaseParser):
         return re.sub(r'\s+', ' ', text).strip().casefold()
 
     def _attach_translations(self, items):
-        """按“英文行 → 紧跟的中文行”把译文挂回解析条目。"""
+        """按“英文行 → 紧跟的中文行”把译文挂回解析条目。
+
+        配对限定在同一个跟读子题型（句子/段落/语篇）区域内：语篇、
+        段落没有自己的“中文：”行时不得顺承继承句子跟读的译文，否则
+        语篇中与句子跟读相同的句子会被录入重复的翻译。
+        """
 
         if not items:
             return items
         pairs = {}
         last_key = ''
+        region = None
+        saw_sub_section = False
         for _, paragraph_text, _ in getattr(self, 'paras', None) or []:
             for line in str(paragraph_text or '').split('\n'):
                 line = line.strip()
                 if not line:
                     continue
+                sub_section = self.RE_NEW_SUB_SECTION.match(line)
+                if sub_section:
+                    region = sub_section.group(1)
+                    saw_sub_section = True
+                    last_key = ''
+                    continue
                 chinese = self._TRANSLATION_PREFIX_RE.match(line)
                 if chinese:
                     translation = line[chinese.end():].strip()
                     if last_key and translation:
-                        pairs.setdefault(last_key, translation)
+                        pairs.setdefault((region, last_key), translation)
                     last_key = ''
                     continue
                 if is_chinese(line):
@@ -164,8 +179,13 @@ class TextReadingParser(BaseParser):
             if not isinstance(item, dict):
                 continue
             key = self._translation_key(item.get('text'))
-            if key and key in pairs and not item.get('translation'):
-                item['translation'] = pairs[key]
+            if not key or item.get('translation'):
+                continue
+            # 文档未出现子题型标题时退回全局匹配，保持对旧版排版的兼容。
+            lookup_region = item.get('category') if saw_sub_section else None
+            translation = pairs.get((lookup_region, key))
+            if translation:
+                item['translation'] = translation
         return items
 
     def _result(self, items):

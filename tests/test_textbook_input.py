@@ -129,6 +129,58 @@ class TextTranslationAttachmentTests(unittest.TestCase):
         translations = [item.get("translation") for item in result["items"]]
         self.assertEqual(translations, ["请问你叫什么名字？", "你来自哪里？"])
 
+    def test_discourse_does_not_inherit_sentence_translations(self) -> None:
+        sentence = "Over the years, he collected many important seeds for China's seed banks."
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "课文跟读.docx"
+            document = Document()
+            for text in [
+                "Section B",
+                "句子跟读",
+                f"1. {sentence}",
+                "中文：多年来，他为中国的种子库收集了许多重要的种子。",
+                "语篇跟读",
+                "The Inspiring Seed Scientist",
+                f"{sentence} He kept working in Xizang.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(str(path)).parse()
+        translations_by_category: dict[str, list] = {}
+        for item in result["items"]:
+            translations_by_category.setdefault(item["category"], []).append(item.get("translation"))
+        self.assertEqual(
+            translations_by_category["句子跟读"],
+            ["多年来，他为中国的种子库收集了许多重要的种子。"],
+        )
+        self.assertEqual(
+            translations_by_category["语篇跟读"],
+            [None, None],
+        )
+
+    def test_discourse_keeps_its_own_translation_lines(self) -> None:
+        sentence = "Over the years, he collected many important seeds for China's seed banks."
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "课文跟读.docx"
+            document = Document()
+            for text in [
+                "Section B",
+                "句子跟读",
+                f"1. {sentence}",
+                "中文：句子译文。",
+                "语篇跟读",
+                f"{sentence}",
+                "中文：语篇译文。",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(str(path)).parse()
+        translations_by_category: dict[str, list] = {}
+        for item in result["items"]:
+            translations_by_category.setdefault(item["category"], []).append(item.get("translation"))
+        self.assertEqual(translations_by_category["句子跟读"], ["句子译文。"])
+        self.assertEqual(translations_by_category["语篇跟读"], ["语篇译文。"])
+
 
 class TextbookExecutorSpecTests(unittest.TestCase):
     def setUp(self) -> None:

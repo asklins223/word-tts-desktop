@@ -5,6 +5,43 @@ from __future__ import annotations
 from .page_shared import *  # noqa: F403,F401
 
 
+# Resolve the whole "climb up to 10 ancestors and test the card conditions"
+# walk in one round-trip.  The checks mirror the Python loop below exactly:
+# heading kind in inner text, an 添加选项/添加答案 control somewhere below,
+# the editor/input caps, and at least one mounted control.
+_QUESTION_CARD_LEVEL_JS = """
+(node, kind) => {
+    let parent = node;
+    for (let level = 0; level < 10; level += 1) {
+        parent = parent.parentElement;
+        if (!parent) {
+            return -1;
+        }
+        const text = String(parent.innerText || '');
+        if (!text.includes(kind)) {
+            continue;
+        }
+        const editors = parent.querySelectorAll(
+            '.rich-text-editor .editor-content[contenteditable="true"]'
+        ).length;
+        const inputs = Array.from(parent.querySelectorAll('input')).filter(
+            (el) => String(el.getAttribute('type') || '') !== 'file'
+        ).length;
+        if (!/添加选项|添加答案/.test(text)) {
+            continue;
+        }
+        if (inputs > 24 || editors > 24) {
+            continue;
+        }
+        if (editors > 0 || inputs > 0) {
+            return level + 1;
+        }
+    }
+    return -1;
+}
+"""
+
+
 class PlatformInputCardMixin:
     """Discover cards and fill text, options, answers, and scores."""
 
@@ -50,17 +87,28 @@ class PlatformInputCardMixin:
             count = nodes.count()
         except Exception:
             count = 0
+        editor_selector = (
+            '.rich-text-editor .editor-content[contenteditable="true"]:visible'
+        )
         for index in range(count):
             try:
                 node = nodes.nth(index)
                 if not node.is_visible():
                     continue
+                hit_level = _closest_visible_level(node, editor_selector, max_level=8)
+                if hit_level > 0:
+                    editors = _ancestor_at_level(node, hit_level).locator(
+                        editor_selector
+                    )
+                    # Engine-side confirmation keeps the batch probe from
+                    # ever picking a different level than the plain loop.
+                    if editors.count() == 1:
+                        matches.append(editors.first)
+                        continue
                 parent = node
                 for _level in range(8):
                     parent = parent.locator("xpath=..")
-                    editors = parent.locator(
-                        '.rich-text-editor .editor-content[contenteditable="true"]:visible'
-                    )
+                    editors = parent.locator(editor_selector)
                     if editors.count() == 1:
                         matches.append(editors.first)
                         break
@@ -76,17 +124,38 @@ class PlatformInputCardMixin:
         field: str = "题干",
     ) -> None:
         expected = _normalise_text(_text_without_html(value))
+        keyboard = getattr(self.page, "keyboard", None)
+        insert_text = (
+            getattr(keyboard, "insert_text", None) if keyboard is not None else None
+        )
         try:
             editor.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
             # 该富文本控件的持久化状态依赖键盘输入事件；直接 fill() 可能
             # 只改变 DOM，保存后又被页面状态覆盖。按用户操作替换内容，
-            # 让编辑器真正收到选中、删除和逐字输入事件。
+            # 让编辑器真正收到选中和删除键盘事件。
             editor.click(timeout=self.action_timeout_ms)
             editor.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
             editor.press("Backspace", timeout=self.action_timeout_ms)
-            editor.type(value, timeout=self.action_timeout_ms)
+            # 逐字符 type 每个字符都是一次驱动往返，长文本在 Windows 上
+            # 尤其慢。一次性 insertText 触发同样的 input 事件链；若个别
+            # 编辑器只认逐字击键，回读不一致时再退回原路径兜底。
+            if callable(insert_text):
+                insert_text(str(value))
+            else:
+                editor.type(value, timeout=self.action_timeout_ms)
             editor.press("Tab", timeout=self.action_timeout_ms)
             actual = _normalise_text(editor.inner_text(timeout=self.action_timeout_ms))
+            if expected and expected not in actual:
+                # Replay the original char-by-char path before failing; some
+                # editor builds only persist state on real keystrokes.
+                editor.click(timeout=self.action_timeout_ms)
+                editor.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
+                editor.press("Backspace", timeout=self.action_timeout_ms)
+                editor.type(value, timeout=self.action_timeout_ms)
+                editor.press("Tab", timeout=self.action_timeout_ms)
+                actual = _normalise_text(
+                    editor.inner_text(timeout=self.action_timeout_ms)
+                )
         except Exception as exc:
             raise PlatformInputUiError(f"填写{field}失败: {exc}") from exc
         if expected and expected not in actual:
@@ -126,6 +195,16 @@ class PlatformInputCardMixin:
                     node = nodes.nth(index)
                     if not node.is_visible():
                         continue
+                    hit_level = _closest_visible_level(
+                        node, "input:visible", max_level=7
+                    )
+                    if hit_level > 0:
+                        inputs = _ancestor_at_level(node, hit_level).locator(
+                            "input:visible"
+                        )
+                        if inputs.count() == 1:
+                            matches.append(inputs.first)
+                            continue
                     parent = node
                     for _level in range(7):
                         parent = parent.locator("xpath=..")
@@ -142,6 +221,7 @@ class PlatformInputCardMixin:
     def _labeled_input_in_scope(self, scope: Any, label: str) -> Any | None:
         """在一个小题卡片内找字段，避免把相邻小题的输入串位。"""
 
+        input_selector = 'input:visible:not([type="file"])'
         try:
             nodes = scope.get_by_text(label, exact=True)
             count = nodes.count()
@@ -152,10 +232,19 @@ class PlatformInputCardMixin:
                 node = nodes.nth(index)
                 if not node.is_visible():
                     continue
+                hit_level = _closest_visible_level(
+                    node, input_selector, max_level=8
+                )
+                if hit_level > 0:
+                    inputs = _ancestor_at_level(node, hit_level).locator(
+                        input_selector
+                    )
+                    if inputs.count() == 1:
+                        return inputs.first
                 parent = node
                 for _level in range(8):
                     parent = parent.locator("xpath=..")
-                    inputs = parent.locator('input:visible:not([type="file"])')
+                    inputs = parent.locator(input_selector)
                     if inputs.count() == 1:
                         return inputs.first
             except Exception:
@@ -163,6 +252,9 @@ class PlatformInputCardMixin:
         return None
 
     def _labeled_text_editor_in_scope(self, scope: Any, label: str) -> Any | None:
+        editor_selector = (
+            '.rich-text-editor .editor-content[contenteditable="true"]:visible'
+        )
         try:
             nodes = scope.get_by_text(label, exact=True)
             count = nodes.count()
@@ -173,12 +265,19 @@ class PlatformInputCardMixin:
                 node = nodes.nth(index)
                 if not node.is_visible():
                     continue
+                hit_level = _closest_visible_level(
+                    node, editor_selector, max_level=8
+                )
+                if hit_level > 0:
+                    editors = _ancestor_at_level(node, hit_level).locator(
+                        editor_selector
+                    )
+                    if editors.count() == 1:
+                        return editors.first
                 parent = node
                 for _level in range(8):
                     parent = parent.locator("xpath=..")
-                    editors = parent.locator(
-                        '.rich-text-editor .editor-content[contenteditable="true"]:visible'
-                    )
+                    editors = parent.locator(editor_selector)
                     if editors.count() == 1:
                         return editors.first
             except Exception:
@@ -205,6 +304,40 @@ class PlatformInputCardMixin:
 
     def _question_card_from_heading(self, node: Any, question_kind: str) -> Any | None:
         """从侧栏/卡片同名标题中选出真正包含控件的题目卡片。"""
+
+        batch_probe = getattr(node, "evaluate", None)
+        if callable(batch_probe):
+            try:
+                hit_level = int(batch_probe(_QUESTION_CARD_LEVEL_JS, question_kind))
+            except Exception:
+                hit_level = -1
+            if hit_level > 0:
+                card = _ancestor_at_level(node, hit_level)
+                try:
+                    # Re-check the candidate with the real Playwright calls
+                    # so the in-browser walk can only save round-trips, never
+                    # return a different card than the plain loop below.
+                    text = str(card.inner_text())
+                    if question_kind in text:
+                        controls = card.get_by_text(
+                            re.compile(r"添加选项|添加答案")
+                        )
+                        editors = card.locator(
+                            '.rich-text-editor .editor-content[contenteditable="true"]'
+                        )
+                        inputs = card.locator('input:not([type="file"])')
+                        control_count = controls.count()
+                        editor_count = editors.count()
+                        input_count = inputs.count()
+                        if (
+                            control_count
+                            and input_count <= 24
+                            and editor_count <= 24
+                            and (editor_count or input_count)
+                        ):
+                            return card
+                except Exception:
+                    pass
 
         parent = node
         for _level in range(10):

@@ -196,6 +196,79 @@ def _debug_dom_snapshot(owner: Any, label: str) -> None:
         flush=True,
     )
 
+# Ancestor-climb probe: the per-level Python loop pays one round-trip per
+# ancestor (locator("xpath=..") + count), which multiplies badly on Windows.
+# This resolves the whole climb inside the browser and returns the 1-based
+# ancestor level holding exactly ``required`` visible matches, mirroring the
+# loop's "climb one level, then test" order.  The Python caller re-checks the
+# returned level through the real Playwright locator so a probe/engine
+# disagreement can only cost a fallback, never a wrong element.
+_ANCESTOR_LEVEL_JS_TEMPLATE = """
+(node) => {
+    let parent = node;
+    for (let level = 0; level < %(max_level)d; level += 1) {
+        parent = parent.parentElement;
+        if (!parent) {
+            return -1;
+        }
+        const matches = Array.from(parent.querySelectorAll(%(css)s));
+        const visible = matches.filter((el) => {
+            if (!el || typeof el.getBoundingClientRect !== 'function') {
+                return false;
+            }
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+                return false;
+            }
+            return window.getComputedStyle(el).visibility !== 'hidden';
+        });
+        if (visible.length === %(required)d) {
+            return level + 1;
+        }
+    }
+    return -1;
+}
+"""
+
+
+def _closest_visible_level(
+    node: Any,
+    css: str,
+    *,
+    max_level: int,
+    required: int = 1,
+) -> int:
+    """Return the nearest 1-based ancestor level with the expected matches.
+
+    ``css`` may contain Playwright's ``:visible`` pseudo-class; it is stripped
+    before running in the browser and visibility is re-checked manually with
+    the same bounding-box + visibility rule used elsewhere.  Returns -1 when
+    nothing qualifies or the node does not support ``evaluate`` (test shims).
+    """
+
+    evaluate = getattr(node, "evaluate", None)
+    if not callable(evaluate):
+        return -1
+    script = _ANCESTOR_LEVEL_JS_TEMPLATE % {
+        "max_level": int(max_level),
+        "css": json.dumps(css.replace(":visible", "")),
+        "required": int(required),
+    }
+    try:
+        return int(evaluate(script))
+    except Exception:
+        return -1
+
+
+def _ancestor_at_level(node: Any, level: int) -> Any:
+    """Climb ``level`` ``xpath=..`` hops; building locators costs no IPC."""
+
+    parent = node
+    for _ in range(max(0, int(level))):
+        parent = parent.locator("xpath=..")
+    return parent
+
+
 # The page mixins use this as their intentionally shared action context.  Keep
 # private compatibility helpers available as well as public types/constants;
 # the mixins are implementation modules, not a user-facing wildcard API.
