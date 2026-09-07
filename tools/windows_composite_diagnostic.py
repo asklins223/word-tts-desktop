@@ -20,6 +20,7 @@ from platform_entry.adapter.textbook_page import (  # noqa: E402
     _replace_editor,
     _select_option,
 )
+from platform_entry.adapter.automation import PlatformInputPageAutomation  # noqa: E402
 
 
 ITEMS = [
@@ -28,6 +29,16 @@ ITEMS = [
     ("We practice the dialogue together.", "我们一起练习对话。"),
     ("The lesson is finished.", "课文学习结束。"),
 ]
+
+FORM_SINGLE_CHOICES = [
+    ("试卷分类", "听说考试"),
+    ("省份", "广东省"),
+    ("城市", "广州市"),
+    ("学段", "初中"),
+    ("年级", "九年级"),
+    ("试卷类型", "中考模拟"),
+]
+FORM_MULTI_CHOICES = ("区/县", ("天河区", "越秀区"))
 
 
 def _record(name_zh: str, name_en: str, audio_path: str) -> dict:
@@ -137,6 +148,90 @@ def _html() -> str:
         document.querySelector('#step-label').hidden = true;
         document.querySelector('#saved').hidden = true;
       };
+    </script>
+    """
+
+
+def _form_html() -> str:
+    controls = []
+    dropdowns = []
+    for index, (title, value) in enumerate(FORM_SINGLE_CHOICES):
+        controls.append(
+            f"""
+            <div class="selectContent" data-field="{index}">
+              <span>{title}</span>
+              <div class="el-select"><div class="el-select__wrapper">请选择</div></div>
+            </div>
+            """
+        )
+        dropdowns.append(
+            f"""
+            <div class="el-select-dropdown" data-field="{index}" hidden>
+              <div class="el-select-dropdown__item" role="option" aria-selected="false">{value}</div>
+            </div>
+            """
+        )
+    multi_index = len(FORM_SINGLE_CHOICES)
+    multi_title, multi_values = FORM_MULTI_CHOICES
+    controls.append(
+        f"""
+        <div class="selectContent" data-field="{multi_index}" data-multi="true">
+          <span>{multi_title}</span>
+          <div class="el-select"><div class="el-select__wrapper">请选择</div></div>
+        </div>
+        """
+    )
+    dropdowns.append(
+        f"""
+        <div class="el-select-dropdown" data-field="{multi_index}" data-multi="true" hidden>
+          {''.join(f'<div class="el-select-dropdown__item" role="option" aria-selected="false">{value}</div>' for value in multi_values)}
+        </div>
+        """
+    )
+    return f"""
+    <!doctype html>
+    <style>
+      .selectContent {{ margin: 8px; }}
+      .el-select__wrapper {{ border: 1px solid #888; min-height: 24px; padding: 8px; width: 220px; }}
+      .el-select-dropdown__item {{ padding: 8px; }}
+    </style>
+    <section id="base-form">{''.join(controls)}</section>
+    <section id="dropdowns">{''.join(dropdowns)}</section>
+    <script>
+      const formFields = [...document.querySelectorAll('.selectContent')];
+      const formDropdowns = [...document.querySelectorAll('.el-select-dropdown')];
+      const hideDropdowns = () => formDropdowns.forEach((dropdown) => {{ dropdown.hidden = true; }});
+      const renderField = (index) => {{
+        const wrapper = formFields[index].querySelector('.el-select__wrapper');
+        const selected = [...formDropdowns[index].querySelectorAll('[aria-selected=true]')];
+        wrapper.innerHTML = selected.length
+          ? selected.map((option) => `<span class="el-select__selected-item"><span class="el-select__tags-text">${{option.textContent}}</span></span>`).join('')
+          : '请选择';
+      }};
+      formFields.forEach((field, index) => {{
+        const wrapper = field.querySelector('.el-select__wrapper');
+        const dropdown = formDropdowns[index];
+        wrapper.addEventListener('click', () => {{ hideDropdowns(); dropdown.hidden = false; }});
+        dropdown.querySelectorAll('[role=option]').forEach((option) => {{
+          option.addEventListener('click', () => {{
+            const multi = dropdown.dataset.multi === 'true';
+            if (!multi) {{
+              dropdown.querySelectorAll('[role=option]').forEach((node) => node.setAttribute('aria-selected', 'false'));
+            }}
+            option.setAttribute('aria-selected', option.getAttribute('aria-selected') === 'true' && multi ? 'false' : 'true');
+            renderField(index);
+            if (!multi) dropdown.hidden = true;
+          }});
+        }});
+      }});
+      document.addEventListener('keydown', (event) => {{ if (event.key === 'Escape') hideDropdowns(); }});
+      window.resetFormDiagnostic = () => {{
+        hideDropdowns();
+        formDropdowns.forEach((dropdown, index) => {{
+          dropdown.querySelectorAll('[role=option]').forEach((option) => option.setAttribute('aria-selected', 'false'));
+          renderField(index);
+        }});
+      }};
     </script>
     """
 
@@ -353,6 +448,83 @@ def _run_suite(page, records: list[dict], optimized: bool, rounds: int) -> dict[
     return {key: round(value / count, 2) for key, value in totals.items()}
 
 
+def _form_automation(page) -> PlatformInputPageAutomation:
+    automation = object.__new__(PlatformInputPageAutomation)
+    automation.page = page
+    automation.action_timeout_ms = 10_000
+    automation._control_check = None
+    return automation
+
+
+def _select_form_choice_before_optimization(
+    automation: PlatformInputPageAutomation,
+    title: str,
+    name: str,
+    *,
+    multi: bool = False,
+) -> None:
+    component = automation._open_select(title, force_real=True)
+    option = automation._wait_for_dropdown_option(title, name)
+    before = automation._selected_multi_count(component) if multi else 0
+    option.click(timeout=automation.action_timeout_ms)
+    if multi:
+        automation._wait_until(
+            lambda: automation._selected_multi_count(component) > before,
+            f"baseline multi select failed: {title}={name}",
+            timeout_seconds=10,
+            interval_ms=50,
+        )
+    else:
+        automation._wait_until(
+            lambda: name in component.inner_text(),
+            f"baseline select failed: {title}={name}",
+            timeout_seconds=10,
+            interval_ms=50,
+        )
+
+
+def _run_form_once(page, optimized: bool) -> dict[str, float]:
+    automation = _form_automation(page)
+    started = time.perf_counter()
+    single_started = time.perf_counter()
+    for title, name in FORM_SINGLE_CHOICES:
+        if optimized:
+            automation._select_one(title, {"name": name})
+        else:
+            _select_form_choice_before_optimization(automation, title, name)
+    single_ms = (time.perf_counter() - single_started) * 1000
+
+    multi_started = time.perf_counter()
+    title, names = FORM_MULTI_CHOICES
+    if optimized:
+        automation._select_many(title, [{"name": name} for name in names])
+    else:
+        for name in names:
+            _select_form_choice_before_optimization(
+                automation,
+                title,
+                name,
+                multi=True,
+            )
+        page.keyboard.press("Escape")
+    multi_ms = (time.perf_counter() - multi_started) * 1000
+    return {
+        "single_ms": single_ms,
+        "multi_ms": multi_ms,
+        "total_ms": (time.perf_counter() - started) * 1000,
+    }
+
+
+def _run_form_suite(page, optimized: bool, rounds: int) -> dict[str, float]:
+    totals = {"single_ms": 0.0, "multi_ms": 0.0, "total_ms": 0.0}
+    for _ in range(rounds):
+        page.evaluate("window.resetFormDiagnostic()")
+        result = _run_form_once(page, optimized)
+        for key, value in result.items():
+            totals[key] += value
+    return {key: round(value / rounds, 2) for key, value in totals.items()}
+
+
 def main() -> None:
     output_path = Path(os.environ.get("DIAGNOSTIC_OUTPUT", "windows-speed-results.json"))
     trace_path = Path(os.environ.get("DIAGNOSTIC_TRACE", "windows-speed-trace.zip"))
@@ -369,13 +541,21 @@ def main() -> None:
             context = browser.new_context()
             old_page = context.new_page()
             new_page = context.new_page()
+            old_form_page = context.new_page()
+            new_form_page = context.new_page()
             old_page.set_content(_html())
             new_page.set_content(_html())
+            old_form_page.set_content(_form_html())
+            new_form_page.set_content(_form_html())
             _run_suite(old_page, records, False, 1)
             _run_suite(new_page, records, True, 1)
+            _run_form_suite(old_form_page, False, 1)
+            _run_form_suite(new_form_page, True, 1)
             old_result = _run_suite(old_page, records, False, rounds)
+            old_form_result = _run_form_suite(old_form_page, False, rounds)
             context.tracing.start(screenshots=False, snapshots=True, sources=False)
             new_result = _run_suite(new_page, records, True, rounds)
+            new_form_result = _run_form_suite(new_form_page, True, rounds)
             context.tracing.stop(path=str(trace_path))
             browser.close()
 
@@ -395,6 +575,16 @@ def main() -> None:
             key: round(old_result[key] / new_result[key], 2)
             for key in old_result
             if new_result[key]
+        },
+        "general_form": {
+            "single_choices": len(FORM_SINGLE_CHOICES),
+            "multi_choices": len(FORM_MULTI_CHOICES[1]),
+            "before": old_form_result,
+            "optimized": new_form_result,
+            "speedup_total": round(
+                old_form_result["total_ms"] / new_form_result["total_ms"],
+                2,
+            ),
         },
     }
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -65,11 +65,11 @@ class PlatformInputContentMixin:
             return len(cards) == expected_cards
 
         try:
-                self._wait_until(
-                    cards_ready,
-                    f"切换到“{group_type}”后题卡没有完整挂载",
-                    timeout_seconds=60,
-                    interval_ms=50,
+            self._wait_until(
+                cards_ready,
+                f"切换到“{group_type}”后题卡没有完整挂载",
+                timeout_seconds=60,
+                interval_ms=50,
             )
         except PlatformInputUiError:
             _debug_dom_snapshot(
@@ -280,6 +280,7 @@ class PlatformInputContentMixin:
             saved,
             "点击“保存试卷”后没有观察到页面保存成功反馈",
             timeout_seconds=60,
+            interval_ms=50,
         )
 
     def return_to_list(self) -> None:
@@ -304,6 +305,7 @@ class PlatformInputContentMixin:
                 or self._has_visible_text("确认退出"),
                 "保存后页面没有返回上一级",
                 timeout_seconds=30,
+                interval_ms=50,
             )
             if self._has_visible_text("确认退出"):
                 self._click_exact("确认退出")
@@ -312,6 +314,7 @@ class PlatformInputContentMixin:
                     or self._has_visible_text("第一步：配置基础属性与题型"),
                     "确认退出后页面没有返回上一级",
                     timeout_seconds=30,
+                    interval_ms=50,
                 )
         if not self._is_paper_list():
             raise PlatformInputUiError("保存后没有返回试卷列表")
@@ -328,6 +331,7 @@ class PlatformInputContentMixin:
             ),
             "刷新试卷列表后没有观察到只读列表反馈",
             timeout_seconds=30,
+            interval_ms=50,
         )
 
     def feedback(self) -> dict[str, Any]:

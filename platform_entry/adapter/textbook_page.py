@@ -511,7 +511,7 @@ def _wait_for_cards(page: Any, count: int, timeout: int = 30_000) -> Any:
                 return cards
         except Exception:
             pass
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(50)
     raise RuntimeError(f"等待课文句子卡片超时：需要 {count} 个")
 
 
