@@ -13,12 +13,137 @@ const SYSTEM_INPUT_PLATFORM_TEMPLATE_RECORD_SCOPE_FIELDS = Object.freeze({
     stageId: 'stage',
     gradeId: 'grade',
 });
+let systemInputPlatformTemplateCatalogIndex = null;
 
 function systemInputPlatformTemplateKind(configuration = {}) {
     const category = systemInputDisplayValue(
         configuration.paperCategory ?? configuration.paper_category ?? $('system-input-paper-category')?.value,
     );
     return systemInputNormalizeLabel(category) === systemInputNormalizeLabel('听说考试') ? 'paper' : 'question';
+}
+
+function systemInputPlatformTemplateChoiceKeys(value) {
+    const object = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    const identifier = object ? (object.id ?? object.value) : value;
+    const keys = [];
+    if (systemInputCascadeValuePresent(identifier)) keys.push(`id:${String(identifier)}`);
+    const label = systemInputNormalizeLabel(systemInputDisplayValue(value));
+    if (label) keys.push(`label:${label}`);
+    return [...new Set(keys)];
+}
+
+function systemInputPlatformTemplateChoiceCacheKey(value) {
+    const object = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    const identifier = object ? (object.id ?? object.value) : value;
+    if (systemInputCascadeValuePresent(identifier)) return `id:${String(identifier)}`;
+    return `label:${systemInputNormalizeLabel(systemInputDisplayValue(value))}`;
+}
+
+function systemInputPlatformTemplateReferenceCacheKey(value) {
+    const reference = systemInputPlatformTemplateReference(value);
+    if (!reference) return '';
+    return [
+        `key:${reference.platform_template_key || ''}`,
+        `id:${systemInputNormalizeLabel(reference.platform_template_id || '')}`,
+        `version:${systemInputNormalizeLabel(reference.platform_template_version || '')}`,
+        `name:${systemInputNormalizeLabel(reference.name || '')}`,
+    ].join('\u0001');
+}
+
+function resetSystemInputPlatformTemplateCatalogIndex() {
+    systemInputPlatformTemplateCatalogIndex = null;
+}
+
+function systemInputPlatformTemplateCatalogIndexForCurrentSource() {
+    const catalog = systemInputPlatformTemplateCatalog && typeof systemInputPlatformTemplateCatalog === 'object'
+        ? systemInputPlatformTemplateCatalog
+        : null;
+    const source = catalog ? catalog.records : systemInputPlatformTemplates;
+    const owner = catalog || systemInputPlatformTemplates;
+    if (systemInputPlatformTemplateCatalogIndex
+        && systemInputPlatformTemplateCatalogIndex.owner === owner
+        && systemInputPlatformTemplateCatalogIndex.source === source) {
+        return systemInputPlatformTemplateCatalogIndex;
+    }
+
+    const records = Array.isArray(source)
+        ? source.filter(record => record && typeof record === 'object')
+        : [];
+    const byKind = Object.fromEntries(Object.entries(SYSTEM_INPUT_PLATFORM_TEMPLATE_SCOPE_FIELDS).map(([kind, fields]) => [
+        kind,
+        {
+            // Keep the source array's realm/prototype. Renderer tests pass
+            // fixture arrays across a VM boundary, and browser callers still
+            // get the native array implementation of their source.
+            records: records.slice(0, 0),
+            fields: Object.fromEntries(fields.map(field => [field, new Map()])),
+        },
+    ]));
+    const byKey = new Map();
+    records.forEach(record => {
+        const templateKey = String(record.platform_template_key || '').trim();
+        if (templateKey && !byKey.has(templateKey)) byKey.set(templateKey, record);
+        if (record.enabled === false) return;
+        const declaredKind = String(record.template_kind || '').trim();
+        const kinds = declaredKind ? [declaredKind] : Object.keys(byKind);
+        kinds.forEach(kind => {
+            const kindIndex = byKind[kind];
+            if (!kindIndex) return;
+            kindIndex.records.push(record);
+            SYSTEM_INPUT_PLATFORM_TEMPLATE_SCOPE_FIELDS[kind].forEach(field => {
+                const choice = systemInputPlatformTemplateRecordChoice(
+                    record,
+                    SYSTEM_INPUT_PLATFORM_TEMPLATE_RECORD_SCOPE_FIELDS[field],
+                );
+                systemInputPlatformTemplateChoiceKeys(choice).forEach(key => {
+                    const bucket = kindIndex.fields[field].get(key) || [];
+                    bucket.push(record);
+                    kindIndex.fields[field].set(key, bucket);
+                });
+            });
+        });
+    });
+    systemInputPlatformTemplateCatalogIndex = {
+        owner,
+        source,
+        records,
+        byKey,
+        byKind,
+        candidates: new Map(),
+        matches: new Map(),
+    };
+    return systemInputPlatformTemplateCatalogIndex;
+}
+
+function systemInputPlatformTemplateIndexedCandidates(index, values, kind, required) {
+    const kindIndex = index.byKind[kind];
+    if (!kindIndex) return [];
+    let pool = kindIndex.records;
+    let poolSize = pool.length;
+
+    // Use the narrowest single-field bucket as the candidate pool, then keep
+    // the original matcher as the final authority. This preserves the old
+    // ID/label compatibility rules while avoiding a full catalogue scan for
+    // every row and every render pass.
+    required.forEach(field => {
+        if (!pool) return;
+        const buckets = new Set();
+        systemInputPlatformTemplateChoiceKeys(values[field]).forEach(key => {
+            (kindIndex.fields[field].get(key) || []).forEach(record => buckets.add(record));
+        });
+        const candidates = pool.slice(0, 0);
+        buckets.forEach(record => candidates.push(record));
+        if (!candidates.length) {
+            pool = [];
+            poolSize = 0;
+            return;
+        }
+        if (candidates.length < poolSize) {
+            pool = candidates;
+            poolSize = candidates.length;
+        }
+    });
+    return pool.filter(record => systemInputPlatformTemplateRecordMatchesScope(record, values, kind));
 }
 
 function systemInputPlatformTemplateScopeValues(configuration = null) {
@@ -37,15 +162,7 @@ function systemInputPlatformTemplateScopeValues(configuration = null) {
 }
 
 function systemInputPlatformTemplateCatalogRecords() {
-    if (systemInputPlatformTemplateCatalog && typeof systemInputPlatformTemplateCatalog === 'object') {
-        return Array.isArray(systemInputPlatformTemplateCatalog.records)
-            ? systemInputPlatformTemplateCatalog.records.filter(record => record && typeof record === 'object')
-            : [];
-    }
-    // Backward compatibility while an older API surface is still loading.
-    return Array.isArray(systemInputPlatformTemplates)
-        ? systemInputPlatformTemplates.filter(record => record && typeof record === 'object')
-        : [];
+    return systemInputPlatformTemplateCatalogIndexForCurrentSource().records;
 }
 
 function systemInputPlatformTemplateRecordChoice(record, field) {
@@ -74,18 +191,31 @@ function systemInputPlatformTemplateCatalogAssessment(configuration = {}, templa
     const kind = systemInputPlatformTemplateKind(values);
     const required = SYSTEM_INPUT_PLATFORM_TEMPLATE_SCOPE_FIELDS[kind];
     const missing = required.filter(field => !systemInputCascadeValuePresent(values[field]));
-    const records = systemInputPlatformTemplateCatalogRecords();
-    const candidates = missing.length ? [] : records.filter(record => (
-        systemInputPlatformTemplateRecordMatchesScope(record, values, kind)
-    ));
+    const index = systemInputPlatformTemplateCatalogIndexForCurrentSource();
+    const records = index.records;
+    const scopeCacheKey = `${kind}\u0001${required.map(field => systemInputPlatformTemplateChoiceCacheKey(values[field])).join('\u0001')}`;
+    let candidates = [];
+    if (!missing.length) {
+        candidates = index.candidates.get(scopeCacheKey);
+        if (!candidates) {
+            candidates = systemInputPlatformTemplateIndexedCandidates(index, values, kind, required);
+            index.candidates.set(scopeCacheKey, candidates);
+        }
+    }
     const reference = systemInputPlatformTemplateReference(template) || systemInputPlatformTemplateReference({
         platform_template_id: values.platformTemplateId,
         platform_template_name: values.platformTemplateName,
         platform_template_version: values.platformTemplateVersion,
     });
-    const matched = reference
-        ? candidates.find(record => systemInputPlatformTemplateMatches(reference, record)) || null
-        : null;
+    const referenceCacheKey = reference ? `${scopeCacheKey}\u0001${systemInputPlatformTemplateReferenceCacheKey(reference)}` : '';
+    let matched = null;
+    if (reference) {
+        if (index.matches.has(referenceCacheKey)) matched = index.matches.get(referenceCacheKey);
+        else {
+            matched = candidates.find(record => systemInputPlatformTemplateMatches(reference, record)) || null;
+            index.matches.set(referenceCacheKey, matched);
+        }
+    }
     let status = 'ready';
     let message = candidates.length ? `可选 ${candidates.length} 个${kind === 'paper' ? '试卷模板' : '专项题型模板'}` : '当前范围没有可用模板';
     if (!records.length) {
@@ -158,7 +288,7 @@ function systemInputPlatformTemplateForKey(key) {
     if (value === SYSTEM_INPUT_LEGACY_PLATFORM_TEMPLATE_KEY) {
         return systemInputPlatformTemplatePendingSelection;
     }
-    return systemInputPlatformTemplates.find(template => String(template.platform_template_key || '') === value) || null;
+    return systemInputPlatformTemplateCatalogIndexForCurrentSource().byKey.get(value) || null;
 }
 
 function systemInputSelectedPlatformTemplate() {
@@ -212,28 +342,59 @@ function renderSystemInputPlatformTemplateOptions(preferred = null) {
     const previousValue = String(field.value || '');
     const wanted = systemInputPlatformTemplateReference(preferred) || systemInputPlatformTemplatePendingSelection;
     const assessment = systemInputPlatformTemplateCatalogAssessment({}, wanted);
-    const scopedTemplates = systemInputPlatformTemplateCatalog === null
+    const hiddenSource = Boolean(field.closest?.('[hidden]'));
+    const picker = typeof systemInputPickerRegistry !== 'undefined'
+        ? systemInputPickerRegistry.get?.('system-input-platform-template-search')
+        : null;
+    // The legacy form is a hidden source while the unified target workspace
+    // is active. Keep its selected key synchronized, but defer constructing
+    // one picker option object per catalogue record until that form is shown.
+    const scopedTemplates = hiddenSource ? [] : systemInputPlatformTemplateCatalog === null
         ? systemInputPlatformTemplates
         : assessment.candidates;
-    const options = scopedTemplates.map(template => ({
-        value: String(template.platform_template_key || ''),
-        label: systemInputPlatformTemplateLabel(template),
-        detail: systemInputPlatformTemplateScopeDetail(template) || '已匹配当前范围',
-        raw: template,
-    })).filter(option => option.value && option.label);
+    const options = hiddenSource ? null : scopedTemplates.map(template => ({
+            value: String(template.platform_template_key || ''),
+            label: systemInputPlatformTemplateLabel(template),
+            detail: systemInputPlatformTemplateScopeDetail(template) || '已匹配当前范围',
+            raw: template,
+        })).filter(option => option.value && option.label);
+    const optionSource = systemInputPlatformTemplateCatalog === null
+        ? systemInputPlatformTemplates
+        : systemInputPlatformTemplateCatalog.records;
+    if (hiddenSource && picker && picker._systemInputPlatformTemplateOptionsSource !== optionSource) {
+        const sourceTemplates = systemInputPlatformTemplateCatalog === null
+            ? (Array.isArray(systemInputPlatformTemplates) ? systemInputPlatformTemplates : [])
+            : systemInputPlatformTemplateCatalogRecords();
+        const sourceOptions = sourceTemplates.map(template => ({
+            value: String(template.platform_template_key || ''),
+            label: systemInputPlatformTemplateLabel(template),
+            detail: systemInputPlatformTemplateScopeDetail(template) || '已匹配当前范围',
+            raw: template,
+        })).filter(option => option.value && option.label);
+        setSystemInputPickerOptions('system-input-platform-template-search', sourceOptions);
+        picker._systemInputPlatformTemplateOptionsSource = optionSource;
+    }
     let selectedKey = '';
-    const matched = wanted && scopedTemplates.find(template => systemInputPlatformTemplateMatches(wanted, template));
-    if (matched?.platform_template_key) {
+    const matched = hiddenSource ? null : wanted && scopedTemplates.find(template => systemInputPlatformTemplateMatches(wanted, template));
+    if (hiddenSource && wanted) {
+        // The pending reference is authoritative while the source form is
+        // hidden. The legacy sentinel keeps that reference available to save
+        // collection without scanning every catalogue record to resolve a
+        // key that the user cannot currently see.
+        selectedKey = SYSTEM_INPUT_LEGACY_PLATFORM_TEMPLATE_KEY;
+    } else if (matched?.platform_template_key) {
         selectedKey = String(matched.platform_template_key);
     } else if (wanted && (wanted.name || wanted.platform_template_id)) {
-        options.push({
-            value: SYSTEM_INPUT_LEGACY_PLATFORM_TEMPLATE_KEY,
-            label: `${systemInputPlatformTemplateLabel(wanted)}（当前配置）`,
-            detail: assessment.status === 'conflict' ? '当前配置与所选范围不匹配' : '当前配置中的名称引用',
-            raw: wanted,
-        });
+        if (options) options.push({
+                value: SYSTEM_INPUT_LEGACY_PLATFORM_TEMPLATE_KEY,
+                label: `${systemInputPlatformTemplateLabel(wanted)}（当前配置）`,
+                detail: assessment.status === 'conflict' ? '当前配置与所选范围不匹配' : '当前配置中的名称引用',
+                raw: wanted,
+            });
         selectedKey = SYSTEM_INPUT_LEGACY_PLATFORM_TEMPLATE_KEY;
-    } else if (previousValue && options.some(option => option.value === previousValue)) {
+    } else if (previousValue && (options
+        ? options.some(option => option.value === previousValue)
+        : scopedTemplates.some(template => String(template.platform_template_key || '') === previousValue))) {
         selectedKey = previousValue;
     }
     field.value = selectedKey;
@@ -242,7 +403,10 @@ function renderSystemInputPlatformTemplateOptions(preferred = null) {
         : systemInputPlatformTemplatePendingSelection;
     search.value = selectedKey ? systemInputPlatformTemplateLabel(systemInputPlatformTemplateForKey(selectedKey)) : '';
     syncSystemInputPicker('system-input-platform-template-search', { selectedValue: selectedKey });
-    setSystemInputPickerOptions('system-input-platform-template-search', options);
+    if (options) {
+        setSystemInputPickerOptions('system-input-platform-template-search', options);
+        if (picker) picker._systemInputPlatformTemplateOptionsSource = optionSource;
+    }
     const legacyMode = systemInputPlatformTemplateCatalog === null;
     const catalogReady = legacyMode || assessment.records.length > 0;
     const parentsReady = legacyMode || assessment.missing.length === 0;
@@ -298,6 +462,7 @@ async function loadSystemInputPlatformTemplates(inputType = $('system-input-type
     const requestId = ++systemInputPlatformTemplateRequestId;
     systemInputPlatformTemplatesType = type;
     systemInputPlatformTemplates = [];
+    resetSystemInputPlatformTemplateCatalogIndex();
     renderSystemInputPlatformTemplateOptions();
     try {
         if (workflowApi?.getPlatformTemplateCatalog) {
@@ -313,6 +478,7 @@ async function loadSystemInputPlatformTemplates(inputType = $('system-input-type
         const templates = await workflowApi.listSystemInputPlatformTemplates(type);
         if (requestId !== systemInputPlatformTemplateRequestId || systemInputPlatformTemplatesType !== type) return;
         systemInputPlatformTemplates = Array.isArray(templates) ? templates.slice(0, 256) : [];
+        resetSystemInputPlatformTemplateCatalogIndex();
         renderSystemInputPlatformTemplateOptions();
         // The target editor can be open while the catalogue request is in
         // flight. Rebuild its shared controls once the authoritative list
@@ -331,6 +497,7 @@ function applySystemInputPlatformTemplateCatalogResponse(response) {
         systemInputPlatformTemplates = Array.isArray(response.catalog.records)
             ? response.catalog.records.slice(0, 20_000)
             : [];
+        resetSystemInputPlatformTemplateCatalogIndex();
     }
     if (response?.sync && typeof response.sync === 'object') {
         systemInputPlatformTemplateCatalogSync = {

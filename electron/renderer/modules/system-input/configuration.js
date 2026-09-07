@@ -44,22 +44,6 @@ function systemInputPaperNameForUnit(baseName) {
     return String(baseName ?? '').trim();
 }
 
-function systemInputSuggestedPaperName() {
-    // Convenience default derived from the imported document name, so the
-    // common case does not require retyping the same title. Deliberately
-    // restricted to single-unit tasks by callers: multi-unit tasks must not
-    // silently submit several same-named platform papers.
-    const raw = String(
-        (typeof currentSession !== 'undefined' && currentSession?.source_filename)
-        || (typeof activeResultContext !== 'undefined' && activeResultContext?.sourceFilename)
-        || (typeof currentWorkspace !== 'undefined' && currentWorkspace?.source_filename)
-        || '',
-    ).trim();
-    if (!raw) return '';
-    const base = raw.replace(/\.(docx?|xlsx|pdf)$/i, '').replace(/\s+/g, ' ').trim();
-    return base ? base.slice(0, 80) : '';
-}
-
 function systemInputTemplateFieldValue(source, ...keys) {
     if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
     return keys
@@ -770,7 +754,6 @@ registerRendererModule("systemInput.configuration", {
     systemInputAppTemplateForValue,
     systemInputSelectedAppTemplate,
     systemInputPaperNameForUnit,
-    systemInputSuggestedPaperName,
     systemInputTemplateFieldValue,
     systemInputConfigurationValueKey,
     systemInputCommonConfiguration,

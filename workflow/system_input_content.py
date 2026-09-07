@@ -1269,6 +1269,15 @@ def _imitation_builder(
 ) -> Mapping[str, Any]:
     text = _item_text(raw_item)
     references = raw_item.get("reference_answers")
+    exam_form = _text(
+        raw_item.get("exam_form") or result.get("exam_form"),
+        limit=32,
+    ).casefold()
+    # The parser profile describes the source layout, not whether the source
+    # is a complete exam.  In particular, ``imitation_numbered_exam_special``
+    # is one of the three special-paper layouts.  Only the document-level
+    # paper decision may enable the reference-answer row.
+    is_exam_paper = exam_form == "paper"
     # Some parser projections keep a shared per-question score on the result
     # envelope instead of repeating it on every source item.  The page-input
     # contract is item-shaped, so materialize that authoritative fallback here
@@ -1280,14 +1289,16 @@ def _imitation_builder(
         "listening_text": text,
         "score": score,
     }
-    # The reference answer for imitation reading is the passage itself.  A
-    # parser may provide an explicit list, but the exam-paper rule must still
-    # materialize the original passage when that list is absent so the page
-    # editor receives the required answer row.
-    if references:
-        question["reference_answers"] = references
-    elif text:
-        question["reference_answers"] = [text]
+    # Only a complete listening exam has a reference-answer row for imitation
+    # reading. A topic-specific special paper must leave that field absent;
+    # otherwise the page adapter and document view mistake the source passage
+    # for an answer that should be entered.
+    if is_exam_paper:
+        if references:
+            question["reference_answers"] = references
+        elif text:
+            question["reference_answers"] = [text]
+        question["reference_answers_source"] = "document"
     return {
         "schema_version": PAGE_INPUT_SCHEMA_VERSION,
         "input_type": "paper",

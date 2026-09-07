@@ -353,6 +353,7 @@ body.system-input-drawer-open .window-drag-region {
 .target-select-clear { display: block; width: 100%; min-height: 42px; margin-top: 4px; padding: 9px 10px; border: 0; border-top: 1px solid var(--line); color: var(--ink-muted); background: transparent; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
 .target-select-clear:hover, .target-select-clear.is-active { color: var(--primary-hover); background: var(--primary-soft); }
 .target-select-empty { display: block; padding: 9px; color: var(--ink-muted); font-size: 12px; line-height: 1.4; }
+.target-select-hint { display: block; padding: 7px 9px; border-top: 1px solid var(--line); color: var(--ink-muted); font-size: 12px; line-height: 1.4; }
 .target-field .target-number > input,
 .target-modal .target-number > input { min-height: 42px; width: auto; padding: 8px 10px; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; }
 .target-select-trigger:focus,

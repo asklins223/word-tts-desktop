@@ -240,7 +240,14 @@ class ImitationReadingParser(BaseParser):
         texts = self._boxed_table_texts()
         items = []
         use_exam_naming = is_exam_paper_bundle(self.paras)
-        split_as_units = self._should_split_numbered_exam_blocks(question_numbers)
+        # A boxed imitation-reading专项 is laid out as one complete
+        # recording task per numbered passage. Keep each passage as its own
+        # input unit even when the heading says “共2题”; that count describes
+        # the source document, not one platform paper containing two tasks.
+        split_as_units = (
+            not use_exam_naming
+            or self._should_split_numbered_exam_blocks(question_numbers)
+        )
         section_score = None
         questions = []
         for _, paragraph, _ in self.paras:
@@ -267,11 +274,16 @@ class ImitationReadingParser(BaseParser):
                 "source": "框内英文",
                 "voice": "female",
                 "text": text,
-                "reference_answers": [text],
+                "exam_form": "paper" if use_exam_naming else "special",
                 "major_section_profile": IMITATION_BOXED_SPECIAL_PROFILE,
                 "entry_profile": IMITATION_READING_ENTRY_PROFILE,
                 "capabilities": self._capabilities(external_input=section_score is not None),
             }
+            # Only a complete listening exam carries an answer row for
+            # imitation reading. A topic-specific special paper records the
+            # passage and score only.
+            if use_exam_naming:
+                item["reference_answers"] = [text]
             if section_score is not None:
                 item["score"] = section_score
             if split_as_units:
@@ -292,13 +304,16 @@ class ImitationReadingParser(BaseParser):
                     "audio_filename_stem": filename_stem,
                 })
             items.append(item)
-            questions.append({
+            question = {
                 "number": number,
                 "listening_text": text,
                 "score": section_score,
-                "reference_answers": [text],
-            })
+            }
+            if use_exam_naming:
+                question["reference_answers"] = [text]
+            questions.append(question)
         result = self._result(items)
+        result["exam_form"] = "paper" if use_exam_naming else "special"
         result["questions"] = questions
         computed_score = sum(
             item.get("score", 0)
@@ -451,6 +466,7 @@ class ImitationReadingParser(BaseParser):
                 "major_section_profile": IMITATION_UNIT_SOURCE_SPECIAL_PROFILE,
                 "entry_profile": IMITATION_READING_ENTRY_PROFILE,
                 "capabilities": self._capabilities(external_input=True),
+                "exam_form": "special",
                 "score": score,
                 # ``number`` is intentionally 1 in every standalone paper.
                 # Use the stable per-script unit id as the normalized identity
@@ -462,10 +478,10 @@ class ImitationReadingParser(BaseParser):
                 "type_path": ["模仿朗读", "录音稿"],
                 "source_locator": f"{unit}/{source}/录音稿{ordinal}",
             })
-            item["reference_answers"] = [item["text"]]
             items.append(item)
 
         result = self._result(items)
+        result["exam_form"] = "special"
         computed_score = sum(
             item.get("score", 0)
             for item in items
@@ -531,10 +547,14 @@ class ImitationReadingParser(BaseParser):
                 'source': '试卷正文',
                 'voice': 'female',
                 'text': sanitize('\n'.join(current_lines)),
+                'exam_form': 'paper' if use_exam_naming else 'special',
                 'major_section_profile': IMITATION_NUMBERED_EXAM_SPECIAL_PROFILE,
                 'entry_profile': IMITATION_READING_ENTRY_PROFILE,
-                'reference_answers': [sanitize('\n'.join(current_lines))],
             }
+            # Directly embedded imitation text in a complete exam is a
+            # reference answer; a standalone special paper is not.
+            if use_exam_naming:
+                item['reference_answers'] = [item['text']]
             score = (
                 current_question_score
                 if current_question_score is not None
@@ -608,6 +628,7 @@ class ImitationReadingParser(BaseParser):
 
         flush()
         result = self._result(items)
+        result['exam_form'] = 'paper' if use_exam_naming else 'special'
         computed_score = sum(
             item.get("score", 0)
             for item in items

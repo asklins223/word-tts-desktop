@@ -980,6 +980,35 @@ test('平台题型模板字段不再提供保存/管理/重命名/删除等自�
     assert.equal(byId('system-input-platform-template-editor'), null);
 });
 
+test('large platform template catalogues keep target pickers lazy and searchable', t => {
+    const { w, byId, run, read } = editor(t, 'paper', 3);
+    run(`systemInputPlatformTemplateCatalog = {
+        records: Array.from({ length: 500 }, (_, index) => ({
+            platform_template_key: 'fixture:large:' + index,
+            template_kind: 'question',
+            name: '专项模板 ' + index,
+            enabled: true,
+            province: { id: 440000, name: '广东省' },
+            city: { id: 440100, name: '广州市' },
+        })),
+        record_count: 500,
+    };
+    systemInputPlatformTemplates = systemInputPlatformTemplateCatalog.records;
+    refreshSystemInputTargetEditor({ force: true });`);
+
+    const select = byId('target-rows').querySelector('[data-unit-id="unit-1"][data-field="platformTemplateName"]');
+    assert.equal(select.options.length, 2, 'only the empty option and current value are materialized');
+
+    const wrapper = select.closest('.target-select');
+    wrapper.querySelector('.target-select-trigger').click();
+    assert.equal(wrapper.querySelectorAll('.target-select-option').length, 100);
+    assert.match(wrapper.textContent, /结果较多（共 501 个）/);
+
+    select.value = '专项模板 499';
+    select.dispatchEvent(new w.Event('input', { bubbles: true }));
+    assert.equal(read()[0].platformTemplateName, '专项模板 499');
+});
+
 test('changing an inline textbook unit clears the dependent lesson', t => {
     const { byId, read } = editor(t, 'textbook', 3);
     const unit = byId('target-rows').querySelector('[data-unit-id="unit-1"][data-field="textbookUnit"]');

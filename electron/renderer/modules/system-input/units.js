@@ -258,7 +258,7 @@ function systemInputUnitStatusPresentation(unit, configuration, index, total) {
     };
 }
 
-function renderSystemInputUnitOverview(systemInput) {
+function renderSystemInputUnitOverview(systemInput, { refreshTargetEditor = true } = {}) {
     const overview = $('system-input-unit-overview');
     const progress = $('system-input-unit-progress');
     const units = Array.isArray(systemInput?.units) ? systemInput.units : [];
@@ -266,7 +266,7 @@ function renderSystemInputUnitOverview(systemInput) {
     if (overview) overview.hidden = !visible;
     if (progress) progress.hidden = !visible;
     if ($('system-input-drawer')?.classList.contains('is-workspace')) {
-        refreshSystemInputTargetEditor();
+        if (refreshTargetEditor) refreshSystemInputTargetEditor();
         return;
     }
     if (!visible) {
@@ -487,7 +487,7 @@ function systemInputTextbookSuggestedValues(systemInput) {
     return suggested && typeof suggested === 'object' ? suggested : {};
 }
 
-function populateSystemInputUnitForm(systemInput) {
+function populateSystemInputUnitForm(systemInput, { refreshTargetEditor = true } = {}) {
     const configuration = systemInputConfigForForm(systemInput);
     const units = Array.isArray(systemInput?.units) ? systemInput.units : [];
     const selectedId = String(systemInputSelectedUnitId || units[0]?.unit_id || '');
@@ -573,7 +573,7 @@ function populateSystemInputUnitForm(systemInput) {
     renderSystemInputDistrictChips();
     renderSystemInputRegionOptions();
     updateSystemInputFormVisibility();
-    renderSystemInputUnitOverview(systemInput);
+    renderSystemInputUnitOverview(systemInput, { refreshTargetEditor });
 }
 
 function setSystemInputField(id, value) {
@@ -956,18 +956,6 @@ function systemInputPopulateForm(systemInput) {
             ];
         }).filter(([unitId]) => unitId),
     );
-    // Suggest the imported document name once so the common single-unit task
-    // does not start from an empty required title. Multi-unit tasks stay
-    // empty on purpose: same-named papers would collide on the platform.
-    if (units.length === 1 && typeof systemInputSuggestedPaperName === 'function') {
-        const onlyUnitId = String(units[0]?.unit_id || '');
-        const draft = systemInputUnitDrafts.get(onlyUnitId);
-        const existingName = String(draft?.paperName ?? draft?.paper_name ?? '').trim();
-        if (draft && !existingName) {
-            const suggested = systemInputSuggestedPaperName();
-            if (suggested) systemInputUnitDrafts.set(onlyUnitId, { ...draft, paperName: suggested });
-        }
-    }
     // 课文字段的文档识别建议同样落入每个单元草稿：抽屉一次只展开一个
     // 单元的表单，未展开的单元仍要能带着建议值参与保存与校验。
     const textbookSuggestions = systemInputTextbookSuggestedValues(systemInput);

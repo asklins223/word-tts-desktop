@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import re
+
 from .page_shared import *  # noqa: F403,F401
+
+
+PAPER_TITLE_PLACEHOLDER = (
+    "请输入完整试卷名称，例如：2026年佛山市南海区初二上学期英语听说期中考试"
+)
+
+
+def _comparable_input_text(raw: Any) -> str:
+    """Compare page input values without deleting meaningful inner spaces."""
+
+    return re.sub(r"\s+", " ", str(raw or "")).strip()
 
 
 class PlatformInputFormMixin:
@@ -75,17 +88,29 @@ class PlatformInputFormMixin:
 
     def _type_input_value(self, input_locator: Any, value: Any, label: str) -> None:
         text = str(value)
+
         try:
             input_locator.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
             input_locator.click(timeout=self.action_timeout_ms)
             input_locator.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
-            input_locator.press("Backspace", timeout=self.action_timeout_ms)
-            input_locator.type(text, timeout=self.action_timeout_ms)
+            # ``fill`` dispatches the native input event that the Vue model
+            # listens for, while still preserving an internal space such as
+            # the one in “Starter Unit1”.  Some older controls additionally
+            # depend on keydown/keyup, so the keyboard path remains a bounded
+            # fallback instead of being the only way to set the value.
+            input_locator.fill(text, timeout=self.action_timeout_ms)
             input_locator.press("Tab", timeout=self.action_timeout_ms)
             actual = input_locator.input_value(timeout=self.action_timeout_ms)
+            if _comparable_input_text(actual) != _comparable_input_text(text):
+                input_locator.click(timeout=self.action_timeout_ms)
+                input_locator.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
+                input_locator.press("Backspace", timeout=self.action_timeout_ms)
+                input_locator.type(text, timeout=self.action_timeout_ms)
+                input_locator.press("Tab", timeout=self.action_timeout_ms)
+                actual = input_locator.input_value(timeout=self.action_timeout_ms)
         except Exception as exc:
             raise PlatformInputUiError(f"填写“{label}”失败: {exc}") from exc
-        if _normalise_text(actual) != _normalise_text(text):
+        if _comparable_input_text(actual) != _comparable_input_text(text):
             raise PlatformInputUiError(
                 f"填写“{label}”后回读不一致：期望 {text!r}，实际为 {actual!r}"
             )
@@ -96,6 +121,15 @@ class PlatformInputFormMixin:
             input_locator = self._first_visible(
                 self.page.locator(f'input[placeholder="{placeholder}"]:visible')
             )
+            if input_locator is None and label == "试卷名称":
+                # The placeholder text has changed slightly between platform
+                # deployments. Its stable prefix is enough to identify this
+                # one field without relying on a page-specific component class.
+                input_locator = self._first_visible(
+                    self.page.locator(
+                        'input[placeholder^="请输入完整试卷名称"]:visible'
+                    )
+                )
         if input_locator is None:
             component = self._field_component(label)
             if component is not None:
@@ -112,6 +146,15 @@ class PlatformInputFormMixin:
         # 该管理端部分输入框除了 input 事件外还依赖键盘事件更新
         # Vue 状态；统一按页面用户输入方式替换并输入。
         self._type_input_value(input_locator, value, label)
+
+    def ensure_paper_title(self) -> None:
+        """Re-assert the title after dependent form controls have rerendered."""
+
+        self._fill_input(
+            "试卷名称",
+            self.spec.paper["title"],
+            placeholder=PAPER_TITLE_PLACEHOLDER,
+        )
 
     def _open_select(self, title: str) -> Any:
         component = self._field_component(title)
@@ -509,11 +552,6 @@ class PlatformInputFormMixin:
             "试卷分类",
             {"name": self.spec.paper_category},
         )
-        self._fill_input(
-            "试卷名称",
-            paper["title"],
-            placeholder="请输入完整试卷名称，例如：2026年佛山市南海区初二上学期英语听说期中考试",
-        )
         self._select_one("省份", paper["province"])
         self._select_one("城市", paper["city"])
         self._select_many("区/县", paper["districts"])
@@ -525,6 +563,10 @@ class PlatformInputFormMixin:
             self._fill_input("年份", paper["year"])
         if paper.get("duration") is not None:
             self._fill_input("大约答题时长（分钟）", paper["duration"])
+        # Province/city/district dependencies can rebuild the form after the
+        # category is selected. Fill the title last so the final visible
+        # base-form state contains the exact configured name.
+        self.ensure_paper_title()
 
     def _search_template_if_needed(self) -> None:
         search = self._first_visible(
@@ -872,6 +914,11 @@ class PlatformInputFormMixin:
         )
 
     def next_to_content(self) -> None:
+        # Selecting the template or a dependent dropdown may recreate the
+        # first-step form. Re-assert the configured title immediately before
+        # the durable page transition so a late Vue render cannot leave the
+        # external “试卷名称” field blank.
+        self.ensure_paper_title()
         self._click_exact("下一步：录入试题内容")
         self._wait_until(
             lambda: self._has_visible_text("第二步：录入试卷内容"),

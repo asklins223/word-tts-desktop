@@ -14,6 +14,7 @@ from workflow.system_input_content import build_page_input_facts, document_entry
 ROOT = Path(__file__).resolve().parents[1]
 NEW_FIXTURE = ROOT / "examples/documents/七上Starter Unit1 Hello模仿朗读专项.docx"
 NUMBERED_FIXTURE = ROOT / "examples/documents/九上Unit1模仿朗读(1).docx"
+FULL_EXAM_FIXTURE = ROOT / "examples/documents/七上Starter Unit 1 听说测试题（2026新题型）.docx"
 OLD_FIXTURE = ROOT / "examples/documents/模仿朗读-7上-U5-U6.docx"
 
 
@@ -33,6 +34,15 @@ def test_boxed_english_rule_extracts_only_the_two_passages():
     assert all(item["major_section_profile"] == "imitation_boxed_special" for item in result["items"])
     assert all(item["entry_profile"] == "imitation_reading_v1" for item in result["items"])
     assert all(item["capabilities"]["external_input"] is True for item in result["items"])
+    assert all("reference_answers" not in item for item in result["items"])
+    assert [item["unit_id"] for item in result["items"]] == [
+        "imitation-reading-question-16",
+        "imitation-reading-question-17",
+    ]
+    assert [item["unit_label"] for item in result["items"]] == [
+        "第16题专项卷",
+        "第17题专项卷",
+    ]
     assert all(not re.search(r"[\u3400-\u9fff]", item["text"]) for item in result["items"])
     assert "请在90秒钟内朗读" not in result["items"][0]["text"]
     assert result["items"][0]["text"].startswith("One morning, Teng Fei starts")
@@ -60,6 +70,11 @@ def test_new_rule_voice_survives_workflow_parser_normalization():
     assert all(item.metadata["entry_profile"] == "imitation_reading_v1" for item in parsed.items)
     assert all(item.metadata["capabilities"]["external_input"] is True for item in parsed.items)
     assert all("page_input" in item.metadata for item in parsed.items)
+    assert {item.metadata["exam_form"] for item in parsed.items} == {"special"}
+    assert all(
+        "reference_answers" not in item.metadata["page_input"]["questions"][0]
+        for item in parsed.items
+    )
 
 
 def test_numbered_exam_rule_is_entry_eligible_after_normalization():
@@ -72,6 +87,64 @@ def test_numbered_exam_rule_is_entry_eligible_after_normalization():
     assert all(item.metadata["entry_profile"] == "imitation_reading_v1" for item in parsed.items)
     assert all(item.metadata["capabilities"]["external_input"] is True for item in parsed.items)
     assert all("page_input" in item.metadata for item in parsed.items)
+    assert {item.metadata["exam_form"] for item in parsed.items} == {"special"}
+    assert [item.metadata["unit_id"] for item in parsed.items] == [
+        "imitation-reading-question-16",
+        "imitation-reading-question-17",
+    ]
+    assert all(
+        "reference_answers" not in item.metadata["page_input"]["questions"][0]
+        for item in parsed.items
+    )
+
+
+def test_numbered_special_rule_groups_each_passage_as_one_recording_unit():
+    parsed = DocumentParser().parse(NUMBERED_FIXTURE)
+
+    rows = [
+        {
+            "item_id": f"item-{index}",
+            "sequence": index,
+            "item_type": item.item_type,
+            "source_locator": item.source_locator,
+            "metadata_json": json.dumps(item.metadata, ensure_ascii=False),
+        }
+        for index, item in enumerate(parsed.items)
+    ]
+    groups, status, evidence = _resolve_unit_groups(rows, None)
+
+    assert status == "multiple_confirmed"
+    assert evidence["strategy"] == "repeated_structure"
+    assert len(groups) == 2
+    assert all(len(group_items) == 1 for group_items in groups.values())
+
+
+def test_all_four_imitation_forms_gate_reference_answers_by_exam_form():
+    special_files = (NEW_FIXTURE, NUMBERED_FIXTURE, OLD_FIXTURE)
+    for path in special_files:
+        parsed = DocumentParser().parse(path)
+        imitation_items = [
+            item for item in parsed.items
+            if item.metadata.get("doc_type") == "模仿朗读"
+        ]
+        assert imitation_items, path
+        assert {item.metadata.get("exam_form") for item in imitation_items} == {"special"}
+        assert all(
+            "reference_answers" not in item.metadata["page_input"]["questions"][0]
+            for item in imitation_items
+        )
+
+    full_exam = DocumentParser().parse(FULL_EXAM_FIXTURE)
+    imitation_items = [
+        item for item in full_exam.items
+        if item.metadata.get("doc_type") == "模仿朗读"
+    ]
+    assert len(imitation_items) == 1
+    item = imitation_items[0]
+    question = item.metadata["page_input"]["questions"][0]
+    assert item.metadata["exam_form"] == "paper"
+    assert question["reference_answers"] == [item.normalized_content]
+    assert question["reference_answers_source"] == "document"
 
 
 def test_boxed_rule_uses_the_structured_preloaded_document():
@@ -142,6 +215,7 @@ def test_direct_exam_rule_recognizes_repeated_blocks_as_two_special_papers():
         "In 2017, the railway was opened in Kenya.",
         "Great changes have taken place in my hometown.",
     ]
+    assert all("reference_answers" not in item for item in result["items"])
 
 
 def test_direct_exam_rule_skips_reference_answers():
@@ -193,6 +267,7 @@ def test_unit_source_special_rule_splits_each_recording_script_into_a_paper():
     assert all(item["entry_profile"] == "imitation_reading_v1" for item in result["items"])
     assert all(item["capabilities"]["external_input"] is True for item in result["items"])
     assert all(item["number"] == 1 for item in result["items"])
+    assert all("reference_answers" not in item for item in result["items"])
     assert [item["score"] for item in result["items"]] == [6, 6, 6, 6, 6, 6]
     assert [item["unit_id"] for item in result["items"]] == [
         "imitation-reading-script-u5-external-1",
@@ -267,7 +342,31 @@ def test_imitation_page_input_uses_result_score_when_item_score_is_omitted():
     assert page_input["questions"] == [{
         "listening_text": "Read this passage aloud.",
         "score": 6,
+    }]
+
+
+def test_imitation_page_input_keeps_reference_answer_for_a_complete_exam():
+    result = {
+        "doc_type": "模仿朗读",
+        "exam_form": "paper",
+        "score_per_item": 7,
+    }
+    raw_item = {
+        "text": "Read this passage aloud.",
+        "major_section_profile": "imitation_boxed_special",
+        "entry_profile": "imitation_reading_v1",
+        "capabilities": {"external_input": True},
+        "exam_form": "paper",
         "reference_answers": ["Read this passage aloud."],
+    }
+
+    page_input = build_page_input_facts("模仿朗读", result, raw_item, 0)
+
+    assert page_input["questions"] == [{
+        "listening_text": "Read this passage aloud.",
+        "score": 7,
+        "reference_answers": ["Read this passage aloud."],
+        "reference_answers_source": "document",
     }]
 
 
@@ -280,7 +379,6 @@ def test_unit_source_special_rule_is_entry_ready_and_groups_one_paper_per_script
         item.metadata["page_input"]["questions"] == [{
             "listening_text": item.normalized_content,
             "score": 6,
-            "reference_answers": [item.normalized_content],
         }]
         for item in parsed.items
     )

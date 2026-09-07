@@ -97,6 +97,18 @@ function closeSystemInputPickersExcept(picker) {
 function renderSystemInputPicker(fieldId) {
     const picker = systemInputPickerRegistry.get(fieldId);
     if (!picker) return;
+    // The legacy form stays mounted as a hidden source while the unified
+    // target workspace is open. Keep its picker state synchronized, but do
+    // not rebuild thousands of hidden option buttons on every detail edit.
+    // Opening the picker later renders the current option set on demand.
+    if (!picker.open && picker.root.closest?.('[hidden]')) {
+        picker.input.removeAttribute('aria-activedescendant');
+        picker.menu.replaceChildren();
+        picker.menu.hidden = true;
+        picker.root.classList.remove('is-open');
+        picker.input.setAttribute('aria-expanded', 'false');
+        return;
+    }
     // Query is transient interaction state. The visible value is the
     // committed choice, so reopening a picker must never reuse that label as a
     // filter and collapse the menu to one option. Only text entered while the

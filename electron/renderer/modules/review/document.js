@@ -1563,6 +1563,20 @@ function renderInfoRetellingFacts(parent, pageInput, item, imageTasks) {
     }
 }
 
+function reviewImitationReferenceAnswersAllowed(item) {
+    const metadata = item?.metadata && typeof item.metadata === 'object'
+        ? item.metadata
+        : {};
+    // The three imitation-reading special-paper layouts can carry a passage
+    // that looks like an answer, so neither the layout profile nor the mere
+    // presence of stale reference_answers is sufficient.  The document-level
+    // exam form is the only authority for showing a reference-answer row.
+    const examForm = reviewDisplayFactValue(
+        item?.exam_form ?? metadata.exam_form,
+    ).toLowerCase();
+    return examForm === 'paper';
+}
+
 function renderDocumentPageFacts(parent, pageInput, item, imageTasks) {
     if (!pageInput) {
         // 课文条目没有页面录入事实，正文就是朗读文本本身。
@@ -1606,15 +1620,11 @@ function renderDocumentPageFacts(parent, pageInput, item, imageTasks) {
         const question = questions[0] || {};
         reviewDocumentTextBlock(parent, '朗读原文', question.listening_text || reviewContentForItem(item));
         const references = Array.isArray(question.reference_answers) ? question.reference_answers : [];
-        if (references.length) {
-            const details = document.createElement('details');
-            const summary = document.createElement('summary');
-            summary.textContent = '查看参考答案';
-            const body = document.createElement('p');
-            body.className = 'review-document-reference';
-            body.textContent = references.join('\n');
-            details.append(summary, body);
-            parent.appendChild(details);
+        if (references.length && reviewImitationReferenceAnswersAllowed(item)) {
+            // Use the shared reference-answer disclosure so套卷 answers get
+            // the same count, spacing, open state, and accessible structure
+            // as the other document sections.
+            renderReviewReferenceAnswers(parent, references, '参考答案');
         }
         return;
     }

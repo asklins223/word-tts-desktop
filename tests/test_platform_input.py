@@ -17,6 +17,7 @@ try:
     from platform_entry.adapter.content_legacy_exam import PlatformInputLegacyExamContentMixin
     from platform_entry.adapter.content_record import PlatformInputRecordContentMixin
     from platform_entry.adapter.content_response import PlatformInputResponseContentMixin
+    from platform_entry.adapter.page_forms import PlatformInputFormMixin
     from platform_entry.adapter.page_navigation import PlatformInputNavigationMixin
     from platform_entry.paper_input import (
         CONTENT_CREATE_PATH,
@@ -394,6 +395,45 @@ class _FakeCustomNextPage(_FakeTemplatePage):
 
 
 class PlatformInputTests(unittest.TestCase):
+    def test_page_input_preserves_internal_spaces_in_paper_title(self) -> None:
+        class FakeInput:
+            def __init__(self) -> None:
+                self.value = "old title"
+                self.events: list[tuple[str, str]] = []
+
+            def scroll_into_view_if_needed(self, **_kwargs) -> None:
+                self.events.append(("scroll", ""))
+
+            def click(self, **_kwargs) -> None:
+                self.events.append(("click", ""))
+
+            def press(self, key: str, **_kwargs) -> None:
+                self.events.append(("press", key))
+
+            def fill(self, value: str, **_kwargs) -> None:
+                self.events.append(("fill", value))
+                self.value = value
+
+            def type(self, value: str, **_kwargs) -> None:
+                self.events.append(("type", value))
+                self.value = value
+
+            def input_value(self, **_kwargs) -> str:
+                return self.value
+
+        input_node = FakeInput()
+        automation = object.__new__(PlatformInputFormMixin)
+        automation.action_timeout_ms = 1234
+
+        automation._type_input_value(
+            input_node,
+            "人教版七上-Starter Unit1-1",
+            "试卷名称",
+        )
+
+        self.assertIn(("fill", "人教版七上-Starter Unit1-1"), input_node.events)
+        self.assertEqual(input_node.value, "人教版七上-Starter Unit1-1")
+
     def test_launch_browser_clears_profile_and_retries_once(self) -> None:
         class Lifecycle:
             clear_calls = []

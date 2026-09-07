@@ -201,10 +201,7 @@ class SystemInputContentTests(unittest.TestCase):
         )
         self.assertEqual(eligible["type"], "模仿朗读")
         self.assertEqual(eligible["questions"][0]["score"], 7)
-        self.assertEqual(
-            eligible["questions"][0]["reference_answers"],
-            ["Eligible passage."],
-        )
+        self.assertNotIn("reference_answers", eligible["questions"][0])
         self.assertEqual(page_input_completeness(eligible)["status"], "complete")
 
         stale_upgrade = build_page_input_facts(

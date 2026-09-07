@@ -114,6 +114,7 @@ const targetEditorPaperFieldOrder = Object.freeze([
     'paperName', 'provinceId', 'cityId', 'districtIds', 'stageId', 'gradeId',
     'paperType', 'platformTemplateName', 'year', 'answerTimeMinutes',
 ]);
+const TARGET_PLATFORM_TEMPLATE_MENU_LIMIT = 100;
 
 function targetEditorPaperCategoryForDefaults(configuration = {}) {
     const systemInput = systemInputInteractionWorkspace()?.system_input || {};
@@ -166,6 +167,40 @@ function el(tag, className, content) {
 function button(label, handler, className = 'btn-secondary btn-sm') {
     const node = el('button', className, label); node.type = 'button'; node.addEventListener('click', handler); return node;
 }
+function installTargetLazySelectValueBridge(select) {
+    if (!select || typeof select._targetSelectOptionProvider !== 'function' || select.dataset.targetLazyValueBridge === 'true') return;
+    let prototype = Object.getPrototypeOf(select);
+    let descriptor = null;
+    let descriptorOwner = null;
+    while (prototype && !descriptor) {
+        descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+        if (descriptor) descriptorOwner = prototype;
+        prototype = Object.getPrototypeOf(prototype);
+    }
+    if (!descriptor?.get || !descriptor?.set) return;
+    const bridgeKey = '__targetLazyValueBridgeInstalled';
+    if (!descriptorOwner?.[bridgeKey]) {
+        Object.defineProperty(descriptorOwner, 'value', {
+            configurable: descriptor.configurable,
+            enumerable: descriptor.enumerable,
+            get: descriptor.get,
+            set(value) {
+                if (typeof this?._targetSelectOptionProvider === 'function') {
+                    const wanted = String(value ?? '');
+                    if (wanted && ![...this.options].some(option => String(option.value) === wanted)) {
+                        this.append(new Option(wanted, wanted));
+                    }
+                }
+                descriptor.set.call(this, value);
+                // jsdom exposes select elements through a Proxy whose set trap
+                // requires a truthy setter result; browsers ignore this return.
+                return true;
+            },
+        });
+        Object.defineProperty(descriptorOwner, bridgeKey, { value: true, configurable: true });
+    }
+    select.dataset.targetLazyValueBridge = 'true';
+}
 function labeledControl(label, control, required = false) {
     const node = el('label', 'target-field');
     node.dataset.required = required ? 'true' : 'false';
@@ -197,6 +232,30 @@ function targetPlatformTemplateChoices(configuration = {}) {
     append(configuration.platformTemplateName);
     append(configuration.platform_template_name);
     return names;
+}
+function targetPlatformTemplatePickerOptions(configuration = {}, query = '') {
+    const choices = targetPlatformTemplateChoices(configuration);
+    const normalizedQuery = systemInputNormalizeLabel(query);
+    const matched = normalizedQuery
+        ? choices.filter(value => systemInputNormalizeLabel(value).includes(normalizedQuery))
+        : choices;
+    const current = text(targetFieldValue(configuration, 'platformTemplateName'));
+    const visible = matched.slice(0, TARGET_PLATFORM_TEMPLATE_MENU_LIMIT);
+    const currentIndex = visible.findIndex(value => systemInputNormalizeLabel(value) === systemInputNormalizeLabel(current));
+    if (current && currentIndex < 0 && matched.some(value => systemInputNormalizeLabel(value) === systemInputNormalizeLabel(current))) {
+        visible.unshift(current);
+        visible.splice(TARGET_PLATFORM_TEMPLATE_MENU_LIMIT);
+    }
+    return {
+        options: visible.map(value => ({
+            value,
+            textContent: value,
+            selected: systemInputNormalizeLabel(value) === systemInputNormalizeLabel(current),
+            disabled: false,
+        })),
+        total: matched.length,
+        truncated: matched.length > visible.length,
+    };
 }
 function createTargetCheckbox({ checked = false, disabled = false, label = '', onChange } = {}) {
     const wrap = el('span', 'target-checkbox');
@@ -255,6 +314,7 @@ function enhanceTargetSelect(select) {
     if (!select || select.dataset.targetSelectEnhanced === 'true') return select;
     const host = select.parentElement;
     if (!host) return select;
+    installTargetLazySelectValueBridge(select);
     // Generated controls (especially one per target row) do not have an ID.
     // Never derive their menu ID from the shared field name: six textbook
     // rows would otherwise all point at the same aria-controls target.
@@ -303,7 +363,7 @@ function enhanceTargetSelect(select) {
         const field = aria.split(' · ').at(-1) || '选项';
         return field.startsWith('选择') ? field : `选择${field}`;
     };
-    const optionLabel = option => String(option?.textContent || '').trim() || placeholder();
+    const optionLabel = option => String((option?.label ?? option?.textContent) || '').trim() || placeholder();
     const selectedOptions = () => [...select.options].filter(option => option.selected && option.value !== '');
     const updateLabel = () => {
         const selected = selectedOptions();
@@ -329,14 +389,25 @@ function enhanceTargetSelect(select) {
     };
     const openQuery = { value: '' };
     const optionsBoxClass = 'target-select-options';
+    const ensureNativeOption = option => {
+        const value = String(option?.value ?? '');
+        if (!value) return null;
+        const existing = [...select.options].find(candidate => String(candidate.value) === value);
+        if (existing) return existing;
+        const native = new Option(optionLabel(option), value);
+        select.append(native);
+        return native;
+    };
     const optionRow = (option, index) => {
         const item = el('button', 'target-select-option'); item.type = 'button'; item.id = `${menuId}-option-${index}`; item.setAttribute('role', 'option'); item.dataset.value = option.value; item.dataset.index = String(index); item.disabled = option.disabled;
         item.setAttribute('aria-selected', option.selected ? 'true' : 'false'); item.textContent = optionLabel(option);
         item.addEventListener('pointermove', () => setActiveOption(item));
         item.addEventListener('click', () => {
             if (select.multiple) {
-                option.selected = !option.selected;
+                const native = ensureNativeOption(option);
+                if (native) native.selected = !native.selected;
             } else {
+                ensureNativeOption(option);
                 select.value = option.value;
                 close({ restore: true });
             }
@@ -351,16 +422,29 @@ function enhanceTargetSelect(select) {
         if (!box) return;
         box.replaceChildren();
         const query = systemInputNormalizeLabel(openQuery.value);
+        const provided = typeof select._targetSelectOptionProvider === 'function'
+            ? select._targetSelectOptionProvider(query) || {}
+            : null;
+        const menuOptions = provided
+            ? (Array.isArray(provided) ? provided : provided.options || [])
+            : [...select.options].filter(option => option.value !== ''
+                && (!query || systemInputNormalizeLabel(optionLabel(option)).includes(query)));
         let rendered = 0;
-        [...select.options].forEach((option, index) => {
+        menuOptions.forEach((option, index) => {
             // Empty options are native placeholders only. They must never be
             // rendered as actionable menu items: an empty choice made a
             // cascade look selected while leaving every child locked.
             if (option.value === '') return;
-            const label = optionLabel(option);
-            if (query && !systemInputNormalizeLabel(label).includes(query)) return;
             box.append(optionRow(option, index)); rendered++;
         });
+        if (provided?.truncated) {
+            const total = Number(provided.total) || 0;
+            const hint = el('span', 'target-select-hint', total
+                ? `结果较多（共 ${total} 个），请继续搜索`
+                : '结果较多，请继续搜索');
+            hint.setAttribute('role', 'status');
+            box.append(hint);
+        }
         // Keep a saved multi-selection removable with a summary clear, even
         // when a search filter temporarily hides the selected rows themselves.
         if (selectedOptions().length) {
@@ -881,7 +965,12 @@ function commitInline(id, key, value) {
         else delete current.platformTemplateVersion;
     }
     systemInputUnitDrafts.set(id, current); targetEditorRecordManual(current); markChanged(id);
-    if (id === String(systemInputSelectedUnitId)) populateSystemInputUnitForm(systemInputInteractionWorkspace()?.system_input);
+    if (id === String(systemInputSelectedUnitId)) {
+        // The visible workspace list is refreshed below. Keep the hidden legacy
+        // form in sync for save collection without rebuilding the whole list a
+        // second time for every inline edit.
+        populateSystemInputUnitForm(systemInputInteractionWorkspace()?.system_input, { refreshTargetEditor: false });
+    }
     // A cascade parent changes the availability and value of later controls.
     // Bypass the normal inline-focus preservation once so stale descendant
     // menus cannot remain visible after the underlying draft was cleared.
@@ -1101,7 +1190,12 @@ function commitTargetDetail(key, sourceValues = null) {
     // editing the currently selected unit. Submission collects that source
     // once more, so it must never overwrite a value just entered in the
     // detached detail dialog with stale hidden-form data.
-    if (id === String(systemInputSelectedUnitId)) populateSystemInputUnitForm(systemInputInteractionWorkspace()?.system_input);
+    if (id === String(systemInputSelectedUnitId)) {
+        // Detail changes are committed to the draft map immediately. The
+        // detached dialog owns the visible state until it closes, so syncing
+        // the hidden source must not trigger another full list render here.
+        populateSystemInputUnitForm(systemInputInteractionWorkspace()?.system_input, { refreshTargetEditor: false });
+    }
     renderTargetDetailCategory(configuration);
     updateTargetDetailSummary(configuration);
     scheduleTargetEditorDraft();
@@ -1411,11 +1505,15 @@ function inlineControl(configuration, key) {
         const templateAssessment = systemInputPlatformTemplateCatalog !== null
             ? systemInputPlatformTemplateCatalogAssessment(configuration)
             : null;
-        const choices = targetPlatformTemplateChoices(configuration);
         select.dataset.targetPlaceholder = templateAssessment?.message || '选择平台题型模板';
         select.append(new Option('', ''));
-        choices.forEach(value => select.append(new Option(value, value)));
-        select.value = text(targetFieldValue(configuration, key));
+        const current = text(targetFieldValue(configuration, key));
+        if (current) select.append(new Option(current, current));
+        select.value = current;
+        // Large platform catalogues are searchable, so only materialize the
+        // current value here. The custom menu asks for a bounded result page
+        // when it opens or when the user types a query.
+        select._targetSelectOptionProvider = query => targetPlatformTemplatePickerOptions(configuration, query);
         select.disabled = Boolean(templateAssessment && (templateAssessment.missing.length || templateAssessment.status === 'unavailable'));
         const update = () => commitInline(String(configuration.unit_id), key, select.value);
         select.addEventListener('change', update);
@@ -1575,7 +1673,10 @@ function refreshSystemInputTargetEditor({ force = false } = {}) {
         $('target-select-visible').disabled = !hasRows;
         const commonText = commonKeys().map(key => text(targetFieldValue(state.commonPending || state.defaults, key))).filter(Boolean).join(' · ');
         $('target-common-summary').textContent = commonText || '设置一次，应用到本批次；单独设置的条目会保留';
-        $('target-platform-names').replaceChildren(...systemInputPlatformTemplates.map(template => new Option(template.name, template.name)));
+        // Platform template names are provided by the bounded lazy picker;
+        // the legacy datalist is kept empty so a catalogue refresh never
+        // recreates one hidden native option per server record.
+        $('target-platform-names').replaceChildren();
     } finally { rendering = false; }
 }
 // Async catalog/region/template reads can finish after the drawer and one of
@@ -1798,7 +1899,9 @@ function renderValueFields(container, keys, values, onChange, selectedFields = n
     releaseTargetNativeSelectFocus();
     container.replaceChildren();
     keys.forEach(key => {
-        const options = fieldOptions(key, values); let control; let districtApi = null;
+        const lazyPlatformTemplate = key === 'platformTemplateName';
+        const options = lazyPlatformTemplate ? null : fieldOptions(key, values);
+        let control; let districtApi = null;
         const isCascade = targetCascadeFields.includes(key);
         const cascadeHint = selectedFields
             ? targetEditorBatchHint(key, values, selectedFields)
@@ -1808,7 +1911,7 @@ function renderValueFields(container, keys, values, onChange, selectedFields = n
         const cascadeReady = cascadeAvailable && (selectedFields
             ? targetEditorBatchReady(key, values, selectedFields)
             : targetCascadeParentsReady(key, values));
-        if (options) {
+        if (options || lazyPlatformTemplate) {
             // 区县走独立的可删除 tag 多选；其余选择项仍用带搜索的 enhanceTargetSelect。
             if (key === 'districtIds') {
                 districtApi = buildTargetDistrictPicker({ key, values, options, cascadeReady, ariaContext, onChange });
@@ -1819,13 +1922,27 @@ function renderValueFields(container, keys, values, onChange, selectedFields = n
                 // represent “no value” without inventing a visible menu choice.
                 // The custom menu deliberately filters it out above.
                 control.append(new Option('', ''));
-                options.forEach((option, index) => {
-                    const nativeOption = new Option(text(option), typeof option === 'string' ? text(option) : String(index));
-                    nativeOption.dataset.targetOptionIndex = String(index);
-                    control.append(nativeOption);
-                });
-                const index = options.findIndex(option => text(option) === text(targetFieldValue(values, key)));
-                control.value = index >= 0 ? control.options[index + (control.options[0]?.value === '' ? 1 : 0)]?.value || '' : '';
+                if (lazyPlatformTemplate) {
+                    const templateAssessment = systemInputPlatformTemplateCatalog !== null
+                        ? systemInputPlatformTemplateCatalogAssessment(values)
+                        : null;
+                    const current = text(targetFieldValue(values, key));
+                    if (current) control.append(new Option(current, current));
+                    control.value = current;
+                    control.dataset.targetPlaceholder = templateAssessment?.message || '选择平台题型模板';
+                    control._targetSelectOptionProvider = query => targetPlatformTemplatePickerOptions(values, query);
+                    control.disabled = Boolean(templateAssessment && (
+                        templateAssessment.missing.length || templateAssessment.status === 'unavailable'
+                    ));
+                } else {
+                    options.forEach((option, index) => {
+                        const nativeOption = new Option(text(option), typeof option === 'string' ? text(option) : String(index));
+                        nativeOption.dataset.targetOptionIndex = String(index);
+                        control.append(nativeOption);
+                    });
+                    const index = options.findIndex(option => text(option) === text(targetFieldValue(values, key)));
+                    control.value = index >= 0 ? control.options[index + (control.options[0]?.value === '' ? 1 : 0)]?.value || '' : '';
+                }
             }
             const handleSelectChange = () => {
                 const before = copy(targetFieldValue(values, key));
@@ -1860,9 +1977,11 @@ function renderValueFields(container, keys, values, onChange, selectedFields = n
                     const index = optionIndex(option);
                     return index >= 0 && index < options.length ? selected(options[index]) : '';
                 };
-                values[key] = control.multiple
-                    ? Array.from(control.selectedOptions).map(selectedValue).filter(value => value !== '')
-                    : control.value === '' ? '' : selectedValue(control.selectedOptions[0]);
+                values[key] = lazyPlatformTemplate
+                    ? control.value === '' ? '' : control.value
+                    : control.multiple
+                        ? Array.from(control.selectedOptions).map(selectedValue).filter(value => value !== '')
+                        : control.value === '' ? '' : selectedValue(control.selectedOptions[0]);
                 if (key === 'platformTemplateName') {
                     const chosenName = text(values[key]);
                     const matchedTemplate = systemInputPlatformTemplateCatalogAssessment(values).candidates.find(template => (

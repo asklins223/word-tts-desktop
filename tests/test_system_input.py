@@ -506,9 +506,9 @@ class SystemInputServiceTests(unittest.TestCase):
             if record["workflow_id"] == workflow_id
         )
 
-    def test_projection_does_not_auto_fill_paper_name_from_unit_label(self) -> None:
-        for unit in self.projection["units"]:
-            self.assertNotIn("paperName", unit["configuration"])
+    def test_projection_leaves_paper_names_blank_until_user_fills_them(self) -> None:
+        names = [unit["configuration"].get("paperName") for unit in self.projection["units"]]
+        self.assertEqual(names, [None, None])
 
     def test_multiple_units_drop_legacy_top_level_paper_name(self) -> None:
         canonical = validate_system_input_configuration({
@@ -2679,6 +2679,7 @@ class SystemInputServiceTests(unittest.TestCase):
                 Path(directory),
             )
 
+        self.assertEqual(raw["paper"]["title"], "外研9上-U6-第1套")
         self.assertEqual(raw["paper"]["districts"], [{"id": 440605, "name": "南海区"}])
         self.assertEqual(raw["question_groups"][0]["type"], "模仿朗读")
         question = raw["question_groups"][0]["questions"][0]
@@ -2687,6 +2688,17 @@ class SystemInputServiceTests(unittest.TestCase):
         self.assertNotIn("text", question)
         self.assertNotIn("stem", question)
         self.assertNotIn("reference_answers", question)
+
+        unit["configuration"] = {
+            **unit["configuration"],
+            "paperName": "人教版七上-Starter Unit1-1",
+        }
+        with tempfile.TemporaryDirectory(prefix="wordtts-page-payload-space-") as directory:
+            raw_with_space = executor._build_raw_spec(
+                {"workflow_id": self.workflow.workflow_id, "unit": unit},
+                Path(directory),
+            )
+        self.assertEqual(raw_with_space["paper"]["title"], "人教版七上-Starter Unit1-1")
 
         unit["configuration"] = {
             **unit["configuration"],

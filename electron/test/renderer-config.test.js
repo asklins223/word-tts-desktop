@@ -16,6 +16,13 @@ function readRendererSource() {
         .replace(/\ninit\(\);\s*$/, '\n');
 }
 
+function readRendererStyles() {
+    return fs.readFileSync(
+        path.join(__dirname, '..', 'renderer', 'styles.css'),
+        'utf8',
+    );
+}
+
 function loadRendererConfigFunctions() {
     const source = readRendererSource();
     const storage = new Map();
@@ -778,6 +785,21 @@ test('核对页先按录入单元分组，不把两个专项卷压成一个题�
         { groupIndex: 0, reviewIndex: 0, text: 'A.' },
         { groupIndex: 1, reviewIndex: 1, text: 'B.' },
     ]).length, 2);
+});
+
+test('模仿朗读文稿视图只在套卷中展示参考答案入口', () => {
+    const source = readRendererSource();
+    const styles = readRendererStyles();
+
+    assert.match(source, /function reviewImitationReferenceAnswersAllowed\(item\)/);
+    assert.match(source, /return examForm === 'paper';/);
+    assert.match(
+        source,
+        /if \(references\.length && reviewImitationReferenceAnswersAllowed\(item\)\)/,
+    );
+    assert.match(source, /renderReviewReferenceAnswers\(parent, references, '参考答案'\)/);
+    assert.match(styles, /\.review-document-reference-details summary::before/);
+    assert.match(styles, /\.review-document-reference-details summary::-webkit-details-marker/);
 });
 
 test('核对页没有单元证据时仍保持单个默认录入单元', () => {
