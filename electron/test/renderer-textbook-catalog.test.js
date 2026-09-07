@@ -66,6 +66,13 @@ function memoryStorage() {
     };
 }
 
+function expectedSyncTime(value) {
+    return new Date(value).toLocaleString('zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+    });
+}
+
 test('重复选择教材上级不清空已填写的下级，也不提示无效变更', () => {
     const { api, inputs, toasts } = loadCatalog([catalogRecord()]);
     api.renderSystemInputTextbookOptions();
@@ -219,7 +226,9 @@ test('上次同步时间写入本机存储，重新加载后仍可展示', () =>
     const second = loadCatalog([], { storage });
     second.api.renderSystemInputTextbookCatalogStatus();
     assert.equal(second.statusNode.textContent, '已同步 12 条');
-    assert.match(second.noteNode.textContent, /上次同步时间：2026\/09\/05 16:30/);
+    assert.ok(second.noteNode.textContent.includes(
+        `上次同步时间：${expectedSyncTime('2026-09-05T08:30:00+00:00')}`,
+    ));
     assert.match(second.noteNode.textContent, /目录更新频率低/);
 });
 
@@ -295,7 +304,9 @@ test('嵌套教材目录按教材数和展开路径数分别展示，不误报�
     const second = loadCatalog(records, { storage });
     second.api.renderSystemInputTextbookCatalogStatus();
     assert.equal(second.statusNode.textContent, '已加载 6 本教材 · 3 条路径');
-    assert.match(second.noteNode.textContent, /上次同步时间：2026\/09\/05 16:30/);
+    assert.ok(second.noteNode.textContent.includes(
+        `上次同步时间：${expectedSyncTime('2026-09-05T08:30:00+00:00')}`,
+    ));
 });
 
 test('空目录返回的生成时间不会伪装成上次同步时间', () => {

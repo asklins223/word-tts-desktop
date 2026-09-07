@@ -1734,7 +1734,10 @@ test('生成页提供停止入口，并把配置冻结竞态收敛到接管流�
 });
 
 test('解析或取消完成后新建任务按钮不会残留禁用状态', () => {
-    const source = readRendererSource();
+    // Git checks out text with platform-specific line endings on some
+    // runners. Normalize before inspecting the renderer source so this
+    // structural assertion tests the code order rather than CRLF/LF.
+    const source = readRendererSource().replace(/\r\n?/g, '\n');
     assert.match(source, /function syncRestartButtonState\(sourceBusy = null\)/);
     assert.match(source, /const active = Boolean\(parsing \|\| isParsing \|\| sourceImportInFlight\)/);
     assert.match(source, /function resetGenerateState\(\) \{[\s\S]*?syncRestartButtonState\(\);/);
