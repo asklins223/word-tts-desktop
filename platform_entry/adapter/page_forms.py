@@ -14,6 +14,19 @@ PAPER_TITLE_PLACEHOLDER = (
 # One round-trip instead of count + nth + inner_text per option; matching
 # still happens in Python with the shared _normalise_text helper.
 _DROPDOWN_TEXTS_JS = "(nodes) => nodes.map((node) => String(node.innerText || ''))"
+_DISPATCH_DROPDOWN_JS = """
+(nodes, wanted) => {
+  const normalize = (value) => String(value || '').replace(/\\s+/g, '');
+  const index = nodes.findIndex((node) => normalize(node.innerText) === wanted);
+  if (index < 0) return -1;
+  nodes[index].dispatchEvent(new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+  }));
+  return index;
+}
+"""
 _MULTI_LABEL_SELECTOR = (
     ".el-select__selected-item .el-select__tags-text:visible, "
     ".el-select__tags-text:visible, "
@@ -294,6 +307,51 @@ class PlatformInputFormMixin:
                     continue
         return None
 
+    def _dispatch_dropdown_option(self, name: str) -> tuple[Any | None, bool]:
+        """Atomically match and click one visible option when batching is available."""
+
+        wanted = _normalise_text(name)
+        supported = False
+        for selector in (
+            ".el-select-dropdown:visible .el-select-dropdown__item:visible",
+            '[role="option"]:visible',
+        ):
+            options = self.page.locator(selector)
+            dispatch = getattr(options, "evaluate_all", None)
+            if not callable(dispatch):
+                continue
+            try:
+                index = dispatch(_DISPATCH_DROPDOWN_JS, wanted)
+            except Exception:
+                continue
+            supported = True
+            if type(index) is int and index >= 0:
+                return options.nth(index), True
+        return None, supported
+
+    def _wait_for_dispatched_dropdown_option(
+        self,
+        title: str,
+        name: str,
+    ) -> Any | None:
+        """Wait until an exact option can be matched and clicked in one call."""
+
+        option = None
+        supported = True
+
+        def ready() -> bool:
+            nonlocal option, supported
+            option, supported = self._dispatch_dropdown_option(name)
+            return option is not None or not supported
+
+        self._wait_until(
+            ready,
+            f"等待“{title}”下拉选项“{name}”超时",
+            timeout_seconds=10,
+            interval_ms=50,
+        )
+        return option
+
     def _wait_for_dropdown_option(self, title: str, name: str) -> Any:
         """Wait for one option and reuse the locator found by the last poll."""
 
@@ -493,8 +551,13 @@ class PlatformInputFormMixin:
         self._search_select(component, name)
         # Element Plus 的下拉层先挂载、后异步渲染选项；不能在 click 后
         # 立即读取，否则会把尚未出现的合法选项误判为不存在。
+        fast_clicked = False
         try:
-            option = self._wait_for_dropdown_option(title, name)
+            option = self._wait_for_dispatched_dropdown_option(title, name)
+            if option is None:
+                option = self._wait_for_dropdown_option(title, name)
+            else:
+                fast_clicked = True
         except PlatformInputUiError:
             # A page build that ignores synthetic clicks leaves no visible
             # dropdown.  Only then replay the real wrapper click; if the
@@ -506,9 +569,14 @@ class PlatformInputFormMixin:
                 raise
             component = self._open_select(title, current, force_real=True)
             self._search_select(component, name)
-            option = self._wait_for_dropdown_option(title, name)
+            option = self._wait_for_dispatched_dropdown_option(title, name)
+            if option is None:
+                option = self._wait_for_dropdown_option(title, name)
+            else:
+                fast_clicked = True
 
-        fast_clicked = _dispatch_click(option)
+        if not fast_clicked:
+            fast_clicked = _dispatch_click(option)
         if not fast_clicked:
             try:
                 option.click(timeout=self.action_timeout_ms)

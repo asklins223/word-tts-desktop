@@ -270,6 +270,54 @@ class FindDropdownOptionBatchTests(unittest.TestCase):
         self.assertEqual(options.count_calls, 1)
 
 
+class DispatchDropdownOptionBatchTests(unittest.TestCase):
+    def test_matches_and_dispatches_in_one_browser_call(self) -> None:
+        class Options(_FakeOptionsLocator):
+            def evaluate_all(self, _script: str, wanted: str) -> int:
+                self.evaluate_all_calls += 1
+                self.wanted = wanted
+                return 1
+
+        options = Options(nodes=[_FakeNode(), _FakeNode()])
+        page = _FakeDropdownPage(
+            {
+                ".el-select-dropdown:visible .el-select-dropdown__item:visible": options,
+                '[role="option"]:visible': _FakeOptionsLocator(),
+            }
+        )
+        owner = SimpleNamespace(page=page)
+
+        option, supported = PlatformInputFormMixin._dispatch_dropdown_option(
+            owner,
+            " 江苏 省 ",
+        )
+
+        self.assertTrue(supported)
+        self.assertIs(option, options._nodes[1])
+        self.assertEqual(options.evaluate_all_calls, 1)
+        self.assertEqual(options.wanted, "江苏省")
+
+    def test_reports_unsupported_batch_api_for_plain_locator(self) -> None:
+        class PlainOptions:
+            pass
+
+        page = _FakeDropdownPage(
+            {
+                ".el-select-dropdown:visible .el-select-dropdown__item:visible": PlainOptions(),
+                '[role="option"]:visible': PlainOptions(),
+            }
+        )
+        owner = SimpleNamespace(page=page)
+
+        option, supported = PlatformInputFormMixin._dispatch_dropdown_option(
+            owner,
+            "江苏省",
+        )
+
+        self.assertIsNone(option)
+        self.assertFalse(supported)
+
+
 class WaitForDropdownOptionTests(unittest.TestCase):
     def test_reuses_the_option_found_by_the_successful_poll(self) -> None:
         owner = object.__new__(PlatformInputFormMixin)
