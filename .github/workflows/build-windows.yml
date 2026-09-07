@@ -126,6 +126,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements_electron.txt
+          python -m pip install --upgrade "playwright==1.62.0"
 
       # ======================================================================
       # 5. 安装 Playwright Chromium（仅作为打包资源；默认 smoke 不访问第三方页面）
