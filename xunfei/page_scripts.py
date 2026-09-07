@@ -706,6 +706,45 @@ class JS:
     }
     """
 
+    CHECK_VISIBLE_LOGIN_SURFACE = """
+    () => {
+        const visible = (element) => {
+            if (!element || !element.isConnected) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const loginLabels = new Set([
+            '登录', '立即登录', '扫码登录', '手机号登录', '登录注册'
+        ]);
+        const buttons = document.querySelectorAll('button, [role="button"]');
+        for (const button of buttons) {
+            if (visible(button) && loginLabels.has(normalize(button.innerText))) {
+                return true;
+            }
+        }
+        const dialogs = document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog'
+        );
+        for (const dialog of dialogs) {
+            if (!visible(dialog)) continue;
+            const text = normalize(dialog.innerText);
+            if (
+                text.includes('登录')
+                && ['扫码', '手机号', '验证码'].some((token) => text.includes(token))
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+    """
+
     GET_DOWNLOAD_ROWS = """
     () => {
         const rowFromInput = (input) => {

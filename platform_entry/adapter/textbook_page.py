@@ -448,8 +448,38 @@ class TextbookRecordObserver:
 # ---------------------------------------------------------------------------
 
 
+_LAST_VISIBLE_INDEX_JS = """
+(nodes) => {
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+        const node = nodes[index];
+        if (!node || typeof node.getBoundingClientRect !== 'function') continue;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        if (rect.width > 0 && rect.height > 0) return index;
+    }
+    return -1;
+}
+"""
+
+_DROPDOWN_TEXTS_JS = "(nodes) => nodes.map((node) => String(node.innerText || ''))"
+
+
 def _visible_exact(page: Any, text: str) -> Any | None:
     candidates = page.get_by_text(text, exact=True)
+    batch_probe = getattr(candidates, "evaluate_all", None)
+    if callable(batch_probe):
+        try:
+            found = int(batch_probe(_LAST_VISIBLE_INDEX_JS))
+        except Exception:
+            found = -1
+        if found >= 0:
+            try:
+                candidate = candidates.nth(found)
+                if candidate.is_visible():
+                    return candidate
+            except Exception:
+                pass
     try:
         count = candidates.count()
     except Exception:
@@ -503,20 +533,47 @@ def _ensure_card_count(page: Any, count: int) -> Any:
     return cards
 
 
-def _replace_editor(editor: Any, value: str, field_name: str) -> None:
+def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None:
     expected = re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def readback_matches(actual: str) -> bool:
+        return expected in actual if expected else not actual
+
     try:
         editor.scroll_into_view_if_needed()
         editor.click()
         editor.press("ControlOrMeta+A")
         editor.press("Backspace")
         if value:
-            editor.type(value)
+            keyboard = getattr(page, "keyboard", None)
+            insert_text = (
+                getattr(keyboard, "insert_text", None)
+                if keyboard is not None
+                else None
+            )
+            if callable(insert_text):
+                insert_text(str(value))
+            else:
+                editor.type(value)
         editor.press("Tab")
         actual = re.sub(r"\s+", " ", str(editor.inner_text() or "")).strip()
+        if not readback_matches(actual):
+            # A few historical editor builds only committed text after the
+            # full keyboard event sequence.  Keep that slower behavior as a
+            # bounded compatibility fallback instead of charging every long
+            # paragraph one event per character.
+            editor.click()
+            editor.press("ControlOrMeta+A")
+            editor.press("Backspace")
+            if value:
+                editor.type(value)
+            editor.press("Tab")
+            actual = re.sub(
+                r"\s+", " ", str(editor.inner_text() or "")
+            ).strip()
     except Exception as exc:
         raise RuntimeError(f"填写{field_name}失败：{exc}") from exc
-    if expected and expected not in actual:
+    if expected and not readback_matches(actual):
         raise RuntimeError(f"{field_name}回读不一致：期望 {expected!r}，实际 {actual!r}")
     if not expected and actual:
         raise RuntimeError(f"{field_name}清空后仍有内容：{actual!r}")
@@ -524,6 +581,19 @@ def _replace_editor(editor: Any, value: str, field_name: str) -> None:
 
 def _find_dropdown_option(page: Any, value: str) -> Any | None:
     role_option = page.get_by_role("option", name=value, exact=True)
+    batch_probe = getattr(role_option, "evaluate_all", None)
+    if callable(batch_probe):
+        try:
+            found = int(batch_probe(_LAST_VISIBLE_INDEX_JS))
+        except Exception:
+            found = -1
+        if found >= 0:
+            try:
+                candidate = role_option.nth(found)
+                if candidate.is_visible():
+                    return candidate
+            except Exception:
+                pass
     try:
         for option_index in range(role_option.count() - 1, -1, -1):
             candidate = role_option.nth(option_index)
@@ -541,7 +611,35 @@ def _find_dropdown_option(page: Any, value: str) -> Any | None:
     wanted = re.sub(r"\s+", " ", value).strip().casefold()
     if wanted:
         all_li = page.locator("li:visible")
-        for option_index in range(all_li.count() - 1, -1, -1):
+        batch_texts = getattr(all_li, "evaluate_all", None)
+        if callable(batch_texts):
+            try:
+                texts = batch_texts(_DROPDOWN_TEXTS_JS)
+            except Exception:
+                texts = None
+            if isinstance(texts, list):
+                for option_index in range(len(texts) - 1, -1, -1):
+                    option_text = re.sub(
+                        r"\s+", " ", str(texts[option_index] or "")
+                    ).strip()
+                    if option_text.casefold() != wanted:
+                        continue
+                    candidate = all_li.nth(option_index)
+                    try:
+                        confirmed = re.sub(
+                            r"\s+",
+                            " ",
+                            str(candidate.inner_text(timeout=300) or ""),
+                        ).strip()
+                    except Exception:
+                        continue
+                    if confirmed.casefold() == wanted:
+                        return candidate
+        try:
+            option_count = all_li.count()
+        except Exception:
+            option_count = 0
+        for option_index in range(option_count - 1, -1, -1):
             candidate = all_li.nth(option_index)
             try:
                 option_text = re.sub(
@@ -583,11 +681,18 @@ def _select_option(page: Any, index: int, value: str) -> None:
             f"下拉框中没有找到选项：{value}；当前可见选项={visible_texts[:20]}"
         )
     option.click()
-    page.wait_for_timeout(300)
-    shown = re.sub(r"\s+", "", str(selector.inner_text() or ""))
     expected_normalized = re.sub(r"\s+", "", value).casefold()
-    shown_normalized = shown.casefold()
-    if expected_normalized not in shown_normalized:
+    shown = ""
+    selected_deadline = time.monotonic() + 3
+    while time.monotonic() < selected_deadline:
+        try:
+            shown = re.sub(r"\s+", "", str(selector.inner_text() or ""))
+        except Exception:
+            shown = ""
+        if expected_normalized in shown.casefold():
+            return
+        page.wait_for_timeout(50)
+    if expected_normalized not in shown.casefold():
         raise RuntimeError(f"下拉框回读不一致：期望 {value!r}，实际 {shown!r}")
 
 
@@ -628,8 +733,13 @@ def _fill_content(
         )
         if editors.count() < 2:
             raise RuntimeError(f"第 {index + 1} 条没有找到原文/译文编辑器")
-        _replace_editor(editors.nth(0), str(item["original"]), "原文")
-        _replace_editor(editors.nth(1), str(item.get("translation") or ""), "译文")
+        _replace_editor(page, editors.nth(0), str(item["original"]), "原文")
+        _replace_editor(
+            page,
+            editors.nth(1),
+            str(item.get("translation") or ""),
+            "译文",
+        )
 
         file_inputs = card.locator('input[type="file"]')
         if file_inputs.count() < 1:
@@ -724,7 +834,6 @@ def _create_textbook_record(
         _visible_exact(page, "新增课文")
     record_id = observer.take_record_id()
     observer.end()
-    page.wait_for_timeout(800)
     if control_check is not None:
         control_check()
     if _visible_exact(page, "新增课文") is None:

@@ -37,6 +37,30 @@ def _probe_synth_state(page):
     return result if isinstance(result, dict) else None
 
 
+_EDITOR_PARAGRAPH_TEXTS_JS = """
+(paragraphs) => paragraphs.map((paragraph) => {
+    const clone = paragraph.cloneNode(true);
+    clone.querySelectorAll('.ssml-editor-placeholder').forEach((node) => node.remove());
+    return String(clone.innerText || clone.textContent || '');
+})
+"""
+
+_EXACT_BUTTON_INDICES_JS = """
+(buttons, expected) => {
+    const wanted = String(expected || '').replace(/\\s+/g, '').trim();
+    const indices = [];
+    const limit = Math.min(buttons.length, 200);
+    for (let index = 0; index < limit; index += 1) {
+        const label = String(buttons[index].innerText || '')
+            .replace(/\\s+/g, '')
+            .trim();
+        if (label === wanted) indices.push(index);
+    }
+    return indices;
+}
+"""
+
+
 class PageActionsMixin:
 
     # ------------------------------------------------------------------
@@ -97,6 +121,13 @@ class PageActionsMixin:
             current_url = str(getattr(page, "url", "") or "").lower()
             if any(marker in current_url for marker in ("/login", "/signin", "/auth/")):
                 return False
+            # 登录等待期间每 500ms 都会调用这里。把可见按钮和弹窗一次性
+            # 放到页面内检查，避免 Windows 上逐节点跨进程读取 inner_text。
+            visible_login_surface = _safe_eval(
+                page, JS.CHECK_VISIBLE_LOGIN_SURFACE
+            )
+            if isinstance(visible_login_surface, bool):
+                return not visible_login_surface
             btns = page.locator("button:visible, [role='button']:visible")
             for i in range(min(btns.count(), 50)):
                 try:
@@ -123,7 +154,6 @@ class PageActionsMixin:
         """清空文本编辑器内容。"""
         _check_cancel_requested(cancel_check)
         _safe_eval(page, JS.CLEAR_EDITOR)
-        _wait_with_cancel(page, 0.2, cancel_check=cancel_check)
         _check_cancel_requested(cancel_check)
         actual = _safe_eval(page, JS.GET_EDITOR_TEXT)
         if actual:
@@ -132,8 +162,18 @@ class PageActionsMixin:
                 page.locator(".ssml-editor").first.click(timeout=3000)
                 page.keyboard.press(_SELECT_ALL)
                 page.keyboard.press("Backspace")
-                _wait_with_cancel(page, 0.2, cancel_check=cancel_check)
-                _check_cancel_requested(cancel_check)
+                _poll(
+                    lambda: (
+                        True
+                        if not (_safe_eval(page, JS.GET_EDITOR_TEXT) or "").strip()
+                        else None
+                    ),
+                    timeout=1.0,
+                    interval=0.025,
+                    max_interval=0.1,
+                    page=page,
+                    cancel_check=cancel_check,
+                )
             except XunfeiCancelled:
                 raise
             except Exception:
@@ -144,29 +184,36 @@ class PageActionsMixin:
         _check_cancel_requested(cancel_check)
         self._clear_editor(page, cancel_check=cancel_check)
         page.locator(".ssml-editor").first.click(timeout=5000)
-        self._pause(page, 0.15, 0.08, cancel_check=cancel_check)
         page.keyboard.press(_SELECT_ALL)
         page.keyboard.press("Backspace")
-        self._pause(page, 0.1, 0.05, cancel_check=cancel_check)
-        self._type_text(page, text, cancel_check=cancel_check)
-        _wait_with_cancel(page, 0.15, cancel_check=cancel_check)
-        _check_cancel_requested(cancel_check)
+        if not self._type_text(page, text, cancel_check=cancel_check):
+            return False
 
         for attempt in range(2):
             _check_cancel_requested(cancel_check)
-            actual = _safe_eval(page, JS.GET_EDITOR_TEXT) or ""
-            if len(actual) >= len(text) * 0.85:
+            landed = _poll(
+                lambda: (
+                    True
+                    if len(_safe_eval(page, JS.GET_EDITOR_TEXT) or "")
+                    >= len(text) * 0.85
+                    else None
+                ),
+                timeout=0.8,
+                interval=0.025,
+                max_interval=0.1,
+                page=page,
+                cancel_check=cancel_check,
+            )
+            if landed:
                 return True
             _log(f"[xunfei]   输入验证失败 (attempt {attempt + 1})，重试...")
             self._clear_editor(page, cancel_check=cancel_check)
             page.locator(".ssml-editor").first.click(timeout=5000)
             self._type_text(page, text, cancel_check=cancel_check)
-            _wait_with_cancel(page, 0.15, cancel_check=cancel_check)
-            _check_cancel_requested(cancel_check)
         return False
 
-    @staticmethod
-    def _clear_editor_with_keyboard(page, cancel_check=None):
+    @classmethod
+    def _clear_editor_with_keyboard(cls, page, cancel_check=None):
         """只用真实键盘操作清空编辑器，供多人配音 UI 流程使用。"""
         _check_cancel_requested(cancel_check)
         # 讯飞失败重试时可能还留着 ssml-float-bar；先用键盘收起它，
@@ -178,25 +225,23 @@ class PageActionsMixin:
         editor.click(timeout=5000)
         page.keyboard.press(_SELECT_ALL)
         page.keyboard.press("Backspace")
-        _wait_with_cancel(page, 0.2, cancel_check=cancel_check)
-        _check_cancel_requested(cancel_check)
-        paragraphs = page.locator(".ssml-editor p")
-        remaining = []
-        for index in range(paragraphs.count()):
-            _check_cancel_requested(cancel_check)
-            paragraph = paragraphs.nth(index)
-            text = paragraph.inner_text(timeout=1000)
-            # ProseMirror 空编辑器会显示 contenteditable=false 的占位符，
-            # 它属于 UI 提示而不是用户文本，不能把它误判成清空失败。
-            placeholders = paragraph.locator(".ssml-editor-placeholder")
-            for placeholder_index in range(placeholders.count()):
-                placeholder_text = placeholders.nth(placeholder_index).inner_text(
-                    timeout=500
-                )
-                text = text.replace(placeholder_text, "")
-            text = text.strip()
-            if text:
-                remaining.append(text)
+
+        def remaining_text():
+            return [
+                value.strip()
+                for value in cls._read_editor_paragraphs(page)
+                if value.strip()
+            ]
+
+        cleared = _poll(
+            lambda: True if not remaining_text() else None,
+            timeout=1.0,
+            interval=0.025,
+            max_interval=0.1,
+            page=page,
+            cancel_check=cancel_check,
+        )
+        remaining = [] if cleared else remaining_text()
         if remaining:
             raise XunfeiError(
                 "讯飞编辑器未能通过键盘清空，停止多人配音 UI 操作"
@@ -206,6 +251,14 @@ class PageActionsMixin:
     def _read_editor_paragraphs(cls, page):
         """读取编辑器的可见段落文本，不修改页面。"""
         paragraphs = page.locator(".ssml-editor p")
+        batch_read = getattr(paragraphs, "evaluate_all", None)
+        if callable(batch_read):
+            try:
+                values = batch_read(_EDITOR_PARAGRAPH_TEXTS_JS)
+            except Exception:
+                values = None
+            if isinstance(values, list):
+                return [str(value or "") for value in values]
         values = []
         for index in range(paragraphs.count()):
             paragraph = paragraphs.nth(index)
@@ -230,9 +283,26 @@ class PageActionsMixin:
         editor = page.locator(".ssml-editor").first
         editor.click(timeout=5000)
         cls._type_text(page, "\n".join(values), cancel_check=cancel_check)
-        _wait_with_cancel(page, 0.25, cancel_check=cancel_check)
-        _check_cancel_requested(cancel_check)
-        actual = cls._read_editor_paragraphs(page)
+
+        def matching_rows():
+            current = cls._read_editor_paragraphs(page)
+            if len(current) != len(values):
+                return None
+            return current if all(
+                received.strip() == expected.strip()
+                for expected, received in zip(values, current)
+            ) else None
+
+        actual = _poll(
+            matching_rows,
+            timeout=2.0,
+            interval=0.025,
+            max_interval=0.15,
+            page=page,
+            cancel_check=cancel_check,
+        )
+        if actual is None:
+            actual = cls._read_editor_paragraphs(page)
         if len(actual) != len(values):
             raise XunfeiError(
                 "多人配音 UI 文本段落数量校验失败："
@@ -807,20 +877,29 @@ class PageActionsMixin:
             if search_input.count() > 0:
                 search_input.first.click(timeout=3000)
                 search_input.first.fill("")
-                self._pause(page, 0.15, 0.06, cancel_check=cancel_check)
                 search_input.first.fill(voice_name)
                 _poll(
                     lambda: _safe_eval(page, JS.CHECK_SEARCH_RESULT, voice_name),
-                    timeout=5, interval=0.6, page=page,
+                    timeout=5,
+                    interval=0.08,
+                    max_interval=0.35,
+                    page=page,
                     cancel_check=cancel_check,
                 )
 
             _check_cancel_requested(cancel_check)
             clicked = _safe_eval(page, JS.SEARCH_AND_CLICK_VOICE, voice_name)
             if clicked:
-                self._pause(page, 0.6, 0.25, cancel_check=cancel_check)
-                selected = _safe_eval(page, JS.CHECK_VOICE_SELECTED, voice_name)
-                _check_cancel_requested(cancel_check)
+                selected = _poll(
+                    lambda: _safe_eval(
+                        page, JS.CHECK_VOICE_SELECTED, voice_name
+                    ),
+                    timeout=2.0,
+                    interval=0.05,
+                    max_interval=0.25,
+                    page=page,
+                    cancel_check=cancel_check,
+                )
                 if selected:
                     return mark_selected()
                 _log(f"[xunfei]   发音人 '{voice_name}' 点击后未见选中态，重试...")
@@ -841,6 +920,14 @@ class PageActionsMixin:
         labels = ("语速", "语调", "音量")
         values = (targets["speed"], targets["pitch"], targets["volume"])
         failed_labels = []
+
+        def param_matches(index, expected):
+            readback = _safe_eval(page, JS.READ_PARAM_INPUTS) or []
+            return bool(
+                index < len(readback)
+                and str(readback[index]).strip() == str(expected)
+            )
+
         for idx, (label, value) in enumerate(zip(labels, values)):
             _check_cancel_requested(cancel_check)
             ok = False
@@ -852,10 +939,14 @@ class PageActionsMixin:
                     page.keyboard.press(_SELECT_ALL)
                     page.keyboard.type(str(value))
                     page.keyboard.press("Tab")
-                    self._pause(page, 0.25, 0.1, cancel_check=cancel_check)
-                    readback = _safe_eval(page, JS.READ_PARAM_INPUTS) or []
-                    _check_cancel_requested(cancel_check)
-                    ok = idx < len(readback) and readback[idx].strip() == str(value)
+                    ok = bool(_poll(
+                        lambda: True if param_matches(idx, value) else None,
+                        timeout=0.8,
+                        interval=0.025,
+                        max_interval=0.1,
+                        page=page,
+                        cancel_check=cancel_check,
+                    ))
             except XunfeiCancelled:
                 raise
             except Exception:
@@ -863,10 +954,14 @@ class PageActionsMixin:
             # 方式二：JS 注入兜底 + 回读验证
             if not ok:
                 _safe_eval(page, JS.SET_PARAM_INPUT, [idx, value])
-                self._pause(page, 0.2, 0.08, cancel_check=cancel_check)
-                readback = _safe_eval(page, JS.READ_PARAM_INPUTS) or []
-                _check_cancel_requested(cancel_check)
-                ok = idx < len(readback) and readback[idx].strip() == str(value)
+                ok = bool(_poll(
+                    lambda: True if param_matches(idx, value) else None,
+                    timeout=0.8,
+                    interval=0.025,
+                    max_interval=0.1,
+                    page=page,
+                    cancel_check=cancel_check,
+                ))
             if not ok:
                 _log(f"[xunfei]   ⚠️ 参数[{label}] 设置为 {value} 后回读不一致")
                 failed_labels.append(label)
@@ -893,7 +988,8 @@ class PageActionsMixin:
             raise XunfeiError("未找到'生成音频'按钮")
         btn.first.click(timeout=5000)
         _log("[xunfei]   已点击生成音频")
-        self._pause(page, 0.6, 0.3, cancel_check=cancel_check)
+        # _confirm_synth starts with a state poll, so a fixed human-like pause
+        # here only delayed fast machines and every batch item.
 
     @staticmethod
     def _normalize_works_name(value):
@@ -913,10 +1009,19 @@ class PageActionsMixin:
             page.keyboard.press(_SELECT_ALL)
             page.keyboard.insert_text(normalized)
             page.keyboard.press("Tab")
-            self._pause(page, 0.2, 0.08, cancel_check=cancel_check)
-            actual = field.input_value(timeout=1000)
-            _check_cancel_requested(cancel_check)
-            if actual == normalized:
+            committed = _poll(
+                lambda: (
+                    True
+                    if field.input_value(timeout=1000) == normalized
+                    else None
+                ),
+                timeout=0.8,
+                interval=0.025,
+                max_interval=0.1,
+                page=page,
+                cancel_check=cancel_check,
+            )
+            if committed:
                 _log(f"[xunfei]   作品名称已设置: {normalized}")
                 return True
         except XunfeiCancelled:
@@ -1129,7 +1234,25 @@ class PageActionsMixin:
         buttons = []
         try:
             candidates = page.locator('button:visible')
-            for index in range(min(candidates.count(), 200)):
+            candidate_indices = None
+            batch_read = getattr(candidates, "evaluate_all", None)
+            if callable(batch_read):
+                try:
+                    snapshot = batch_read(
+                        _EXACT_BUTTON_INDICES_JS,
+                        "确认合成",
+                    )
+                except Exception:
+                    snapshot = None
+                if isinstance(snapshot, list):
+                    candidate_indices = [
+                        int(index)
+                        for index in snapshot
+                        if isinstance(index, int) and index >= 0
+                    ]
+            if candidate_indices is None:
+                candidate_indices = range(min(candidates.count(), 200))
+            for index in candidate_indices:
                 button = candidates.nth(index)
                 try:
                     label = re.sub(r"\s+", "", button.inner_text(timeout=500)).strip()
@@ -1667,8 +1790,6 @@ class PageActionsMixin:
                 # 状态；不能把这个未知结果当成“未提交”再次点击。
                 self._submission_state_uncertain = True
             return settled
-
-        self._pause(page, 0.6, 0.3, cancel_check=cancel_check)
 
         # 讯飞“作品设置”弹窗中的格式是独立的 WAV/MP3 单选项。不能依赖
         # 默认勾选，也不能取第一个 option；提交前必须回读并确认 MP3。

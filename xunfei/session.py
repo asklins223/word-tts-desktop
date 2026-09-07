@@ -269,6 +269,10 @@ class SessionLifecycleMixin:
         self._current_voice_key = None
         self._current_voice_name = None
         self._applied_params = None  # dict(speed=, pitch=, volume=) 或 None
+        # “发现本地缓存”只会在编辑页首次挂载/重载后出现。登录阶段完整
+        # 探测一次后，同一 Page 上的每条批量任务只做一次即时快照，不能
+        # 为一个已经确认不存在的弹窗重复等待 1.5 秒。
+        self._draft_prompt_checked_page = None
         # worksId 捕获。时间戳截止线只作为兼容兜底，真实页面优先使用
         # request->response 序号 fence 防止旧请求的延迟 response 跨条串入。
         self._works_lock = threading.Lock()

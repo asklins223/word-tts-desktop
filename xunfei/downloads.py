@@ -391,6 +391,10 @@ class DownloadMixin:
         """合成失败后恢复页面状态（重新加载编辑页，重置音色/参数记忆）。"""
         try:
             _check_cancel_requested(cancel_check)
+            # A navigation can mount the local-draft prompt again.  Only that
+            # page lifecycle boundary should re-enable the bounded detection
+            # window used by _dismiss_local_draft_prompt().
+            self._draft_prompt_checked_page = None
             page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
             editor_ready = _poll(
                 lambda: bool(page.locator(".ssml-editor:visible").count()),
@@ -429,8 +433,20 @@ class DownloadMixin:
         # 后续输入动作撞上刚刚出现的遮罩层。只在本地页面上短暂等待它
         # 自己出现；没有提示时最多增加约 1.5 秒，不把正常启动变成长轮询。
         _check_cancel_requested(cancel_check)
+        already_checked = getattr(
+            self, "_draft_prompt_checked_page", None
+        ) is page
         state = _safe_eval(page, JS.DISMISS_LOCAL_DRAFT_PROMPT)
-        detect_deadline = time.monotonic() + min(1.5, max(0.0, float(timeout)))
+        # The login/reload boundary already paid the delayed-mount detection
+        # window.  Batch items on the same page still take one immediate
+        # snapshot so an unexpectedly late prompt is handled, but they no
+        # longer each sleep for another 1.5 seconds when no prompt exists.
+        detect_window = (
+            0.0
+            if already_checked
+            else min(1.5, max(0.0, float(timeout)))
+        )
+        detect_deadline = time.monotonic() + detect_window
         while state == "not_found" and time.monotonic() < detect_deadline:
             _check_cancel_requested(cancel_check)
             try:
@@ -445,6 +461,7 @@ class DownloadMixin:
         if not isinstance(state, str):
             return True
         if state == "not_found":
+            self._draft_prompt_checked_page = page
             return True
         if state != "clicked":
             _log(
@@ -465,6 +482,7 @@ class DownloadMixin:
             cancel_check=cancel_check,
         )
         if cleared:
+            self._draft_prompt_checked_page = page
             _log("[xunfei]   已清除讯飞上次中断留下的本地编辑缓存")
         else:
             _log("[xunfei]   讯飞本地缓存恢复弹窗关闭超时")

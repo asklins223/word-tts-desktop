@@ -26,6 +26,7 @@ try:
     from platform_entry.adapter.page_forms import PlatformInputFormMixin
     from platform_entry.adapter.page_navigation import PlatformInputNavigationMixin
     from platform_entry.adapter.page_shared import _closest_visible_level
+    from platform_entry.adapter.page_shared import _closest_count_level
     from platform_entry.adapter.page_shared import _ancestor_at_level
     from platform_entry.adapter.errors import PlatformInputUiError
 except (ImportError, SyntaxError) as exc:
@@ -298,6 +299,18 @@ class ClosestVisibleLevelTests(unittest.TestCase):
         self.assertEqual(node.locator_calls, [])
         _ancestor_at_level(node, 2)
         self.assertEqual(node.locator_calls, ["xpath=..", "xpath=.."])
+
+    def test_hidden_control_probe_uses_browser_ancestor_walk(self) -> None:
+        node = _FakeNode(evaluate_result=4)
+        self.assertEqual(
+            _closest_count_level(
+                node,
+                'input[type="file"]',
+                max_level=8,
+            ),
+            4,
+        )
+        self.assertEqual(node.evaluate_calls, 1)
 
 
 class _FakeAncestorLocator:

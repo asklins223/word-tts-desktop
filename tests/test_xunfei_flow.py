@@ -1515,6 +1515,134 @@ class XunfeiFlowTests(unittest.TestCase):
         self.assertEqual(page.keyboard.inserted, [text])
         self.assertEqual(page.keyboard.typed, [])
 
+    def test_editor_paragraphs_are_read_in_one_browser_round_trip(self):
+        class Paragraphs:
+            def __init__(self):
+                self.evaluate_calls = 0
+
+            def evaluate_all(self, _script):
+                self.evaluate_calls += 1
+                return ["First line", "Second line"]
+
+            def count(self):
+                raise AssertionError("batch path must not count paragraphs")
+
+        paragraphs = Paragraphs()
+
+        class Page:
+            @staticmethod
+            def locator(selector):
+                self.assertEqual(selector, ".ssml-editor p")
+                return paragraphs
+
+        self.assertEqual(
+            XunFeiSession._read_editor_paragraphs(Page()),
+            ["First line", "Second line"],
+        )
+        self.assertEqual(paragraphs.evaluate_calls, 1)
+
+    def test_login_state_is_probed_in_one_browser_round_trip(self):
+        class Page:
+            url = "https://peiyin.xunfei.cn/editor"
+
+            def __init__(self, login_surface):
+                self.login_surface = login_surface
+                self.evaluate_calls = []
+
+            @staticmethod
+            def is_closed():
+                return False
+
+            def evaluate(self, script):
+                self.evaluate_calls.append(script)
+                return self.login_surface
+
+            @staticmethod
+            def locator(_selector):
+                raise AssertionError("batch login probe must avoid locator scans")
+
+        session = XunFeiSession()
+        for login_surface, expected in ((False, True), (True, False)):
+            with self.subTest(login_surface=login_surface):
+                page = Page(login_surface)
+                self.assertEqual(session._is_logged_in(page), expected)
+                self.assertEqual(
+                    page.evaluate_calls,
+                    [xunfei.JS.CHECK_VISIBLE_LOGIN_SURFACE],
+                )
+
+    def test_confirm_button_candidates_are_filtered_in_one_round_trip(self):
+        class Button:
+            def __init__(self):
+                self.text_reads = 0
+
+            def inner_text(self, **_kwargs):
+                self.text_reads += 1
+                return "确认合成"
+
+            @staticmethod
+            def is_disabled():
+                return False
+
+        button = Button()
+
+        class Buttons:
+            def __init__(self):
+                self.batch_calls = 0
+
+            def evaluate_all(self, _script, expected):
+                self.batch_calls += 1
+                self.assert_expected = expected
+                return [87]
+
+            @staticmethod
+            def count():
+                raise AssertionError("batch path must not count every button")
+
+            @staticmethod
+            def nth(index):
+                self.assertEqual(index, 87)
+                return button
+
+        candidates = Buttons()
+
+        class Page:
+            @staticmethod
+            def locator(selector):
+                self.assertEqual(selector, "button:visible")
+                return candidates
+
+        result = XunFeiSession._visible_confirm_synth_buttons(Page())
+
+        self.assertEqual(result, [(button, False)])
+        self.assertEqual(candidates.batch_calls, 1)
+        self.assertEqual(candidates.assert_expected, "确认合成")
+        self.assertEqual(button.text_reads, 1)
+
+    def test_draft_prompt_delay_is_paid_only_once_per_page(self):
+        session = XunFeiSession()
+        page = object()
+        with mock.patch.object(
+            xunfei_downloads,
+            "_safe_eval",
+            return_value="not_found",
+        ):
+            # The zero-time first probe marks this page as fully checked.
+            self.assertTrue(
+                session._dismiss_local_draft_prompt(page, timeout=0)
+            )
+            with mock.patch.object(
+                xunfei_downloads,
+                "_wait_with_cancel",
+                side_effect=AssertionError(
+                    "a checked page must not enter the delayed probe loop"
+                ),
+            ) as wait:
+                self.assertTrue(
+                    session._dismiss_local_draft_prompt(page, timeout=8)
+                )
+                wait.assert_not_called()
+
     def test_voice_cache_is_invalidated_when_xunfei_resets_to_default_voice(self):
         """提交上一条作品后页面复位时，下一条不能盲信本地音色缓存。"""
         from playwright.sync_api import sync_playwright

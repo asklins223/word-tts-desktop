@@ -231,6 +231,27 @@ _ANCESTOR_LEVEL_JS_TEMPLATE = """
 """
 
 
+# File inputs are commonly hidden behind the platform's upload button, so the
+# visibility-aware ancestor probe above cannot be reused for them.  This
+# variant keeps the same single browser round-trip while counting every
+# matching descendant, including hidden ``input[type=file]`` nodes.
+_ANCESTOR_COUNT_LEVEL_JS_TEMPLATE = """
+(node) => {
+    let parent = node;
+    for (let level = 0; level < %(max_level)d; level += 1) {
+        parent = parent.parentElement;
+        if (!parent) {
+            return -1;
+        }
+        if (parent.querySelectorAll(%(css)s).length === %(required)d) {
+            return level + 1;
+        }
+    }
+    return -1;
+}
+"""
+
+
 def _closest_visible_level(
     node: Any,
     css: str,
@@ -252,6 +273,36 @@ def _closest_visible_level(
     script = _ANCESTOR_LEVEL_JS_TEMPLATE % {
         "max_level": int(max_level),
         "css": json.dumps(css.replace(":visible", "")),
+        "required": int(required),
+    }
+    try:
+        return int(evaluate(script))
+    except Exception:
+        return -1
+
+
+def _closest_count_level(
+    node: Any,
+    css: str,
+    *,
+    max_level: int,
+    required: int = 1,
+) -> int:
+    """Return the nearest ancestor level with ``required`` CSS matches.
+
+    Unlike :func:`_closest_visible_level`, this includes hidden descendants.
+    It is intended for native file inputs whose visible upload surface is a
+    sibling element.  Test shims or selector syntax unsupported by
+    ``querySelectorAll`` simply return ``-1`` and use the original locator
+    walk.
+    """
+
+    evaluate = getattr(node, "evaluate", None)
+    if not callable(evaluate):
+        return -1
+    script = _ANCESTOR_COUNT_LEVEL_JS_TEMPLATE % {
+        "max_level": int(max_level),
+        "css": json.dumps(css),
         "required": int(required),
     }
     try:

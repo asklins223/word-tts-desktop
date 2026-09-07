@@ -27,6 +27,18 @@ class PlatformInputAssetMixin:
                     node = nodes.nth(index)
                     if not node.is_visible():
                         continue
+                    hit_level = _closest_visible_level(
+                        node,
+                        ".examAudioContent:visible",
+                        max_level=8,
+                    )
+                    if hit_level > 0:
+                        regions = _ancestor_at_level(node, hit_level).locator(
+                            ".examAudioContent:visible"
+                        )
+                        if regions.count() == 1:
+                            matches.append(regions.first)
+                            continue
                     parent = node
                     for _level in range(8):
                         parent = parent.locator("xpath=..")
@@ -72,6 +84,18 @@ class PlatformInputAssetMixin:
                     node = nodes.nth(index)
                     if not node.is_visible():
                         continue
+                    hit_level = _closest_count_level(
+                        node,
+                        'input[type="file"]',
+                        max_level=8,
+                    )
+                    if hit_level > 0:
+                        inputs = _ancestor_at_level(node, hit_level).locator(
+                            'input[type="file"]'
+                        )
+                        if inputs.count() == 1:
+                            matches.append(inputs.first)
+                            continue
                     parent = node
                     for _level in range(8):
                         parent = parent.locator("xpath=..")
@@ -98,6 +122,17 @@ class PlatformInputAssetMixin:
                 node = nodes.nth(index)
                 if not node.is_visible():
                     continue
+                hit_level = _closest_visible_level(
+                    node,
+                    ".examAudioContent:visible",
+                    max_level=8,
+                )
+                if hit_level > 0:
+                    regions = _ancestor_at_level(node, hit_level).locator(
+                        ".examAudioContent:visible"
+                    )
+                    if regions.count() == 1:
+                        return regions.first
                 parent = node
                 for _level in range(8):
                     parent = parent.locator("xpath=..")
@@ -387,6 +422,18 @@ class PlatformInputAssetMixin:
                     node = nodes.nth(index)
                     if not node.is_visible():
                         continue
+                    hit_level = _closest_count_level(
+                        node,
+                        'input[type="file"]',
+                        max_level=8,
+                    )
+                    if hit_level > 0:
+                        inputs = _ancestor_at_level(node, hit_level).locator(
+                            'input[type="file"]'
+                        )
+                        if inputs.count() == 1:
+                            matches.append(inputs.first)
+                            continue
                     parent = node
                     for _level in range(8):
                         parent = parent.locator("xpath=..")

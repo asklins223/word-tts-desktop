@@ -882,11 +882,10 @@ class CompositeActionsMixin:
                         # 事件；它只作为键盘路径未落地时的 UI 级重试。
                         field.fill(expected_value, timeout=3000)
                         field.press("Tab")
-                    # 输入框的 DOM value 会先于讯飞 React 表单状态更新；
-                    # 不能只在点击后立即读值。80ms 足够让 blur/input 状态
-                    # 落地，仍比每项固定长等待更快。
-                    _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
-                    _check_cancel_requested(cancel_check)
+                    # The poll performs an immediate read and waits only when
+                    # React actually needs time to commit the blur.  Charging
+                    # a fixed 80ms for all three controls accumulated across
+                    # every voice/configuration group.
                     actual = _poll(
                         lambda: read_expected_value(
                             label, index, expected_value
@@ -1253,9 +1252,15 @@ class CompositeActionsMixin:
         card = None
         for search_attempt in range(2):
             _check_cancel_requested(cancel_check)
-            search.click(timeout=3000)
-            page.keyboard.press(_SELECT_ALL)
-            page.keyboard.type(voice_name)
+            try:
+                # The search box is a normal input. ``fill`` dispatches its
+                # framework input event in one operation, avoiding one driver
+                # round-trip per character on packaged Windows builds.
+                search.fill(voice_name, timeout=3000)
+            except Exception:
+                search.click(timeout=3000)
+                page.keyboard.press(_SELECT_ALL)
+                page.keyboard.type(voice_name)
             card = _poll(
                 lambda: cls._find_composite_voice_card(
                     page, voice_name, cancel_check=cancel_check
@@ -1279,10 +1284,8 @@ class CompositeActionsMixin:
         _check_cancel_requested(cancel_check)
         card.click(timeout=5000)
         # 选中卡片后面板会重新挂载三项参数输入框；输入框数量出现
-        # 之前，旧的输入节点也可能短暂可见。给 React 一次短落地时间，
-        # 避免把参数发给上一张卡片的旧表单。
-        _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
-        _check_cancel_requested(cancel_check)
+        # 之前，旧的输入节点也可能短暂可见。参数助手会重新定位并轮询
+        # 完整表单，因此无需给每个配置组预付固定等待。
         card_ms = round((time.perf_counter() - phase_started_at) * 1000)
         params_started_at = time.perf_counter()
         cls._apply_composite_ui_params(

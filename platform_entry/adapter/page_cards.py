@@ -41,6 +41,58 @@ _QUESTION_CARD_LEVEL_JS = """
 }
 """
 
+_EDITOR_PLACEHOLDERS_JS = """
+(nodes) => nodes.map((node) => String(node.getAttribute('data-placeholder') || ''))
+"""
+
+_QUESTION_HEADING_SNAPSHOT_JS = """
+(nodes) => nodes.map((node, index) => {
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return {
+        index,
+        text: String(node.innerText || ''),
+        visible: style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && rect.width > 0
+            && rect.height > 0,
+    };
+})
+"""
+
+_QUESTION_CARD_CONFIRM_JS = """
+(node, kind) => {
+    const text = String(node.innerText || '');
+    const editors = node.querySelectorAll(
+        '.rich-text-editor .editor-content[contenteditable="true"]'
+    ).length;
+    const inputs = Array.from(node.querySelectorAll('input')).filter(
+        (element) => String(element.getAttribute('type') || '') !== 'file'
+    ).length;
+    return text.includes(kind)
+        && /添加选项|添加答案/.test(text)
+        && inputs <= 24
+        && editors <= 24
+        && (editors > 0 || inputs > 0);
+}
+"""
+
+_ANSWER_CONTROL_SNAPSHOT_JS = """
+(nodes) => nodes.map((node, index) => {
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return {
+        index,
+        text: String(node.innerText || ''),
+        className: String(node.getAttribute('class') || ''),
+        visible: style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && rect.width > 0
+            && rect.height > 0,
+    };
+})
+"""
+
 
 class PlatformInputCardMixin:
     """Discover cards and fill text, options, answers, and scores."""
@@ -53,16 +105,35 @@ class PlatformInputCardMixin:
         primary: list[Any] = []
         direct_question: list[Any] = []
         fallback: list[Any] = []
-        try:
-            count = editors.count()
-        except Exception:
-            count = 0
-        for index in range(count):
-            editor = editors.nth(index)
+        placeholders = None
+        batch_read = getattr(editors, "evaluate_all", None)
+        if callable(batch_read):
             try:
-                placeholder = str(editor.get_attribute("data-placeholder") or "")
+                snapshot = batch_read(_EDITOR_PLACEHOLDERS_JS)
             except Exception:
-                placeholder = ""
+                snapshot = None
+            if isinstance(snapshot, list):
+                placeholders = [str(value or "") for value in snapshot]
+        if placeholders is None:
+            try:
+                count = editors.count()
+            except Exception:
+                count = 0
+            placeholders = []
+            for index in range(count):
+                try:
+                    placeholders.append(
+                        str(
+                            editors.nth(index).get_attribute(
+                                "data-placeholder"
+                            )
+                            or ""
+                        )
+                    )
+                except Exception:
+                    placeholders.append("")
+        for index, placeholder in enumerate(placeholders):
+            editor = editors.nth(index)
             if any(token in placeholder for token in _SECTION_TEXT_PLACEHOLDERS):
                 continue
             fallback.append(editor)
@@ -314,28 +385,14 @@ class PlatformInputCardMixin:
             if hit_level > 0:
                 card = _ancestor_at_level(node, hit_level)
                 try:
-                    # Re-check the candidate with the real Playwright calls
-                    # so the in-browser walk can only save round-trips, never
-                    # return a different card than the plain loop below.
-                    text = str(card.inner_text())
-                    if question_kind in text:
-                        controls = card.get_by_text(
-                            re.compile(r"添加选项|添加答案")
-                        )
-                        editors = card.locator(
-                            '.rich-text-editor .editor-content[contenteditable="true"]'
-                        )
-                        inputs = card.locator('input:not([type="file"])')
-                        control_count = controls.count()
-                        editor_count = editors.count()
-                        input_count = inputs.count()
-                        if (
-                            control_count
-                            and input_count <= 24
-                            and editor_count <= 24
-                            and (editor_count or input_count)
-                        ):
-                            return card
+                    # Confirm all conditions in one browser operation.  The
+                    # previous confirmation performed inner_text plus three
+                    # separate counts for every question card.
+                    if card.evaluate(
+                        _QUESTION_CARD_CONFIRM_JS,
+                        question_kind,
+                    ):
+                        return card
                 except Exception:
                     pass
 
@@ -380,11 +437,37 @@ class PlatformInputCardMixin:
         )
         try:
             nodes = self.page.get_by_text(pattern)
-            count = nodes.count()
         except Exception:
             return []
+        candidate_indices = None
+        batch_snapshot_used = False
+        batch_read = getattr(nodes, "evaluate_all", None)
+        if callable(batch_read):
+            try:
+                snapshot = batch_read(_QUESTION_HEADING_SNAPSHOT_JS)
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, list):
+                batch_snapshot_used = True
+                candidate_indices = []
+                for item in snapshot:
+                    if not isinstance(item, Mapping) or not item.get("visible"):
+                        continue
+                    heading = self._normalise_question_heading(item.get("text"))
+                    if re.fullmatch(
+                        r"(?:小题|第)\d+[（(]"
+                        + re.escape(question_kind)
+                        + r"[）)]",
+                        heading,
+                    ):
+                        candidate_indices.append(int(item["index"]))
+        if candidate_indices is None:
+            try:
+                candidate_indices = list(range(nodes.count()))
+            except Exception:
+                return []
         result: list[Any] = []
-        for index in range(count):
+        for index in candidate_indices:
             try:
                 node = nodes.nth(index)
                 # Switching from 听后选择 to 听后应答 leaves the previous
@@ -393,14 +476,17 @@ class PlatformInputCardMixin:
                 # instead of the 7 cards in the active panel.  Off-screen
                 # cards inside the active scroll area still report visible
                 # here and remain eligible for scroll_into_view later.
-                if not node.is_visible():
-                    continue
-                heading = self._normalise_question_heading(node.inner_text())
-                if not re.fullmatch(
-                    r"(?:小题|第)\d+[（(]" + re.escape(question_kind) + r"[）)]",
-                    heading,
-                ):
-                    continue
+                if not batch_snapshot_used:
+                    if not node.is_visible():
+                        continue
+                    heading = self._normalise_question_heading(node.inner_text())
+                    if not re.fullmatch(
+                        r"(?:小题|第)\d+[（(]"
+                        + re.escape(question_kind)
+                        + r"[）)]",
+                        heading,
+                    ):
+                        continue
                 card = self._question_card_from_heading(node, question_kind)
                 if card is not None:
                     result.append(card)
@@ -448,12 +534,39 @@ class PlatformInputCardMixin:
         祖先节点更稳定，也能兼容编辑既有记录时已经存在的选项。
         """
 
-        result: list[Any] = []
-        for editor in self._visible_content_editors(card):
+        editors = card.locator(
+            '.rich-text-editor .editor-content[contenteditable="true"]:visible'
+        )
+        placeholders = None
+        batch_read = getattr(editors, "evaluate_all", None)
+        if callable(batch_read):
             try:
-                placeholder = str(editor.get_attribute("data-placeholder") or "")
+                values = batch_read(_EDITOR_PLACEHOLDERS_JS)
             except Exception:
-                placeholder = ""
+                values = None
+            if isinstance(values, list):
+                placeholders = [str(value or "") for value in values]
+        if placeholders is None:
+            visible_editors = self._visible_content_editors(card)
+            editors = None
+            placeholders = []
+            for editor in visible_editors:
+                try:
+                    placeholders.append(
+                        str(editor.get_attribute("data-placeholder") or "")
+                    )
+                except Exception:
+                    placeholders.append("")
+        else:
+            visible_editors = []
+
+        result: list[Any] = []
+        for index, placeholder in enumerate(placeholders):
+            editor = (
+                editors.nth(index)
+                if editors is not None
+                else visible_editors[index]
+            )
             if "题干" in placeholder or "解析" in placeholder:
                 continue
             if placeholder == "请输入" or "选项" in placeholder:
@@ -533,6 +646,23 @@ class PlatformInputCardMixin:
         controls = card.locator(".answerNormal, .answerSelected")
 
         def matching_control() -> Any | None:
+            batch_read = getattr(controls, "evaluate_all", None)
+            if callable(batch_read):
+                try:
+                    snapshot = batch_read(_ANSWER_CONTROL_SNAPSHOT_JS)
+                except Exception:
+                    snapshot = None
+                if isinstance(snapshot, list):
+                    wanted = _normalise_text(answer).casefold()
+                    for item in snapshot:
+                        if not isinstance(item, Mapping) or not item.get("visible"):
+                            continue
+                        if (
+                            _normalise_text(item.get("text")).casefold()
+                            == wanted
+                        ):
+                            return controls.nth(int(item["index"]))
+                    return None
             try:
                 count = controls.count()
             except Exception:
@@ -569,9 +699,6 @@ class PlatformInputCardMixin:
             raise PlatformInputUiError(f"题目卡片没有正确答案控件“{answer}”")
         try:
             click_and_confirm(node)
-            # 给 Vue 状态同步和失焦事件一个明确的落盘窗口，避免视觉上
-            # 已选中但紧接着切换/保存时仍使用旧答案。
-            self.page.wait_for_timeout(250)
         except Exception as exc:
             raise PlatformInputUiError(f"选择正确答案“{answer}”失败: {exc}") from exc
 
@@ -579,6 +706,21 @@ class PlatformInputCardMixin:
         """读取页面“正确答案”控件的选中样式，而不是猜当前答案。"""
 
         nodes = card.locator(".answerNormal, .answerSelected")
+        batch_read = getattr(nodes, "evaluate_all", None)
+        if callable(batch_read):
+            try:
+                snapshot = batch_read(_ANSWER_CONTROL_SNAPSHOT_JS)
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, list):
+                wanted = _normalise_text(answer).casefold()
+                return any(
+                    isinstance(item, Mapping)
+                    and item.get("visible")
+                    and _normalise_text(item.get("text")).casefold() == wanted
+                    and "answerSelected" in str(item.get("className") or "")
+                    for item in snapshot
+                )
         try:
             count = nodes.count()
         except Exception:

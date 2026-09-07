@@ -195,7 +195,10 @@ class PlatformInputFormMixin:
             search.fill(value)
         except Exception as exc:
             raise PlatformInputUiError(f"搜索下拉选项“{value}”失败: {exc}") from exc
-        self.page.wait_for_timeout(100)
+        # The caller immediately polls for the exact option.  A fixed sleep
+        # here charged every dropdown even when Element Plus rendered the
+        # filtered list synchronously, which accumulated noticeably on the
+        # Windows driver transport.
 
     def _find_dropdown_option(self, name: str) -> Any | None:
         wanted = _normalise_text(name)
@@ -536,7 +539,6 @@ class PlatformInputFormMixin:
                     raise PlatformInputUiError(
                         f"选择“{title}={name}”失败: {force_exc}"
                     ) from exc
-            self.page.wait_for_timeout(100)
 
             def selected() -> bool:
                 option = self._find_dropdown_option(name)

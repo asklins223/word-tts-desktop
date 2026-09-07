@@ -338,7 +338,8 @@ class PlatformInputNavigationMixin:
         except Exception as exc:
             raise PlatformInputUiError(f"填写试卷搜索条件失败: {exc}") from exc
         self._click_exact("查询")
-        self.page.wait_for_timeout(300)
+        # Callers wait for the fresh list response/row explicitly; a fixed
+        # delay here only serialised that existing readiness wait.
 
     def start_new_paper(self) -> None:
         self._click_exact("新增试卷")
@@ -528,7 +529,6 @@ class PlatformInputNavigationMixin:
                         f"填写既有试卷搜索条件失败: {exc}"
                     ) from exc
                 self._click_exact("查询")
-                self.page.wait_for_timeout(300)
 
         self._wait_until(
             lambda: find_edit_action() is not None,
