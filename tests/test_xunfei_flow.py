@@ -2763,6 +2763,7 @@ class XunfeiFlowTests(unittest.TestCase):
             </div>
             <div class="index-module__name">同名作品</div>
             <div>订单编号: PO-FIRST</div>
+            <div>审核通过</div>
           </div>
           <div class="index-module__item">
             <div class="index-module__checkbox">
@@ -2770,6 +2771,7 @@ class XunfeiFlowTests(unittest.TestCase):
             </div>
             <div class="index-module__name">同名作品</div>
             <div>订单编号: PO-SECOND</div>
+            <div>审核通过</div>
           </div>
         </div>
         """
@@ -2794,6 +2796,121 @@ class XunfeiFlowTests(unittest.TestCase):
                 2,
             )
             browser.close()
+
+    def test_download_row_with_order_no_never_uses_stale_api_index(self):
+        """目标订单号未渲染时，不能凭旧 API row_index 勾选同名旧作品。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div class="index-module__scrolledList">
+          <div class="index-module__item">
+            <input class="ant-checkbox-input" type="checkbox">
+            <div class="index-module__name">同名作品</div>
+            <div>订单编号: PO-OLD</div>
+            <div>审核通过</div>
+          </div>
+        </div>
+        """
+        target = {
+            "works_id": "works-new",
+            "order_no": "PO-NEW",
+            "works_name": "同名作品",
+            "row_index": 0,
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+
+            state = page.evaluate(xunfei.JS.SELECT_DOWNLOAD_ROWS, [target])
+
+            self.assertEqual(state["selected"], [])
+            self.assertEqual(
+                [item["works_id"] for item in state["missing"]],
+                ["works-new"],
+            )
+            self.assertFalse(
+                page.locator("input.ant-checkbox-input").is_checked()
+            )
+            browser.close()
+
+    def test_download_selection_waits_for_target_row_downloadable_dom(self):
+        """目标行仍显示合成中时不得勾选，要等可下载 DOM 稳定后再操作。"""
+        from playwright.sync_api import sync_playwright
+
+        html = """
+        <div class="index-module__scrolledList">
+          <div class="index-module__item">
+            <input id="target-checkbox"
+                   class="ant-checkbox-input"
+                   type="checkbox">
+            <div class="index-module__name">延迟作品</div>
+            <div>订单编号: PO-DELAYED</div>
+            <div id="target-status">合成中</div>
+          </div>
+        </div>
+        <script>
+          window.statusAtClick = null;
+          document.querySelector('#target-checkbox').addEventListener('click', () => {
+            window.statusAtClick = document.querySelector('#target-status').textContent;
+          });
+          setTimeout(() => {
+            document.querySelector('#target-status').textContent = '审核通过';
+          }, 120);
+        </script>
+        """
+        target = {
+            "works_id": "works-delayed",
+            "order_no": "PO-DELAYED",
+            "works_name": "延迟作品",
+            "row_index": 0,
+        }
+        session = XunFeiSession()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+
+            selected, missing = session._select_download_rows(
+                page,
+                [target],
+                timeout=2,
+            )
+
+            self.assertIn("works-delayed", selected)
+            self.assertEqual(missing, [])
+            self.assertTrue(page.locator("#target-checkbox").is_checked())
+            self.assertEqual(
+                page.evaluate("() => window.statusAtClick"),
+                "审核通过",
+            )
+            browser.close()
+
+    def test_download_button_waits_until_react_enables_it(self):
+        """勾选提交稍慢时要轮询按钮，不能第一次 disabled 就判下载失败。"""
+        session = XunFeiSession()
+
+        def run_poll(check, **_kwargs):
+            for _attempt in range(3):
+                result = check()
+                if result:
+                    return result
+            return None
+
+        with mock.patch.object(
+            session,
+            "_click_visible_exact_button",
+            side_effect=[False, False, True],
+        ) as click_button, mock.patch.object(
+            xunfei_downloads,
+            "_poll",
+            side_effect=run_poll,
+        ):
+            self.assertTrue(
+                session._click_download_when_ready(object(), timeout=1)
+            )
+
+        self.assertEqual(click_button.call_count, 3)
 
     def test_download_uses_current_xunfei_user_page(self):
         self.assertEqual(xunfei.DOWNLOAD_PAGE_URL, "https://peiyin.xunfei.cn/user")
@@ -3557,6 +3674,10 @@ class XunfeiFlowTests(unittest.TestCase):
                     mock.patch.object(session, "_download_signed_url", return_value=False), \
                     mock.patch.object(
                         session,
+                        "_refresh_download_page_for_selection",
+                    ) as refresh_download_page, \
+                    mock.patch.object(
+                        session,
                         "_select_download_rows",
                         return_value=({"works-a", "works-b"}, []),
                     ), \
@@ -3568,6 +3689,10 @@ class XunfeiFlowTests(unittest.TestCase):
                         mock.patch.object(xunfei_downloads, "_safe_eval", return_value=True):
                 results = session._download_pending_batch(pending)
 
+            refresh_download_page.assert_called_once_with(
+                session._page,
+                cancel_check=None,
+            )
             self.assertFalse(results["works-a"]["downloaded"])
             self.assertTrue(results["works-b"]["downloaded"])
             self.assertFalse(Path(pending[0]["output_path"]).exists())

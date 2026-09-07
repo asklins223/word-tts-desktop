@@ -747,6 +747,15 @@ class JS:
 
     GET_DOWNLOAD_ROWS = """
     () => {
+        const visible = (element) => {
+            if (!element || !element.isConnected) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && rect.width > 0
+                && rect.height > 0;
+        };
         const rowFromInput = (input) => {
             let parent = input;
             for (let level = 0; parent && level < 9; level += 1) {
@@ -763,11 +772,23 @@ class JS:
             const row = rowFromInput(input);
             if (!row || seen.has(row)) continue;
             const name = row.querySelector('[class*="__name"]');
+            const text = String(row.innerText || '').replace(/\\s+/g, ' ').trim();
+            const normalizedText = text.replace(/\\s+/g, '');
+            const downloadReady = [
+                '审核通过', '合成完成', '生成完成', '制作完成', '已完成', '可下载'
+            ].some((marker) => normalizedText.includes(marker));
             seen.add(row);
             rows.push({
                 index: rows.length,
-                text: String(row.innerText || '').replace(/\\s+/g, ' ').trim(),
+                text,
                 works_name: String(name?.innerText || '').replace(/\\s+/g, ' ').trim(),
+                ready: visible(row)
+                    && input.isConnected
+                    && !input.disabled
+                    && input.getAttribute('aria-disabled') !== 'true'
+                    && downloadReady,
+                download_ready: downloadReady,
+                checked: Boolean(input.checked),
             });
         }
         return rows;
@@ -777,6 +798,15 @@ class JS:
     SELECT_DOWNLOAD_ROWS = """
     (targets) => {
         const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const visible = (element) => {
+            if (!element || !element.isConnected) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && rect.width > 0
+                && rect.height > 0;
+        };
         const rowFromInput = (input) => {
             let parent = input;
             for (let level = 0; parent && level < 9; level += 1) {
@@ -798,6 +828,10 @@ class JS:
                 input: row.querySelector('input.ant-checkbox-input, input[type="checkbox"]'),
                 text: normalize(row.innerText || ''),
                 name: normalize(row.querySelector('[class*="__name"]')?.innerText || ''),
+                visible: visible(row),
+                downloadReady: [
+                    '审核通过', '合成完成', '生成完成', '制作完成', '已完成', '可下载'
+                ].some((marker) => normalize(row.innerText || '').includes(marker)),
             });
         }
 
@@ -813,11 +847,20 @@ class JS:
                     !used.has(index) && row.text.includes(orderNo)
                 ));
             }
-            if (found < 0 && Number.isInteger(target?.row_index)) {
+            // ``row_index`` comes from an API snapshot and is unsafe while
+            // the visible list still contains its previous render.  It may
+            // only disambiguate a row when no order number exists and the
+            // row's own rendered name still matches the target.
+            if (found < 0 && !orderNo && Number.isInteger(target?.row_index)) {
                 const index = target.row_index;
-                if (index >= 0 && index < rows.length && !used.has(index)) found = index;
+                if (
+                    index >= 0
+                    && index < rows.length
+                    && !used.has(index)
+                    && (!worksName || rows[index].name === worksName)
+                ) found = index;
             }
-            if (found < 0 && worksName) {
+            if (found < 0 && !orderNo && worksName) {
                 found = rows.findIndex((row, index) => (
                     !used.has(index) && row.name === worksName
                 ));
@@ -832,7 +875,14 @@ class JS:
             }
 
             const checkbox = rows[found].input;
-            if (!checkbox) {
+            if (
+                !checkbox
+                || !rows[found].visible
+                || !rows[found].downloadReady
+                || !checkbox.isConnected
+                || checkbox.disabled
+                || checkbox.getAttribute('aria-disabled') === 'true'
+            ) {
                 missing.push({
                     works_id: String(target?.works_id || ''),
                     order_no: String(target?.order_no || ''),
@@ -862,18 +912,19 @@ class JS:
     """
 
     SCROLL_DOWNLOAD_LIST = """
-    () => {
+    (position) => {
+        const toTop = position === 'top';
         let moved = false;
         const containers = document.querySelectorAll(
             '[class*="__scrolledList"], [class*="scrolledList"], [class*="scroll"]'
         );
         for (const container of containers) {
             if (container.scrollHeight > container.clientHeight) {
-                container.scrollTop = container.scrollHeight;
+                container.scrollTop = toTop ? 0 : container.scrollHeight;
                 moved = true;
             }
         }
-        window.scrollTo(0, document.body.scrollHeight);
+        window.scrollTo(0, toTop ? 0 : document.body.scrollHeight);
         return moved;
     }
     """

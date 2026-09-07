@@ -516,33 +516,200 @@ class DownloadMixin:
             pass
         return False
 
-    def _select_download_rows(self, page, targets, cancel_check=None):
-        """在讯飞作品页按 worksId 对应的 orderNo 精确勾选作品行。"""
+    def _wait_download_page_ready(
+        self,
+        page,
+        timeout=30,
+        cancel_check=None,
+    ):
+        """等待作品页主体就绪，并保留登录失效的恢复语义。"""
+
+        def download_page_state():
+            if _safe_eval(page, JS.CHECK_DOWNLOAD_PAGE):
+                return "ready"
+            if _safe_eval(page, JS.CHECK_LOGIN_SURFACE):
+                return "login"
+            return None
+
+        page_state = _poll(
+            download_page_state,
+            timeout=timeout,
+            interval=0.2,
+            max_interval=1.0,
+            page=page,
+            cancel_check=cancel_check,
+        )
+        if page_state == "login":
+            message = "讯飞配音登录信息已失效，请重新登录"
+            _log(f"[xunfei]   {message}")
+            raise XunfeiLoginRequired(message)
+        if page_state != "ready":
+            raise XunfeiError("讯飞作品下载页未加载完成")
+        return True
+
+    def _refresh_download_page_for_selection(self, page, cancel_check=None):
+        """API 就绪后刷新作品页，不让勾选命中旧的 React DOM。"""
+        _check_cancel_requested(cancel_check)
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+        except Exception as error:
+            if _safe_eval(page, JS.CHECK_LOGIN_SURFACE):
+                message = "讯飞配音登录信息已失效，请重新登录"
+                _log(f"[xunfei]   {message}")
+                raise XunfeiLoginRequired(message) from error
+            raise XunfeiError(f"刷新讯飞作品下载页失败: {error}") from error
+        _check_cancel_requested(cancel_check)
+        self._wait_download_page_ready(
+            page,
+            timeout=30,
+            cancel_check=cancel_check,
+        )
+        _log("[xunfei]   下载页已刷新，等待本批作品 DOM 稳定")
+
+    @staticmethod
+    def _find_download_target_row(rows, target):
+        """在只读 DOM 快照中严格匹配一条可下载的目标行。"""
+        if not isinstance(rows, list) or not isinstance(target, dict):
+            return None
+
+        def normalize(value):
+            return re.sub(r"\s+", "", str(value or "")).strip()
+
+        order_no = normalize(target.get("order_no"))
+        works_name = normalize(target.get("works_name"))
+        candidates = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("ready") is not True:
+                continue
+            row_text = normalize(row.get("text"))
+            row_name = normalize(row.get("works_name"))
+            if order_no:
+                matched = order_no in row_text
+            else:
+                matched = bool(works_name) and row_name == works_name
+            if matched:
+                candidates.append(row)
+
+        # 订单号本应唯一；无订单号时作品名也必须唯一。过渡渲染中
+        # 旧、新行同时存在时宁可继续等待，绝不凭 API row_index 猜测。
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _select_download_rows(
+        self,
+        page,
+        targets,
+        cancel_check=None,
+        timeout=30,
+    ):
+        """等目标行稳定渲染且可下载后，再按 orderNo 勾选。"""
         selected = {}
-        missing = list(targets)
-        for attempt in range(8):
+        targets = list(targets or [])
+        clicked = {}
+        stable_rows = {}
+        started_at = time.monotonic()
+        deadline = started_at + max(0.0, float(timeout))
+        next_scroll_at = started_at + 3.0
+        scroll_to_top = False
+
+        while time.monotonic() <= deadline:
             _check_cancel_requested(cancel_check)
-            state = _safe_eval(page, JS.SELECT_DOWNLOAD_ROWS, missing or targets) or {}
-            for item in state.get("selected") or []:
-                _check_cancel_requested(cancel_check)
-                selected[str(item.get("works_id") or "")] = item
-            missing_ids = {
-                str(item.get("works_id") or "")
-                for item in state.get("missing") or []
-            }
             missing = [
                 item for item in targets
                 if str(item.get("works_id") or "") not in selected
-                and str(item.get("works_id") or "") in missing_ids
             ]
             if not missing:
                 break
-            if attempt >= 7:
-                break
-            _check_cancel_requested(cancel_check)
-            _safe_eval(page, JS.SCROLL_DOWNLOAD_LIST)
-            _wait_with_cancel(page, 0.5, cancel_check=cancel_check)
 
+            rows = _safe_eval(page, JS.GET_DOWNLOAD_ROWS)
+            ready_to_click = []
+            any_target_visible = False
+            now = time.monotonic()
+            for target in missing:
+                works_id = str(target.get("works_id") or "")
+                row = self._find_download_target_row(rows, target)
+                if row is None:
+                    stable_rows.pop(works_id, None)
+                    continue
+                any_target_visible = True
+                signature = (
+                    row.get("index"),
+                    re.sub(r"\s+", "", str(row.get("text") or "")),
+                    re.sub(r"\s+", "", str(row.get("works_name") or "")),
+                )
+                previous = stable_rows.get(works_id)
+                stable_count = (
+                    int(previous.get("count") or 0) + 1
+                    if previous and previous.get("signature") == signature
+                    else 1
+                )
+                stable_rows[works_id] = {
+                    "signature": signature,
+                    "count": stable_count,
+                }
+
+                if row.get("checked") is True and (
+                    works_id in clicked or stable_count >= 2
+                ):
+                    selected[works_id] = clicked.get(works_id) or {
+                        "works_id": works_id,
+                        "order_no": str(target.get("order_no") or ""),
+                        "works_name": str(target.get("works_name") or ""),
+                        "row_index": row.get("index"),
+                    }
+                    clicked.pop(works_id, None)
+                    continue
+
+                if works_id in clicked:
+                    # React 状态更新可能比原生 click 慢一拍。给它一个短暂
+                    # 提交窗口；仍未回读到 checked 才允许重试。
+                    clicked_at = float(clicked[works_id].get("clicked_at") or now)
+                    if now - clicked_at < 1.0:
+                        continue
+                    clicked.pop(works_id, None)
+                    stable_rows[works_id]["count"] = 1
+                    continue
+
+                if stable_count >= 2:
+                    ready_to_click.append(target)
+
+            if ready_to_click:
+                state = _safe_eval(page, JS.SELECT_DOWNLOAD_ROWS, ready_to_click)
+                if isinstance(state, dict):
+                    clicked_at = time.monotonic()
+                    for item in state.get("selected") or []:
+                        _check_cancel_requested(cancel_check)
+                        works_id = str(item.get("works_id") or "")
+                        if works_id:
+                            clicked[works_id] = {
+                                **item,
+                                "clicked_at": clicked_at,
+                            }
+                next_scroll_at = time.monotonic() + 3.0
+
+            now = time.monotonic()
+            if not any_target_visible and now >= next_scroll_at:
+                _safe_eval(
+                    page,
+                    JS.SCROLL_DOWNLOAD_LIST,
+                    "top" if scroll_to_top else "bottom",
+                )
+                scroll_to_top = not scroll_to_top
+                stable_rows.clear()
+                next_scroll_at = now + 2.0
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _wait_with_cancel(
+                page,
+                min(0.15, remaining),
+                cancel_check=cancel_check,
+            )
+
+        missing = [
+            item for item in targets
+            if str(item.get("works_id") or "") not in selected
+        ]
         if selected:
             _log(
                 f"[xunfei]   下载页已勾选 {len(selected)}/{len(targets)} 条作品"
@@ -553,6 +720,32 @@ class DownloadMixin:
                 + ", ".join(str(item.get("works_id") or "") for item in missing)
             )
         return selected, missing
+
+    def _click_download_when_ready(
+        self,
+        page,
+        timeout=20,
+        cancel_check=None,
+    ):
+        """等 React 完成勾选状态提交后，再点击可用的下载按钮。"""
+
+        def click_ready_button():
+            if cancel_check is None:
+                return self._click_visible_exact_button(page, "下载")
+            return self._click_visible_exact_button(
+                page,
+                "下载",
+                cancel_check=cancel_check,
+            )
+
+        return bool(_poll(
+            click_ready_button,
+            timeout=timeout,
+            interval=0.1,
+            max_interval=0.5,
+            page=page,
+            cancel_check=cancel_check,
+        ))
 
     def _download_selected_rows(
         self,
@@ -578,43 +771,44 @@ class DownloadMixin:
         page.on("download", on_download)
         try:
             _check_cancel_requested(cancel_check)
-            if cancel_check is None:
-                clicked = self._click_visible_exact_button(page, "下载")
-            else:
-                clicked = self._click_visible_exact_button(
-                    page, "下载", cancel_check=cancel_check
-                )
+            clicked = self._click_download_when_ready(
+                page,
+                timeout=20,
+                cancel_check=cancel_check,
+            )
             if not clicked:
                 _log("[xunfei]   ❌ 下载页未找到可用的“下载”按钮")
                 return []
 
             # 当前页面通常直接触发多个 MP3 下载；部分账号会先弹出
-            # Ant Design 下载确认框，再点击确认按钮。
-            _wait_with_cancel(page, 0.5, cancel_check=cancel_check)
-            _check_cancel_requested(cancel_check)
-            dialog = self._find_visible_dialog(page, "下载")
-            if dialog is not None:
-                if cancel_check is None:
-                    dialog_clicked = self._click_visible_exact_button(
-                        page, "下载", scope=dialog
-                    )
-                else:
-                    dialog_clicked = self._click_visible_exact_button(
-                        page,
-                        "下载",
-                        scope=dialog,
-                        cancel_check=cancel_check,
-                    )
-                if not dialog_clicked:
-                    _log("[xunfei]   ❌ 未能点击下载确认弹窗中的“下载”")
-                    return downloads
-                _log("[xunfei]   已确认下载弹窗")
-
+            # Ant Design 下载确认框。弹窗也是异步挂载，在收集下载
+            # 事件的同一轮询里处理，避免固定等待后仍然抢早。
             expected = len(selected_targets)
-            deadline = time.time() + 120
-            while len(downloads) < expected and time.time() < deadline:
+            deadline = time.monotonic() + 120
+            dialog_deadline = time.monotonic() + 5
+            dialog_handled = False
+            while len(downloads) < expected and time.monotonic() < deadline:
                 _check_cancel_requested(cancel_check)
-                _wait_with_cancel(page, 0.5, cancel_check=cancel_check)
+                if not dialog_handled and time.monotonic() <= dialog_deadline:
+                    dialog = self._find_visible_dialog(page, "下载")
+                    if dialog is not None:
+                        if cancel_check is None:
+                            dialog_clicked = self._click_visible_exact_button(
+                                page, "下载", scope=dialog
+                            )
+                        else:
+                            dialog_clicked = self._click_visible_exact_button(
+                                page,
+                                "下载",
+                                scope=dialog,
+                                cancel_check=cancel_check,
+                            )
+                        if not dialog_clicked:
+                            _log("[xunfei]   ❌ 未能点击下载确认弹窗中的“下载”")
+                            return downloads
+                        dialog_handled = True
+                        _log("[xunfei]   已确认下载弹窗")
+                _wait_with_cancel(page, 0.25, cancel_check=cancel_check)
             _log(
                 f"[xunfei]   下载页事件完成: {len(downloads)}/{expected} 条"
             )
@@ -745,26 +939,11 @@ class DownloadMixin:
                 raise XunfeiLoginRequired(message) from error
             raise XunfeiError(f"无法打开讯飞作品下载页: {error}")
 
-        def download_page_state():
-            if _safe_eval(page, JS.CHECK_DOWNLOAD_PAGE):
-                return "ready"
-            if _safe_eval(page, JS.CHECK_LOGIN_SURFACE):
-                return "login"
-            return None
-
-        page_state = _poll(
-            download_page_state,
+        self._wait_download_page_ready(
+            page,
             timeout=30,
-            interval=0.5,
-            page=page,
             cancel_check=cancel_check,
         )
-        if page_state == "login":
-            message = "讯飞配音登录信息已失效，请重新登录"
-            _log(f"[xunfei]   {message}")
-            raise XunfeiLoginRequired(message)
-        if page_state != "ready":
-            raise XunfeiError("讯飞作品下载页未加载完成")
 
         _log(f"[xunfei] 下载页已打开: {page.url}")
         # 下载页就绪不等于音频已合成完成；这里先按作品上报“等待就绪”
@@ -922,6 +1101,13 @@ class DownloadMixin:
         if not browser_targets:
             return results
 
+        # 音频是否就绪由接口精确确认，但作品页是在确认之前打开的。
+        # 浏览器兜底前必须刷新并重新等待页面主体，否则 React 旧 DOM
+        # 仍可能显示“合成中”，过早勾选后点击下载会被页面拒绝。
+        self._refresh_download_page_for_selection(
+            page,
+            cancel_check=cancel_check,
+        )
         if cancel_check is None:
             selected, missing = self._select_download_rows(page, browser_targets)
         else:
