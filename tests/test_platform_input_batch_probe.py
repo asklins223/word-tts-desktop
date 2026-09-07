@@ -23,7 +23,10 @@ try:
         PlatformInputCardMixin,
         _QUESTION_CARD_LEVEL_JS,
     )
-    from platform_entry.adapter.page_forms import PlatformInputFormMixin
+    from platform_entry.adapter.page_forms import (
+        PlatformInputFormMixin,
+        _selected_multi_texts,
+    )
     from platform_entry.adapter.page_navigation import PlatformInputNavigationMixin
     from platform_entry.adapter.page_shared import _closest_visible_level
     from platform_entry.adapter.page_shared import _closest_count_level
@@ -289,6 +292,29 @@ class WaitForDropdownOptionTests(unittest.TestCase):
 
         self.assertIs(actual, expected)
         self.assertEqual(calls, ["江苏省", "江苏省"])
+
+
+class SelectedMultiTextsTests(unittest.TestCase):
+    def test_reads_all_label_variants_once_and_deduplicates_nested_text(self) -> None:
+        class Labels:
+            @staticmethod
+            def all_inner_texts() -> list[str]:
+                return ["天河区", "天河区", "越秀区"]
+
+        class Component:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def locator(self, _selector: str) -> Labels:
+                self.calls += 1
+                return Labels()
+
+        component = Component()
+        self.assertEqual(
+            _selected_multi_texts(component),
+            ["天河区", "越秀区"],
+        )
+        self.assertEqual(component.calls, 1)
 
 
 class ClosestVisibleLevelTests(unittest.TestCase):

@@ -14,6 +14,11 @@ PAPER_TITLE_PLACEHOLDER = (
 # One round-trip instead of count + nth + inner_text per option; matching
 # still happens in Python with the shared _normalise_text helper.
 _DROPDOWN_TEXTS_JS = "(nodes) => nodes.map((node) => String(node.innerText || ''))"
+_MULTI_LABEL_SELECTOR = (
+    ".el-select__selected-item .el-select__tags-text:visible, "
+    ".el-select__tags-text:visible, "
+    ".el-tag__content:visible"
+)
 
 
 def _comparable_input_text(raw: Any) -> str:
@@ -35,6 +40,19 @@ def _dispatch_click(locator: Any) -> bool:
         return False
 
 
+def _selected_multi_texts(component: Any) -> list[str]:
+    if component is None:
+        return []
+    try:
+        values = component.locator(_MULTI_LABEL_SELECTOR).all_inner_texts()
+    except Exception:
+        return []
+    # Element Plus versions can expose both a tag wrapper and its nested text
+    # node.  A CSS union returns both; preserving the first occurrence keeps
+    # the old priority behavior without paying up to three browser calls.
+    return list(dict.fromkeys(str(value) for value in values))
+
+
 class PlatformInputFormMixin:
     """Owns reusable labelled inputs and dropdown controls."""
 
@@ -47,9 +65,8 @@ class PlatformInputFormMixin:
         ):
             try:
                 roots = self.page.locator(selector).filter(has_text=title)
-                candidate = self._first_visible(roots)
-                if candidate is not None:
-                    return candidate
+                if roots.count():
+                    return roots.first
             except Exception:
                 continue
         return None
@@ -195,12 +212,12 @@ class PlatformInputFormMixin:
             component = self._field_component(title)
         if component is None:
             raise PlatformInputUiError(f"页面上没有“{title}”下拉框")
-        wrapper = self._first_visible(
-            component.locator(".el-select__wrapper:visible")
-        )
+        wrappers = component.locator(".el-select__wrapper:visible")
+        wrapper = wrappers.first if wrappers.count() else None
         select = None
         if wrapper is None:
-            select = self._first_visible(component.locator(".el-select:visible"))
+            selects = component.locator(".el-select:visible")
+            select = selects.first if selects.count() else None
         target = wrapper or select or component
         try:
             # The Element Plus wrapper owns the Vue click handler.  If a
@@ -216,14 +233,13 @@ class PlatformInputFormMixin:
     def _search_select(self, component: Any, value: str) -> None:
         """在页面下拉框内搜索显示值，避免依赖完整选项列表的即时加载。"""
 
-        search = self._first_visible(
-            component.locator(
-                'input.el-select__input:visible, '
-                'input[role="combobox"]:visible'
-            )
+        searches = component.locator(
+            'input.el-select__input:visible, '
+            'input[role="combobox"]:visible'
         )
-        if search is None:
+        if not searches.count():
             return
+        search = searches.first
         try:
             search.fill(value)
         except Exception as exc:
@@ -304,20 +320,7 @@ class PlatformInputFormMixin:
 
         if component is None:
             return 0
-        selectors = (
-            ".el-select__selected-item .el-select__tags-text:visible",
-            ".el-select__tags-text:visible",
-            ".el-tag__content:visible",
-        )
-        labels: list[str] = []
-        for selector in selectors:
-            try:
-                candidate = component.locator(selector).all_inner_texts()
-            except Exception:
-                continue
-            if candidate:
-                labels = [str(value) for value in candidate]
-                break
+        labels = _selected_multi_texts(component)
         if not labels:
             return 0
 
@@ -334,20 +337,7 @@ class PlatformInputFormMixin:
 
         if component is None:
             return set(), 0, True
-        selectors = (
-            ".el-select__selected-item .el-select__tags-text:visible",
-            ".el-select__tags-text:visible",
-            ".el-tag__content:visible",
-        )
-        labels: list[str] = []
-        for selector in selectors:
-            try:
-                candidate = component.locator(selector).all_inner_texts()
-            except Exception:
-                continue
-            if candidate:
-                labels = [str(value) for value in candidate]
-                break
+        labels = _selected_multi_texts(component)
         selected: set[str] = set()
         count = 0
         complete = True
@@ -388,8 +378,9 @@ class PlatformInputFormMixin:
         self,
         title: str,
         wanted_names: Sequence[str],
+        component: Any | None = None,
     ) -> bool:
-        component = self._field_component(title)
+        component = component or self._field_component(title)
         if component is None:
             return False
         labels, count, complete = self._selected_multi_labels(component)
@@ -579,18 +570,18 @@ class PlatformInputFormMixin:
             seen.add(key)
             wanted_names.append(name)
 
-        if self._multi_selection_matches(title, wanted_names):
+        current = self._field_component(title)
+        if self._multi_selection_matches(title, wanted_names, current):
             self.page.keyboard.press("Escape")
             return
-        if self._selected_multi_count(self._field_component(title)):
+        if self._selected_multi_count(current):
             self._clear_multi_selection(title)
 
         # Element Plus 多选框在某些版本点击一个选项后会关闭下拉层，因此每
         # 个值都重新打开；这是页面点击，不是批量构造请求。
         for name in wanted_names:
-            dropdown = self._first_visible(
-                self.page.locator(".el-select-dropdown:visible")
-            )
+            dropdowns = self.page.locator(".el-select-dropdown:visible")
+            dropdown = dropdowns.first if dropdowns.count() else None
             component = (
                 self._field_component(title)
                 if dropdown is not None
@@ -615,9 +606,6 @@ class PlatformInputFormMixin:
                 continue
 
             def selected() -> bool:
-                option = self._find_dropdown_option(name)
-                if self._option_is_selected(option):
-                    return True
                 if component is None:
                     return False
                 labels, _count, complete = self._selected_multi_labels(component)
