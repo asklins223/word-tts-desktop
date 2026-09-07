@@ -140,6 +140,9 @@ jobs:
           DIAGNOSTIC_ROUNDS: '30'
         run: python tools/windows_speed_diagnostic.py
 
+      - name: Run focused Windows regression tests
+        run: python -m unittest tests.test_textbook_page tests.test_platform_input tests.test_platform_input_batch_probe
+
       - name: Upload Windows browser speed diagnostic
         if: always()
         uses: actions/upload-artifact@v4
