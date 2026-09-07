@@ -653,8 +653,19 @@ def _select_option(page: Any, index: int, value: str) -> None:
     selectors = page.locator(".el-select__wrapper:visible")
     selector = selectors.nth(index)
     try:
-        # click() already waits for the indexed control to become actionable.
-        selector.click(timeout=15_000)
+        # The wrapper is visible and already resolved.  Dispatching its click
+        # avoids a Windows hit-test round trip; a real click remains the
+        # fallback for page builds that reject synthetic events.
+        dispatch_open = getattr(selector, "dispatch_event", None)
+        opened_dispatched = False
+        if callable(dispatch_open):
+            try:
+                dispatch_open("click", timeout=500)
+                opened_dispatched = True
+            except Exception:
+                pass
+        if not opened_dispatched:
+            selector.click(timeout=15_000)
     except Exception as exc:
         raise RuntimeError(
             f"创建页面下拉框数量不足，无法选择第 {index + 1} 项：{value}"
@@ -678,28 +689,39 @@ def _select_option(page: Any, index: int, value: str) -> None:
         dispatch_event = getattr(option, "dispatch_event", None)
         if callable(dispatch_event):
             try:
-                dispatch_event("click")
+                dispatch_event("click", timeout=500)
                 dispatched = True
             except Exception:
                 pass
         if not dispatched:
             option.click(timeout=2_500)
     except Exception:
-        selector.click(timeout=2_500)
         try:
-            option.click(timeout=9_500)
-        except Exception as exc:
-            # Keep the older DOM variants as a compatibility fallback, but
-            # do not charge the normal path repeated Python-to-browser scans.
-            option = _find_dropdown_option(page, value)
-            if option is None:
-                visible_texts = page.locator(
-                    ".el-select-dropdown__item:visible"
-                ).all_inner_texts()
-                raise RuntimeError(
-                    f"下拉框中没有找到选项：{value}；当前可见选项={visible_texts[:20]}"
-                ) from exc
-            option.click()
+            if not opened_dispatched:
+                raise RuntimeError("synthetic open was not used")
+            # The synthetic open may have worked even if the option event did
+            # not.  Try the real option click before toggling the wrapper.
+            if option.count():
+                option.click(timeout=2_500)
+            else:
+                selector.click(timeout=2_500)
+                option.click(timeout=9_500)
+        except Exception:
+            try:
+                selector.click(timeout=2_500)
+                option.click(timeout=9_500)
+            except Exception as exc:
+                # Keep the older DOM variants as a compatibility fallback,
+                # but do not charge the normal path repeated Python scans.
+                option = _find_dropdown_option(page, value)
+                if option is None:
+                    visible_texts = page.locator(
+                        ".el-select-dropdown__item:visible"
+                    ).all_inner_texts()
+                    raise RuntimeError(
+                        f"下拉框中没有找到选项：{value}；当前可见选项={visible_texts[:20]}"
+                    ) from exc
+                option.click()
     selected_text = re.compile(
         r"\s*".join(escaped_parts),
         re.IGNORECASE,
