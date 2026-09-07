@@ -16,8 +16,6 @@ if (REPO_ROOT / "platform_entry").is_dir():
 
 from platform_entry.adapter.textbook_page import (  # noqa: E402
     _ensure_card_count,
-    _fill_classification,
-    _fill_content,
     _find_dropdown_option,
     _replace_editor,
     _select_option,
@@ -214,6 +212,79 @@ def _fill_content_before_optimization(page, record: dict) -> None:
             raise RuntimeError(f"audio readback failed for {stem}")
 
 
+def _fill_classification_with_stages(
+    page,
+    record: dict,
+    optimized: bool,
+) -> dict[str, float]:
+    names_started = time.perf_counter()
+    chinese_name = page.get_by_placeholder("请输入课文名称（中文）", exact=True)
+    english_name = page.get_by_placeholder("请输入课文名称（英文）", exact=True)
+    if optimized:
+        chinese_name.fill(str(record["name_zh"]))
+        english_name.fill(str(record["name_en"]))
+    else:
+        _type_input_before_optimization(chinese_name, record["name_zh"])
+        _type_input_before_optimization(english_name, record["name_en"])
+    names_ms = (time.perf_counter() - names_started) * 1000
+
+    dropdown_started = time.perf_counter()
+    values = [
+        record["form"],
+        record["version"],
+        record["stage"],
+        record["grade"],
+        record["volume"],
+        record["unit"],
+        record["lesson"],
+    ]
+    for index, value in enumerate(values):
+        if optimized:
+            _select_option(page, index, str(value))
+        else:
+            _select_option_before_optimization(page, index, str(value))
+    dropdown_ms = (time.perf_counter() - dropdown_started) * 1000
+    return {"names_ms": names_ms, "dropdowns_ms": dropdown_ms}
+
+
+def _fill_content_with_stages(
+    page,
+    record: dict,
+    optimized: bool,
+) -> dict[str, float]:
+    cards = _ensure_card_count(page, len(record["items"]))
+    editors_ms = 0.0
+    uploads_ms = 0.0
+    for index, item in enumerate(record["items"]):
+        card = cards.nth(index)
+        card.scroll_into_view_if_needed()
+        editors = card.locator(
+            '.rich-text-editor .editor-content[contenteditable="true"]'
+        )
+        editor_started = time.perf_counter()
+        if optimized:
+            _replace_editor(page, editors.nth(0), str(item["original"]), "原文")
+            _replace_editor(page, editors.nth(1), str(item["translation"]), "译文")
+        else:
+            _replace_editor_before_optimization(editors.nth(0), str(item["original"]))
+            _replace_editor_before_optimization(editors.nth(1), str(item["translation"]))
+        editors_ms += (time.perf_counter() - editor_started) * 1000
+
+        upload_started = time.perf_counter()
+        file_inputs = card.locator('input[type="file"]')
+        file_inputs.first.set_input_files(str(item["audio_path"]))
+        stem = Path(str(item["audio_path"])).stem
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if stem in str(card.inner_text() or ""):
+                break
+            page.wait_for_timeout(250)
+        else:
+            raise RuntimeError(f"audio readback failed for {stem}")
+        uploads_ms += (time.perf_counter() - upload_started) * 1000
+    return {"editors_ms": editors_ms, "uploads_ms": uploads_ms}
+
+
 def _fill_classification_before_optimization(page, record: dict) -> None:
     _type_input_before_optimization(
         page.get_by_placeholder("请输入课文名称（中文）", exact=True), record["name_zh"]
@@ -236,35 +307,37 @@ def _fill_classification_before_optimization(page, record: dict) -> None:
 
 def _run_record(page, record: dict, optimized: bool) -> dict[str, float]:
     started = time.perf_counter()
-    if optimized:
-        _fill_classification(page, record)
-    else:
-        _fill_classification_before_optimization(page, record)
-    classification_ms = (time.perf_counter() - started) * 1000
+    classification = _fill_classification_with_stages(page, record, optimized)
 
     page.get_by_text("下一步:录入课文内容", exact=True).click()
     page.get_by_text("第二步：录入课文句子内容", exact=True).wait_for(state="visible")
-    content_started = time.perf_counter()
-    if optimized:
-        _fill_content(page, record)
-    else:
-        _fill_content_before_optimization(page, record)
-    content_ms = (time.perf_counter() - content_started) * 1000
+    content = _fill_content_with_stages(page, record, optimized)
 
     save_started = time.perf_counter()
     page.get_by_text("保存课文句子", exact=True).click()
     page.get_by_text("保存成功", exact=True).wait_for(state="visible", timeout=20_000)
     save_ms = (time.perf_counter() - save_started) * 1000
     return {
-        "classification_ms": classification_ms,
-        "content_ms": content_ms,
+        "names_ms": classification["names_ms"],
+        "dropdowns_ms": classification["dropdowns_ms"],
+        "editors_ms": content["editors_ms"],
+        "uploads_ms": content["uploads_ms"],
+        "content_ms": content["editors_ms"] + content["uploads_ms"],
         "save_ms": save_ms,
         "total_ms": (time.perf_counter() - started) * 1000,
     }
 
 
 def _run_suite(page, records: list[dict], optimized: bool, rounds: int) -> dict[str, float]:
-    totals = {"classification_ms": 0.0, "content_ms": 0.0, "save_ms": 0.0, "total_ms": 0.0}
+    totals = {
+        "names_ms": 0.0,
+        "dropdowns_ms": 0.0,
+        "editors_ms": 0.0,
+        "uploads_ms": 0.0,
+        "content_ms": 0.0,
+        "save_ms": 0.0,
+        "total_ms": 0.0,
+    }
     count = 0
     for _ in range(rounds):
         for record in records:
