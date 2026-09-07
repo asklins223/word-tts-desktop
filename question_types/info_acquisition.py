@@ -37,8 +37,8 @@ class InfoAcquisitionParser(BaseParser):
     RE_SCRIPT = SCRIPT_MARKER_RE
     RE_QUESTION = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)')
     RE_SPEAKER_PREFIX = re.compile(r'^\s*(?:([WwMm])\s*[:：]|\(([WwMm])\))')
-    RE_PAGE_SPEAKER_MARKER = re.compile(
-        r'(?im)^[ \t]*(?:\([WwMm]\)(?:[ \t]*[:：])?|[WwMm][ \t]*[:：])[ \t]*'
+    RE_PAGE_PAREN_SPEAKER_MARKER = re.compile(
+        r'(?im)^[ \t]*\([WwMm]\)(?:[ \t]*[:：])?[ \t]*'
     )
     RE_SCORE = re.compile(
         r'每(?:小题|道题|题)\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
@@ -100,10 +100,13 @@ class InfoAcquisitionParser(BaseParser):
 
         The raw ``text`` remains untouched for TTS speaker parsing.  The
         separate ``listening_text`` field is consumed by page input and the
-        document review view, where ``(W)/(M)`` must not be shown.
+        document review view, where ``(W)/(M)`` must not be shown while
+        ``W:``/``M:`` must remain available for system input.
         """
 
-        return cls.RE_PAGE_SPEAKER_MARKER.sub('', sanitize(str(value or ''))).strip()
+        return cls.RE_PAGE_PAREN_SPEAKER_MARKER.sub(
+            '', sanitize(str(value or ''))
+        ).strip()
 
     @classmethod
     def _answer_line(cls, value):

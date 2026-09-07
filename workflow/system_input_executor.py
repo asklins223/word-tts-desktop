@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import tempfile
 import threading
 from collections.abc import Mapping, Sequence
@@ -41,6 +42,34 @@ from .system_input_content import (
 
 def _text(value: Any, *, limit: int = 1024) -> str:
     return str(value or "").strip()[:limit]
+
+
+_LEGACY_PAGE_COLON_SPEAKER_MARKER_RE = re.compile(
+    r"(?im)^[ \t]*[WwMm][ \t]*[:：][ \t]*"
+)
+
+
+def _system_input_listening_text(page_value: Any, source_value: Any) -> str:
+    """Build visible input text and repair labels lost by the old sanitizer.
+
+    Current page facts are authoritative.  A saved fact from the affected
+    version can be recognized safely when it is exactly the raw source after
+    both colon and parenthesized labels were removed; in that one case,
+    restore the raw ``W:``/``M:`` form while still removing ``(W)``/``(M)``.
+    """
+
+    page_text = _page_listening_text(page_value)
+    source_text = _page_listening_text(source_value)
+    if not page_text:
+        return source_text
+    if (
+        source_text
+        and _LEGACY_PAGE_COLON_SPEAKER_MARKER_RE.search(source_text)
+        and _LEGACY_PAGE_COLON_SPEAKER_MARKER_RE.sub("", source_text).strip()
+        == page_text
+    ):
+        return source_text
+    return page_text
 
 
 # Older input-run snapshots are immutable and were created before the
@@ -763,10 +792,9 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                     # voice routing, but the visible platform field must not
                     # receive those ``(W)/(M)`` labels.  Re-apply this at the
                     # final page boundary for older saved snapshots too.
-                    material["listening_text"] = _page_listening_text(
-                        material.get("listening_text")
-                        or segment.get("raw_text")
-                        or segment.get("tts_text")
+                    material["listening_text"] = _system_input_listening_text(
+                        material.get("listening_text"),
+                        segment.get("raw_text") or segment.get("tts_text"),
                     )
                     raw_questions = material.get("questions")
                     if isinstance(raw_questions, Sequence) and not isinstance(
@@ -801,10 +829,9 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                         continue
                     material = dict(raw_material)
                     material["audio_path"] = audio_path
-                    material["listening_text"] = _page_listening_text(
-                        material.get("listening_text")
-                        or segment.get("raw_text")
-                        or segment.get("tts_text")
+                    material["listening_text"] = _system_input_listening_text(
+                        material.get("listening_text"),
+                        segment.get("raw_text") or segment.get("tts_text"),
                     )
                     raw_questions = material.get("questions")
                     if isinstance(raw_questions, Sequence) and not isinstance(
@@ -834,8 +861,10 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                         continue
                     question = dict(raw_question)
                     question["audio_path"] = audio_path
-                    if question.get("listening_text") is None:
-                        question["listening_text"] = _text(segment.get("raw_text") or segment.get("tts_text"), limit=1_000_000)
+                    question["listening_text"] = _system_input_listening_text(
+                        question.get("listening_text"),
+                        segment.get("raw_text") or segment.get("tts_text"),
+                    )
                     if question.get("score") is None and segment.get("score") is not None:
                         question["score"] = segment.get("score")
                     if question.get("answer_time") is None:
@@ -854,8 +883,10 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                         continue
                     question = dict(raw_question)
                     question["audio_path"] = audio_path
-                    if question.get("listening_text") is None:
-                        question["listening_text"] = _text(segment.get("raw_text") or segment.get("tts_text"), limit=1_000_000)
+                    question["listening_text"] = _system_input_listening_text(
+                        question.get("listening_text"),
+                        segment.get("raw_text") or segment.get("tts_text"),
+                    )
                     if question.get("score") is None and segment.get("score") is not None:
                         question["score"] = segment.get("score")
                     imitation_questions.append(question)
@@ -863,10 +894,9 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                 raw_recording = facts.get("recording")
                 recording = dict(raw_recording) if isinstance(raw_recording, Mapping) else {}
                 recording["audio_path"] = audio_path
-                recording["listening_text"] = _page_listening_text(
-                    recording.get("listening_text")
-                    or segment.get("raw_text")
-                    or segment.get("tts_text")
+                recording["listening_text"] = _system_input_listening_text(
+                    recording.get("listening_text"),
+                    segment.get("raw_text") or segment.get("tts_text"),
                 )
                 record_group: dict[str, Any] = {
                     "type": group_type,
@@ -879,10 +909,9 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                 raw_recording = facts.get("recording")
                 recording = dict(raw_recording) if isinstance(raw_recording, Mapping) else {}
                 recording["audio_path"] = audio_path
-                recording["listening_text"] = _page_listening_text(
-                    recording.get("listening_text")
-                    or segment.get("raw_text")
-                    or segment.get("tts_text")
+                recording["listening_text"] = _system_input_listening_text(
+                    recording.get("listening_text"),
+                    segment.get("raw_text") or segment.get("tts_text"),
                 )
                 instruction_stem = _text(
                     recording.get("instruction_audio_filename_stem"),

@@ -388,15 +388,68 @@ class SystemInputContentTests(unittest.TestCase):
         question = groups[0]["materials"][0]["questions"][0]
         self.assertEqual(question["prompt_audio_path"], "/private/question-1.mp3")
 
-    def test_legacy_page_group_boundary_strips_speaker_markers_from_listening_text(self) -> None:
+    def test_all_page_input_types_strip_only_parenthesized_speaker_markers(self) -> None:
+        source = (
+            "W: Woman with a colon label.\n"
+            "(M) Man with a parenthesized label.\n"
+            "M： Man with a full-width colon label.\n"
+            "(W)： Woman with a parenthesized label and colon."
+        )
+        expected = (
+            "W: Woman with a colon label.\n"
+            "Man with a parenthesized label.\n"
+            "M： Man with a full-width colon label.\n"
+            "Woman with a parenthesized label and colon."
+        )
+        cases = [
+            (
+                "听后选择",
+                {"type": "听后选择", "materials": [{"listening_text": source}]},
+                lambda facts: facts["materials"][0]["listening_text"],
+            ),
+            (
+                "听后应答",
+                {"type": "听后应答", "questions": [{"listening_text": source}]},
+                lambda facts: facts["questions"][0]["listening_text"],
+            ),
+            (
+                "模仿朗读",
+                {"type": "模仿朗读", "questions": [{"listening_text": source}]},
+                lambda facts: facts["questions"][0]["listening_text"],
+            ),
+            (
+                "听后记录并转述信息",
+                {"type": "听后记录并转述信息", "recording": {"listening_text": source}},
+                lambda facts: facts["recording"]["listening_text"],
+            ),
+            (
+                "信息获取",
+                {"type": "信息获取", "materials": [{"listening_text": source}]},
+                lambda facts: facts["materials"][0]["listening_text"],
+            ),
+            (
+                "信息转述及询问",
+                {"type": "信息转述及询问", "recording": {"listening_text": source}},
+                lambda facts: facts["recording"]["listening_text"],
+            ),
+        ]
+
+        for page_type, page_input, listening_text in cases:
+            with self.subTest(page_type=page_type):
+                self.assertEqual(listening_text(sanitize_page_input(page_input)), expected)
+
+    def test_legacy_page_group_boundary_strips_only_parenthesized_speaker_markers(self) -> None:
         # Older saved page facts can still carry the TTS source instead of the
-        # page-display copy.  The final grouping boundary must keep those
-        # speaker labels out of the external editor while leaving TTS storage
-        # untouched elsewhere.
+        # page-display copy. The final grouping boundary removes (W)/(M) but
+        # preserves W:/M: for the external editor; TTS storage stays untouched.
         retelling_facts = {
             "type": "信息转述及询问",
             "recording": {
-                "listening_text": "(W)Emma introduces her plan.\n(M)A second line.",
+                "listening_text": (
+                    "W: Emma introduces her plan.\n"
+                    "(M)A second line.\n"
+                    "M: A final line."
+                ),
             },
             "retelling": {"prompt": "Let me tell you about Emma.", "score": 6},
             "asking": [],
@@ -406,14 +459,17 @@ class SystemInputContentTests(unittest.TestCase):
         )
         self.assertEqual(
             retelling_groups[0]["recording"]["listening_text"],
-            "Emma introduces her plan.\nA second line.",
+            "W: Emma introduces her plan.\nA second line.\nM: A final line.",
         )
 
         acquisition_facts = {
             "type": "信息获取",
             "materials": [{
                 "section": "回答问题",
-                "listening_text": "(M)Tom answers the question.",
+                # Simulate a saved fact produced by the affected version: its
+                # W:/M: labels were already removed even though raw TTS text
+                # still has the original source markers.
+                "listening_text": "Tom asks.\nAmy answers the question.",
                 "questions": [{
                     "prompt": "What is the answer?",
                     "score": 1,
@@ -422,11 +478,47 @@ class SystemInputContentTests(unittest.TestCase):
             }],
         }
         acquisition_groups = PlatformInputWorkflowPageExecutor._build_grouped_page_content(
-            [(acquisition_facts, "/private/acquisition.mp3", {"tts_text": "(M)fallback"})]
+            [(
+                acquisition_facts,
+                "/private/acquisition.mp3",
+                {"tts_text": "M: Tom asks.\n(W)Amy answers the question."},
+            )]
         )
         self.assertEqual(
             acquisition_groups[0]["materials"][0]["listening_text"],
-            "Tom answers the question.",
+            "M: Tom asks.\nAmy answers the question.",
+        )
+
+    def test_final_page_boundary_cleans_fallback_text_for_response_and_imitation(self) -> None:
+        response_facts = {
+            "type": "听后应答",
+            "questions": [{"listening_text": "Woman asks.\nMan replies."}],
+        }
+        imitation_facts = {
+            "type": "模仿朗读",
+            "questions": [{"listening_text": ""}],
+        }
+
+        groups = PlatformInputWorkflowPageExecutor._build_grouped_page_content([
+            (
+                response_facts,
+                "/private/response.mp3",
+                {"raw_text": "W: Woman asks.\n(M)Man replies."},
+            ),
+            (
+                imitation_facts,
+                "/private/imitation.mp3",
+                {"raw_text": "(W)Read this passage."},
+            ),
+        ])
+
+        self.assertEqual(
+            groups[0]["questions"][0]["listening_text"],
+            "W: Woman asks.\nMan replies.",
+        )
+        self.assertEqual(
+            groups[1]["questions"][0]["listening_text"],
+            "Read this passage.",
         )
 
     def test_info_retelling_page_boundary_splits_legacy_slash_answers(self) -> None:

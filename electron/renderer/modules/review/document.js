@@ -7,7 +7,8 @@ let reviewImageDialogBound = false;
 let reviewImageDialogState = { returnFocus: null, scale: 1, url: null };
 let reviewPanelViewportSyncBound = false;
 let reviewPanelViewportSyncFrame = 0;
-const REVIEW_PAGE_SPEAKER_MARKER_RE = /^[ \t]*(?:\([WwMm]\)(?:[ \t]*[:：])?|[WwMm][ \t]*[:：])[ \t]*/gim;
+const REVIEW_PAGE_PAREN_SPEAKER_MARKER_RE = /^[ \t]*\([WwMm]\)(?:[ \t]*[:：])?[ \t]*/gim;
+const REVIEW_PAGE_COLON_SPEAKER_MARKER_RE = /^[ \t]*[WwMm][ \t]*[:：][ \t]*/gim;
 const REVIEW_PAGE_ANSWER_SPLIT_RE = /\s*\/\s*/;
 
 function syncReviewPanelViewport() {
@@ -877,8 +878,14 @@ function renderReviewDocumentNav(models, presentation, nav) {
     nav.replaceChildren(fragment);
 }
 
-function reviewDocumentTextBlock(parent, label, text, className = 'review-document-script') {
-    const value = reviewPageText(text);
+function reviewDocumentTextBlock(
+    parent,
+    label,
+    text,
+    className = 'review-document-script',
+    sourceText = '',
+) {
+    const value = reviewPageText(text, sourceText);
     if (!value) return null;
     const section = document.createElement('section');
     section.className = `${className}-block`;
@@ -893,14 +900,23 @@ function reviewDocumentTextBlock(parent, label, text, className = 'review-docume
     return section;
 }
 
-// The parser keeps the speaker marker in the raw TTS text so the audio
-// pipeline can still interpret it.  The document view is a page-facing
-// representation, so it must never leak those markers even when a workspace
-// was created by an older parser version.
-function reviewPageText(value) {
-    return reviewDisplayFactValue(value)
-        .replace(REVIEW_PAGE_SPEAKER_MARKER_RE, '')
+// The parser keeps speaker markers in the raw TTS text so the audio pipeline
+// can route voices without reading them aloud. The page-facing representation
+// removes only (W)/(M); W:/M: are intentional system-input content.
+function reviewPageText(value, sourceValue = '') {
+    const pageText = reviewDisplayFactValue(value)
+        .replace(REVIEW_PAGE_PAREN_SPEAKER_MARKER_RE, '')
         .trim();
+    const sourceText = reviewDisplayFactValue(sourceValue)
+        .replace(REVIEW_PAGE_PAREN_SPEAKER_MARKER_RE, '')
+        .trim();
+    if (!pageText) return sourceText;
+    const legacyPageText = sourceText
+        .replace(REVIEW_PAGE_COLON_SPEAKER_MARKER_RE, '')
+        .trim();
+    return legacyPageText !== sourceText && legacyPageText === pageText
+        ? sourceText
+        : pageText;
 }
 
 function reviewDocumentScore(question, item) {
@@ -927,8 +943,11 @@ function reviewDocumentOptionMatchesAnswer(option, answer) {
         || answerText === reviewDisplayFactValue(option?.text).toLowerCase();
 }
 
-function reviewDocumentQuestionPrompt(question, options) {
-    const prompt = reviewPageText(question?.prompt || question?.listening_text);
+function reviewDocumentQuestionPrompt(question, options, sourceText = '') {
+    const prompt = reviewPageText(
+        question?.prompt || question?.listening_text,
+        sourceText,
+    );
     const optionTexts = options
         .map(option => reviewDisplayFactValue(option?.text))
         .filter(Boolean);
@@ -971,7 +990,7 @@ function reviewDocumentQuestion(
         reviewDocumentTextBlock(
             row,
             promptLabel,
-            reviewDocumentQuestionPrompt(question, options),
+            reviewDocumentQuestionPrompt(question, options, reviewContentForItem(item)),
             'review-document-prompt',
         );
     }
@@ -1355,7 +1374,13 @@ function renderRecordFacts(parent, pageInput, item, imageTasks) {
         questions.length ? `${questions.length} 小题` : '待补齐',
         reviewRecordSectionScore(pageInput),
     );
-    reviewDocumentTextBlock(recordingBody, '听力原文', recording.listening_text || reviewContentForItem(item));
+    reviewDocumentTextBlock(
+        recordingBody,
+        '听力原文',
+        recording.listening_text || reviewContentForItem(item),
+        'review-document-script',
+        reviewContentForItem(item),
+    );
     const imageArtifactId = reviewDisplayFactValue(
         recording.image_artifact_id || recording.table_image_artifact_id,
     );
@@ -1485,7 +1510,13 @@ function renderInfoAcquisitionFacts(parent, pageInput, item) {
                 heading.textContent = `第${materialIndex + 1}段录音`;
                 body.appendChild(heading);
             }
-            reviewDocumentTextBlock(body, '听力原文', material?.listening_text || reviewContentForItem(item));
+            reviewDocumentTextBlock(
+                body,
+                '听力原文',
+                material?.listening_text || reviewContentForItem(item),
+                'review-document-script',
+                reviewContentForItem(item),
+            );
             (Array.isArray(material?.questions) ? material.questions : []).forEach(question => {
                 reviewDocumentQuestion(body, question, item, {
                     splitReferenceAnswers: true,
@@ -1512,7 +1543,13 @@ function renderInfoRetellingFacts(parent, pageInput, item, imageTasks) {
         reviewRetellingSectionScore(pageInput),
     );
     reviewDocumentTextBlock(recordingBody, '题目指导文字', recording.instruction_text);
-    reviewDocumentTextBlock(recordingBody, '听力原文', recording.listening_text || reviewContentForItem(item));
+    reviewDocumentTextBlock(
+        recordingBody,
+        '听力原文',
+        recording.listening_text || reviewContentForItem(item),
+        'review-document-script',
+        reviewContentForItem(item),
+    );
     const imageArtifactId = reviewDisplayFactValue(
         recording.image_artifact_id || recording.table_image_artifact_id,
     );
@@ -1603,7 +1640,13 @@ function renderDocumentPageFacts(parent, pageInput, item, imageTasks) {
     const questions = reviewPageQuestionList(pageInput);
     if (type === '听后选择') {
         const material = Array.isArray(pageInput.materials) ? pageInput.materials[0] : null;
-        reviewDocumentTextBlock(parent, '听力原文', material?.listening_text || reviewContentForItem(item));
+        reviewDocumentTextBlock(
+            parent,
+            '听力原文',
+            material?.listening_text || reviewContentForItem(item),
+            'review-document-script',
+            reviewContentForItem(item),
+        );
         questions.forEach(question => reviewDocumentQuestion(parent, question, item));
         return;
     }
@@ -1618,7 +1661,13 @@ function renderDocumentPageFacts(parent, pageInput, item, imageTasks) {
     }
     if (type === '模仿朗读') {
         const question = questions[0] || {};
-        reviewDocumentTextBlock(parent, '朗读原文', question.listening_text || reviewContentForItem(item));
+        reviewDocumentTextBlock(
+            parent,
+            '朗读原文',
+            question.listening_text || reviewContentForItem(item),
+            'review-document-script',
+            reviewContentForItem(item),
+        );
         const references = Array.isArray(question.reference_answers) ? question.reference_answers : [];
         if (references.length && reviewImitationReferenceAnswersAllowed(item)) {
             // Use the shared reference-answer disclosure so套卷 answers get
@@ -1896,6 +1945,7 @@ registerRendererModule("review.document", {
     reviewDocumentItemValue,
     reviewItemIsTextbook,
     reviewTypeGroupIsTextbook,
+    reviewPageText,
     syncReviewDocumentSelection,
     renderReviewDocumentView,
 });

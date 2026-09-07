@@ -239,8 +239,13 @@ class XunfeiConfigTests(unittest.TestCase):
 
     def test_speaker_markers_map_to_amanda_and_george(self):
         self.assertEqual(
-            core.parse_speakers("W: hello\nM: goodbye"),
-            [(core.FEMALE_VOICE, "hello"), (core.MALE_VOICE, "goodbye")],
+            core.parse_speakers("W: hello\nM: goodbye\n(W) hello again\n(M) goodbye again"),
+            [
+                (core.FEMALE_VOICE, "hello"),
+                (core.MALE_VOICE, "goodbye"),
+                (core.FEMALE_VOICE, "hello again"),
+                (core.MALE_VOICE, "goodbye again"),
+            ],
         )
 
     def test_named_roles_can_be_mapped_to_independent_voice_keys(self):

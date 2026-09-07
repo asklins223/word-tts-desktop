@@ -118,20 +118,23 @@ def _safe_stem(value: Any, *, limit: int = 240) -> str:
     return stem[:limit]
 
 
-_PAGE_SPEAKER_MARKER_RE = re.compile(
-    r"(?im)^[ \t]*(?:\([WwMm]\)(?:[ \t]*[:：])?|[WwMm][ \t]*[:：])[ \t]*"
+_PAGE_PAREN_SPEAKER_MARKER_RE = re.compile(
+    r"(?im)^[ \t]*\([WwMm]\)(?:[ \t]*[:：])?[ \t]*"
 )
 
 
 def _page_listening_text(value: Any) -> str:
-    """Normalize speaker labels out of page-visible listening text.
+    """Remove only parenthesized speaker labels from system-input text.
 
     TTS keeps the original parser item text, while page facts use this
     display-only form so the external editor and document view do not show
-    ``(W)/(M)``.
+    ``(W)/(M)``.  ``W:``/``M:`` remain part of the visible text submitted to
+    the system; the audio pipeline removes both forms independently.
     """
 
-    return _PAGE_SPEAKER_MARKER_RE.sub("", _text(value, limit=PAGE_INPUT_MAX_TEXT)).strip()
+    return _PAGE_PAREN_SPEAKER_MARKER_RE.sub(
+        "", _text(value, limit=PAGE_INPUT_MAX_TEXT)
+    ).strip()
 
 
 def _number(value: Any) -> int | float | None:

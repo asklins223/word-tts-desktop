@@ -67,11 +67,27 @@ function loadRendererConfigFunctions() {
     vm.runInContext('globalThis.__rendererTests.systemInputAppTemplateTargetUnits = systemInputAppTemplateTargetUnits;', context);
     vm.runInContext('globalThis.__rendererTests.systemInputDiagnosticText = systemInputDiagnosticText;', context);
     vm.runInContext('globalThis.__rendererTests.systemInputReviewDocumentName = systemInputReviewDocumentName; globalThis.__rendererTests.systemInputReviewPresentation = systemInputReviewPresentation;', context);
+    vm.runInContext('globalThis.__rendererTests.reviewPageText = WORDTTS_RENDERER.getModule("review.document").reviewPageText;', context);
     vm.runInContext('globalThis.__rendererTests.deliveryStageInputHasStarted = deliveryStageInputHasStarted; globalThis.__rendererTests.deliveryStageResultIsReady = deliveryStageResultIsReady; globalThis.__rendererTests.deliveryStageStatus = deliveryStageStatus;', context);
     vm.runInContext('globalThis.__rendererTests.rendererContext = WORDTTS_RENDERER.getContext();', context);
     vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
     return { api: context.__rendererTests, storage, document, mediaState };
 }
+
+test('文稿核对仅隐藏圆括号说话人标识并保留系统录入的 W/M 冒号标识', () => {
+    const { api } = loadRendererConfigFunctions();
+    assert.equal(
+        api.reviewPageText('W: First line.\n(M) Second line.\nM： Third line.\n(W)： Fourth line.'),
+        'W: First line.\nSecond line.\nM： Third line.\nFourth line.',
+    );
+    assert.equal(
+        api.reviewPageText(
+            'First line.\nSecond line.',
+            'W: First line.\n(M) Second line.',
+        ),
+        'W: First line.\nSecond line.',
+    );
+});
 
 test('系统录入审阅优先展示平台试卷/课文名，平台不支持链接时给出非失败提示', () => {
     const { api } = loadRendererConfigFunctions();

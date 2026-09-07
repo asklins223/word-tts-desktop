@@ -28,7 +28,6 @@ def test_workflow_page_facts_keep_the_drawing_selector():
     assert [recording["block_kind"] for recording in recordings] == ["drawing_group"]
     assert [recording["block_index"] for recording in recordings] == [0]
     assert "(W)" not in recordings[0]["listening_text"]
-    assert "W:" not in recordings[0]["listening_text"]
     assert parsed.items[0].metadata["page_input"]["asking"][0]["reference_answers"] == [
         "What problem may you have with your plan?"
     ]

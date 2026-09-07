@@ -247,10 +247,14 @@ def test_legacy_page_facts_separate_tts_markers_from_visible_text_and_split_answ
         visible_text = item.metadata["page_input"]["materials"][0]["listening_text"]
         assert "(W)" not in visible_text
         assert "(M)" not in visible_text
-        assert "W:" not in visible_text
-        assert "M:" not in visible_text
     assert info_recording_items[0].metadata["page_input"]["materials"][0]["listening_text"].startswith(
-        "What subjects do you have at school, Mary?"
+        "M: What subjects do you have at school, Mary?"
+    )
+    assert info_recording_items[1].metadata["page_input"]["materials"][0]["listening_text"].startswith(
+        "W: Hi, Jack."
+    )
+    assert info_recording_items[2].metadata["page_input"]["materials"][0]["listening_text"].startswith(
+        "M: Amy, what are you going to wear"
     )
 
     asking = retelling_page["asking"]
