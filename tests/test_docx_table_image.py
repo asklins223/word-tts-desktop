@@ -11,6 +11,7 @@ from workflow.docx_table_image import (
     _read_document_xml,
     _renderer_asset_paths,
     _table_paths,
+    _BrowserRenderer,
     render_docx_block_image,
     render_docx_drawing_image,
     render_docx_table_image,
@@ -33,6 +34,31 @@ def test_renderer_assets_are_pinned_and_available():
         "docx-renderer.umd.js",
     ]
     assert all(path.stat().st_size > 0 for path in paths)
+
+
+def test_browser_renderer_selects_full_packaged_chromium():
+    class FakeBrowser:
+        def is_connected(self):
+            return True
+
+    class FakeChromium:
+        def __init__(self):
+            self.calls = []
+
+        def launch(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeBrowser()
+
+    class FakePlaywright:
+        def __init__(self):
+            self.chromium = FakeChromium()
+
+    renderer = _BrowserRenderer()
+    playwright = FakePlaywright()
+    browser = renderer._launch_browser(playwright)
+
+    assert isinstance(browser, FakeBrowser)
+    assert playwright.chromium.calls == [{"channel": "chromium", "headless": True}]
 
 
 def test_table_paths_ignore_non_renderable_bookmark_nodes():
@@ -125,7 +151,7 @@ def test_block_renderer_rejects_unknown_kind(tmp_path: Path):
         (
             ROOT / "examples/documents/七上Starter Unit 1 听说测试题（2026新题型）.docx",
             1,
-            [5],
+            [5, 6],
         ),
         (
             ROOT / "examples/documents/七上StarterUnit2听说测试题-信息转述答案扩展版.docx",
@@ -149,7 +175,7 @@ def test_repository_recording_fixture_renders_directly_to_png(
     result = render_docx_table_image(source, output, table_index=table_index)
 
     assert result["block_kind"] == "table"
-    assert result["fragment_count"] == 1
+    assert result["fragment_count"] == len(expected_pages)
     assert result["pages"] == expected_pages
     assert result["size_bytes"] == output.stat().st_size
     assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

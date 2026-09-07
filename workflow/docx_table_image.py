@@ -875,6 +875,14 @@ class _BrowserRenderer:
         if thread is not None and threading.current_thread() is not thread:
             thread.join(timeout=2)
 
+    @staticmethod
+    def _launch_browser(playwright: Any) -> Any:
+        """Launch the full Chromium executable included in release builds."""
+        return playwright.chromium.launch(
+            channel="chromium",
+            headless=True,
+        )
+
     def _worker(self) -> None:
         playwright = browser = None
         try:
@@ -891,7 +899,13 @@ class _BrowserRenderer:
 
                         playwright = sync_playwright().start()
                     if browser is None or not browser.is_connected():
-                        browser = playwright.chromium.launch(headless=True)
+                        # The release payload contains the full Chromium
+                        # browser, not Playwright's separate headless-shell
+                        # download. Playwright 1.56 otherwise resolves
+                        # headless=True to chromium_headless_shell, which
+                        # exists in a normal developer cache but is
+                        # intentionally not packaged.
+                        browser = self._launch_browser(playwright)
                     value = self._render_job(browser, job)
                 except Exception as exc:
                     if browser is not None and not browser.is_connected():
