@@ -638,7 +638,7 @@ class PlatformInputCardMixin:
                 lambda: len(self._option_row_editors(card)) < before,
                 "删除多余选项后页面没有更新",
                 timeout_seconds=10,
-                interval_ms=100,
+                interval_ms=50,
             )
             editors = self._option_row_editors(card)
 
@@ -660,7 +660,7 @@ class PlatformInputCardMixin:
                 or len(self._visible_content_editors(card)) > before_total,
                 "点击“添加选项”后页面没有出现新的选项编辑器",
                 timeout_seconds=10,
-                interval_ms=100,
+                interval_ms=50,
             )
             editors = self._option_row_editors(card)
         if len(editors) < expected:
@@ -720,7 +720,7 @@ class PlatformInputCardMixin:
                 lambda: self._answer_is_selected(card, answer),
                 f"选择正确答案“{answer}”后页面没有显示选中状态",
                 timeout_seconds=10,
-                interval_ms=100,
+                interval_ms=50,
             )
 
         node = matching_control()
@@ -890,7 +890,7 @@ class PlatformInputCardMixin:
                 lambda: len(self._answer_inputs_in_card(card)) < before,
                 "删除多余参考答案后页面没有更新",
                 timeout_seconds=10,
-                interval_ms=100,
+                interval_ms=50,
             )
             current = self._answer_inputs_in_card(card)
 
@@ -911,7 +911,7 @@ class PlatformInputCardMixin:
                 lambda: len(self._answer_inputs_in_card(card)) > before,
                 "点击“添加答案”后页面没有出现新的答案输入框",
                 timeout_seconds=10,
-                interval_ms=100,
+                interval_ms=50,
             )
             current = self._answer_inputs_in_card(card)
         if len(current) < expected:

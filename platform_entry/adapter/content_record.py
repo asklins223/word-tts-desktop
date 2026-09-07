@@ -88,14 +88,14 @@ class PlatformInputRecordContentMixin:
                 lambda: len(self._question_cards("录音题")) == retelling_count,
                 "切换到“听后记录并转述信息”后信息转述题卡没有完整挂载",
                 timeout_seconds=60,
-                interval_ms=200,
+                interval_ms=50,
             )
             self._wait_until(
                 lambda: len(self._labeled_text_editors("听力原文"))
                 >= retelling_count,
                 "信息转述没有完整挂载“听力原文”编辑器",
                 timeout_seconds=60,
-                interval_ms=200,
+                interval_ms=50,
             )
             retelling_cards = self._question_cards("录音题")
             retelling_listening_editors = self._labeled_text_editors("听力原文")

@@ -178,7 +178,7 @@ class PlatformInputAssetMixin:
             cleared,
             f"{description}清除{label}后页面仍显示旧音频",
             timeout_seconds=15,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def _audio_delete_near_label(
@@ -224,6 +224,7 @@ class PlatformInputAssetMixin:
                     is not None,
                     f"清除第 {occurrence + 1} 个音频后上传控件没有出现",
                     timeout_seconds=15,
+                    interval_ms=50,
                 )
                 input_locator = self._file_input_near_label(
                     occurrence,
@@ -327,7 +328,7 @@ class PlatformInputAssetMixin:
                 lambda: self._audio_file_input_in_scope(scope, label) is not None,
                 f"{description}清除已有{label}后上传控件没有出现",
                 timeout_seconds=15,
-                interval_ms=100,
+                interval_ms=50,
             )
             input_locator = self._audio_file_input_in_scope(scope, label)
         if input_locator is None:
@@ -399,6 +400,7 @@ class PlatformInputAssetMixin:
             rendered,
             f"第 {occurrence + 1} 个音频上传后页面没有显示文件",
             timeout_seconds=60,
+            interval_ms=50,
         )
 
     def _file_input_near_text(
@@ -523,7 +525,7 @@ class PlatformInputAssetMixin:
             lambda: self._image_region(occurrence) is not None,
             f"第 {occurrence + 1} 个已有信息记录表图片没有出现替换控件",
             timeout_seconds=10,
-            interval_ms=100,
+            interval_ms=50,
         )
 
     def _image_delete(self, occurrence: int = 0) -> Any | None:
@@ -584,6 +586,7 @@ class PlatformInputAssetMixin:
                     == 1,
                     f"清除第 {occurrence + 1} 个信息记录表图片后上传控件没有出现",
                     timeout_seconds=15,
+                    interval_ms=50,
                 )
                 region = self._image_region(occurrence)
                 if region is not None:
@@ -621,4 +624,5 @@ class PlatformInputAssetMixin:
             rendered,
             f"第 {occurrence + 1} 个信息记录表图片上传后页面没有显示图片",
             timeout_seconds=60,
+            interval_ms=50,
         )

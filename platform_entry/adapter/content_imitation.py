@@ -134,7 +134,7 @@ class PlatformInputImitationContentMixin:
             lambda: len(self._question_cards("录音题")) == len(self.spec.items),
             "切换到“模仿朗读”后录音题卡没有完整挂载",
             timeout_seconds=60,
-            interval_ms=200,
+            interval_ms=50,
         )
         cards = self._question_cards("录音题")
         if len(cards) != len(self.spec.items):

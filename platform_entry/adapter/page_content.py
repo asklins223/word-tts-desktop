@@ -65,11 +65,11 @@ class PlatformInputContentMixin:
             return len(cards) == expected_cards
 
         try:
-            self._wait_until(
-                cards_ready,
-                f"切换到“{group_type}”后题卡没有完整挂载",
-                timeout_seconds=60,
-                interval_ms=200,
+                self._wait_until(
+                    cards_ready,
+                    f"切换到“{group_type}”后题卡没有完整挂载",
+                    timeout_seconds=60,
+                    interval_ms=50,
             )
         except PlatformInputUiError:
             _debug_dom_snapshot(
@@ -96,7 +96,7 @@ class PlatformInputContentMixin:
             listening_editors_ready,
             f"“{group_type}”没有完整挂载“听力原文”编辑器",
             timeout_seconds=60,
-            interval_ms=200,
+            interval_ms=50,
         )
         if len(listening_editors) < expected_listening_editors:
             raise PlatformInputUiError(
