@@ -726,18 +726,6 @@ def _select_option(page: Any, index: int, value: str) -> None:
         r"\s*".join(escaped_parts),
         re.IGNORECASE,
     )
-    expected = re.sub(r"\s+", "", value).casefold()
-
-    # In the normal Element Plus path the wrapper text is updated during the
-    # dispatched click itself.  Read it once before asking Playwright to wait
-    # for a filtered locator; the latter adds a visible Windows
-    # waitForSelector round-trip even when the state is already ready.
-    try:
-        shown = re.sub(r"\s+", "", str(selector.inner_text() or ""))
-    except Exception:
-        shown = ""
-    if expected and expected in shown.casefold():
-        return
     try:
         selector.filter(has_text=selected_text).wait_for(
             state="visible",
@@ -748,6 +736,7 @@ def _select_option(page: Any, index: int, value: str) -> None:
             shown = re.sub(r"\s+", "", str(selector.inner_text() or ""))
         except Exception:
             shown = ""
+        expected = re.sub(r"\s+", "", value).casefold()
         if expected not in shown.casefold():
             if dispatched:
                 # Some older page builds ignore a synthetic click.  Only
