@@ -717,12 +717,10 @@ class PlatformInputNavigationMixin:
         try:
             _debug_dom_snapshot(self, f"before-click:{group_type}")
             target.click(timeout=self.action_timeout_ms)
-            self.page.wait_for_timeout(300)
             _debug_dom_snapshot(self, f"after-click:{group_type}")
         except Exception as exc:
             try:
                 target.click(force=True, timeout=self.action_timeout_ms)
-                self.page.wait_for_timeout(300)
                 _debug_dom_snapshot(self, f"after-force-click:{group_type}")
             except Exception as force_exc:
                 raise PlatformInputUiError(
