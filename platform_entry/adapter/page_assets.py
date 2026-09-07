@@ -159,7 +159,6 @@ class PlatformInputAssetMixin:
             if deletes.count() == 0:
                 return
             delete = deletes.first
-            delete.scroll_into_view_if_needed()
             delete.click(timeout=self.action_timeout_ms)
         except Exception as exc:
             raise PlatformInputUiError(
@@ -319,7 +318,6 @@ class PlatformInputAssetMixin:
             try:
                 delete = region.locator(".deleteBtn img:visible")
                 if delete.count():
-                    delete.first.scroll_into_view_if_needed()
                     delete.first.click(timeout=self.action_timeout_ms)
             except Exception as exc:
                 raise PlatformInputUiError(
@@ -513,7 +511,6 @@ class PlatformInputAssetMixin:
         if image is None:
             return
         try:
-            image.scroll_into_view_if_needed()
             # 页面菜单由图片悬浮状态控制。这里只移动鼠标来挂载菜单，不能
             # 点击图片：点击会触发浏览器原生的文件选择器。真正的上传统一
             # 通过后面的 input[type=file].set_input_files 完成。
@@ -576,7 +573,6 @@ class PlatformInputAssetMixin:
             delete = self._image_delete(occurrence)
             if delete is not None:
                 try:
-                    delete.scroll_into_view_if_needed()
                     delete.click(timeout=self.action_timeout_ms)
                 except Exception as exc:
                     raise PlatformInputUiError("清除已有信息记录表图片失败") from exc

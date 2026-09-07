@@ -200,12 +200,13 @@ class PlatformInputCardMixin:
             getattr(keyboard, "insert_text", None) if keyboard is not None else None
         )
         try:
-            editor.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
             # 该富文本控件的持久化状态依赖键盘输入事件；直接 fill() 可能
             # 只改变 DOM，保存后又被页面状态覆盖。按用户操作替换内容，
             # 让编辑器真正收到选中和删除键盘事件。
-            editor.click(timeout=self.action_timeout_ms)
-            editor.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
+            _select_all_editable_text(
+                editor,
+                timeout_ms=self.action_timeout_ms,
+            )
             editor.press("Backspace", timeout=self.action_timeout_ms)
             # 逐字符 type 每个字符都是一次驱动往返，长文本在 Windows 上
             # 尤其慢。一次性 insertText 触发同样的 input 事件链；若个别
@@ -238,9 +239,10 @@ class PlatformInputCardMixin:
         """按页面键盘操作清空富文本字段，并确认字段确实为空。"""
 
         try:
-            editor.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
-            editor.click(timeout=self.action_timeout_ms)
-            editor.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
+            _select_all_editable_text(
+                editor,
+                timeout_ms=self.action_timeout_ms,
+            )
             editor.press("Backspace", timeout=self.action_timeout_ms)
             editor.press("Tab", timeout=self.action_timeout_ms)
             actual = _normalise_text(
@@ -598,7 +600,6 @@ class PlatformInputCardMixin:
                     f"题目卡片有 {len(editors)} 个选项但没有可用的“删除”控件，无法整理为 {expected} 个"
                 )
             before = len(editors)
-            delete_candidates[-1].scroll_into_view_if_needed()
             try:
                 delete_candidates[-1].click(timeout=self.action_timeout_ms)
             except Exception as exc:
@@ -620,7 +621,6 @@ class PlatformInputCardMixin:
                 )
             before_total = len(self._visible_content_editors(card))
             try:
-                add.scroll_into_view_if_needed()
                 add.click(timeout=self.action_timeout_ms)
             except Exception as exc:
                 raise PlatformInputUiError(f"点击“添加选项”失败: {exc}") from exc
@@ -682,7 +682,6 @@ class PlatformInputCardMixin:
             return
 
         def click_and_confirm(node: Any) -> None:
-            node.scroll_into_view_if_needed()
             # 答案按钮常位于卡片滚动容器边缘，普通点击可能被相邻
             # 编辑器的透明层拦截；这是实际控件，强制点击后仍用 DOM
             # 选中态回读确认，避免把“点击调用成功”误当成答案已写入。
@@ -854,7 +853,6 @@ class PlatformInputCardMixin:
                 )
             before = len(current)
             try:
-                delete_candidates[-1].scroll_into_view_if_needed()
                 delete_candidates[-1].click(timeout=self.action_timeout_ms)
             except Exception as exc:
                 raise PlatformInputUiError(f"删除多余参考答案失败: {exc}") from exc
@@ -875,7 +873,6 @@ class PlatformInputCardMixin:
                 )
             before = len(current)
             try:
-                add.scroll_into_view_if_needed()
                 add.click(timeout=self.action_timeout_ms)
             except Exception as exc:
                 raise PlatformInputUiError(f"点击“添加答案”失败: {exc}") from exc

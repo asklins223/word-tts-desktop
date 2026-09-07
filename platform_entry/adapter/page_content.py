@@ -57,9 +57,16 @@ class PlatformInputContentMixin:
         """Activate one lazy-loaded family and validate its visible card set."""
 
         self._activate_outline_section(group_type, outline_target=outline_target)
+        cards: list[Any] = []
+
+        def cards_ready() -> bool:
+            nonlocal cards
+            cards = self._question_cards(question_kind)
+            return len(cards) == expected_cards
+
         try:
             self._wait_until(
-                lambda: len(self._question_cards(question_kind)) == expected_cards,
+                cards_ready,
                 f"切换到“{group_type}”后题卡没有完整挂载",
                 timeout_seconds=60,
                 interval_ms=200,
@@ -70,7 +77,6 @@ class PlatformInputContentMixin:
                 f"mount-timeout:{group_type}:expected-{question_kind}-{expected_cards}",
             )
             raise
-        cards = self._question_cards(question_kind)
         if len(cards) != expected_cards:
             raise PlatformInputUiError(
                 f"“{group_type}”当前有 {len(cards)} 个{question_kind}，"
@@ -78,14 +84,20 @@ class PlatformInputContentMixin:
             )
         if not expected_listening_editors:
             return cards, []
+
+        listening_editors: list[Any] = []
+
+        def listening_editors_ready() -> bool:
+            nonlocal listening_editors
+            listening_editors = self._labeled_text_editors("听力原文")
+            return len(listening_editors) >= expected_listening_editors
+
         self._wait_until(
-            lambda: len(self._labeled_text_editors("听力原文"))
-            >= expected_listening_editors,
+            listening_editors_ready,
             f"“{group_type}”没有完整挂载“听力原文”编辑器",
             timeout_seconds=60,
             interval_ms=200,
         )
-        listening_editors = self._labeled_text_editors("听力原文")
         if len(listening_editors) < expected_listening_editors:
             raise PlatformInputUiError(
                 f"“{group_type}”只有 {len(listening_editors)} 个“听力原文”编辑器，"
