@@ -1,0 +1,204 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Automation runtime benchmark</title>
+<style>
+  :root { font: 14px/1.4 system-ui, sans-serif; color: #202124; }
+  body { margin: 20px; }
+  .field, .select-field, .question-card { margin: 8px 0; }
+  .select-field { display: inline-block; vertical-align: top; width: 190px; margin-right: 8px; }
+  .select-trigger { width: 100%; min-height: 32px; text-align: left; background: white; border: 1px solid #888; padding: 6px; }
+  .dropdown { position: absolute; z-index: 4; min-width: 170px; background: white; border: 1px solid #888; padding: 4px; }
+  .option { display: block; width: 100%; border: 0; background: white; text-align: left; padding: 6px; }
+  .option:hover, .answer:hover { background: #eaf2ff; }
+  .selected { display: inline-block; margin: 1px 3px 1px 0; padding: 1px 4px; background: #e8f0fe; border-radius: 3px; }
+  .outline { margin: 3px; }
+  .content-section { border: 1px solid #aaa; margin-top: 12px; padding: 8px; }
+  .question-card { border: 1px solid #bbb; padding: 8px; }
+  .editor { min-height: 24px; border: 1px solid #aaa; padding: 4px; margin: 4px 0; }
+  .number { width: 80px; }
+  .answer { margin: 3px; border: 1px solid #888; background: white; padding: 4px 8px; }
+  .answer.selected-answer { color: white; background: #1677ff; }
+  #works { margin-top: 12px; }
+  .work-row { padding: 4px; }
+  [hidden] { display: none !important; }
+</style>
+
+<main>
+  <section id="base-stage">
+    <input data-testid="paper-title" placeholder="试卷名称">
+    <input data-testid="paper-year" placeholder="年份">
+    <input data-testid="paper-duration" placeholder="时长">
+    <div id="select-fields"></div>
+    <label><input data-testid="template-choice" type="radio" name="template">模板</label>
+    <button data-testid="next" disabled>下一步</button>
+  </section>
+
+  <section id="content-stage" hidden>
+    <nav id="outline"></nav>
+    <div id="content-sections"></div>
+    <button data-testid="save">保存试卷</button>
+    <span data-testid="save-status"></span>
+  </section>
+
+  <section id="audio-stage" hidden>
+    <button data-testid="generate">生成音频</button>
+    <div id="works" hidden></div>
+    <button data-testid="download" disabled>下载</button>
+    <div id="download-modal" hidden>
+      <span>下载确认</span><button data-testid="confirm-download">下载</button>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const SELECTS = [
+    ['category', '听说考试'], ['province', '广东省'], ['city', '广州市'],
+    ['district', '天河区'], ['stage', '初中'], ['grade', '九年级'],
+    ['kind', '中考模拟']
+  ];
+  const selectRoot = document.querySelector('#select-fields');
+  const selected = new Map();
+  SELECTS.forEach(([key, value], index) => {
+    const field = document.createElement('div');
+    field.className = 'select-field';
+    field.dataset.testid = `select-${key}`;
+    field.innerHTML = `<button class="select-trigger" data-key="${key}">请选择</button>`;
+    const dropdown = document.createElement('div');
+    dropdown.className = 'dropdown';
+    dropdown.dataset.key = key;
+    dropdown.hidden = true;
+    const values = index === 3 ? [value, '越秀区'] : [value];
+    values.forEach((name) => {
+      const option = document.createElement('button');
+      option.className = 'option'; option.type = 'button'; option.textContent = name;
+      option.dataset.value = name; dropdown.append(option);
+    });
+    field.append(dropdown); selectRoot.append(field);
+    field.querySelector('.select-trigger').addEventListener('click', () => {
+      document.querySelectorAll('.dropdown').forEach((node) => { node.hidden = true; });
+      setTimeout(() => { dropdown.hidden = false; }, 12);
+    });
+    dropdown.addEventListener('click', (event) => {
+      const option = event.target.closest('.option'); if (!option) return;
+      selected.set(key, option.dataset.value);
+      field.querySelector('.select-trigger').textContent = option.dataset.value;
+      dropdown.hidden = true; updateNext();
+    });
+  });
+
+  const multiField = document.createElement('div');
+  multiField.className = 'select-field'; multiField.dataset.testid = 'select-districts';
+  multiField.innerHTML = '<button class="select-trigger" data-key="districts">请选择</button>';
+  const multiDropdown = document.createElement('div');
+  multiDropdown.className = 'dropdown'; multiDropdown.dataset.key = 'districts'; multiDropdown.hidden = true;
+  ['天河区', '越秀区', '海珠区'].forEach((name) => {
+    const option = document.createElement('button');
+    option.className = 'option'; option.type = 'button'; option.textContent = name;
+    option.dataset.value = name; multiDropdown.append(option);
+  });
+  multiField.append(multiDropdown); selectRoot.append(multiField);
+  multiField.querySelector('.select-trigger').addEventListener('click', () => {
+    document.querySelectorAll('.dropdown').forEach((node) => { node.hidden = true; });
+    setTimeout(() => { multiDropdown.hidden = false; }, 12);
+  });
+  multiDropdown.addEventListener('click', (event) => {
+    const option = event.target.closest('.option'); if (!option) return;
+    const values = selected.get('districts') || [];
+    const next = values.includes(option.dataset.value)
+      ? values.filter((item) => item !== option.dataset.value)
+      : [...values, option.dataset.value];
+    selected.set('districts', next);
+    multiField.querySelector('.select-trigger').innerHTML = next.length
+      ? next.map((item) => `<span class="selected">${item}</span>`).join('')
+      : '请选择';
+    updateNext();
+  });
+
+  const sections = document.querySelector('#content-sections');
+  const outline = document.querySelector('#outline');
+  for (let sectionIndex = 0; sectionIndex < 6; sectionIndex += 1) {
+    const section = document.createElement('section');
+    section.className = 'content-section'; section.dataset.section = String(sectionIndex); section.hidden = true;
+    for (let cardIndex = 0; cardIndex < 3; cardIndex += 1) {
+      const card = document.createElement('article');
+      card.className = 'question-card'; card.dataset.card = `${sectionIndex}-${cardIndex}`;
+      card.innerHTML = `
+        <div class="editor" contenteditable="true" data-testid="prompt">旧题干</div>
+        <div class="editor" contenteditable="true" data-testid="translation">旧译文</div>
+        <input class="number" data-testid="score" value="1">
+        <input class="number" data-testid="duration" value="5">
+        <input data-testid="audio" type="file" accept="audio/*">
+        <span class="audio-name"></span>
+        <div class="answers"><button class="answer" data-answer="A">A</button><button class="answer" data-answer="B">B</button><button class="answer" data-answer="C">C</button></div>`;
+      section.append(card);
+    }
+    sections.append(section);
+    const tab = document.createElement('button');
+    tab.className = 'outline'; tab.type = 'button'; tab.dataset.section = String(sectionIndex);
+    tab.textContent = `题型 ${sectionIndex + 1}`; outline.append(tab);
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.content-section').forEach((node) => { node.hidden = true; });
+      setTimeout(() => { section.hidden = false; }, 16);
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    const answer = event.target.closest('.answer');
+    if (!answer) return;
+    answer.closest('.answers').querySelectorAll('.answer').forEach((node) => node.classList.remove('selected-answer'));
+    answer.classList.add('selected-answer');
+  });
+  document.querySelector('[data-testid="template-choice"]').addEventListener('change', updateNext);
+  document.querySelector('[data-testid="next"]').addEventListener('click', () => {
+    document.querySelector('#base-stage').hidden = true;
+    document.querySelector('#content-stage').hidden = false;
+    document.querySelector('#audio-stage').hidden = false;
+  });
+  document.querySelector('[data-testid="save"]').addEventListener('click', () => {
+    setTimeout(() => { document.querySelector('[data-testid="save-status"]').textContent = '保存成功'; }, 45);
+  });
+  document.addEventListener('change', (event) => {
+    const input = event.target;
+    if (input.matches('[data-testid="audio"]') && input.files && input.files[0]) {
+      input.closest('.question-card').querySelector('.audio-name').textContent = input.files[0].name;
+    }
+  });
+
+  function updateNext() {
+    const allSingles = SELECTS.every(([key]) => selected.has(key));
+    const districts = selected.get('districts') || [];
+    const radio = document.querySelector('[data-testid="template-choice"]').checked;
+    document.querySelector('[data-testid="next"]').disabled = !(allSingles && districts.length === 3 && radio);
+  }
+
+  const generate = document.querySelector('[data-testid="generate"]');
+  const works = document.querySelector('#works');
+  const download = document.querySelector('[data-testid="download"]');
+  const modal = document.querySelector('#download-modal');
+  generate.addEventListener('click', () => {
+    setTimeout(() => {
+      works.innerHTML = '';
+      for (let index = 0; index < 6; index += 1) {
+        const row = document.createElement('label'); row.className = 'work-row';
+        row.innerHTML = `<input type="checkbox" data-work="${index}">作品 ${index + 1}`;
+        works.append(row);
+      }
+      works.hidden = false;
+      works.querySelectorAll('input').forEach((input) => input.addEventListener('change', () => {
+        setTimeout(() => { download.disabled = !works.querySelector('input:checked'); }, 70);
+      }));
+    }, 110);
+  });
+  download.addEventListener('click', () => { setTimeout(() => { modal.hidden = false; }, 24); });
+  document.querySelector('[data-testid="confirm-download"]').addEventListener('click', () => {
+    modal.hidden = true;
+    works.querySelectorAll('input:checked').forEach((input) => {
+      const link = document.createElement('a');
+      link.download = `work-${input.dataset.work}.mp3`;
+      link.href = 'data:audio/mpeg;base64,SUQzBAAAAAA=';
+      link.click();
+    });
+  });
+})();
+</script>
