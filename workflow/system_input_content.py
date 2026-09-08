@@ -48,10 +48,10 @@ PAGE_INPUT_MAX_LIST = 256
 # The first version of document entry deliberately recognizes whole document
 # shapes instead of treating every individual page-input fact as an entry
 # point.  This keeps the review screen and the external adapter aligned: a
-# full listening paper is one flow, while imitation-reading, listening-response
-# and listening-record/retelling 专项 documents are smaller, separate flows. New
-# document families should be added here with a parser-owned profile before
-# they become visible in the UI.
+# A full listening paper is one flow, while the individual listening families
+# can also be entered as smaller, separate flows. New document families should
+# be added here with a parser-owned profile before they become visible in the
+# UI.
 DOCUMENT_ENTRY_PROFILES = (
     {
         "format": "listening_paper",
@@ -62,6 +62,11 @@ DOCUMENT_ENTRY_PROFILES = (
             "模仿朗读",
             "听后记录并转述信息",
         ),
+    },
+    {
+        "format": "listening_selection",
+        "label": "听后选择",
+        "types": ("听后选择",),
     },
     {
         "format": "legacy_listening_paper",
@@ -1118,8 +1123,8 @@ def document_entry_support(
     elif detected or invalid_count or known_document_types:
         status = "unsupported"
         reason = (
-            "当前录入脚本只支持“听说测试题”“模仿朗读”“听后应答”和"
-            "“听后记录并转述信息”四种文档结构；"
+            "当前录入脚本只支持“听说测试题”“听后选择”“模仿朗读”“听后应答”和"
+            "“听后记录并转述信息”五种文档结构；"
             "这份文档尚未形成可录入的完整结构。"
         )
     else:

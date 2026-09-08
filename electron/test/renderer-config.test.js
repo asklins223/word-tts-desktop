@@ -288,7 +288,7 @@ test('核对页展示解析出的多级题型和默认男女声', () => {
     assert.equal(api.reviewVoicePresentation({ voice: 'male' }).voice, '默认男声');
 });
 
-test('文稿核对只开放四种已接入的文档结构', () => {
+test('文稿核对开放已接入的文档结构，并支持单独听后选择', () => {
     const { api } = loadRendererConfigFunctions();
     const fullPaper = api.reviewDocumentEntrySupport([
         { metadata: { page_input: { type: '听后选择' }, doc_type: '听后选择' } },
@@ -306,6 +306,17 @@ test('文稿核对只开放四种已接入的文档结构', () => {
     ]);
     assert.equal(fullPaper.supported, true);
     assert.equal(fullPaper.format, 'listening_paper');
+
+    const standaloneSelection = api.reviewDocumentEntrySupport([
+        {
+            metadata: {
+                page_input: { type: '听后选择' },
+                doc_type: '听后选择',
+            },
+        },
+    ]);
+    assert.equal(standaloneSelection.supported, true);
+    assert.equal(standaloneSelection.format, 'listening_selection');
 
     const imitation = api.reviewDocumentEntrySupport([
         {
@@ -505,6 +516,9 @@ test('文稿视图按页面题目计数，并校准两类专项卷的字段层�
     assert.match(source, /optionsLabel: '应答语'/);
     assert.match(source, /听力原文与音频复用第一节/);
     assert.match(source, /details\.open = values\.length <= 3/);
+    assert.match(source, /renderListeningSelectionFacts/);
+    assert.match(source, /renderReviewDocumentOptions/);
+    assert.match(source, /review-document-material/);
 });
 
 test('文稿核对缺少服务端前置判断时默认关闭，不在前端自行放行', () => {

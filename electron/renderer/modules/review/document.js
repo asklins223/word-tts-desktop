@@ -944,16 +944,39 @@ function reviewDocumentOptionMatchesAnswer(option, answer) {
 }
 
 function reviewDocumentQuestionPrompt(question, options, sourceText = '') {
-    const prompt = reviewPageText(
+    return reviewPageText(
         question?.prompt || question?.listening_text,
         sourceText,
     );
-    const optionTexts = options
-        .map(option => reviewDisplayFactValue(option?.text))
-        .filter(Boolean);
-    if (!prompt || !optionTexts.length) return prompt;
-    const suffix = `(${optionTexts.join(' / ')})`;
-    return prompt.endsWith(suffix) ? prompt : `${prompt} ${suffix}`;
+}
+
+function renderReviewDocumentOptions(parent, options, answer, label = '选项') {
+    if (!Array.isArray(options) || !options.length) return false;
+    const labelElement = document.createElement('span');
+    labelElement.className = 'review-document-field-label review-document-options-label';
+    labelElement.textContent = label;
+    const list = document.createElement('ul');
+    list.className = 'review-document-options';
+    options.forEach(option => {
+        const row = document.createElement('li');
+        const isAnswer = reviewDocumentOptionMatchesAnswer(option, answer);
+        row.className = `review-document-option${isAnswer ? ' is-answer' : ''}`;
+        const optionId = document.createElement('span');
+        optionId.className = 'review-document-option-id';
+        optionId.textContent = reviewDisplayFactValue(option?.option_id, '—');
+        const optionText = document.createElement('span');
+        optionText.textContent = reviewDisplayFactValue(option?.text, '未提供');
+        row.append(optionId, optionText);
+        if (isAnswer) {
+            const answerMarker = document.createElement('span');
+            answerMarker.className = 'review-document-option-answer';
+            answerMarker.textContent = '正确答案';
+            row.appendChild(answerMarker);
+        }
+        list.appendChild(row);
+    });
+    parent.append(labelElement, list);
+    return true;
 }
 
 function reviewDocumentQuestion(
@@ -964,6 +987,7 @@ function reviewDocumentQuestion(
         showPrompt = true,
         showHeading = true,
         promptLabel = '题目',
+        optionsLabel = '选项',
         splitReferenceAnswers = false,
         preferReferenceAnswers = false,
     } = {},
@@ -1007,6 +1031,8 @@ function reviewDocumentQuestion(
             && referenceValues.length > 1
         )
     );
+    const optionsRendered = !useReferenceAnswers
+        && renderReviewDocumentOptions(row, options, question.answer, optionsLabel);
     if (useReferenceAnswers) {
         renderReviewReferenceAnswers(row, references, '参考答案', {
             splitSlash: splitReferenceAnswers,
@@ -1014,15 +1040,20 @@ function reviewDocumentQuestion(
     }
     const answer = reviewDisplayFactValue(question.answer);
     const answerOption = options.find(option => reviewDocumentOptionMatchesAnswer(option, question.answer));
-    if (!useReferenceAnswers && answerOption) {
+    if (!useReferenceAnswers && answerOption && !optionsRendered) {
         const answerLine = document.createElement('p');
         answerLine.className = 'review-document-answer-line';
         answerLine.textContent = `正确答案：${reviewDisplayFactValue(answerOption.text, '未提供')}`;
         row.appendChild(answerLine);
-    } else if (!useReferenceAnswers && answer) {
+    } else if (!useReferenceAnswers && answer && !optionsRendered) {
         const answerLine = document.createElement('p');
         answerLine.className = 'review-document-answer-line';
         answerLine.textContent = `参考答案：${answer}`;
+        row.appendChild(answerLine);
+    } else if (!useReferenceAnswers && options.length && !answerOption && !answer) {
+        const answerLine = document.createElement('p');
+        answerLine.className = 'review-document-answer-line is-missing';
+        answerLine.textContent = '正确答案：未识别';
         row.appendChild(answerLine);
     }
     if (!useReferenceAnswers && !answer && references) {
@@ -1527,6 +1558,50 @@ function renderInfoAcquisitionFacts(parent, pageInput, item) {
     });
 }
 
+function renderListeningSelectionFacts(parent, pageInput, item) {
+    const materials = Array.isArray(pageInput?.materials) ? pageInput.materials : [];
+    if (!materials.length) {
+        reviewDocumentTextBlock(
+            parent,
+            '听力原文',
+            reviewContentForItem(item),
+            'review-document-script',
+            reviewContentForItem(item),
+        );
+        return;
+    }
+
+    materials.forEach((material, materialIndex) => {
+        const questions = Array.isArray(material?.questions) ? material.questions : [];
+        const section = document.createElement('section');
+        section.className = 'review-document-material';
+        section.dataset.reviewDocumentMaterial = String(materialIndex + 1);
+
+        if (materials.length > 1) {
+            const heading = document.createElement('header');
+            heading.className = 'review-document-material-heading';
+            const title = document.createElement('h5');
+            title.textContent = `第${materialIndex + 1}段录音`;
+            const meta = document.createElement('small');
+            meta.textContent = `${questions.length} 小题`;
+            heading.append(title, meta);
+            section.appendChild(heading);
+        }
+
+        reviewDocumentTextBlock(
+            section,
+            '听力原文',
+            material?.listening_text || reviewContentForItem(item),
+            'review-document-script',
+            reviewContentForItem(item),
+        );
+        questions.forEach(question => reviewDocumentQuestion(section, question, item, {
+            optionsLabel: '选项',
+        }));
+        parent.appendChild(section);
+    });
+}
+
 function renderInfoRetellingFacts(parent, pageInput, item, imageTasks) {
     const recording = pageInput?.recording && typeof pageInput.recording === 'object'
         ? pageInput.recording
@@ -1639,15 +1714,7 @@ function renderDocumentPageFacts(parent, pageInput, item, imageTasks) {
     }
     const questions = reviewPageQuestionList(pageInput);
     if (type === '听后选择') {
-        const material = Array.isArray(pageInput.materials) ? pageInput.materials[0] : null;
-        reviewDocumentTextBlock(
-            parent,
-            '听力原文',
-            material?.listening_text || reviewContentForItem(item),
-            'review-document-script',
-            reviewContentForItem(item),
-        );
-        questions.forEach(question => reviewDocumentQuestion(parent, question, item));
+        renderListeningSelectionFacts(parent, pageInput, item);
         return;
     }
     if (type === '听后应答') {

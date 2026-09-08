@@ -17,7 +17,7 @@ from workflow.system_input_executor import PlatformInputWorkflowPageExecutor
 
 
 class SystemInputContentTests(unittest.TestCase):
-    def test_document_entry_preflight_recognizes_the_four_supported_shapes(self) -> None:
+    def test_document_entry_preflight_recognizes_supported_shapes(self) -> None:
         full_paper = document_entry_support(
             [{"type": page_type} for page_type in (
                 "听后选择",
@@ -73,6 +73,34 @@ class SystemInputContentTests(unittest.TestCase):
         self.assertTrue(record_retelling["supported"])
         self.assertEqual(record_retelling["format"], "listening_record_retelling")
         self.assertEqual(record_retelling["label"], "听后记录并转述信息")
+
+    def test_standalone_listening_selection_is_an_entry_shape(self) -> None:
+        facts = {
+            "type": "听后选择",
+            "materials": [{
+                "listening_text": "W: Hello!",
+                "questions": [{
+                    "prompt": "How is Peter?",
+                    "options": [
+                        {"option_id": "A", "text": "Tired."},
+                        {"option_id": "B", "text": "Fine."},
+                    ],
+                    "answer": "B",
+                    "score": 1,
+                }],
+            }],
+        }
+
+        support = document_entry_support(
+            [facts],
+            input_type="paper",
+            document_types=["听后选择"],
+        )
+
+        self.assertTrue(support["supported"])
+        self.assertEqual(support["format"], "listening_selection")
+        self.assertEqual(support["label"], "听后选择")
+        self.assertEqual(page_input_completeness(facts)["status"], "complete")
 
     def test_record_retelling_entry_requires_confirmed_table_profile(self) -> None:
         missing_profile = document_entry_support(

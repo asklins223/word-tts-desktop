@@ -49,6 +49,13 @@ class ListeningSelectionParser(BaseParser):
     # 业务字段抽取（阶段3⑤）：题干与选项的完整形态
     RE_STEM_FULL = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)$')
     RE_OPTION_FULL = re.compile(r'^([A-CＡ-Ｃ])\s*[.．、）)]\s*(.+)$')
+    # Some Word sources put the red correct option on the same paragraph as
+    # the question stem, then wrap the rest of the stem onto the next line.
+    # The red-span metadata is the authority for deciding whether this is an
+    # inline option rather than ordinary prose containing “A./B./C.”.
+    RE_INLINE_OPTION = re.compile(
+        r'(?P<stem>.+?)\s+(?P<option>[A-CＡ-Ｃ])\s*[.．、）)]\s*(?P<text>.+)$'
+    )
     RE_ANSWER = re.compile(r'^(?:参考答案|答案|解析)\s*[：:]?')
     RE_SCORE = re.compile(
         r'每(?:小题|道题|题)\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
@@ -158,6 +165,28 @@ class ListeningSelectionParser(BaseParser):
             return None
         number = self.paragraph_metadata[position].get("numbering_number")
         return int(number) if number is not None else None
+
+    @classmethod
+    def _inline_red_option(cls, value, metadata, *, source_offset=0):
+        """Extract a red option embedded in a question paragraph.
+
+        ``source_offset`` maps the question-stem substring back to the full
+        Word paragraph because the numbering prefix is not part of the
+        stored stem.  Requiring the option span itself to be red prevents
+        ordinary sentences such as “Choose A. or B.” from becoming options.
+        """
+
+        for match in cls.RE_INLINE_OPTION.finditer(str(value or '')):
+            option_start = source_offset + match.start('option')
+            option_end = source_offset + match.end('text')
+            if not has_red_text_in_range(metadata, option_start, option_end):
+                continue
+            return {
+                "option_id": cls._normalize_option_id(match.group('option')),
+                "text": sanitize(match.group('text')),
+                "stem": sanitize(match.group('stem')),
+            }
+        return None
 
     def parse(self):
         items = []
@@ -330,12 +359,30 @@ class ListeningSelectionParser(BaseParser):
                 # 业务字段抽取：题干行与选项行（不属于任何录音稿）
                 stem_match = self.RE_STEM_FULL.match(value)
                 if stem_match:
+                    paragraph_metadata = (
+                        self.paragraph_metadata[position]
+                        if position < len(self.paragraph_metadata)
+                        else {}
+                    )
+                    stem_value = stem_match.group(2)
                     question = {
                         "number": int(stem_match.group(1)),
-                        "stem": sanitize(stem_match.group(2)),
+                        "stem": sanitize(stem_value),
                         "options": [],
                         "answer": None,
                     }
+                    inline_option = self._inline_red_option(
+                        stem_value,
+                        paragraph_metadata,
+                        source_offset=stem_match.start(2),
+                    )
+                    if inline_option:
+                        question["stem"] = inline_option["stem"]
+                        question["options"].append({
+                            "option_id": inline_option["option_id"],
+                            "text": inline_option["text"],
+                        })
+                        question["answer"] = inline_option["option_id"]
                     answer_time = pending_time_per_question()
                     if answer_time is not None:
                         question["answer_time"] = answer_time
@@ -385,6 +432,20 @@ class ListeningSelectionParser(BaseParser):
                         elif pending_questions[-1].get("answer_status") != "ambiguous_red":
                             pending_questions[-1]["answer"] = option_id
                     continue
+                # Word may wrap a long question stem before the A/B/C option
+                # paragraphs.  Keep that continuation attached to the latest
+                # question while its option list is still being collected.
+                if (
+                    pending_questions
+                    and value
+                    and not self.RE_ANSWER.match(value)
+                    and len(pending_questions[-1].get("options", [])) < 3
+                ):
+                    current_question = pending_questions[-1]
+                    current_question["stem"] = sanitize(
+                        f"{current_question.get('stem', '')} {value}"
+                    )
+                    continue
                 continue
 
             # 下一道题的提示、题干、选项或答案都不是录音内容。
@@ -404,6 +465,15 @@ class ListeningSelectionParser(BaseParser):
         flush()
         flush_questions(None)
         clear_pending_reading_prompt()
+        option_order = {"A": 0, "B": 1, "C": 2}
+        for question in questions:
+            question["options"] = sorted(
+                question.get("options", []),
+                key=lambda option: (
+                    option_order.get(option.get("option_id"), 99),
+                    option.get("option_id", ""),
+                ),
+            )
         result = self._result(items)
         # A content segment may contain multiple choice questions that share
         # one recording. Keep the segment-level score as the sum of its

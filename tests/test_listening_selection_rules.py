@@ -243,6 +243,40 @@ class ListeningSelectionRuleTests(unittest.TestCase):
         self.assertEqual(result["score_per_item"], 1)
         self.assertEqual(result["section_score"], 1)
 
+    def test_inline_red_option_and_wrapped_stem_are_collected_in_order(self):
+        paras = [
+            (0, "一、听后选择（每小题1分，满分3分）", "Normal"),
+            (1, "（计算机语音提示）听下面一段对话，回答第1小题。", "Normal"),
+            (2, "1. What is B. Miller.", "Normal"),
+            (3, "the girl's last name?", "Normal"),
+            (4, "A. Emma.", "Normal"),
+            (5, "C. Smith.", "Normal"),
+            (6, "【录音原文】", "Normal"),
+            (7, "W: Hello!", "Normal"),
+        ]
+        metadata = [{} for _ in paras]
+        metadata[2] = {
+            "colored_runs": [
+                {"start": 0, "end": 11, "text": "1. What is ", "rgb": "000000"},
+                {"start": 11, "end": 21, "text": "B. Miller.", "rgb": "FF0000"},
+            ],
+        }
+
+        result = ListeningSelectionParser(
+            "inline-red-option.docx",
+            preloaded_paras=(paras, metadata),
+        ).parse()
+
+        question = result["questions"][0]
+        self.assertEqual(question["stem"], "What is the girl's last name?")
+        self.assertEqual(question["options"], [
+            {"option_id": "A", "text": "Emma."},
+            {"option_id": "B", "text": "Miller."},
+            {"option_id": "C", "text": "Smith."},
+        ])
+        self.assertEqual(question["answer"], "B")
+        self.assertEqual(question["script_ordinal"], 1)
+
     def test_reading_time_is_split_per_question_when_one_prompt_covers_two(self):
         paras = [
             (0, "一、听后选择（每小题1分，满分2分）", "Normal"),

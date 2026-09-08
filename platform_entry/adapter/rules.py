@@ -81,6 +81,17 @@ PAPER_BUNDLE_RULES: tuple[PaperBundleRule, ...] = (
             in DEFAULT_OUTLINE_TARGETS.items()
         ),
     ),
+    PaperBundleRule(
+        key="platform_input-listening-selection-v1",
+        # A standalone 听后选择 document uses the same selection-card
+        # semantics as the listening-paper section, but its question count is
+        # document-driven rather than fixed to the eight-card full-paper rule.
+        template_name_tokens=("听后选择",),
+        outline_targets=(
+            ("听后选择", "第1题(选择题)", 0),
+        ),
+        outline_numbering="local",
+    ),
 )
 
 

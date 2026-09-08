@@ -717,6 +717,18 @@ class PlatformInputTests(unittest.TestCase):
                 explicit_key="unregistered-rule",
             )
 
+    def test_standalone_listening_selection_rule_reuses_selection_card_flow(self) -> None:
+        rule = resolve_paper_bundle_rule("听后选择")
+
+        self.assertIsNotNone(rule)
+        self.assertEqual(rule.key, "platform_input-listening-selection-v1")
+        self.assertEqual(rule.card_counts(), {})
+        self.assertEqual(
+            rule.outline_target("听后选择"),
+            ("第1题(选择题)", 0),
+        )
+        self.assertEqual(rule.outline_numbering, "local")
+
     def test_ambiguous_bundle_rule_match_fails_closed(self) -> None:
         first = PaperBundleRule(key="rule-a", template_name_tokens=("同名模板",))
         second = PaperBundleRule(key="rule-b", template_name_tokens=("同名模板",))
