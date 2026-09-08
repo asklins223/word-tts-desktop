@@ -85,7 +85,8 @@ jobs:
         shell: pwsh
         run: |
           $repoWindows = (Resolve-Path .).Path
-          $repoWsl = (wsl.exe -d Ubuntu-24.04 -- wslpath -a "$repoWindows").Trim()
+          $drive = $repoWindows.Substring(0, 1).ToLowerInvariant()
+          $repoWsl = "/mnt/$drive$($repoWindows.Substring(2).Replace('\\', '/'))"
           $script = @"
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
