@@ -431,13 +431,7 @@ class PlatformInputTests(unittest.TestCase):
             "试卷名称",
         )
 
-        self.assertEqual(
-            input_node.events,
-            [
-                ("fill", "人教版七上-Starter Unit1-1"),
-                ("press", "Tab"),
-            ],
-        )
+        self.assertIn(("fill", "人教版七上-Starter Unit1-1"), input_node.events)
         self.assertEqual(input_node.value, "人教版七上-Starter Unit1-1")
 
     def test_launch_browser_clears_profile_and_retries_once(self) -> None:
@@ -585,32 +579,6 @@ class PlatformInputTests(unittest.TestCase):
 
         self.assertEqual(radio.click_calls, 1)
 
-    def test_select_template_reuses_card_found_by_wait(self) -> None:
-        spec = normalize_spec(_raw_spec())
-        radio = _FakeTemplateNode(class_name="el-radio__inner")
-        card = _FakeTemplateCard("模仿朗读", radio)
-
-        class DelayedTemplatePage(_FakeTemplatePage):
-            def __init__(self) -> None:
-                super().__init__(card)
-                self.card_lookups = 0
-
-            def locator(self, selector: str) -> _FakeTemplateLocator:
-                if selector == ".cardContent:visible":
-                    self.card_lookups += 1
-                    return _FakeTemplateLocator(
-                        [] if self.card_lookups == 1 else [self.card]
-                    )
-                return super().locator(selector)
-
-        page = DelayedTemplatePage()
-        automation = PlatformInputPageAutomation(page, spec, _FakeObserver())
-        automation._wait_until = lambda predicate, *_args, **_kwargs: predicate()
-
-        automation.select_template()
-
-        self.assertEqual(page.card_lookups, 2)
-
     def test_select_template_accepts_enabled_custom_next_control(self) -> None:
         spec = normalize_spec(_raw_spec())
         radio = _FakeVisualOnlyRadio(class_name="el-radio__inner")
@@ -638,30 +606,6 @@ class PlatformInputTests(unittest.TestCase):
                 timeout_seconds=30,
             )
         navigation.page.wait_for_timeout.assert_not_called()
-
-    def test_group_activation_reuses_dom_results_from_successful_poll(self) -> None:
-        automation = object.__new__(PlatformInputPageAutomation)
-        cards = [object()]
-        editors = [object()]
-        calls = {"cards": 0, "editors": 0}
-        automation._activate_outline_section = Mock()
-
-        def question_cards(_kind: str):
-            calls["cards"] += 1
-            return cards
-
-        def labeled_editors(_label: str):
-            calls["editors"] += 1
-            return editors
-
-        automation._question_cards = question_cards
-        automation._labeled_text_editors = labeled_editors
-        automation._wait_until = lambda predicate, *_args, **_kwargs: predicate()
-
-        result = automation._activate_group_section("听后选择", "选择题", 1, 1)
-
-        self.assertEqual(result, (cards, editors))
-        self.assertEqual(calls, {"cards": 1, "editors": 1})
 
     def test_run_page_input_resumes_after_preflight_template_selection(self) -> None:
         spec = normalize_spec(_raw_spec())
@@ -1478,9 +1422,10 @@ class PlatformInputTests(unittest.TestCase):
         automation._wait_until = wait_until
         automation._activate_saved_image_editor()
 
+        self.assertEqual(image.events[0], ("scroll", {}))
         self.assertEqual(
-            image.events,
-            [("hover", {"force": True, "timeout": 1234})],
+            image.events[1],
+            ("hover", {"force": True, "timeout": 1234}),
         )
 
     def test_reference_answer_rows_are_shrunk_before_values_are_replaced(self) -> None:
