@@ -33,11 +33,18 @@ try
 {
     for (var round = 1; round <= rounds; round++)
     {
-        using var page = await browser.NewPageAsync(new BrowserNewPageOptions
+        var page = await browser.NewPageAsync(new BrowserNewPageOptions
         {
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 },
         });
-        records.Add(await RunRoundAsync(page, fixture, audioPath, outputDirectory, round));
+        try
+        {
+            records.Add(await RunRoundAsync(page, fixture, audioPath, outputDirectory, round));
+        }
+        finally
+        {
+            await page.CloseAsync();
+        }
     }
 }
 finally
