@@ -33,7 +33,7 @@ try
 {
     for (var round = 1; round <= rounds; round++)
     {
-        await using var page = await browser.NewPageAsync(new BrowserNewPageOptions
+        using var page = await browser.NewPageAsync(new BrowserNewPageOptions
         {
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 },
         });
