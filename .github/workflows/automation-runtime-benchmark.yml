@@ -106,6 +106,7 @@ jobs:
             --fixture '$repoWsl/tools/automation_runtime_benchmark/fixture.html' \
             --output '$repoWsl/.arts/runtime-benchmark/wsl-python.json'
           "@
+          $script = $script -replace "`r", ""
           wsl.exe -d Ubuntu-24.04 -- bash -lc $script
 
       - name: Summarize same-host results
