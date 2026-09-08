@@ -22,6 +22,8 @@ from .constants import (
     TEXTBOOK_MANAGEMENT_URL,
     TEXTBOOK_PAGE_PATH,
 )
+from .page_shared import _fast_inner_text
+from .performance import page_perf
 
 
 def _text(value: Any, *, limit: int = 1024) -> str:
@@ -199,7 +201,7 @@ def _open_catalog_list(
                     page.goto(TEXTBOOK_MANAGEMENT_URL, wait_until="domcontentloaded", timeout=60_000)
             except Exception:
                 pass
-        page.wait_for_timeout(1_000)
+        page.wait_for_timeout(200)
     raise RuntimeError("等待登录/教材管理列表页面超时；未读取教材目录。")
 
 
@@ -503,15 +505,28 @@ def _click_exact(page: Any, text: str, *, timeout: int = 15_000) -> None:
 
 
 def _wait_for_cards(page: Any, count: int, timeout: int = 30_000) -> Any:
-    deadline = time.monotonic() + timeout / 1000
     cards = page.locator(".expandContent:visible")
+    deadline = time.monotonic() + timeout / 1000
+    # Let Playwright wait inside its driver when available. This avoids a
+    # Python -> Node -> Chromium round-trip for every 200ms poll on Windows.
+    try:
+        target = cards.nth(max(0, int(count) - 1))
+        waiter = getattr(target, "wait_for", None)
+        if callable(waiter):
+            waiter(state="visible", timeout=timeout)
+            if cards.count() >= count:
+                return cards
+    except Exception:
+        pass
+
     while time.monotonic() < deadline:
         try:
             if cards.count() >= count:
                 return cards
         except Exception:
             pass
-        page.wait_for_timeout(200)
+        remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+        page.wait_for_timeout(min(100, remaining_ms))
     raise RuntimeError(f"等待课文句子卡片超时：需要 {count} 个")
 
 
@@ -540,7 +555,8 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
         return expected in actual if expected else not actual
 
     try:
-        editor.scroll_into_view_if_needed()
+        # click() performs the same actionability scroll and saves one driver
+        # round-trip for every long text field.
         editor.click()
         editor.press("ControlOrMeta+A")
         editor.press("Backspace")
@@ -556,7 +572,11 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
             else:
                 editor.type(value)
         editor.press("Tab")
-        actual = re.sub(r"\s+", " ", str(editor.inner_text() or "")).strip()
+        actual = re.sub(
+            r"\s+",
+            " ",
+            str(editor.inner_text(timeout=2_000) or ""),
+        ).strip()
         if not readback_matches(actual):
             # A few historical editor builds only committed text after the
             # full keyboard event sequence.  Keep that slower behavior as a
@@ -569,7 +589,7 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
                 editor.type(value)
             editor.press("Tab")
             actual = re.sub(
-                r"\s+", " ", str(editor.inner_text() or "")
+                r"\s+", " ", str(editor.inner_text(timeout=2_000) or "")
             ).strip()
     except Exception as exc:
         raise RuntimeError(f"填写{field_name}失败：{exc}") from exc
@@ -653,28 +673,65 @@ def _find_dropdown_option(page: Any, value: str) -> Any | None:
 
 
 def _select_option(page: Any, index: int, value: str) -> None:
+    tracer = page_perf(page, operation="textbook-input")
+    with tracer.span("select_option", index=int(index)):
+        return _select_option_impl(page, index, value)
+
+
+def _select_option_impl(page: Any, index: int, value: str) -> None:
     selectors = page.locator(".el-select__wrapper:visible")
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and selectors.count() <= index:
-        page.wait_for_timeout(200)
-    if selectors.count() <= index:
+    selector_count = selectors.count()
+    if selector_count <= index:
+        selector_deadline = time.monotonic() + 15
+        # nth().wait_for() is implemented by Playwright's driver and avoids
+        # repeatedly asking the Python process for the same count.
+        try:
+            target = selectors.nth(index)
+            waiter = getattr(target, "wait_for", None)
+            if callable(waiter):
+                remaining_ms = int(max(1, (selector_deadline - time.monotonic()) * 1000))
+                waiter(state="visible", timeout=remaining_ms)
+                selector_count = selectors.count()
+        except Exception:
+            selector_count = selectors.count()
+        while time.monotonic() < selector_deadline and selector_count <= index:
+            remaining_ms = int(max(1, (selector_deadline - time.monotonic()) * 1000))
+            page.wait_for_timeout(min(100, remaining_ms))
+            selector_count = selectors.count()
+    if selector_count <= index:
         raise RuntimeError(f"创建页面下拉框数量不足，无法选择第 {index + 1} 项：{value}")
 
     selector = selectors.nth(index)
-    selector.scroll_into_view_if_needed()
-    # 弹层渲染有延迟；若一直没有选项，可能是下拉没有展开，重新点击。
+    # 弹层渲染有延迟；只有确认下拉已经关闭时才重新点击。Element Plus
+    # 的 wrapper.click() 是 toggle，过早重试会把已经打开但尚未加载选项的
+    # 弹层关闭，且旧实现只再试一次后就会一直等到超时。
     option = None
     open_deadline = time.monotonic() + 12
-    next_retry = time.monotonic() + 2.5
+    next_retry = time.monotonic() + 1.5
     selector.click()
+
+    def dropdown_open() -> bool | None:
+        try:
+            expanded = selector.get_attribute("aria-expanded")
+            if expanded is not None:
+                return str(expanded).strip().casefold() == "true"
+        except Exception:
+            pass
+        try:
+            return page.locator(".el-select-dropdown:visible").count() > 0
+        except Exception:
+            return None
+
     while time.monotonic() < open_deadline:
         option = _find_dropdown_option(page, value)
         if option is not None:
             break
         if time.monotonic() >= next_retry:
-            selector.click()
-            next_retry = time.monotonic() + 2.5
-        page.wait_for_timeout(250)
+            if dropdown_open() is not True:
+                selector.click()
+            next_retry = time.monotonic() + 1.5
+        remaining_ms = int(max(1, (open_deadline - time.monotonic()) * 1000))
+        page.wait_for_timeout(min(100, remaining_ms))
     if option is None:
         visible_texts = page.locator(".el-select-dropdown__item:visible").all_inner_texts()
         raise RuntimeError(
@@ -686,7 +743,11 @@ def _select_option(page: Any, index: int, value: str) -> None:
     selected_deadline = time.monotonic() + 3
     while time.monotonic() < selected_deadline:
         try:
-            shown = re.sub(r"\s+", "", str(selector.inner_text() or ""))
+            shown = re.sub(
+                r"\s+",
+                "",
+                _fast_inner_text(selector, timeout_ms=300),
+            )
         except Exception:
             shown = ""
         if expected_normalized in shown.casefold():
@@ -715,7 +776,50 @@ def _fill_classification(page: Any, record: Mapping[str, Any]) -> None:
         _select_option(page, index, str(value))
 
 
+def _wait_for_card_audio_label(
+    card: Any,
+    stem: str,
+    normalized_stem: str,
+    *,
+    timeout_ms: int = 20_000,
+) -> bool | None:
+    """Wait for the upload label in Playwright instead of Python polling.
+
+    ``None`` means that a lightweight page shim has no locator wait API and
+    the caller should use its compatibility polling loop. ``False`` means a
+    real locator wait timed out or the final readback did not match.
+    """
+
+    get_by_text = getattr(card, "get_by_text", None)
+    if not callable(get_by_text):
+        return None
+    try:
+        pattern = re.compile(
+            rf"(?:{re.escape(stem)}|{re.escape(normalized_stem)})"
+        )
+        label = get_by_text(pattern)
+        waiter = getattr(label, "wait_for", None)
+        if not callable(waiter):
+            return None
+        waiter(state="visible", timeout=timeout_ms)
+        card_text = _fast_inner_text(card, timeout_ms=500)
+        return stem in card_text or normalized_stem in card_text
+    except Exception:
+        return False
+
+
 def _fill_content(
+    page: Any,
+    record: Mapping[str, Any],
+    *,
+    control_check: Callable[[], None] | None = None,
+) -> None:
+    tracer = page_perf(page, operation="textbook-input")
+    with tracer.span("fill_content", item_count=len(record.get("items") or ())):
+        return _fill_content_impl(page, record, control_check=control_check)
+
+
+def _fill_content_impl(
     page: Any,
     record: Mapping[str, Any],
     *,
@@ -749,16 +853,22 @@ def _fill_content(
         # 平台会把文件名中的非单词字符替换成下划线后再展示。
         stem = Path(audio_path).stem
         normalized_stem = re.sub(r"\W+", "_", stem, flags=re.UNICODE)
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            try:
-                card_text = str(card.inner_text() or "")
+        audio_label_ready = _wait_for_card_audio_label(
+            card,
+            stem,
+            normalized_stem,
+        )
+        if audio_label_ready is None:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                card_text = _fast_inner_text(card, timeout_ms=300)
                 if stem in card_text or normalized_stem in card_text:
+                    audio_label_ready = True
                     break
-            except Exception:
-                pass
-            page.wait_for_timeout(250)
-        else:
+                remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+                page.wait_for_timeout(min(100, remaining_ms))
+
+        if not audio_label_ready:
             raise RuntimeError(f"第 {index + 1} 条音频回读失败：{stem}")
         if control_check is not None:
             control_check()
@@ -766,7 +876,7 @@ def _fill_content(
 
 def _body_text(page: Any) -> str:
     try:
-        return str(page.locator("body").inner_text(timeout=2_000) or "")
+        return str(page.locator("body").inner_text(timeout=500) or "")
     except Exception:
         return ""
 
@@ -792,7 +902,7 @@ def _open_text_list(page: Any, login_timeout_seconds: int) -> None:
                     page.goto(RESOURCE_TEXT_URL, wait_until="domcontentloaded", timeout=60_000)
             except Exception:
                 pass
-        page.wait_for_timeout(1_000)
+        page.wait_for_timeout(200)
     raise RuntimeError("等待登录/课文管理页面超时；未创建任何课文记录。")
 
 
@@ -866,6 +976,11 @@ def execute_records(
             control_check()
         try:
             _open_text_list(page, max(1, int(login_timeout)))
+            observer = TextbookCatalogResponseObserver(
+                page,
+                api_base=API_BASE_URL,
+            )
+            before_search_responses = observer.response_count
         except RuntimeError as exc:
             # _open_text_list 超时抛 RuntimeError；转成 TimeoutError 供
             # 执行器区分“登录未完成”与一般执行失败。
@@ -945,16 +1060,34 @@ def verify_live(
             _configure_page_timeouts(page)
 
             _open_text_list(page, max(1, int(login_timeout)))
+            observer = TextbookCatalogResponseObserver(
+                page,
+                api_base=API_BASE_URL,
+            )
+            before_search_responses = observer.response_count
             search = page.locator("input[placeholder*='课文名称']").first
             search.scroll_into_view_if_needed()
             search.fill(title)
             page.keyboard.press("Enter")
-            page.wait_for_timeout(2500)
+            # Wait for the list request issued by the page. A fixed 2.5s
+            # sleep made every read-only verification slow even when the
+            # response had already arrived.
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if observer.response_count > before_search_responses:
+                    break
+                remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+                page.wait_for_timeout(min(100, remaining_ms))
+            # Give Vue one short render tick after the response callback.
+            page.wait_for_timeout(100)
             rows = page.locator(".el-table__row:visible")
             matches: list[dict[str, Any]] = []
             count = min(rows.count(), 20)
             for index in range(count):
-                row_text = _text(rows.nth(index).inner_text(), limit=2048)
+                row_text = _text(
+                    _fast_inner_text(rows.nth(index), timeout_ms=500),
+                    limit=2048,
+                )
                 if title in row_text:
                     matches.append({"external_record_id": None, "status": "FOUND"})
             return {

@@ -31,6 +31,7 @@ class RetryPolicy:
         "AUTH_ERROR",
         "VALIDATION_ERROR",
         "CONTENT_CONFLICT",
+        "COMPOSITE_SELECTION_FAILED",
     }
 
     def __init__(self, *, max_attempts: int = 3, base_delay_seconds: float = 1.0, max_delay_seconds: float = 60.0, random: Random | None = None) -> None:

@@ -16,6 +16,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { normalizeProjectVersion, readProjectVersion } = require('./project_version');
+const electronGet = require('../electron/node_modules/app-builder-lib/out/util/electronGet');
 const { archive } = require('../electron/node_modules/app-builder-lib/out/targets/archive');
 const { buildBlockMap } = require('../electron/node_modules/app-builder-lib/out/targets/blockmap/blockmap');
 const { getPath7za } = require('../electron/node_modules/app-builder-lib/out/toolsets/7zip');
@@ -29,6 +30,92 @@ const PAYLOAD_ARCHIVE_NAME = 'wordtts-payload.7z';
 const PAYLOAD_EXTRACTOR_NAME = 'wordtts-7za.exe';
 const PAYLOAD_EXTRACTION_MARKER = 'WORDTTS_PAYLOAD_EXTRACTION';
 const PAYLOAD_EXTRACTION_ENV = 'WORDTTS_PAYLOAD_EXPORT_DIR';
+
+// electron-builder's bundled @electron/get extracts a tool into
+// `<cache>/<tool>.tmp` and then renames that directory into place.  Some
+// Windows volume/filter-driver combinations report EXDEV for that final
+// directory rename even though both paths are siblings on the same volume.
+// The archive is already fully extracted at that point, so reusing the
+// verified temporary tool directory is safe and avoids a needless download.
+const BUILDER_TOOLSET_EXDEV_FALLBACK = Symbol.for(
+    'wordtts.builderToolsetExdevFallback',
+);
+const recoveredToolsetDirectories = new Set();
+
+process.once('exit', () => {
+    for (const directory of recoveredToolsetDirectories) {
+        try {
+            fs.rmSync(directory, { recursive: true, force: true });
+        } catch (_) {
+            // Temporary recovery files are best-effort cleanup only.
+        }
+    }
+});
+
+async function recoverToolsetDirectoryFromRenameError(error) {
+    if (error?.code !== 'EXDEV') return null;
+    const source = typeof error.path === 'string' ? path.resolve(error.path) : '';
+    const destination = typeof error.dest === 'string' ? path.resolve(error.dest) : '';
+    if (!source || !destination || !source.toLowerCase().endsWith('.tmp')) return null;
+    if (path.normalize(source.slice(0, -4)) !== destination) return null;
+
+    const executableName = process.platform === 'win32' ? '7za.exe' : '7za';
+    const executable = path.join(source, 'bin', executableName);
+    let recoveryDirectory = null;
+    try {
+        if (!fs.statSync(executable).isFile()) return null;
+        recoveryDirectory = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'wordtts-7za-recovery-'),
+        );
+        const recoveryExecutable = path.join(
+            recoveryDirectory,
+            'bin',
+            executableName,
+        );
+        fs.mkdirSync(path.dirname(recoveryExecutable), { recursive: true });
+        // A content read/write avoids the Windows cache volume's transient
+        // sharing violation that can affect copyFile immediately after 7za
+        // extraction has completed.
+        const contents = await fs.promises.readFile(executable);
+        await fs.promises.writeFile(recoveryExecutable, contents, { mode: 0o755 });
+        recoveredToolsetDirectories.add(recoveryDirectory);
+        return recoveryDirectory;
+    } catch (_) {
+        if (recoveryDirectory) {
+            try {
+                fs.rmSync(recoveryDirectory, { recursive: true, force: true });
+            } catch (__) {
+                // Best effort cleanup before propagating the original error.
+            }
+        }
+        return null;
+    }
+}
+
+function installBuilderToolsetExdevFallback() {
+    const original = electronGet?.downloadBuilderToolset;
+    if (typeof original !== 'function' || original[BUILDER_TOOLSET_EXDEV_FALLBACK]) return;
+
+    const wrapped = async function downloadBuilderToolsetWithFallback(...args) {
+        try {
+            return await original.apply(this, args);
+        } catch (error) {
+            const recovered = await recoverToolsetDirectoryFromRenameError(error);
+            if (!recovered) throw error;
+            console.warn(
+                `[installer-build] 7zip 缓存目录跨卷移动失败，复用已解压目录: ${recovered}`,
+            );
+            return recovered;
+        }
+    };
+    Object.defineProperty(wrapped, BUILDER_TOOLSET_EXDEV_FALLBACK, {
+        value: true,
+    });
+    electronGet.downloadBuilderToolset = wrapped;
+}
+
+installBuilderToolsetExdevFallback();
+
 const PORTABLE_UNINSTALL_RELOCATION_LABEL = 'wordtts_continue_portable';
 const PORTABLE_UNINSTALL_RELOCATION_BLOCK = [
     '  # An installed portable executable cannot remove its own directory.',

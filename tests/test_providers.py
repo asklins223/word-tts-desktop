@@ -19,7 +19,12 @@ from workflow.providers import (
     _normalize_legacy_error,
 )
 from workflow.repositories import WorkflowRepository
-from xunfei.errors import XunfeiBrowserLaunchError, XunfeiCancelled
+from xunfei.errors import (
+    XunfeiBrowserLaunchError,
+    XunfeiCancelled,
+    XunfeiCompositeSelectionError,
+)
+from workflow.retry_policy import RetryPolicy
 
 
 class _Backend:
@@ -117,6 +122,15 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(ambiguous.code, "LOCAL_SUBMISSION_NOT_CONFIRMED")
         self.assertFalse(ambiguous.ambiguous)
         self.assertEqual(ambiguous.details["works_name"], "wordtts-demo")
+
+        selection = _normalize_legacy_error(
+            XunfeiCompositeSelectionError("第 2 行未被页面队列接受"),
+        )
+        self.assertEqual(selection.code, "COMPOSITE_SELECTION_FAILED")
+        self.assertFalse(selection.ambiguous)
+        self.assertFalse(
+            RetryPolicy().decide(selection.code, attempt_no=1).automatic
+        )
 
         # A plain XunfeiError is raised while preparing the editor, before
         # "确认合成".  It is safe to retry and must not become an ambiguous

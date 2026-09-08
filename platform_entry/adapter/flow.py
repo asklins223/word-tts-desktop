@@ -8,12 +8,13 @@ from typing import Any
 from .constants import PAPER_CONTENT_GET_PATH, PAPER_PAGE_PATH
 from .errors import PlatformInputError
 from .models import PlatformInputSpec
+from .performance import page_perf
 
 # Read-only verification wait windows. The list query is issued by the page
 # itself; the observer needs one fresh PAPER_PAGE_PATH response after 查询
 # before the matches list can be trusted.
 VERIFY_LIST_RESPONSE_TIMEOUT_SECONDS = 30.0
-VERIFY_LIST_SETTLE_MS = 800
+VERIFY_LIST_SETTLE_MS = 250
 
 
 def run_page_verify(
@@ -30,9 +31,14 @@ def run_page_verify(
     """
 
     steps: list[dict[str, Any]] = []
+    tracer = page_perf(
+        getattr(automation, "page", None),
+        operation="platform-input",
+    )
 
     def page_step(name: str, action: Any) -> None:
-        action()
+        with tracer.span("step:" + name):
+            action()
         steps.append({"name": name, "mode": "PAGE_UI"})
 
     observer = automation.observer
@@ -88,6 +94,10 @@ def run_page_input(
     """
 
     steps: list[dict[str, Any]] = []
+    tracer = page_perf(
+        getattr(automation, "page", None),
+        operation="platform-input",
+    )
 
     # The same callback is also consumed by the shared navigation/form wait
     # loops. Page actions remain atomic, but a lazy-loaded template list or
@@ -98,7 +108,8 @@ def run_page_input(
     def page_step(name: str, action: Any) -> None:
         if control_check is not None:
             control_check()
-        action()
+        with tracer.span("step:" + name):
+            action()
         if control_check is not None:
             control_check()
         steps.append({"name": name, "mode": "PAGE_UI"})

@@ -142,6 +142,17 @@ def _normalize_legacy_error(error: Exception, *, works_name: str | None = None) 
             details=details,
             ambiguous=False,
         )
+    if class_name == "XunfeiCompositeSelectionError":
+        # The editor may already contain a partially accepted selection. Do
+        # not turn this into TRANSIENT_PROVIDER_ERROR: an automatic retry
+        # would re-enter the whole composite submission and select the rows
+        # that were already accepted by the page.
+        return ProviderError(
+            "讯飞多人配音段落选区未完成，为避免重复选择已停止，请检查页面后手动重试",
+            code="COMPOSITE_SELECTION_FAILED",
+            details=details,
+            ambiguous=False,
+        )
     if class_name == "XunfeiCancelled":
         return ProviderError(
             "讯飞浏览器任务已取消，可重新生成",

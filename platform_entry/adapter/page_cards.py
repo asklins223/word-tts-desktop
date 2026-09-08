@@ -200,7 +200,6 @@ class PlatformInputCardMixin:
             getattr(keyboard, "insert_text", None) if keyboard is not None else None
         )
         try:
-            editor.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
             # 该富文本控件的持久化状态依赖键盘输入事件；直接 fill() 可能
             # 只改变 DOM，保存后又被页面状态覆盖。按用户操作替换内容，
             # 让编辑器真正收到选中和删除键盘事件。
@@ -215,7 +214,9 @@ class PlatformInputCardMixin:
             else:
                 editor.type(value, timeout=self.action_timeout_ms)
             editor.press("Tab", timeout=self.action_timeout_ms)
-            actual = _normalise_text(editor.inner_text(timeout=self.action_timeout_ms))
+            actual = _normalise_text(
+                editor.inner_text(timeout=min(self.action_timeout_ms, 2_000))
+            )
             if expected and expected not in actual:
                 # Replay the original char-by-char path before failing; some
                 # editor builds only persist state on real keystrokes.
@@ -225,7 +226,7 @@ class PlatformInputCardMixin:
                 editor.type(value, timeout=self.action_timeout_ms)
                 editor.press("Tab", timeout=self.action_timeout_ms)
                 actual = _normalise_text(
-                    editor.inner_text(timeout=self.action_timeout_ms)
+                    editor.inner_text(timeout=min(self.action_timeout_ms, 2_000))
                 )
         except Exception as exc:
             raise PlatformInputUiError(f"填写{field}失败: {exc}") from exc
@@ -238,13 +239,14 @@ class PlatformInputCardMixin:
         """按页面键盘操作清空富文本字段，并确认字段确实为空。"""
 
         try:
-            editor.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
             editor.click(timeout=self.action_timeout_ms)
             editor.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
             editor.press("Backspace", timeout=self.action_timeout_ms)
             editor.press("Tab", timeout=self.action_timeout_ms)
             actual = _normalise_text(
-                _text_without_html(editor.inner_text(timeout=self.action_timeout_ms))
+                _text_without_html(
+                    editor.inner_text(timeout=min(self.action_timeout_ms, 2_000))
+                )
             )
         except Exception as exc:
             raise PlatformInputUiError(f"清空{field}失败: {exc}") from exc
@@ -400,7 +402,7 @@ class PlatformInputCardMixin:
         for _level in range(10):
             try:
                 parent = parent.locator("xpath=..")
-                text = str(parent.inner_text())
+                text = _fast_inner_text(parent, timeout_ms=500)
                 if question_kind not in text:
                     continue
                 # 题目表单位于独立的可滚动面板内。Chromium 在新开的
@@ -479,7 +481,9 @@ class PlatformInputCardMixin:
                 if not batch_snapshot_used:
                     if not node.is_visible():
                         continue
-                    heading = self._normalise_question_heading(node.inner_text())
+                    heading = self._normalise_question_heading(
+                        _fast_inner_text(node, timeout_ms=500)
+                    )
                     if not re.fullmatch(
                         r"(?:小题|第)\d+[（(]"
                         + re.escape(question_kind)
@@ -670,7 +674,9 @@ class PlatformInputCardMixin:
             for index in range(count):
                 try:
                     node = controls.nth(index)
-                    if node.is_visible() and _normalise_text(node.inner_text()).casefold() == _normalise_text(answer).casefold():
+                    if node.is_visible() and _normalise_text(
+                        _fast_inner_text(node, timeout_ms=500)
+                    ).casefold() == _normalise_text(answer).casefold():
                         return node
                 except Exception:
                     continue
@@ -729,7 +735,9 @@ class PlatformInputCardMixin:
             current = nodes.nth(index)
             for _level in range(5):
                 try:
-                    if _normalise_text(current.inner_text()).casefold() != _normalise_text(answer).casefold():
+                    if _normalise_text(
+                        _fast_inner_text(current, timeout_ms=500)
+                    ).casefold() != _normalise_text(answer).casefold():
                         break
                     class_name = str(current.get_attribute("class") or "")
                     if "answerSelected" in class_name:

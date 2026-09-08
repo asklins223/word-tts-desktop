@@ -25,6 +25,7 @@ from .config import (
 from .errors import (
     XunfeiBrowserLaunchError,
     XunfeiCancelled,
+    XunfeiCompositeSelectionError,
     XunfeiError,
     XunfeiLoginRequired,
     XunfeiQuotaExceeded,
@@ -73,6 +74,7 @@ __all__ = [
     "VOICES",
     "XunfeiCancelled",
     "XunfeiBrowserLaunchError",
+    "XunfeiCompositeSelectionError",
     "XunfeiError",
     "XunfeiLoginRequired",
     "XunfeiQuotaExceeded",

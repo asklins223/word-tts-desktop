@@ -17,6 +17,7 @@ try:
     from platform_entry.adapter.content_legacy_exam import PlatformInputLegacyExamContentMixin
     from platform_entry.adapter.content_record import PlatformInputRecordContentMixin
     from platform_entry.adapter.content_response import PlatformInputResponseContentMixin
+    from platform_entry.adapter.page_assets import PlatformInputAssetMixin
     from platform_entry.adapter.page_forms import PlatformInputFormMixin
     from platform_entry.adapter.page_navigation import PlatformInputNavigationMixin
     from platform_entry.paper_input import (
@@ -368,6 +369,37 @@ class _FakeTemplatePage:
         return _FakeTemplateLocator([])
 
 
+class _DetachedTemplateRadio(_FakeTemplateNode):
+    def scroll_into_view_if_needed(self) -> None:
+        self.scroll_calls += 1
+        raise RuntimeError("Element is not attached to the DOM")
+
+
+class _ReflowingTemplatePage(_FakeTemplatePage):
+    """Return a stale card once, then the card from the next Vue render."""
+
+    def __init__(
+        self,
+        stale_card: _FakeTemplateCard,
+        fresh_card: _FakeTemplateCard,
+    ) -> None:
+        super().__init__(stale_card)
+        self.stale_card = stale_card
+        self.fresh_card = fresh_card
+        self.card_locator_calls = 0
+
+    def locator(self, selector: str) -> _FakeTemplateLocator:
+        if selector == ".cardContent:visible":
+            self.card_locator_calls += 1
+            card = (
+                self.stale_card
+                if self.card_locator_calls == 1
+                else self.fresh_card
+            )
+            return _FakeTemplateLocator([card])
+        return super().locator(selector)
+
+
 class _FakeVisualOnlyRadio(_FakeTemplateNode):
     """A radio whose visual click is not exposed as a checked property."""
 
@@ -392,6 +424,27 @@ class _FakeCustomNextPage(_FakeTemplatePage):
         if text == self.next_node.text:
             return _FakeTemplateLocator([self.next_node])
         return _FakeTemplateLocator([])
+
+
+class _FakeDropdownField:
+    def __init__(self) -> None:
+        self.selected_name = ""
+
+    def inner_text(self, **_kwargs) -> str:
+        return self.selected_name or "省份"
+
+
+class _FakeDropdownOption:
+    def __init__(self, field: _FakeDropdownField, *, stale: bool) -> None:
+        self.field = field
+        self.stale = stale
+        self.click_calls = 0
+
+    def click(self, **_kwargs) -> None:
+        self.click_calls += 1
+        if self.stale:
+            raise RuntimeError("Element is not attached to the DOM")
+        self.field.selected_name = "湖北省"
 
 
 class PlatformInputTests(unittest.TestCase):
@@ -433,6 +486,34 @@ class PlatformInputTests(unittest.TestCase):
 
         self.assertIn(("fill", "人教版七上-Starter Unit1-1"), input_node.events)
         self.assertEqual(input_node.value, "人教版七上-Starter Unit1-1")
+
+    def test_ensure_paper_title_only_repairs_a_cleared_value(self) -> None:
+        spec = normalize_spec(_raw_spec())
+
+        class FakeInput:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def input_value(self, **_kwargs) -> str:
+                return self.value
+
+        input_node = FakeInput(spec.paper["title"])
+        automation = object.__new__(PlatformInputFormMixin)
+        automation.spec = spec
+        automation.action_timeout_ms = 1234
+        automation._find_input = lambda *_args, **_kwargs: input_node
+        automation._fill_input = Mock()
+
+        automation.ensure_paper_title()
+        automation._fill_input.assert_not_called()
+
+        input_node.value = ""
+        automation.ensure_paper_title()
+        automation._fill_input.assert_called_once()
+        self.assertEqual(
+            automation._fill_input.call_args.args,
+            ("试卷名称", spec.paper["title"]),
+        )
 
     def test_launch_browser_clears_profile_and_retries_once(self) -> None:
         class Lifecycle:
@@ -567,6 +648,22 @@ class PlatformInputTests(unittest.TestCase):
         self.assertTrue(radio.checked)
         self.assertEqual(card.click_calls, 0)
 
+    def test_select_template_reacquires_card_after_vue_detaches_old_locator(self) -> None:
+        spec = normalize_spec(_raw_spec())
+        stale_radio = _DetachedTemplateRadio(class_name="el-radio__inner")
+        fresh_radio = _FakeTemplateNode(class_name="el-radio__inner")
+        page = _ReflowingTemplatePage(
+            _FakeTemplateCard("模仿朗读", stale_radio),
+            _FakeTemplateCard("模仿朗读", fresh_radio),
+        )
+        automation = PlatformInputPageAutomation(page, spec, _FakeObserver())
+
+        automation.select_template()
+
+        self.assertEqual(stale_radio.scroll_calls, 0)
+        self.assertEqual(fresh_radio.click_calls, 1)
+        self.assertGreaterEqual(page.card_locator_calls, 3)
+
     def test_select_template_accepts_camel_case_selected_card_marker(self) -> None:
         spec = normalize_spec(_raw_spec())
         radio = _FakeTemplateNode(class_name="el-radio__inner")
@@ -589,6 +686,75 @@ class PlatformInputTests(unittest.TestCase):
         automation.select_template()
 
         self.assertEqual(radio.click_calls, 1)
+
+    def test_fill_base_form_enters_title_before_dependent_fields(self) -> None:
+        spec = normalize_spec(_raw_spec(category="听说考试", with_paper_type=True))
+        automation = object.__new__(PlatformInputFormMixin)
+        automation.spec = spec
+        automation.existing_paper_id = None
+        calls: list[tuple[str, str]] = []
+
+        automation.ensure_paper_title = lambda: calls.append(("title", "试卷名称"))
+        automation._select_one = lambda title, _choice: calls.append(("select", title))
+        automation._select_many = lambda title, _choices: calls.append(("many", title))
+        automation._fill_input = lambda title, _value: calls.append(("input", title))
+
+        automation.fill_base_form()
+
+        self.assertEqual(
+            calls[:3],
+            [
+                ("select", "试卷分类"),
+                ("title", "试卷名称"),
+                ("select", "省份"),
+            ],
+        )
+        self.assertEqual(calls[-1], ("title", "试卷名称"))
+        self.assertLess(
+            calls.index(("title", "试卷名称")),
+            calls.index(("select", "试卷类型")),
+        )
+
+    def test_select_one_reacquires_option_after_vue_detaches_old_locator(self) -> None:
+        field = _FakeDropdownField()
+        stale_option = _FakeDropdownOption(field, stale=True)
+        fresh_option = _FakeDropdownOption(field, stale=False)
+        option_calls = 0
+
+        class Keyboard:
+            def __init__(self) -> None:
+                self.press_calls = 0
+
+            def press(self, _key: str) -> None:
+                self.press_calls += 1
+
+        page = Mock()
+        page.keyboard = Keyboard()
+        automation = object.__new__(PlatformInputFormMixin)
+        automation.page = page
+        automation.action_timeout_ms = 15_000
+        automation._field_component = lambda _title: field
+        automation._open_select = Mock(return_value=field)
+        automation._search_select = Mock()
+
+        def find_option(_name: str):
+            nonlocal option_calls
+            option_calls += 1
+            return stale_option if option_calls <= 2 else fresh_option
+
+        automation._find_dropdown_option = find_option
+
+        def wait_until(predicate, message, **_kwargs) -> None:
+            if not predicate():
+                raise PlatformInputUiError(message)
+
+        automation._wait_until = wait_until
+        automation._select_one("省份", {"name": "湖北省"})
+
+        self.assertEqual(stale_option.click_calls, 2)
+        self.assertEqual(fresh_option.click_calls, 1)
+        self.assertEqual(automation._open_select.call_count, 2)
+        self.assertEqual(page.keyboard.press_calls, 1)
 
     def test_wait_until_runs_control_checkpoint_before_long_page_wait(self) -> None:
         navigation = object.__new__(PlatformInputNavigationMixin)
@@ -1435,6 +1601,14 @@ class PlatformInputTests(unittest.TestCase):
                 "/tmp/ttsmaker-file-2026-9-3-11-16-29.mp3",
             )
         )
+
+    def test_audio_label_pattern_accepts_required_field_marker(self) -> None:
+        pattern = PlatformInputAssetMixin._audio_label_pattern("原文音频")
+
+        self.assertIsNotNone(pattern.fullmatch("原文音频"))
+        self.assertIsNotNone(pattern.fullmatch("原文音频*"))
+        self.assertIsNotNone(pattern.fullmatch("原文音频 ＊"))
+        self.assertIsNone(pattern.fullmatch("原文音频文件"))
 
     def test_local_asset_paths_reject_unsupported_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

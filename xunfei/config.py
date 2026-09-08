@@ -286,6 +286,16 @@ def shared_chrome_launch_args():
         "--disable-sync",
         "--metrics-recording-only",
         "--no-pings",
+        # 自动化窗口一旦被遮挡/失焦，Chromium 会节流定时器与渲染，
+        # 在 Windows 上表现为随机卡顿。这三个开关只关后台节流，
+        # 不影响登录、合成与下载。
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+        # Windows may still classify a headed window as natively occluded
+        # when another maximized window covers it. Disable that classification
+        # for the dedicated automation profile.
+        "--disable-features=CalculateNativeWinOcclusion",
     ]
 
 

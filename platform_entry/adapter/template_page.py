@@ -156,7 +156,7 @@ def _visible_exact(page: Any, text: str) -> Any | None:
 
 def _body_text(page: Any) -> str:
     try:
-        return str(page.locator("body").inner_text(timeout=2_000) or "")
+        return str(page.locator("body").inner_text(timeout=500) or "")
     except Exception:
         return ""
 
@@ -195,7 +195,7 @@ def _open_template_list(
                 page.goto(TEMPLATE_MANAGEMENT_URL, wait_until="domcontentloaded", timeout=60_000)
             except Exception:
                 pass
-        page.wait_for_timeout(1_000)
+        page.wait_for_timeout(200)
     raise RuntimeError("等待登录/模板管理页面超时；未读取平台模板目录。")
 
 

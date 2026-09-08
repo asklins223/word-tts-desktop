@@ -22,6 +22,7 @@ const {
     readRegistryInstallLocations,
     relocatedExecutableCleanupBatch,
     resolveCleanupLauncherPath,
+    resolveInstallTargetPath,
     resolveRelocatedCleanupExecutable,
     resolveUninstallRelocation,
     shortcutPaths,
@@ -274,16 +275,15 @@ test('自绘安装器参数解析支持普通、更新、卸载和无窗口冒�
     );
 });
 
-test('Windows 安装路径校验拒绝相对路径和磁盘根目录', () => {
+test('Windows 安装路径接受盘符根目录并解析到应用专用子目录', () => {
     assert.equal(normalizeTargetPath('C:\\Apps\\小猪wordTTS', 'win32'), 'C:\\Apps\\小猪wordTTS');
     assert.throws(
         () => normalizeTargetPath('Apps\\小猪wordTTS', 'win32'),
         error => error instanceof InstallerError && error.code === 'INVALID_TARGET',
     );
-    assert.throws(
-        () => normalizeTargetPath('C:\\', 'win32'),
-        error => error instanceof InstallerError && error.code === 'INVALID_TARGET',
-    );
+    assert.equal(normalizeTargetPath('C:\\', 'win32'), 'C:\\');
+    assert.equal(resolveInstallTargetPath('C:\\', 'win32'), 'C:\\小猪wordTTS');
+    assert.equal(resolveInstallTargetPath('D:/', 'win32'), 'D:\\小猪wordTTS');
     const environment = {
         SystemRoot: 'C:\\Windows',
         USERPROFILE: 'C:\\Users\\Alice',
@@ -294,6 +294,10 @@ test('Windows 安装路径校验拒绝相对路径和磁盘根目录', () => {
     assert.equal(
         validateInstallTargetPath('C:\\Apps\\小猪wordTTS', 'win32', environment),
         'C:\\Apps\\小猪wordTTS',
+    );
+    assert.equal(
+        validateInstallTargetPath('C:\\', 'win32', environment),
+        'C:\\小猪wordTTS',
     );
     assert.throws(
         () => validateInstallTargetPath('C:\\Windows\\System32\\小猪wordTTS', 'win32', environment),

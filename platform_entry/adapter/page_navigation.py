@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .page_shared import *  # noqa: F403,F401
+from .performance import page_perf
 
 
 # One-shot visibility probe: instead of paying one protocol round-trip per
@@ -53,6 +54,7 @@ class PlatformInputNavigationMixin:
             if existing_paper_id not in (None, "")
             else None
         )
+        self._perf = page_perf(self.page, operation="platform-input")
 
         # A few page mixins intentionally use short, user-like locator calls
         # without repeating ``timeout=...`` on every keyboard action.  The
@@ -187,19 +189,42 @@ class PlatformInputNavigationMixin:
         interval_ms: int = 200,
     ) -> None:
         deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            # Keep this outside the predicate's broad defensive catch: a
-            # durable stop is a control signal, not a transient DOM error.
+        tracer = getattr(self, "_perf", None) or page_perf(
+            self.page,
+            operation="platform-input",
+        )
+        with tracer.span(
+            "wait",
+            timeout_seconds=round(float(timeout_seconds), 3),
+            interval_ms=max(1, int(interval_ms)),
+        ) as metadata:
+            attempts = 0
+            last_error: str | None = None
+            while time.monotonic() < deadline:
+                # Keep this outside the predicate's broad defensive catch: a
+                # durable stop is a control signal, not a transient DOM error.
+                self._control_checkpoint()
+                attempts += 1
+                try:
+                    if predicate():
+                        metadata["attempts"] = attempts
+                        return
+                except Exception as exc:
+                    # A detached Vue node is expected during rerender.  Keep
+                    # only its type for diagnostics; values may contain input
+                    # text and should never be sent to the perf stream.
+                    last_error = type(exc).__name__
+                self._control_checkpoint()
+                remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+                if remaining_ms <= 0:
+                    break
+                self.page.wait_for_timeout(min(max(1, int(interval_ms)), remaining_ms))
             self._control_checkpoint()
-            try:
-                if predicate():
-                    return
-            except Exception:
-                pass
-            self._control_checkpoint()
-            self.page.wait_for_timeout(interval_ms)
-        self._control_checkpoint()
-        raise PlatformInputUiError(message)
+            metadata["attempts"] = attempts
+            metadata["timed_out"] = True
+            if last_error:
+                metadata["last_error"] = last_error
+            raise PlatformInputUiError(message)
 
     def wait_until_ready(self, admin_url: str, timeout_seconds: float) -> None:
         try:
@@ -635,7 +660,11 @@ class PlatformInputNavigationMixin:
 
         def normalised_outline_text(node: Any) -> str:
             try:
-                return re.sub(r"\s+", "", str(node.inner_text() or ""))
+                return re.sub(
+                    r"\s+",
+                    "",
+                    _fast_inner_text(node, timeout_ms=300),
+                )
             except Exception:
                 return ""
 
@@ -710,24 +739,29 @@ class PlatformInputNavigationMixin:
                     continue
             return None
 
+        resolved_target: Any | None = None
+
+        def target_ready() -> bool:
+            nonlocal resolved_target
+            resolved_target = visible_target()
+            return resolved_target is not None
+
         self._wait_until(
-            lambda: visible_target() is not None,
+            target_ready,
             f"第二步没有找到“{group_type}”题目导航入口",
             timeout_seconds=30,
         )
-        target = visible_target()
+        target = resolved_target or visible_target()
         if target is None:
             raise PlatformInputUiError(f"第二步没有找到“{group_type}”题目导航入口")
         try:
             _debug_dom_snapshot(self, f"before-click:{group_type}")
             target.scroll_into_view_if_needed()
             target.click(timeout=self.action_timeout_ms)
-            self.page.wait_for_timeout(300)
             _debug_dom_snapshot(self, f"after-click:{group_type}")
         except Exception as exc:
             try:
                 target.click(force=True, timeout=self.action_timeout_ms)
-                self.page.wait_for_timeout(300)
                 _debug_dom_snapshot(self, f"after-force-click:{group_type}")
             except Exception as force_exc:
                 raise PlatformInputUiError(

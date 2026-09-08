@@ -8,6 +8,33 @@ from .page_shared import *  # noqa: F403,F401
 class PlatformInputAssetMixin:
     """Resolve existing controls and upload only through file inputs."""
 
+    @staticmethod
+    def _audio_label_pattern(label: str) -> re.Pattern[str]:
+        """Match a field label with the platform's required-field marker.
+
+        The exam page renders required labels as one text node plus a sibling
+        ``*`` node (for example ``原文音频`` + ``*``).  ``get_by_text(...,
+        exact=True)`` therefore misses the label even though it is visibly
+        present.  Keep the pattern narrow so an ancestor containing the whole
+        card is not accepted as the label itself.
+        """
+
+        return re.compile(rf"^\s*{re.escape(str(label))}\s*[*＊]?\s*$")
+
+    def _audio_label_nodes(self, scope: Any, label: str) -> Any:
+        """Return fresh label nodes, accepting an optional required marker."""
+
+        pattern = self._audio_label_pattern(label)
+        try:
+            nodes = scope.get_by_text(pattern)
+            if nodes.count():
+                return nodes
+        except Exception:
+            # Lightweight test shims and older Playwright wrappers may only
+            # implement the exact-text form.
+            pass
+        return scope.get_by_text(label, exact=True)
+
     def _audio_region_near_label(
         self,
         occurrence: int,
@@ -16,7 +43,7 @@ class PlatformInputAssetMixin:
     ) -> Any | None:
         labels = (label,) if label else _AUDIO_LABELS
         for label_text in labels:
-            nodes = self.page.get_by_text(label_text, exact=True)
+            nodes = self._audio_label_nodes(self.page, label_text)
             try:
                 count = nodes.count()
             except Exception:
@@ -73,7 +100,7 @@ class PlatformInputAssetMixin:
 
         labels = (label,) if label else _AUDIO_LABELS
         for label_text in labels:
-            nodes = self.page.get_by_text(label_text, exact=True)
+            nodes = self._audio_label_nodes(self.page, label_text)
             try:
                 count = nodes.count()
             except Exception:
@@ -112,7 +139,7 @@ class PlatformInputAssetMixin:
     def _audio_region_in_scope(self, scope: Any, label: str) -> Any | None:
         """在一张题卡内定位指定音频字段，避免同页字段序号串位。"""
 
-        nodes = scope.get_by_text(label, exact=True)
+        nodes = self._audio_label_nodes(scope, label)
         try:
             count = nodes.count()
         except Exception:
@@ -560,7 +587,6 @@ class PlatformInputAssetMixin:
             if heading is not None:
                 try:
                     heading.scroll_into_view_if_needed()
-                    self.page.wait_for_timeout(300)
                 except Exception:
                     pass
                 region = self._image_region(occurrence)

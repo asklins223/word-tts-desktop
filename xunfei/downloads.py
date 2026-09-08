@@ -374,18 +374,17 @@ class DownloadMixin:
         self._clear_editor(page, cancel_check=cancel_check)
         # 不再固定等待 1~2 秒。弹窗关闭动画和编辑器清空完成后立即继续，
         # 如果页面较慢则最多等待 2 秒，避免下一条输入撞上旧弹窗。
+        # 合并为一次 evaluate：原来每轮 2 次往返（编辑器文本+弹窗扫描）。
+        cleanup_probe = getattr(JS, "CHECK_CLEANUP_READY", None) or JS.CHECK_NO_VISIBLE_MODAL
         ready = _poll(
-            lambda: (
-                not (_safe_eval(page, JS.GET_EDITOR_TEXT) or "").strip()
-                and bool(_safe_eval(page, JS.CHECK_NO_VISIBLE_MODAL))
-            ),
+            lambda: True if _safe_eval(page, cleanup_probe) else None,
             timeout=2,
             interval=0.1,
             page=page,
             cancel_check=cancel_check,
         )
         if not ready:
-            self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
+            self._pause(page, 0.12, 0.04, cancel_check=cancel_check)
 
     def _recover_and_retry(self, page, cancel_check=None):
         """合成失败后恢复页面状态（重新加载编辑页，重置音色/参数记忆）。"""
@@ -495,11 +494,72 @@ class DownloadMixin:
         root = scope or page
         try:
             buttons = root.locator('button:visible')
+            # 逐个 inner_text/is_disabled 会产生 N*2 次往返，打包客户端在
+            # 轮询下载按钮时尤其明显。先一次性读回元数据，只对命中的
+            # 那个控件做一次真实 click。
+            batch_read = getattr(buttons, "evaluate_all", None)
+            if callable(batch_read):
+                try:
+                    metadata = batch_read(
+                        """els => els.map((el, index) => ({
+                            index,
+                            text: (el.innerText || '').trim(),
+                            disabled: !!el.disabled
+                                || el.getAttribute('aria-disabled') === 'true',
+                        }))"""
+                    )
+                except Exception:
+                    metadata = None
+                if isinstance(metadata, list) and metadata:
+                    candidates = []
+                    for item in metadata[:100]:
+                        _check_cancel_requested(cancel_check)
+                        if not isinstance(item, dict):
+                            continue
+                        try:
+                            text = re.sub(
+                                r"\s+", "", str(item.get("text") or "")
+                            ).strip()
+                        except Exception:
+                            continue
+                        if text != label or item.get("disabled"):
+                            continue
+                        try:
+                            index = int(item.get("index", -1))
+                        except (TypeError, ValueError):
+                            continue
+                        if index >= 0:
+                            candidates.append(index)
+                    for index in candidates:
+                        _check_cancel_requested(cancel_check)
+                        try:
+                            # 快照与点击之间页面可能重排（React 提交中）。
+                            # 只对命中的下标做一次新鲜文本回读，确认仍是
+                            # 目标按钮才点；对不上就走下面的新鲜全量兜底。
+                            fresh = re.sub(
+                                r"\s+",
+                                "",
+                                buttons.nth(index).inner_text(timeout=1000),
+                            ).strip()
+                            if fresh != label:
+                                break
+                            buttons.nth(index).click(force=True, timeout=5000)
+                            _check_cancel_requested(cancel_check)
+                            return True
+                        except XunfeiCancelled:
+                            raise
+                        except Exception:
+                            break
+                    else:
+                        # 快照里就没有命中，和老逻辑的全量扫描结论一致。
+                        if not candidates:
+                            return False
+                    # 有候选但新鲜回读对不上：快照已过期，用新鲜全量重扫。
             for index in range(min(buttons.count(), 100)):
                 _check_cancel_requested(cancel_check)
                 button = buttons.nth(index)
                 try:
-                    if re.sub(r"\\s+", "", button.inner_text(timeout=500)).strip() != label:
+                    if re.sub(r"\s+", "", button.inner_text(timeout=500)).strip() != label:
                         continue
                     if button.is_disabled():
                         continue

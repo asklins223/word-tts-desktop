@@ -17,7 +17,12 @@ class SubmissionTrackerMixin:
     """Capture temporary/formal works IDs without crossing task boundaries."""
 
     def _remember_api_request(self, request):
-        """记录网页真实请求中的认证信息，供列表/签名接口复用。"""
+        """记录网页真实请求中的认证信息，供列表/签名接口复用。
+
+        调用方 ``_on_response`` 已按提交/签名/video-api URL 过滤，本函数
+        不再按 URL 二次取舍，避免把未来改了路径的提交接口漏掉导致认证
+        刷新中断。这里只优化取值方式：优先用同步本地属性。
+        """
         try:
             payload = request.post_data_json
         except Exception:
@@ -30,10 +35,22 @@ class SubmissionTrackerMixin:
                         if key in base and base[key] not in (None, ""):
                             self._api_base[key] = base[key]
 
+        # ``request.headers`` 是同步本地属性，无需往返；只有缺失时才回退
+        # 到可能需要跨进程读取的 ``all_headers()``。
+        headers = None
         try:
-            headers = request.all_headers()
+            candidate = getattr(request, "headers", None)
+            if isinstance(candidate, dict) and candidate:
+                headers = candidate
         except Exception:
-            headers = {}
+            headers = None
+        if not isinstance(headers, dict):
+            try:
+                headers = request.all_headers()
+            except Exception:
+                headers = {}
+        if not isinstance(headers, dict):
+            return
         authorization = headers.get("authorization") or headers.get("Authorization")
         if authorization:
             with self._works_lock:
@@ -70,7 +87,16 @@ class SubmissionTrackerMixin:
         return None
 
     def _on_response(self, response):
-        url = response.url
+        url = str(getattr(response, "url", "") or "")
+        # 页面每次加载会产生几十个静态资源响应。无关 URL 直接返回，避免
+        # 每个响应都进入 Python 回调、解析 body 或读取请求头。
+        if (
+            "makeMultipleSpeakerWork" not in url
+            and "order_gen" not in url
+            and "get_work_sign_url" not in url
+            and "video-api" not in url
+        ):
+            return
         try:
             request = getattr(response, "request", None)
             is_submission_response = (

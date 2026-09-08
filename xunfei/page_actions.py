@@ -21,6 +21,7 @@ from .config import (
 from .errors import (
     XunfeiError,
     XunfeiCancelled,
+    XunfeiCompositeSelectionError,
     XunfeiSubmissionAmbiguous,
     _check_cancel_requested,
     _log,
@@ -48,15 +49,27 @@ _EDITOR_PARAGRAPH_TEXTS_JS = """
 _EXACT_BUTTON_INDICES_JS = """
 (buttons, expected) => {
     const wanted = String(expected || '').replace(/\\s+/g, '').trim();
-    const indices = [];
+    const matches = [];
     const limit = Math.min(buttons.length, 200);
     for (let index = 0; index < limit; index += 1) {
-        const label = String(buttons[index].innerText || '')
-            .replace(/\\s+/g, '')
-            .trim();
-        if (label === wanted) indices.push(index);
+        const button = buttons[index];
+        let label = '';
+        try {
+            label = String(button.innerText || '').replace(/\\s+/g, '').trim();
+        } catch (e) {
+            continue;
+        }
+        if (label !== wanted) continue;
+        let disabled = false;
+        try {
+            disabled = !!button.disabled
+                || button.getAttribute('aria-disabled') === 'true';
+        } catch (e) {
+            disabled = false;
+        }
+        matches.push({index, label, disabled});
     }
-    return indices;
+    return matches;
 }
 """
 
@@ -520,7 +533,7 @@ class PageActionsMixin:
         兜底，避免长文档被误判为空队列。
         """
         try:
-            state = _safe_eval(page, JS.READ_COMPOSITE_QUEUE_STATE)
+            state = cls._read_composite_queue_state(page)
             if isinstance(state, dict):
                 pending_count = state.get("pendingCount")
                 badge_count = state.get("badgeCount")
@@ -563,6 +576,20 @@ class PageActionsMixin:
             return 0
 
     @classmethod
+    def _read_composite_queue_state(cls, page):
+        """读取一次多段队列快照，供增量补选复用。
+
+        选区事件是异步落到讯飞页面的。调用方必须能区分“队列确实为空”
+        和“页面暂时读不到行号”，否则失败后只能把整批段落重新选一遍，
+        这正是长文档出现重复选择的来源。
+        """
+        try:
+            state = _safe_eval(page, JS.READ_COMPOSITE_QUEUE_STATE)
+        except Exception:
+            return None
+        return state if isinstance(state, dict) else None
+
+    @classmethod
     def _read_composite_queue_row_indices(cls, page):
         """回读多段队列对应的编辑器行号（页面提供时）。
 
@@ -571,7 +598,7 @@ class PageActionsMixin:
         对前一种形态做严格行号校验；无法完整映射时返回 ``None``，由调用
         方继续使用数量校验，不把页面版本差异误判成错误。
         """
-        state = _safe_eval(page, JS.READ_COMPOSITE_QUEUE_STATE)
+        state = cls._read_composite_queue_state(page)
         if not isinstance(state, dict):
             return None
         indices = state.get("rowIndices")
@@ -633,7 +660,8 @@ class PageActionsMixin:
         建立一行正文选区，再用带修饰键的真实鼠标 pointerup 加入队列；这
         比 Playwright 对每行执行 select_text 少一次编辑器节点往返。最终
         “使用”动作仍只执行一次。Range 路径只负责建立浏览器当前选区，若
-        页面版本没有正确接受它，调用方会清空队列并切回原生 select_text。
+        页面版本没有正确接受它，当前调用只会补选能够从页面行号回读出的
+        缺行，不会把已经成功加入队列的整批段落再选一遍。
         """
         _check_cancel_requested(cancel_check)
         try:
@@ -643,29 +671,150 @@ class PageActionsMixin:
                 if int(first) <= int(last)
             ]
         except (TypeError, ValueError):
-            raise XunfeiError("多人配音多段选区范围格式异常")
+            raise XunfeiCompositeSelectionError(
+                "多人配音多段选区范围格式异常",
+                can_fallback_to_native=False,
+            )
         if not normalized_ranges:
-            raise XunfeiError("多人配音多段选区没有可加入的目标区间")
-        if cls._read_composite_queue_count(page) != 0:
-            raise XunfeiError("多人配音多段选区开始前仍有上一组待处理选区")
+            raise XunfeiCompositeSelectionError(
+                "多人配音多段选区没有可加入的目标区间",
+                can_fallback_to_native=False,
+            )
         if any(
             first < 0 or last >= len(rows)
             for first, last in normalized_ranges
         ):
-            raise XunfeiError("多人配音多段选区索引越界")
+            raise XunfeiCompositeSelectionError(
+                "多人配音多段选区索引越界",
+                can_fallback_to_native=False,
+            )
         selected_indices = [
             row_index
             for first, last in normalized_ranges
             for row_index in range(first, last + 1)
         ]
         if len(set(selected_indices)) != len(selected_indices):
-            raise XunfeiError("多人配音多段选区包含重复行，拒绝重复套用音色")
+            raise XunfeiCompositeSelectionError(
+                "多人配音多段选区包含重复行，拒绝重复套用音色",
+                can_fallback_to_native=False,
+            )
+
+        expected_count = len(selected_indices)
+        expected_set = set(selected_indices)
+
+        def state_count(state):
+            """按页面实际徽标/装饰节点读取一个保守的队列数量。"""
+            if not isinstance(state, dict):
+                return None
+            pending_count = state.get("pendingCount")
+            badge_count = state.get("badgeCount")
+            if (
+                isinstance(pending_count, int)
+                and pending_count > 0
+                and isinstance(badge_count, int)
+                and badge_count > 0
+            ):
+                return max(pending_count, badge_count)
+            if isinstance(pending_count, int) and pending_count >= 0:
+                if pending_count > 0:
+                    return pending_count
+                if isinstance(badge_count, int) and badge_count > 0:
+                    return badge_count
+                return 0
+            if isinstance(badge_count, int) and badge_count > 0:
+                return badge_count
+            return None
+
+        def state_indices(state):
+            """只返回能够完整映射到页面段落的行号。"""
+            if not isinstance(state, dict):
+                return None
+            values = state.get("rowIndices")
+            if not isinstance(values, list):
+                return None
+            result = []
+            for value in values:
+                if not isinstance(value, int) or value < 0:
+                    return None
+                result.append(value)
+            # 一个 aggregate pending-range 可能只映射到起始段落；这种
+            # 行号不能拿来补选，否则会把已在 aggregate 中的段落重复加入。
+            badge_count = state.get("badgeCount")
+            if isinstance(badge_count, int) and badge_count > 0:
+                if len(result) != badge_count:
+                    return None
+            if len(set(result)) != len(result):
+                return None
+            return result
+
+        def queue_snapshot():
+            state = cls._read_composite_queue_state(page)
+            count = state_count(state)
+            if count is None:
+                # 页面旧版本没有完整快照时保留原有 DOM 兜底；只有数量
+                # 可读、且不需要增量补选时才会接受它。
+                count = cls._read_composite_queue_count(page)
+            return {
+                "count": count,
+                "indices": state_indices(state),
+                "state": state,
+            }
+
+        pointerup_attempted = False
+
+        def selection_failure(message, *, can_fallback_to_native=None):
+            if can_fallback_to_native is None:
+                can_fallback_to_native = not pointerup_attempted
+            return XunfeiCompositeSelectionError(
+                message,
+                can_fallback_to_native=can_fallback_to_native,
+            )
 
         paragraphs = page.locator(".ssml-editor p")
         if paragraphs.count() != len(rows):
-            raise XunfeiError(
-                "多人配音多段选区前段落数量已变化，拒绝继续操作"
+            raise selection_failure(
+                "多人配音多段选区前段落数量已变化，拒绝继续操作",
+                can_fallback_to_native=False,
             )
+
+        initial = queue_snapshot()
+        initial_count = initial["count"]
+        initial_indices = initial["indices"]
+        pointerup_attempted = bool(initial_count)
+        if initial_count:
+            # 已有队列时只能在“完整行号可回读”的情况下补选缺行。若页面
+            # 只给出一个 aggregate 节点，宁可停下，也不能盲目重选整组。
+            if initial_indices is None:
+                raise selection_failure(
+                    "多人配音多段选区已有不可完整定位的待处理队列，"
+                    f"期望 {expected_count} 行、实际 {initial_count} 行；"
+                    "即使数量相同也无法证明属于当前目标，为避免串行已停止",
+                    can_fallback_to_native=False,
+                )
+            initial_set = set(initial_indices)
+            if not initial_set.issubset(expected_set):
+                raise selection_failure(
+                    "多人配音多段选区已有目标范围之外的待处理行，"
+                    f"实际行 {[index + 1 for index in initial_indices[:20]]}；"
+                    "为避免串行已停止"
+                )
+            if initial_count > expected_count:
+                raise selection_failure(
+                    "多人配音多段选区已有待处理行超过本组目标，"
+                    f"期望 {expected_count} 行、实际 {initial_count} 行；"
+                    "为避免重复套用音色已停止"
+                )
+            remaining_indices = [
+                index for index in selected_indices if index not in initial_set
+            ]
+        else:
+            if initial_indices:
+                raise selection_failure(
+                    "多人配音多段选区数量与行号回读不一致，"
+                    "为避免重复选择已停止",
+                    can_fallback_to_native=False,
+                )
+            remaining_indices = list(selected_indices)
 
         def paragraph_text_target(paragraph):
             # 这里每次都会先由 _input_composite_text 清空编辑器，待标注
@@ -684,7 +833,7 @@ class PageActionsMixin:
                     row_index,
                 )
                 if not isinstance(selected, dict):
-                    raise XunfeiError(
+                    raise selection_failure(
                         f"多人配音快速选区失败：第 {row_index + 1} 行不可见"
                     )
                 expected_text = rows[row_index].get("text") or ""
@@ -692,16 +841,16 @@ class PageActionsMixin:
                     cls._normalize_selection_text(selected.get("text"))
                     != cls._normalize_selection_text(expected_text)
                 ):
-                    raise XunfeiError(
+                    raise selection_failure(
                         f"多人配音快速选区回读失败：第 {row_index + 1} 行正文不一致"
                     )
                 if selected.get("activeEditor") is not True:
-                    raise XunfeiError(
+                    raise selection_failure(
                         f"多人配音快速选区失败：第 {row_index + 1} 行编辑器未获得焦点"
                     )
                 box = selected.get("box")
                 if not isinstance(box, dict):
-                    raise XunfeiError(
+                    raise selection_failure(
                         f"多人配音快速选区失败：第 {row_index + 1} 行坐标不可用"
                     )
                 _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
@@ -739,7 +888,14 @@ class PageActionsMixin:
             # 原生 select_text 也必须回读正文。否则段落内容在页面异步
             # 重绘/排序后发生漂移时，仍会把一个“数量正确但正文错误”的
             # 选区加入讯飞队列。
-            cls._verify_editor_selection(page, [rows[row_index]["text"]])
+            try:
+                cls._verify_editor_selection(page, [rows[row_index]["text"]])
+            except XunfeiCancelled:
+                raise
+            except Exception as error:
+                raise selection_failure(
+                    f"多人配音原生选区回读失败：第 {row_index + 1} 行；{error}"
+                ) from error
             return target, box
 
         def enqueue_current_selection(target, box):
@@ -749,9 +905,18 @@ class PageActionsMixin:
             原生 select_text/Shift-click 完整选区，再只发送一次带修饰键的
             真实鼠标 pointerup，避免长句换行时依赖鼠标拖动终点。
             """
+            nonlocal pointerup_attempted
             _check_cancel_requested(cancel_check)
             if not box or box["width"] < 4 or box["height"] < 4:
-                raise XunfeiError("多人配音多段选区目标行不可见")
+                raise XunfeiCompositeSelectionError(
+                    "多人配音多段选区目标行不可见",
+                    can_fallback_to_native=not pointerup_attempted,
+                )
+            # From this point a pointerup may reach the page even if the
+            # browser call raises.  Never switch selection mechanisms after
+            # that boundary, because the queue may already contain a row.
+            pointerup_attempted = True
+
             def send_pointerup():
                 page.keyboard.down(_MULTI_SELECT_MODIFIER)
                 try:
@@ -767,58 +932,109 @@ class PageActionsMixin:
                 finally:
                     page.keyboard.up(_MULTI_SELECT_MODIFIER)
 
-            send_pointerup()
+            try:
+                send_pointerup()
+            except XunfeiCancelled:
+                raise
+            except Exception as error:
+                raise XunfeiCompositeSelectionError(
+                    "多人配音多段选区 pointerup 发送失败，"
+                    "为避免重复选择已停止",
+                    can_fallback_to_native=False,
+                ) from error
             # 不逐行轮询装饰节点：讯飞会把选区装饰异步批量渲染，逐行等
             # 反而会在打包客户端里累积数百毫秒。固定给事件 20ms 落地，
-            # 最终统一用 expected_count 回读；总数不符时由上层清空队列
-            # 后重试整组，避免以速度换取漏段。
+            # 最终统一用 expected_count 回读；总数不符时由下面的增量补选
+            # 处理，避免以速度换取漏段，也不清空后重选整组。
             _wait_with_cancel(page, 0.02, cancel_check=cancel_check)
             _check_cancel_requested(cancel_check)
 
-        # 每行加入同一队列；连续配置仍由上层合并为一个配置组，后续只
-        # 点击一次“使用”，不会退化成逐段打开音色面板。
-        for first, last in normalized_ranges:
-            for row_index in range(first, last + 1):
+        # 每行加入同一队列；如果讯飞异步事件漏记了某一行，只按完整行号
+        # 快照补选缺行，最多两轮，不清空、不切换到原生 select_text，因而
+        # 已成功的段落永远不会被整批重复选择。
+        repair_round = 0
+        while True:
+            for row_index in remaining_indices:
                 _check_cancel_requested(cancel_check)
                 target, box = select_exact_text(row_index)
                 enqueue_current_selection(target, box)
 
-        # 队列装饰按实际段落保留一个节点，徽标则可能按连续区间计数；
-        # 这里校验段落覆盖总数，避免漏掉任一目标行。
-        expected_count = sum(
-            last - first + 1 for first, last in normalized_ranges
-        )
-        expected_indices = selected_indices
-        def expected_queue_count():
-            current = cls._read_composite_queue_count(page)
-            return current if current == expected_count else None
+            def expected_queue_snapshot():
+                snapshot = queue_snapshot()
+                if snapshot["count"] != expected_count:
+                    return None
+                actual_indices = snapshot["indices"]
+                if (
+                    actual_indices is not None
+                    and sorted(actual_indices) != sorted(selected_indices)
+                ):
+                    return None
+                return snapshot
 
-        actual_count = _poll(
-            expected_queue_count,
-            timeout=3,
-            interval=0.1,
-            max_interval=0.4,
-            page=page,
-            cancel_check=cancel_check,
-        )
-        if actual_count != expected_count:
-            cls._clear_composite_queue(page, cancel_check=cancel_check)
-            raise XunfeiError(
-                "多人配音多段选区数量校验失败："
+            snapshot = _poll(
+                expected_queue_snapshot,
+                timeout=3,
+                interval=0.1,
+                max_interval=0.4,
+                page=page,
+                cancel_check=cancel_check,
+            )
+            if snapshot:
+                _log(
+                    f"[xunfei]   多人配音已加入多段选区："
+                    f"{len(normalized_ranges)} 个配置区间、{expected_count} 行"
+                    + (
+                        f"（增量补选 {repair_round} 轮）"
+                        if repair_round
+                        else ""
+                    )
+                )
+                return expected_count
+
+            snapshot = queue_snapshot()
+            actual_indices = snapshot["indices"]
+            if actual_indices is not None:
+                actual_set = set(actual_indices)
+                if actual_set.issubset(expected_set):
+                    missing = [
+                        index for index in selected_indices
+                        if index not in actual_set
+                    ]
+                    if not missing and snapshot["count"] == expected_count:
+                        return expected_count
+                    if missing and repair_round < 2:
+                        repair_round += 1
+                        _log(
+                            "[xunfei]   多人配音多段选区发现异步漏记，"
+                            f"只补选 {len(missing)} 行："
+                            f"{[index + 1 for index in missing[:20]]}"
+                        )
+                        remaining_indices = missing
+                        # 给页面最后一批 pending-range 一个短暂的稳定窗口；
+                        # 这不是整批重试，且能避免延迟事件与补选相撞。
+                        _wait_with_cancel(page, 0.12, cancel_check=cancel_check)
+                        continue
+
+            state = snapshot.get("state")
+            actual_count = snapshot.get("count")
+            missing_indices = [
+                index for index in selected_indices
+                if actual_indices is not None and index not in set(actual_indices)
+            ]
+            detail = (
                 f"期望 {expected_count} 个待选段，实际 {actual_count} 个"
             )
-        actual_indices = cls._read_composite_queue_row_indices(page)
-        if actual_indices is not None and sorted(actual_indices) != sorted(expected_indices):
-            cls._clear_composite_queue(page, cancel_check=cancel_check)
-            raise XunfeiError(
-                "多人配音多段选区行号校验失败："
-                f"期望 {expected_indices}，实际 {actual_indices}"
+            if actual_indices is not None and missing_indices:
+                detail += f"，缺失行 {[index + 1 for index in missing_indices[:20]]}"
+            if isinstance(state, dict):
+                detail += (
+                    f"（pending={state.get('pendingCount')}, "
+                    f"badge={state.get('badgeCount')}）"
+                )
+            raise selection_failure(
+                "多人配音多段选区数量/行号回读失败："
+                f"{detail}；为避免重复选择已停止"
             )
-        _log(
-            f"[xunfei]   多人配音已加入多段选区："
-            f"{len(normalized_ranges)} 个配置区间、{expected_count} 行"
-        )
-        return actual_count
 
     def _select_voice(self, page, voice_name, voice_key=None, cancel_check=None):
         """搜索并选择指定发音人，并以页面实际选中态校验缓存。"""
@@ -1244,7 +1460,37 @@ class PageActionsMixin:
                     )
                 except Exception:
                     snapshot = None
-                if isinstance(snapshot, list):
+                if isinstance(snapshot, list) and snapshot and all(
+                    isinstance(item, dict) for item in snapshot
+                ):
+                    # 批量脚本一次返回 label+disabled，把原来每个按钮
+                    # inner_text+is_disabled 两次往返降为一次新鲜文本回读。
+                    # 回读不可省：快照与点击之间对话框可能重排， stale 下标
+                    # 会指向完全无关的按钮；disabled 沿用快照值（翻转只会
+                    # 让 click 抛异常进重试，不会点错按钮）。
+                    for item in snapshot:
+                        try:
+                            index = int(item.get("index", -1))
+                        except (TypeError, ValueError):
+                            continue
+                        if index < 0:
+                            continue
+                        button = candidates.nth(index)
+                        try:
+                            label = re.sub(
+                                r"\s+", "", button.inner_text(timeout=500)
+                            ).strip()
+                        except Exception:
+                            continue
+                        if label != "确认合成":
+                            continue
+                        buttons.append((button, bool(item.get("disabled"))))
+                    if buttons:
+                        return buttons
+                    # The snapshot was valid, but every indexed locator was
+                    # stale after a dialog rerender. Leave candidate_indices
+                    # unset so the fresh full scan below can recover.
+                elif isinstance(snapshot, list):
                     candidate_indices = [
                         int(index)
                         for index in snapshot
@@ -1364,6 +1610,26 @@ class PageActionsMixin:
                 '.ant-modal:visible, .ant-modal-content:visible, [role="dialog"]:visible, '
                 '.el-dialog:visible, .el-message-box:visible'
             )
+            # 先一次性读回各弹窗文本，只对命中的索引做 locator 定位，
+            # 避免每个弹窗一次 inner_text 往返。
+            batch_read = getattr(dialogs, "evaluate_all", None)
+            if callable(batch_read):
+                try:
+                    texts = batch_read(
+                        "els => els.map(el => (el.innerText || el.textContent || ''))"
+                    )
+                except Exception:
+                    texts = None
+                if isinstance(texts, list) and texts:
+                    wanted = re.sub(r"\s+", "", str(text_fragment or ""))
+                    for index, raw in enumerate(texts[:20]):
+                        try:
+                            text = re.sub(r"\s+", "", str(raw or ""))
+                        except Exception:
+                            continue
+                        if wanted and wanted in text:
+                            return dialogs.nth(index)
+                    return None
             for index in range(min(dialogs.count(), 20)):
                 dialog = dialogs.nth(index)
                 try:
@@ -1486,7 +1752,7 @@ class PageActionsMixin:
                         return None
                     if clicked == "clicked":
                         js_click_attempted = True
-                        self._pause(page, 0.18, 0.05, cancel_check=cancel_check)
+                        self._pause(page, 0.10, 0.03, cancel_check=cancel_check)
                         return None
                 # JS click 没有让 React 受控状态变化时，降低频率再用
                 # locator 点击真实 button[role=switch]，避免连续点同一开关。
@@ -1494,7 +1760,7 @@ class PageActionsMixin:
                 if now - last_locator_attempt >= 0.65:
                     last_locator_attempt = now
                     if self._click_ai_switch_with_locator(page):
-                        self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
+                        self._pause(page, 0.12, 0.04, cancel_check=cancel_check)
                 return None
 
             # switch 尚未挂载时也给 locator 一次机会；页面继续异步渲染时，
@@ -1503,7 +1769,7 @@ class PageActionsMixin:
             if now - last_locator_attempt >= 0.65:
                 last_locator_attempt = now
                 if self._click_ai_switch_with_locator(page):
-                    self._pause(page, 0.25, 0.08, cancel_check=cancel_check)
+                    self._pause(page, 0.12, 0.04, cancel_check=cancel_check)
             return None
 
         result = _poll(
@@ -1559,7 +1825,7 @@ class PageActionsMixin:
             if snapshot:
                 _log(f"[xunfei]   AI 弹窗未勾选‘不再提示’，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return False
-        self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
+        self._pause(page, 0.15, 0.05, cancel_check=cancel_check)
 
         if ensure_switch:
             switch_state = self._ensure_ai_switch_off(
@@ -1577,7 +1843,7 @@ class PageActionsMixin:
                 if snapshot:
                     _log(f"[xunfei]   AI 标识开关未确认关闭，当前弹窗: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
                 return False
-            self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
+            self._pause(page, 0.15, 0.05, cancel_check=cancel_check)
 
         confirmed = bool(_poll(
             lambda: _safe_eval(page, JS.CLICK_AI_CONFIRM),
@@ -1614,7 +1880,7 @@ class PageActionsMixin:
             if snapshot:
                 _log(f"[xunfei]   AI 标识确认后弹窗仍存在: {json.dumps(snapshot, ensure_ascii=False)[:1800]}")
             return False
-        self._pause(page, 0.5, 0.2, cancel_check=cancel_check)
+        self._pause(page, 0.20, 0.08, cancel_check=cancel_check)
         return True
 
     def _wait_order_or_error(self, page, timeout, cancel_check=None):
@@ -1690,7 +1956,7 @@ class PageActionsMixin:
                         + json.dumps(snapshot, ensure_ascii=False)[:1800]
                     )
                 return False
-            self._pause(page, 0.35, 0.15, cancel_check=cancel_check)
+            self._pause(page, 0.15, 0.05, cancel_check=cancel_check)
             return True
 
         def handle_ai_flag(ensure_switch=False):

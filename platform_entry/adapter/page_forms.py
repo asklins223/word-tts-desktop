@@ -102,9 +102,6 @@ class PlatformInputFormMixin:
         text = str(value)
 
         try:
-            input_locator.scroll_into_view_if_needed(timeout=self.action_timeout_ms)
-            input_locator.click(timeout=self.action_timeout_ms)
-            input_locator.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
             # ``fill`` dispatches the native input event that the Vue model
             # listens for, while still preserving an internal space such as
             # the one in “Starter Unit1”.  Some older controls additionally
@@ -112,14 +109,18 @@ class PlatformInputFormMixin:
             # fallback instead of being the only way to set the value.
             input_locator.fill(text, timeout=self.action_timeout_ms)
             input_locator.press("Tab", timeout=self.action_timeout_ms)
-            actual = input_locator.input_value(timeout=self.action_timeout_ms)
+            actual = input_locator.input_value(
+                timeout=min(self.action_timeout_ms, 2_000)
+            )
             if _comparable_input_text(actual) != _comparable_input_text(text):
                 input_locator.click(timeout=self.action_timeout_ms)
                 input_locator.press("ControlOrMeta+A", timeout=self.action_timeout_ms)
                 input_locator.press("Backspace", timeout=self.action_timeout_ms)
                 input_locator.type(text, timeout=self.action_timeout_ms)
                 input_locator.press("Tab", timeout=self.action_timeout_ms)
-                actual = input_locator.input_value(timeout=self.action_timeout_ms)
+                actual = input_locator.input_value(
+                    timeout=min(self.action_timeout_ms, 2_000)
+                )
         except Exception as exc:
             raise PlatformInputUiError(f"填写“{label}”失败: {exc}") from exc
         if _comparable_input_text(actual) != _comparable_input_text(text):
@@ -127,7 +128,7 @@ class PlatformInputFormMixin:
                 f"填写“{label}”后回读不一致：期望 {text!r}，实际为 {actual!r}"
             )
 
-    def _fill_input(self, label: str, value: Any, *, placeholder: str = "") -> None:
+    def _find_input(self, label: str, *, placeholder: str = "") -> Any | None:
         input_locator = None
         if placeholder:
             input_locator = self._first_visible(
@@ -152,6 +153,10 @@ class PlatformInputFormMixin:
                     )
         if input_locator is None:
             input_locator = self._input_near_label(label)
+        return input_locator
+
+    def _fill_input(self, label: str, value: Any, *, placeholder: str = "") -> None:
+        input_locator = self._find_input(label, placeholder=placeholder)
         if input_locator is None:
             raise PlatformInputUiError(f"页面上没有“{label}”输入框")
 
@@ -160,11 +165,29 @@ class PlatformInputFormMixin:
         self._type_input_value(input_locator, value, label)
 
     def ensure_paper_title(self) -> None:
-        """Re-assert the title after dependent form controls have rerendered."""
+        """Fill the title once, then repair it only if a rerender cleared it."""
+
+        expected = self.spec.paper["title"]
+        try:
+            input_locator = self._find_input(
+                "试卷名称",
+                placeholder=PAPER_TITLE_PLACEHOLDER,
+            )
+            if input_locator is not None:
+                actual = input_locator.input_value(
+                    timeout=min(self.action_timeout_ms, 2_000)
+                )
+                if _comparable_input_text(actual) == _comparable_input_text(expected):
+                    return
+        except Exception:
+            # The page may be between two Vue renders.  _fill_input() will
+            # acquire a fresh locator and report a real failure if it remains
+            # unavailable.
+            pass
 
         self._fill_input(
             "试卷名称",
-            self.spec.paper["title"],
+            expected,
             placeholder=PAPER_TITLE_PLACEHOLDER,
         )
 
@@ -226,7 +249,9 @@ class PlatformInputFormMixin:
                         matched = True
                         option = options.nth(index)
                         try:
-                            if _normalise_text(option.inner_text()) == wanted:
+                            if _normalise_text(
+                                _fast_inner_text(option, timeout_ms=300)
+                            ) == wanted:
                                 return option
                         except Exception:
                             continue
@@ -239,7 +264,9 @@ class PlatformInputFormMixin:
             for index in range(count):
                 try:
                     option = options.nth(index)
-                    if _normalise_text(option.inner_text()) == wanted:
+                    if _normalise_text(
+                        _fast_inner_text(option, timeout_ms=300)
+                    ) == wanted:
                         return option
                 except Exception:
                     continue
@@ -439,52 +466,97 @@ class PlatformInputFormMixin:
         current = self._field_component(title)
         if current is not None:
             try:
-                if _normalise_text(name) in _normalise_text(current.inner_text()):
+                if _normalise_text(name) in _normalise_text(
+                    _fast_inner_text(current, timeout_ms=300)
+                ):
                     return
             except Exception:
                 pass
-        component = self._open_select(title)
-        self._search_select(component, name)
-        # Element Plus 的下拉层先挂载、后异步渲染选项；不能在 click 后
-        # 立即读取，否则会把尚未出现的合法选项误判为不存在。
-        self._wait_until(
-            lambda: self._find_dropdown_option(name) is not None,
-            f"等待“{title}”下拉选项“{name}”超时",
-            timeout_seconds=10,
-            interval_ms=100,
-        )
-        option = self._find_dropdown_option(name)
-        if option is None:
-            raise PlatformInputUiError(f"“{title}”下拉框中没有选项“{name}”")
-        try:
-            option.click(timeout=self.action_timeout_ms)
-        except Exception as exc:
-            # Element Plus 的 teleport 下拉层在表单布局变化时可能持续触发
-            # “element is not stable”。先确认是否已经选中；如果没有，
-            # 用页面控件对应的 force click 完成同一个用户点击动作。
-            try:
-                current = self._field_component(title)
-                if current is not None and _normalise_text(name) in _normalise_text(
-                    current.inner_text()
-                ):
-                    return
-                option.click(force=True, timeout=self.action_timeout_ms)
-            except Exception as force_exc:
-                raise PlatformInputUiError(
-                    f"选择“{title}={name}”失败: {force_exc}"
-                ) from exc
-
         def selected() -> bool:
-            component = self._field_component(title)
-            return component is not None and _normalise_text(name) in _normalise_text(
-                component.inner_text()
-            )
+            try:
+                component = self._field_component(title)
+                return component is not None and _normalise_text(name) in _normalise_text(
+                    _fast_inner_text(component, timeout_ms=300)
+                )
+            except Exception:
+                return False
 
-        self._wait_until(
-            selected,
-            f"选择“{title}={name}”后页面没有显示已选值",
-            timeout_seconds=10,
-        )
+        # Vue/Element Plus may replace the teleported option list while
+        # Playwright is waiting for a stable node.  The default 15s action
+        # timeout then turns one transient detach into a 30s apparent hang
+        # (normal click + force click).  Keep the initial option-load wait,
+        # but make each click bounded and reacquire the whole list on retry.
+        action_timeout_ms = int(getattr(self, "action_timeout_ms", 15_000))
+        click_timeout_ms = min(max(action_timeout_ms, 1_000), 4_000)
+        last_error: Exception | None = None
+        for attempt in range(3):
+            if selected():
+                return
+            try:
+                if attempt:
+                    try:
+                        self.page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                component = self._open_select(title)
+                self._search_select(component, name)
+                # Element Plus 的下拉层先挂载、后异步渲染选项；不能在 click 后
+                # 立即读取，否则会把尚未出现的合法选项误判为不存在。
+                self._wait_until(
+                    lambda: self._find_dropdown_option(name) is not None,
+                    f"等待“{title}”下拉选项“{name}”超时",
+                    timeout_seconds=10 if attempt == 0 else 4,
+                    interval_ms=100,
+                )
+                option = self._find_dropdown_option(name)
+                if option is None:
+                    raise PlatformInputUiError(
+                        f"“{title}”下拉框中没有选项“{name}”"
+                    )
+                try:
+                    option.click(timeout=click_timeout_ms)
+                except Exception as exc:
+                    # A detached click may already have reached Vue.  Check
+                    # the fresh field before retrying, so a successful click
+                    # is never turned into a second toggle.
+                    last_error = exc
+                    if selected():
+                        return
+                    try:
+                        option.click(force=True, timeout=click_timeout_ms)
+                        last_error = None
+                    except Exception as force_exc:
+                        last_error = force_exc
+                    if selected():
+                        return
+                    if last_error is not None:
+                        raise PlatformInputUiError(
+                            f"选择“{title}={name}”失败: {last_error}"
+                        ) from last_error
+                self._wait_until(
+                    selected,
+                    f"选择“{title}={name}”后页面没有显示已选值",
+                    timeout_seconds=10,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if selected():
+                    return
+                if attempt < 2:
+                    try:
+                        self.page.wait_for_timeout(100 * (attempt + 1))
+                    except Exception:
+                        pass
+                    continue
+
+        if isinstance(last_error, PlatformInputUiError):
+            raise last_error
+        if last_error is not None:
+            raise PlatformInputUiError(
+                f"选择“{title}={name}”失败: {last_error}"
+            ) from last_error
+        raise PlatformInputUiError(f"选择“{title}={name}”失败")
 
     def _select_many(self, title: str, choices: Sequence[Mapping[str, Any]]) -> None:
         wanted_names: list[str] = []
@@ -570,8 +642,8 @@ class PlatformInputFormMixin:
 
     def fill_base_form(self) -> None:
         paper = self.spec.paper
-        # 切换试卷分类会重建后续表单并清空已经填写的名称，因此分类
-        # 必须先选；之后再按页面顺序填写名称和地区等字段。
+        # 试卷分类会触发表单重建，先完成这个会清空名称的依赖选择；
+        # 随后立即填写名称，避免名称在所有试卷属性之后才出现。
         if self.existing_paper_id:
             current_category = self._field_component("试卷分类")
             if current_category is not None:
@@ -590,6 +662,7 @@ class PlatformInputFormMixin:
             "试卷分类",
             {"name": self.spec.paper_category},
         )
+        self.ensure_paper_title()
         self._select_one("省份", paper["province"])
         self._select_one("城市", paper["city"])
         self._select_many("区/县", paper["districts"])
@@ -602,8 +675,8 @@ class PlatformInputFormMixin:
         if paper.get("duration") is not None:
             self._fill_input("大约答题时长（分钟）", paper["duration"])
         # Province/city/district dependencies can rebuild the form after the
-        # category is selected. Fill the title last so the final visible
-        # base-form state contains the exact configured name.
+        # title was entered. Keep the final check for that specific case, but
+        # do not type the same title twice when the page preserved it.
         self.ensure_paper_title()
 
     def _search_template_if_needed(self) -> None:
@@ -666,6 +739,13 @@ class PlatformInputFormMixin:
 
         def card_is_selected() -> bool:
             """Read the page's actual radio/card selection state."""
+
+            # Template cards are Vue-owned nodes.  Searching or selecting a
+            # card can replace the whole list, so never inspect the locator
+            # captured before the last render.
+            card = find_card()
+            if card is None:
+                return False
 
             def compact_state(value: Any) -> str:
                 # The platform has emitted both ``is-selected`` and
@@ -895,45 +975,90 @@ class PlatformInputFormMixin:
             # control.  Clicking only ``.cardContent`` can focus the card
             # without updating Vue's selected-template state, which leaves
             # the first-step page looking unchanged (the reported failure).
-            control = None
-            for selector in (
-                ".el-radio__inner:visible",
-                ".el-radio__input:visible",
-                '[role="radio"]:visible',
-                'input[type="radio"]:visible',
-                "label:visible",
-            ):
-                control = self._first_visible(card.locator(selector))
-                if control is not None:
-                    break
-            if control is None:
-                inputs = card.locator('input[type="radio"]')
+            last_error: Exception | None = None
+            for attempt in range(3):
+                # Search again immediately before scrolling/clicking.  A
+                # locator can be valid during find_card() and detached by the
+                # time Playwright waits for it to become stable.
+                current_card = find_card()
+                if current_card is None:
+                    last_error = PlatformInputUiError(
+                        f"没有找到题型模板“{self.spec.template_name}”"
+                    )
+                else:
+                    try:
+                        control = None
+                        for selector in (
+                            ".el-radio__inner:visible",
+                            ".el-radio__input:visible",
+                            '[role="radio"]:visible',
+                            'input[type="radio"]:visible',
+                            "label:visible",
+                        ):
+                            control = self._first_visible(
+                                current_card.locator(selector)
+                            )
+                            if control is not None:
+                                break
+                        if control is None:
+                            inputs = current_card.locator('input[type="radio"]')
+                            try:
+                                if inputs.count() > 0:
+                                    control = inputs.first
+                            except Exception:
+                                control = None
+                        control = control or current_card
+                        control.scroll_into_view_if_needed()
+                        check = getattr(control, "check", None)
+                        if callable(check):
+                            try:
+                                check(force=True, timeout=self.action_timeout_ms)
+                                return
+                            except Exception:
+                                # Some page versions expose a styled radio
+                                # wrapper rather than a checkable input; fall
+                                # through to the normal UI click.
+                                pass
+                        try:
+                            control.click(timeout=self.action_timeout_ms)
+                        except Exception as exc:
+                            try:
+                                control.click(
+                                    force=True,
+                                    timeout=self.action_timeout_ms,
+                                )
+                            except Exception as force_exc:
+                                raise PlatformInputUiError(
+                                    f"选择题型模板“{self.spec.template_name}”失败: "
+                                    f"{force_exc}"
+                                ) from exc
+                        return
+                    except Exception as exc:
+                        last_error = exc
+
+                # A click may have taken effect just as the old node detached.
+                # Read the fresh card before attempting another click, which
+                # prevents duplicate selection events.
                 try:
-                    if inputs.count() > 0:
-                        control = inputs.first
+                    if card_is_selected():
+                        return
                 except Exception:
-                    control = None
-            control = control or card
-            control.scroll_into_view_if_needed()
-            check = getattr(control, "check", None)
-            if callable(check):
-                try:
-                    check(force=True, timeout=self.action_timeout_ms)
-                    return
-                except Exception:
-                    # Some page versions expose a styled radio wrapper rather
-                    # than a checkable input; fall through to the normal UI
-                    # click for the same visible control.
                     pass
-            try:
-                control.click(timeout=self.action_timeout_ms)
-            except Exception as exc:
-                try:
-                    control.click(force=True, timeout=self.action_timeout_ms)
-                except Exception as force_exc:
-                    raise PlatformInputUiError(
-                        f"选择题型模板“{self.spec.template_name}”失败: {force_exc}"
-                    ) from exc
+                if attempt < 2:
+                    try:
+                        self.page.wait_for_timeout(100 * (attempt + 1))
+                    except Exception:
+                        # Lightweight drivers may not implement waits; the
+                        # next fresh locator attempt is still useful.
+                        pass
+
+            if isinstance(last_error, PlatformInputUiError):
+                raise last_error
+            if last_error is not None:
+                raise last_error
+            raise PlatformInputUiError(
+                f"选择题型模板“{self.spec.template_name}”失败"
+            )
 
         try:
             click_template_control()

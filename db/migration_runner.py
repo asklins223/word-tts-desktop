@@ -689,7 +689,11 @@ def backup_database(path: Path, *, destination: Path | None = None) -> Path | No
     target.parent.mkdir(parents=True, exist_ok=True)
     if target == path:
         raise MigrationError("migration backup destination must differ from database")
-    temporary = Path(tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))[1])
+    # mkstemp 返回的 OS 句柄必须立即关闭：只取路径会泄漏句柄，在
+    # Windows 上还会占用临时文件，导致后续 replace/unlink 失败。
+    backup_fd, backup_tmp = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    os.close(backup_fd)
+    temporary = Path(backup_tmp)
     try:
         source = _readonly_connection(path)
         backup = sqlite3.connect(str(temporary), timeout=5, isolation_level=None)
@@ -699,7 +703,9 @@ def backup_database(path: Path, *, destination: Path | None = None) -> Path | No
         finally:
             backup.close()
             source.close()
-        with temporary.open("rb") as handle:
+        # Windows 的 fsync(_commit) 不接受只读句柄，会报 EBADF；macOS/Linux
+        # 上只读 fsync 合法。用 rb+ 做落盘确认，各平台行为一致。
+        with temporary.open("rb+") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary, target)
         try:
@@ -755,10 +761,12 @@ def prepare_migration_backup(
     journal = path.parent / "side_effect_intents.jsonl"
     if journal.exists():
         journal_backup = Path(f"{backup_path}.side_effect_intents.jsonl")
-        temporary = Path(tempfile.mkstemp(prefix=f".{journal_backup.name}.", suffix=".tmp", dir=str(journal_backup.parent))[1])
+        journal_fd, journal_tmp = tempfile.mkstemp(prefix=f".{journal_backup.name}.", suffix=".tmp", dir=str(journal_backup.parent))
+        os.close(journal_fd)
+        temporary = Path(journal_tmp)
         try:
             shutil.copyfile(journal, temporary)
-            with temporary.open("rb") as handle:
+            with temporary.open("rb+") as handle:
                 os.fsync(handle.fileno())
             os.replace(temporary, journal_backup)
             try:

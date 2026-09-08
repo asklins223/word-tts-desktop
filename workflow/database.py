@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import sqlite3
 import threading
@@ -123,29 +124,49 @@ class WorkflowDatabase:
                 return False
             lock_path = self.path.parent / ".workflow.lock"
             lock_file = lock_path.open("a+b", buffering=0)
-            lock_file.seek(0)
-            if lock_file.read(1) == b"":
-                lock_file.seek(0)
-                lock_file.write(b"\0")
-                lock_file.flush()
-            lock_file.seek(0)
+            # Windows 的 msvcrt 锁是强制锁：同进程第二个句柄对已加锁区域
+            # 加锁可能“成功”，但随后的读会被直接拒绝（EACCES），而不是像
+            # POSIX 那样读成功、加锁时才失败。所以加锁和标记字节读写都要
+            # 把 EACCES 归一为“目录被占用”，其它 OSError 保持原样抛出。
             try:
-                import fcntl
-
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                backend = "fcntl"
-            except ImportError:  # pragma: no cover - exercised on Windows.
                 try:
-                    import msvcrt
+                    import fcntl
 
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                    backend = "msvcrt"
-                except (ImportError, OSError) as exc:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    backend = "fcntl"
+                except ImportError:
+                    try:
+                        import msvcrt
+
+                        try:
+                            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                        except OSError as lock_exc:
+                            if lock_exc.errno in (errno.EACCES, errno.EPERM):
+                                raise RuntimeError("workflow data directory is already in use") from lock_exc
+                            raise RuntimeError("workflow data directory cannot be locked on this platform") from lock_exc
+                        backend = "msvcrt"
+                    except ImportError as exc:
+                        raise RuntimeError("workflow data directory cannot be locked on this platform") from exc
+                except (BlockingIOError, OSError) as exc:
+                    raise RuntimeError("workflow data directory is already in use") from exc
+                lock_file.seek(0)
+                try:
+                    marker = lock_file.read(1)
+                except OSError as exc:
+                    if exc.errno in (errno.EACCES, errno.EPERM):
+                        raise RuntimeError("workflow data directory is already in use") from exc
+                    raise
+                if marker == b"":
+                    lock_file.seek(0)
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+            except BaseException:
+                try:
                     lock_file.close()
-                    raise RuntimeError("workflow data directory cannot be locked on this platform") from exc
-            except (BlockingIOError, OSError) as exc:
-                lock_file.close()
-                raise RuntimeError("workflow data directory is already in use") from exc
+                except OSError:
+                    pass
+                raise
             try:
                 os.chmod(lock_path, 0o600)
             except OSError:

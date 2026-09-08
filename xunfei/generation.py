@@ -14,6 +14,7 @@ import uuid
 from .config import OUTPUT_DIR, PARAM_DEFAULT, clamp_param
 from .errors import (
     XunfeiCancelled,
+    XunfeiCompositeSelectionError,
     XunfeiError,
     XunfeiLoginRequired,
     XunfeiQuotaExceeded,
@@ -174,6 +175,7 @@ class GenerationMixin:
                 XunfeiLoginRequired,
                 XunfeiSubmissionAmbiguous,
                 XunfeiCancelled,
+                XunfeiCompositeSelectionError,
             ):
                 raise
             except XunfeiRateLimited as error:

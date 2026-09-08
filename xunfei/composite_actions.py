@@ -18,6 +18,7 @@ from .config import (
 )
 from .errors import (
     XunfeiCancelled,
+    XunfeiCompositeSelectionError,
     XunfeiError,
     _check_cancel_requested,
     _log,
@@ -173,36 +174,48 @@ class CompositeActionsMixin:
                 raise
             except Exception:
                 pass
-        scope = cls._composite_ui_scope(page, cancel_check=cancel_check)
-        controls = scope.locator(
-            'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
-            '.cursor-pointer:visible'
-        )
-        try:
-            # 逐个 inner_text/is_disabled 会产生大量 Playwright ↔ 浏览器
-            # 往返，打包客户端里尤其明显。这里只把当前可见控件的必要
-            # 元数据一次性读回，最终 click 仍然使用真实页面控件。
-            metadata = controls.evaluate_all(
-                """els => els.map((el, index) => ({
-                    index,
-                    text: (el.innerText || '').trim(),
-                    disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
-                }))"""
-            )
+        # React 会在搜索结果、参数表和工具栏之间切换时重挂载控件。不要
+        # 把一次 metadata 扫描得到的 nth 位置当成稳定引用；点击失败后
+        # 重新取得 scope、重新扫描并再次定位当前 DOM。每次 click 使用较
+        # 短超时，避免一个失效位置把整批任务卡住 5 秒。
+        for attempt in range(3):
             _check_cancel_requested(cancel_check)
-            for item in metadata[:200]:
+            scope = cls._composite_ui_scope(page, cancel_check=cancel_check)
+            controls = scope.locator(
+                'button:visible, [role="button"]:visible, [data-speaker-id]:visible, '
+                '.cursor-pointer:visible'
+            )
+            try:
+                # 逐个 inner_text/is_disabled 会产生大量 Playwright ↔ 浏览器
+                # 往返，打包客户端里尤其明显。这里只把当前可见控件的必要
+                # 元数据一次性读回，最终 click 仍然使用真实页面控件。
+                metadata = controls.evaluate_all(
+                    """els => els.map((el, index) => ({
+                        index,
+                        text: (el.innerText || '').trim(),
+                        disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+                    }))"""
+                )
                 _check_cancel_requested(cancel_check)
-                if cls._normalize_composite_ui_text(item.get("text")) != expected:
-                    continue
-                if item.get("disabled"):
-                    continue
-                controls.nth(int(item["index"])).click(timeout=5000)
+                target_index = None
+                for item in metadata[:200]:
+                    _check_cancel_requested(cancel_check)
+                    if cls._normalize_composite_ui_text(item.get("text")) != expected:
+                        continue
+                    if item.get("disabled"):
+                        continue
+                    target_index = int(item["index"])
+                    break
+                if target_index is None:
+                    return False
+                controls.nth(target_index).click(timeout=1500)
                 _check_cancel_requested(cancel_check)
                 return True
-        except XunfeiCancelled:
-            raise
-        except Exception:
-            pass
+            except XunfeiCancelled:
+                raise
+            except Exception:
+                if attempt < 2:
+                    _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
         return False
 
     @staticmethod
@@ -493,6 +506,61 @@ class CompositeActionsMixin:
                 return True
         return False
 
+    @staticmethod
+    def _composite_css_quoted(value):
+        """Return a CSS attribute string that is safe for a live locator."""
+        escaped = str(value or "")
+        escaped = escaped.replace("\\", "\\\\")
+        escaped = escaped.replace('"', '\\"')
+        escaped = escaped.replace("\r", "\\D ").replace("\n", "\\A ")
+        return f'"{escaped}"'
+
+    @classmethod
+    def _composite_voice_card_locator(cls, scope, item, voice_name):
+        """Build a semantic, re-resolvable locator for a voice card.
+
+        The old implementation returned ``controls.nth(index)`` after one DOM
+        snapshot. A search result can be inserted or removed before the caller
+        clicks it, making that index point at a different node or at no node at
+        all. IDs/data attributes and the card image alt text survive that
+        re-render, so use them as the locator anchor instead.
+        """
+        element_id = str(item.get("elementId") or "").strip()
+        if element_id:
+            return scope.locator(
+                f"[id={cls._composite_css_quoted(element_id)}]:visible"
+            ).first
+
+        speaker_id = str(item.get("dataSpeakerId") or "").strip()
+        if speaker_id:
+            return scope.locator(
+                f"[data-speaker-id={cls._composite_css_quoted(speaker_id)}]:visible"
+            ).first
+
+        alt = str(item.get("alt") or "").strip()
+        if alt:
+            image = scope.locator(
+                f"img[alt={cls._composite_css_quoted(alt)}]:visible"
+            ).first
+            # The provider currently renders search results as a clickable
+            # div.w-full; older versions render them as a button. Select the
+            # nearest real card ancestor without invoking page-side JS click.
+            return image.locator(
+                "xpath=ancestor-or-self::*[self::button or @role='button' "
+                "or @data-speaker-id or "
+                "contains(concat(' ', normalize-space(@class), ' '), "
+                "' cursor-pointer ') or "
+                "contains(concat(' ', normalize-space(@class), ' '), "
+                "' w-full ')][1]"
+            )
+
+        # Kept as a compatibility fallback for a provider card without an
+        # image/identifier. This is still a live locator and is re-resolved at
+        # action time; it is not a frozen list index.
+        return scope.locator(".cursor-pointer:visible").filter(
+            has_text=str(voice_name or "")
+        ).first
+
     @classmethod
     def _find_composite_voice_card(cls, page, voice_name, cancel_check=None):
         """寻找当前搜索结果中唯一的目标音色卡片。
@@ -520,6 +588,8 @@ class CompositeActionsMixin:
                     disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
                     alt: el.querySelector('img[alt]')?.getAttribute('alt') || '',
                     label: el.querySelector('p, strong, [class*="name"], [class*="title"]')?.textContent?.trim() || '',
+                    elementId: el.id || '',
+                    dataSpeakerId: el.getAttribute('data-speaker-id') || '',
                 }))"""
             )
         except XunfeiCancelled:
@@ -545,16 +615,26 @@ class CompositeActionsMixin:
                 continue
             label = str(item.get("label") or "")
             candidates.append({
+                "index": index,
                 "tag": str(item.get("tagName") or "").upper(),
                 "className": str(item.get("className") or ""),
-                "control": controls.nth(index),
                 "text": text,
                 "alt": alt,
                 "label": label,
+                "elementId": str(item.get("elementId") or ""),
+                "dataSpeakerId": str(item.get("dataSpeakerId") or ""),
             })
 
         if not candidates:
             return None
+
+        def _locator(item):
+            try:
+                return cls._composite_voice_card_locator(scope, item, voice_name)
+            except Exception:
+                # Old page versions may reject one of the semantic selectors;
+                # keep the old locator only as a final compatibility fallback.
+                return controls.nth(int(item["index"]))
 
         # 讯飞当前页面的搜索结果是 div.w-full 卡片，最近使用列表是
         # button。保留同名情况下的搜索结果优先级，同时兼容未来把结果
@@ -565,7 +645,7 @@ class CompositeActionsMixin:
         ]
         pool = preferred or candidates
         if len(pool) == 1:
-            return pool[0]["control"]
+            return _locator(pool[0])
 
         # 多候选时优先按主名称精确匹配，避免 Amanda 误命中 Amanda-教育
         def _norm(value):
@@ -596,12 +676,12 @@ class CompositeActionsMixin:
                 continue
 
         if len(exact) == 1:
-            return exact[0]["control"]
+            return _locator(exact[0])
         if len(exact) > 1:
             # 多个精确同名（极少见的重复 DOM），优先取第一个 w-full 结果
             # 避免返回 None 导致上层长时间轮询 5 秒
             _log(f"[xunfei]   多人配音音色精确候选仍不唯一: {voice_name}（{len(exact)} 项），取首个")
-            return exact[0]["control"]
+            return _locator(exact[0])
 
         # 无精确匹配时，按主标签长度启发式选择最接近的候选，避免长时间轮询
         # 例如搜索 Amanda 时，Amanda(6) 比 Amanda-教育(10) 更短
@@ -617,14 +697,45 @@ class CompositeActionsMixin:
                 f"[xunfei]   多人配音音色候选按长度启发式选择: {voice_name} -> "
                 f"{pool_sorted[0].get('label') or pool_sorted[0].get('alt') or pool_sorted[0].get('text')[:20]!r}"
             )
-            return pool_sorted[0]["control"]
+            return _locator(pool_sorted[0])
 
         # 仍无法唯一确定时（多个候选长度相同等极少见情况），为避免上层
         # 轮询 5 秒后才重试，直接取首个并记录，避免用户感知到 2-4 秒停顿
         _log(
             f"[xunfei]   多人配音音色候选仍不唯一但已无法按长度区分: {voice_name}（{len(pool)} 项），取首个"
         )
-        return pool_sorted[0]["control"]
+        return _locator(pool_sorted[0])
+
+    @classmethod
+    def _click_composite_voice_card(
+        cls, page, voice_name, *, initial_card=None, cancel_check=None
+    ):
+        """Click a searched voice card while tolerating one React remount."""
+        card = initial_card
+        for attempt in range(3):
+            _check_cancel_requested(cancel_check)
+            if card is None:
+                card = cls._find_composite_voice_card(
+                    page, voice_name, cancel_check=cancel_check
+                )
+            if card is None:
+                if attempt < 2:
+                    _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+                continue
+            try:
+                # A card found after the search is already visible. A short
+                # action timeout avoids waiting through a full provider retry
+                # when the framework replaces that node during the click.
+                card.click(timeout=1500)
+                _check_cancel_requested(cancel_check)
+                return True
+            except XunfeiCancelled:
+                raise
+            except Exception:
+                card = None
+                if attempt < 2:
+                    _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+        return False
 
     @classmethod
     def _open_composite_voice_panel(cls, page, cancel_check=None):
@@ -1282,7 +1393,15 @@ class CompositeActionsMixin:
         if card is None:
             raise XunfeiError(f"多人配音面板未找到音色卡片: {voice_name}")
         _check_cancel_requested(cancel_check)
-        card.click(timeout=5000)
+        if not cls._click_composite_voice_card(
+            page,
+            voice_name,
+            initial_card=card,
+            cancel_check=cancel_check,
+        ):
+            raise XunfeiCompositeSelectionError(
+                f"多人配音音色卡片无法稳定点击: {voice_name}"
+            )
         # 选中卡片后面板会重新挂载三项参数输入框；输入框数量出现
         # 之前，旧的输入节点也可能短暂可见。参数助手会重新定位并轮询
         # 完整表单，因此无需给每个配置组预付固定等待。
@@ -1301,7 +1420,9 @@ class CompositeActionsMixin:
         if not cls._click_composite_ui_control(
             page, "使用", cancel_check=cancel_check
         ):
-            raise XunfeiError(f"多人配音面板未找到可用的“使用”按钮: {voice_name}")
+            raise XunfeiCompositeSelectionError(
+                f"多人配音面板未找到可用的“使用”按钮: {voice_name}"
+            )
         ranges_to_verify = verify_ranges or [(first_index, last_index)]
         verified = _poll(
             lambda: cls._verify_composite_voice_marks_ranges(
@@ -1726,17 +1847,16 @@ class CompositeActionsMixin:
 
         # 讯飞新版编辑器提供真实的 Command/Ctrl 多段选择队列：同一配置的
         # 不连续行先全部加入队列，再一次点击“使用”统一设置音色和参数。
-        # 若页面版本没有该能力或队列回读失败，重新输入文本后退回旧的
-        # 连续区间方案，保证正确性优先。
+        # 队列应用或布局失败时才回退旧的连续区间方案；选区回读失败由
+        # _select_composite_queue_rows 自己做有界的缺行补选。只有在确认
+        # 快速 Range 路径尚未发送任何 pointerup 时，才允许安全切到原生
+        # select_text；一旦页面可能已收到队列事件就必须停止。
         queue_error = None
-        # 正常路径使用页面 Range 建立选区，遇到页面版本不接受 Range
-        # 时，后续整批都切换为原生 select_text，避免在同一批任务中反复
-        # 试探两种选区机制。
-        native_selection = False
+        # 正常路径使用页面 Range 建立选区。选区函数内部会按页面行号只
+        # 补选异步漏记的行；不能在已经可能入队后整批切换到另一套机制。
         for queue_attempt in range(2):
             _check_cancel_requested(cancel_check)
             if queue_attempt:
-                native_selection = True
                 _log(
                     "[xunfei]   多人配音多段队列应用回读失败，"
                     "重新输入全部文本后再试一次"
@@ -1749,42 +1869,28 @@ class CompositeActionsMixin:
                     _check_cancel_requested(cancel_check)
                     group_started_at = time.perf_counter()
                     ranges = entry["ranges"]
-                    selection_error = None
-                    for selection_attempt in range(2):
-                        _check_cancel_requested(cancel_check)
-                        try:
-                            cls._select_composite_queue_rows(
-                                page,
-                                rows,
-                                ranges,
-                                native=(native_selection or selection_attempt > 0),
-                                cancel_check=cancel_check,
-                            )
-                            selection_error = None
-                            break
-                        except XunfeiCancelled:
+                    try:
+                        cls._select_composite_queue_rows(
+                            page,
+                            rows,
+                            ranges,
+                            native=False,
+                            cancel_check=cancel_check,
+                        )
+                    except XunfeiCompositeSelectionError as selection_error:
+                        if not getattr(selection_error, "can_fallback_to_native", False):
                             raise
-                        except XunfeiError as error:
-                            selection_error = error
-                            retryable = (
-                                "多人配音 UI 选区校验失败" in str(error)
-                                or "多人配音多段选区数量校验失败" in str(error)
-                                or "多人配音快速选区" in str(error)
-                            )
-                            if selection_attempt == 0 and retryable:
-                                native_selection = True
-                                _log(
-                                    "[xunfei]   多人配音多段选区回读不一致，"
-                                    "清空当前队列后重试一次"
-                                )
-                                if not cls._clear_composite_queue(
-                                    page, cancel_check=cancel_check
-                                ):
-                                    break
-                                continue
-                            break
-                    if selection_error:
-                        raise selection_error
+                        _log(
+                            "[xunfei]   快速选区在尚未入队前失败，"
+                            "安全回退原生 select_text"
+                        )
+                        cls._select_composite_queue_rows(
+                            page,
+                            rows,
+                            ranges,
+                            native=True,
+                            cancel_check=cancel_check,
+                        )
                     cls._apply_composite_voice_to_queue(
                         page, rows, ranges, cancel_check=cancel_check
                     )
@@ -1807,6 +1913,11 @@ class CompositeActionsMixin:
                 queue_error = None
                 break
             except XunfeiCancelled:
+                raise
+            except XunfeiCompositeSelectionError:
+                # 选区函数已经做过有界的“只补缺行”处理。此类错误不能
+                # 进入下面的整批重输/连续区间回退，否则会再次选择已成功
+                # 的段落；同时交给生成层禁止通用提交重试。
                 raise
             except XunfeiError as error:
                 queue_error = error

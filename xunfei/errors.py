@@ -51,6 +51,18 @@ class XunfeiCancelled(XunfeiError):
     """批量任务被上层取消，停止后续提交/下载。"""
 
 
+class XunfeiCompositeSelectionError(XunfeiError):
+    """多人配音选区未完成，不能由提交层盲目整批重选。"""
+
+    def __init__(self, message, *, can_fallback_to_native=False):
+        super().__init__(message)
+        # A native ``select_text`` fallback is safe only when the fast Range
+        # path failed before any modifier-key pointerup could have reached
+        # the page.  The selector helper sets this explicitly on those
+        # failures; all uncertain queue states remain fail-closed.
+        self.can_fallback_to_native = bool(can_fallback_to_native)
+
+
 def _check_cancel_requested(cancel_check):
     """执行可选取消探针；探针自身异常不能误杀正常合成。"""
     if not callable(cancel_check):

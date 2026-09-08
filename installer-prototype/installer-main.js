@@ -509,7 +509,10 @@ function normalizedPlan(input) {
     const mode = ['install', 'update', 'uninstall'].includes(candidate.mode)
         ? candidate.mode
         : installerConfig.mode;
-    const targetPath = String(candidate.targetPath || installerConfig.targetPath || '').trim();
+    const rawTargetPath = String(candidate.targetPath || installerConfig.targetPath || '').trim();
+    const targetPath = installerService?.normalizeTargetPath
+        ? installerService.normalizeTargetPath(rawTargetPath)
+        : rawTargetPath;
     return {
         mode,
         targetPath,
@@ -543,9 +546,15 @@ function registerIpc() {
             defaultPath: String(defaultPath || installerConfig.targetPath || ''),
             properties: ['openDirectory', 'createDirectory'],
         });
+        const selectedPath = result.canceled ? '' : String(result.filePaths?.[0] || '');
         return {
             canceled: Boolean(result.canceled),
-            path: result.canceled ? '' : String(result.filePaths?.[0] || ''),
+            // Keep a drive-root selection usable without ever exposing the
+            // drive itself as the install/uninstall target. The service also
+            // canonicalizes manually entered paths in normalizedPlan().
+            path: selectedPath && installerService?.normalizeTargetPath
+                ? installerService.normalizeTargetPath(selectedPath)
+                : selectedPath,
         };
     });
 

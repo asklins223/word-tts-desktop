@@ -15,7 +15,12 @@ import xunfei
 import xunfei.config as xunfei_config
 import xunfei.downloads as xunfei_downloads
 import xunfei.runtime as xunfei_runtime
-from xunfei import XunFeiSession, XunfeiError, XunfeiLoginRequired
+from xunfei import (
+    XunFeiSession,
+    XunfeiCompositeSelectionError,
+    XunfeiError,
+    XunfeiLoginRequired,
+)
 
 
 class _FakeKeyboard:
@@ -740,6 +745,57 @@ class XunfeiFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_composite_voice_card_survives_search_result_remount(self):
+        """搜索结果重绘改变列表顺序后仍必须点击目标音色，而不是旧 nth。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        fillers = "".join(
+            '<div class="reorder-marker cursor-pointer">无关控件</div>'
+            for _ in range(6)
+        )
+        html = f"""
+            <div class="fixed" style="display:block; width:800px; height:500px">
+                <input placeholder="输入主播名称进行搜索" />
+                {fillers}
+                <div class="w-full cursor-pointer" data-role="voice-card">
+                    <img alt="晓燕" />
+                    <span>晓燕</span>
+                </div>
+                <button>使用</button>
+            </div>
+            <script>
+                window.voiceCardClicked = false;
+                document.querySelector('[data-role="voice-card"]').onclick = () => {{
+                    window.voiceCardClicked = true;
+                }};
+            </script>
+        """
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                card = XunFeiSession._find_composite_voice_card(page, "晓燕")
+                self.assertIsNotNone(card)
+
+                # Simulate the provider's React result-list remount after the
+                # metadata scan but before Playwright performs the click. The
+                # old controls.nth(index) locator now points outside the list.
+                page.locator(".reorder-marker").evaluate_all(
+                    "elements => elements.forEach(element => element.remove())"
+                )
+                self.assertTrue(
+                    XunFeiSession._click_composite_voice_card(
+                        page, "晓燕", initial_card=card
+                    )
+                )
+                self.assertTrue(page.evaluate("() => window.voiceCardClicked"))
+            finally:
+                browser.close()
+
     def test_composite_queue_selects_non_contiguous_rows_and_applies_each_voice(self):
         """多段队列必须覆盖精确行集合，并能连续套用两种音色。"""
         try:
@@ -904,6 +960,108 @@ class XunfeiFlowTests(unittest.TestCase):
                 session = XunFeiSession()
                 self.assertEqual(session._read_composite_queue_count(page), 2)
                 self.assertIsNone(session._read_composite_queue_row_indices(page))
+                rows = [
+                    {"text": "First paragraph."},
+                    {"text": "Second paragraph."},
+                ]
+                with self.assertRaises(XunfeiCompositeSelectionError):
+                    session._select_composite_queue_rows(page, rows, [(0, 1)])
+            finally:
+                browser.close()
+
+    def test_confirm_button_scan_falls_back_after_stale_snapshot(self):
+        """确认按钮快照失效后仍应执行新鲜全量扫描。"""
+        class Locator:
+            def __init__(self) -> None:
+                self.readbacks = iter(["已经重排的按钮", "确认合成"])
+
+            def evaluate_all(self, _script: str, _expected: str) -> list[dict[str, object]]:
+                return [{"index": 0, "label": "确认合成", "disabled": False}]
+
+            def nth(self, _index: int) -> "Locator":
+                return self
+
+            def inner_text(self, **_kwargs: object) -> str:
+                return next(self.readbacks)
+
+            def count(self) -> int:
+                return 1
+
+            def is_disabled(self) -> bool:
+                return False
+
+        class Page:
+            def __init__(self, locator: Locator) -> None:
+                self._locator = locator
+
+            def locator(self, _selector: str) -> Locator:
+                return self._locator
+
+        locator = Locator()
+        result = XunFeiSession._visible_confirm_synth_buttons(Page(locator))
+        self.assertEqual(len(result), 1)
+        self.assertIs(result[0][0], locator)
+        self.assertFalse(result[0][1])
+
+    def test_composite_queue_repairs_only_missing_row(self):
+        """异步漏记时只补缺行，不能把已入队段落整批再选一遍。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:  # pragma: no cover - 构建环境会安装依赖
+            self.skipTest(f"Playwright 未安装: {error}")
+
+        texts = ["First paragraph.", "Second paragraph.", "Third paragraph."]
+        html = """
+            <div class="ssml-editor" contenteditable="true">
+                %s
+            </div>
+            <script>
+                const editor = document.querySelector('.ssml-editor');
+                window.__pointerRows = [];
+                window.__droppedOneRow = false;
+                document.addEventListener('pointerup', (event) => {
+                    if (!event.metaKey && !event.ctrlKey) return;
+                    const selection = window.getSelection();
+                    const node = selection?.anchorNode;
+                    const element = node?.nodeType === Node.ELEMENT_NODE
+                        ? node : node?.parentElement;
+                    const paragraph = element?.closest?.('.ssml-editor p');
+                    const paragraphs = Array.from(editor.querySelectorAll('p'));
+                    const rowIndex = paragraphs.indexOf(paragraph);
+                    window.__pointerRows.push(rowIndex);
+                    if (rowIndex === 1 && !window.__droppedOneRow) {
+                        window.__droppedOneRow = true;
+                        return;
+                    }
+                    if (rowIndex < 0 || paragraph.querySelector('.msq-pending-range')) return;
+                    const pending = document.createElement('i');
+                    pending.className = 'msq-pending-range';
+                    pending.dataset.rowIndex = String(rowIndex);
+                    paragraph.append(pending);
+                });
+            </script>
+        """ % "".join(f"<p>{text}</p>" for text in texts)
+        rows = [{"text": text} for text in texts]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 900, "height": 300})
+                page.set_content(html)
+                session = XunFeiSession()
+                session._select_composite_queue_rows(page, rows, [(0, 2)])
+                self.assertEqual(session._read_composite_queue_count(page), 3)
+                self.assertEqual(
+                    session._read_composite_queue_row_indices(page), [0, 1, 2]
+                )
+                pointer_rows = page.evaluate("() => window.__pointerRows")
+                self.assertEqual(pointer_rows.count(0), 1)
+                self.assertEqual(pointer_rows.count(1), 2)
+                self.assertEqual(pointer_rows.count(2), 1)
+                session._select_composite_queue_rows(page, rows, [(0, 2)])
+                repeated_pointer_rows = page.evaluate(
+                    "() => window.__pointerRows"
+                )
+                self.assertEqual(repeated_pointer_rows, pointer_rows)
             finally:
                 browser.close()
 
@@ -1098,6 +1256,31 @@ class XunfeiFlowTests(unittest.TestCase):
         click_generate.assert_called_once_with(page)
         cleanup.assert_called_once_with(page)
         self.assertEqual(pending["works_id"], "final-id")
+
+    def test_composite_selection_error_does_not_retry_whole_submission(self):
+        """选区无法安全回读时不能重输全文，避免重复选择/重复提交。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        page = mock.Mock()
+        page.locator.return_value.count.return_value = 1
+        session._page = page
+        work = {
+            "work_id": "composite:selection-error",
+            "works_name": "selection-error-test",
+            "item_ids": ["q1"],
+            "item_count": 1,
+            "items": [],
+        }
+
+        with mock.patch.object(
+            session,
+            "_prepare_composite_editor",
+            side_effect=XunfeiCompositeSelectionError("missing row"),
+        ), mock.patch.object(session, "_recover_for_retry") as recover:
+            with self.assertRaises(XunfeiCompositeSelectionError):
+                session._generate_pending_composite(work, max_retries=3)
+
+        recover.assert_not_called()
 
     def test_post_submit_cleanup_failure_does_not_retry_single_generation(self):
         """拿到 worksId 后页面清理失败不能再次提交并重复计费。"""

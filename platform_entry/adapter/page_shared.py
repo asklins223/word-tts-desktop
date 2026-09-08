@@ -76,6 +76,24 @@ from .observer import ReadOnlyFeedbackObserver
 from .rules import PAPER_BUNDLE_RULES
 
 
+def _fast_inner_text(locator: Any, timeout_ms: int = 500) -> str:
+    """Read text without letting a polling probe inherit a 15s page timeout."""
+
+    reader = getattr(locator, "inner_text", None)
+    if not callable(reader):
+        return ""
+    try:
+        return str(reader(timeout=max(1, int(timeout_ms))) or "")
+    except TypeError:
+        # Lightweight test shims and older adapters may not accept timeout.
+        try:
+            return str(reader() or "")
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+
+
 def _dom_debug_enabled() -> bool:
     """Return whether the opt-in visible-page DOM trace is enabled."""
 

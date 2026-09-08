@@ -214,21 +214,38 @@ function normalizeTargetPath(targetPath, platform = process.platform) {
         throw new InstallerError('INVALID_TARGET', '安装位置包含不支持的字符。');
     }
     const normalized = pathApi.normalize(raw);
-    if (pathEquals(normalized, pathApi.parse(normalized).root, platform)) {
+    // Only Windows drive roots are accepted as picker bases and resolved to
+    // an application subdirectory below. Keep the original fail-closed rule
+    // for other platforms, where no equivalent root-selection behavior exists.
+    if (platform !== 'win32' && pathEquals(normalized, pathApi.parse(normalized).root, platform)) {
         throw new InstallerError('INVALID_TARGET', '不能把磁盘根目录作为安装位置。');
     }
     return normalized;
 }
 
-function validateInstallTargetPath(targetPath, platform = process.platform, environment = process.env) {
+function resolveInstallTargetPath(targetPath, platform = process.platform) {
     const normalized = normalizeTargetPath(targetPath, platform);
+    if (platform !== 'win32') return normalized;
+
+    // A drive root is a useful choice in the native folder picker, but it is
+    // not a safe atomic-install target: replacing or removing it would mean
+    // replacing/removing the whole drive. Treat it as the parent chosen by
+    // the user and keep the actual application directory product-specific.
+    const root = path.win32.parse(normalized).root;
+    return pathEquals(normalized, root, platform)
+        ? path.win32.join(root, PRODUCT_NAME)
+        : normalized;
+}
+
+function validateInstallTargetPath(targetPath, platform = process.platform, environment = process.env) {
+    const normalized = resolveInstallTargetPath(targetPath, platform);
     if (platform !== 'win32') return normalized;
 
     const root = path.win32.parse(normalized).root;
     const relative = path.win32.relative(root, normalized);
-    // normalizeTargetPath already rejects the root itself. Keep this explicit
-    // guard here as well because this function is the destructive-operation
-    // boundary and should not rely on a caller having performed both checks.
+    // Keep this explicit guard because this function is the
+    // destructive-operation boundary and must never return a drive root even
+    // if the root-resolution rule above changes in the future.
     if (!relative) {
         throw new InstallerError('INVALID_TARGET', '安装位置必须是磁盘下的独立应用文件夹。');
     }
@@ -335,7 +352,7 @@ function resolveUninstallRelocation({
         return { required: false, targetPath: targetPath || null, staged: false };
     }
     const resolvedTarget = targetPath
-        ? path.win32.normalize(String(targetPath))
+        ? resolveInstallTargetPath(targetPath, 'win32')
         : (isInstalledUninstaller ? path.win32.dirname(executable) : null);
     if (!resolvedTarget) return { required: false, targetPath: null, staged: false };
 
@@ -442,7 +459,7 @@ function readInstallLocationRecord(dataPath, platform) {
     const record = parseJsonFile(installLocationFilePath(dataPath, platform));
     if (!record || record.format !== INSTALL_LOCATION_VERSION || record.product !== PRODUCT_NAME) return null;
     try {
-        return normalizeTargetPath(record.installPath, platform);
+        return resolveInstallTargetPath(record.installPath, platform);
     } catch (_) {
         return null;
     }
@@ -1231,8 +1248,9 @@ function createInstallerService(options = {}) {
             // protected locations during auto-detection so one stale key
             // cannot make the installer fail before it reaches a valid
             // default location.
-            try { validateServiceTargetPath(normalized); } catch (_) { return; }
-            if (!candidates.some(item => pathEquals(item, normalized, platform))) candidates.push(normalized);
+            let canonical;
+            try { canonical = validateServiceTargetPath(normalized); } catch (_) { return; }
+            if (!candidates.some(item => pathEquals(item, canonical, platform))) candidates.push(canonical);
         };
         add(options.targetPath);
         if (lastPlan?.targetPath) add(lastPlan.targetPath);
@@ -1249,7 +1267,7 @@ function createInstallerService(options = {}) {
     }
 
     function readState(targetPath) {
-        const normalized = normalizeTargetPath(targetPath, platform);
+        const normalized = resolveInstallTargetPath(targetPath, platform);
         const state = parseJsonFile(path.join(normalized, INSTALL_STATE_FILE));
         if (!state || state.format !== INSTALL_STATE_VERSION || state.product !== PRODUCT_NAME) return null;
         if (!state.installPath || !pathEquals(state.installPath, normalized, platform)) return null;
@@ -1959,7 +1977,10 @@ function createInstallerService(options = {}) {
         run,
         launchInstalledApp,
         targetNeedsElevation,
-        normalizeTargetPath: target => normalizeTargetPath(target, platform),
+        // Use the safe, canonical install target for UI selections and plans.
+        // In particular, selecting C:\ or D:\ becomes C:\小猪wordTTS or
+        // D:\小猪wordTTS before any operation can treat it as a target.
+        normalizeTargetPath: target => resolveInstallTargetPath(target, platform),
         detectInstalledPath,
         readState,
         setSetupExecutable,
@@ -2005,6 +2026,7 @@ module.exports = {
     validateInstallTargetPath,
     waitForCleanupReady,
     normalizeTargetPath,
+    resolveInstallTargetPath,
     parseInstallerArguments,
     compareVersions,
 };

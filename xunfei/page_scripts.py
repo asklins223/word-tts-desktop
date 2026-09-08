@@ -209,6 +209,25 @@ class JS:
     }
     """
 
+    CHECK_CLEANUP_READY = """
+    () => {
+        const editor = document.querySelector('.ssml-editor');
+        if ((editor?.textContent?.trim() || '') !== '') return false;
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        return !Array.from(document.querySelectorAll(
+            '.ant-modal, [role="dialog"], .el-dialog, .el-message-box'
+        )).some(visible);
+    }
+    """
+
     GET_SELECTION_TEXT = """
     () => {
         const selection = window.getSelection?.();
