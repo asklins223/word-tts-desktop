@@ -274,6 +274,16 @@ class PlatformInputContentMixin:
         # BaseAddEdit 的关闭图标是 w-9 h-9；预览按钮内的图标只有 w-4
         # h-4，因此这个定位不会碰“预览”。当前页面从第二步关闭后会先
         # 回到第一步，再关闭一次才回到列表；两次都是页面关闭控件。
+        # Windows 上列表页可能在关闭编辑页的过程中自动发起一次刷新，
+        # 因此响应基线必须在关闭动作之前记录；否则这条真实响应会被当作
+        # “关闭前的旧响应”，随后重复点击查询又可能因为筛选条件未变化而
+        # 不发请求，最终误报“没有观察到只读列表反馈”。
+        before_list_response_count = int(
+            getattr(self.observer, "list_response_count", 0) or 0
+        )
+        before_read_only_request_count = len(
+            getattr(self.observer, "read_only_requests", ()) or ()
+        )
         for _attempt in range(2):
             if self._is_paper_list():
                 break
@@ -304,15 +314,33 @@ class PlatformInputContentMixin:
         if not self._is_paper_list():
             raise PlatformInputUiError("保存后没有返回试卷列表")
 
-        before = len(self.observer.read_only_requests)
         query = self._first_visible(self.page.get_by_text("查询", exact=True))
         if query is None:
             return
+        # 与只读核验复用同一条页面查询路径：明确填写标题，确保 Vue
+        # 表单认为筛选条件发生了变化，Windows 上不会出现“点击了查询但
+        # 没有重新发请求”的空刷新。
+        search = self._first_visible(
+            self.page.locator('input[placeholder="请输入试卷名称"]:visible')
+        )
+        if search is not None:
+            try:
+                search.fill(self.spec.paper["title"])
+            except Exception as exc:
+                raise PlatformInputUiError(
+                    f"填写试卷列表搜索条件失败: {exc}"
+                ) from exc
         self._click_exact("查询")
         self._wait_until(
-            lambda: any(
+            lambda: int(
+                getattr(self.observer, "list_response_count", 0) or 0
+            )
+            > before_list_response_count
+            or any(
                 event["path"] == PAPER_PAGE_PATH
-                for event in self.observer.read_only_requests[before:]
+                for event in self.observer.read_only_requests[
+                    before_read_only_request_count:
+                ]
             ),
             "刷新试卷列表后没有观察到只读列表反馈",
             timeout_seconds=30,

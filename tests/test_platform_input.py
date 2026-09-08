@@ -1317,6 +1317,56 @@ class PlatformInputTests(unittest.TestCase):
             ["PAGE_UI"] * 8,
         )
 
+    def test_return_to_list_fills_title_and_accepts_fresh_list_response(self) -> None:
+        spec = normalize_spec(_raw_spec())
+
+        class _SearchInput:
+            def __init__(self) -> None:
+                self.values: list[str] = []
+
+            def fill(self, value: str) -> None:
+                self.values.append(value)
+
+        class _ListPage:
+            def __init__(self) -> None:
+                self.search = _SearchInput()
+
+            def get_by_text(self, text: str, *, exact: bool = False):
+                self.query_text = (text, exact)
+                return object()
+
+            def locator(self, selector: str):
+                self.search_selector = selector
+                return self.search
+
+        page = _ListPage()
+        observer = ReadOnlyFeedbackObserver(page=object())
+        observer.list_response_count = 0
+        automation = object.__new__(PlatformInputPageAutomation)
+        automation.page = page
+        automation.spec = spec
+        automation.observer = observer
+        automation.action_timeout_ms = 1000
+        automation._is_paper_list = lambda: True
+        automation._first_visible = lambda locator: locator
+
+        def click_query(text: str) -> None:
+            self.assertEqual(text, "查询")
+            observer.list_response_count += 1
+
+        automation._click_exact = click_query
+        automation._wait_until = lambda predicate, *_args, **_kwargs: self.assertTrue(
+            predicate()
+        )
+
+        automation.return_to_list()
+
+        self.assertEqual(page.search.values, [spec.paper["title"]])
+        self.assertEqual(
+            page.search_selector,
+            'input[placeholder="请输入试卷名称"]:visible',
+        )
+
     def test_save_content_accepts_create_response_from_a_new_paper(self) -> None:
         automation = object.__new__(PlatformInputPageAutomation)
         automation.observer = type(
