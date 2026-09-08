@@ -66,6 +66,7 @@ jobs:
       - name: Benchmark Windows .NET Playwright
         shell: pwsh
         run: |
+          $dotnetOutput = Join-Path (Resolve-Path .arts/runtime-benchmark).Path 'windows-dotnet.json'
           dotnet run --project tools/automation_runtime_benchmark/dotnet/AutomationRuntimeBenchmark.csproj `
             --configuration Release `
             --no-build `
@@ -73,7 +74,7 @@ jobs:
             --runtime windows-dotnet `
             --rounds $env:BENCHMARK_ROUNDS `
             --fixture (Resolve-Path tools/automation_runtime_benchmark/fixture.html).Path `
-            --output (Resolve-Path .arts/runtime-benchmark).Path\windows-dotnet.json
+            --output $dotnetOutput
 
       - name: Install Ubuntu on WSL
         uses: Ubuntu/WSL/.github/actions/wsl-install@main
