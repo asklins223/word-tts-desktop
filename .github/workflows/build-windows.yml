@@ -368,6 +368,9 @@ jobs:
 
       - name: Upload Windows smoke diagnostics
         if: always()
+        # Diagnostic artifacts are optional; a transient artifact-service
+        # failure must not block the verified package from being uploaded.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: 小猪wordTTS-Windows-smoke
@@ -703,6 +706,7 @@ jobs:
 
       - name: Upload installer lifecycle diagnostics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: 小猪wordTTS-Windows-installer-smoke
@@ -714,6 +718,7 @@ jobs:
 
       - name: Upload failed installer for forensic inspection
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: 小猪wordTTS-Windows-failed-installer
