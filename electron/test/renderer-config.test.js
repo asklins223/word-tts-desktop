@@ -67,7 +67,7 @@ function loadRendererConfigFunctions() {
     vm.runInContext('globalThis.__rendererTests.systemInputAppTemplateTargetUnits = systemInputAppTemplateTargetUnits;', context);
     vm.runInContext('globalThis.__rendererTests.systemInputDiagnosticText = systemInputDiagnosticText;', context);
     vm.runInContext('globalThis.__rendererTests.systemInputReviewDocumentName = systemInputReviewDocumentName; globalThis.__rendererTests.systemInputReviewPresentation = systemInputReviewPresentation;', context);
-    vm.runInContext('globalThis.__rendererTests.reviewPageText = WORDTTS_RENDERER.getModule("review.document").reviewPageText;', context);
+    vm.runInContext('globalThis.__rendererTests.reviewPageText = WORDTTS_RENDERER.getModule("review.document").reviewPageText; globalThis.__rendererTests.reviewTextbookParagraphGroups = WORDTTS_RENDERER.getModule("review.document").reviewTextbookParagraphGroups; globalThis.__rendererTests.reviewTextbookDetectedForm = WORDTTS_RENDERER.getModule("review.document").reviewTextbookDetectedForm; globalThis.__rendererTests.reviewTextbookFormForGroup = WORDTTS_RENDERER.getModule("review.document").reviewTextbookFormForGroup; globalThis.__rendererTests.buildReviewTypeGroups = WORDTTS_RENDERER.getModule("review.document").buildReviewTypeGroups;', context);
     vm.runInContext('globalThis.__rendererTests.deliveryStageInputHasStarted = deliveryStageInputHasStarted; globalThis.__rendererTests.deliveryStageResultIsReady = deliveryStageResultIsReady; globalThis.__rendererTests.deliveryStageStatus = deliveryStageStatus;', context);
     vm.runInContext('globalThis.__rendererTests.rendererContext = WORDTTS_RENDERER.getContext();', context);
     vm.runInContext('globalThis.__rendererTests.initializeTheme = initializeTheme; globalThis.__rendererTests.setWorkspaceTheme = setWorkspaceTheme;', context);
@@ -2022,6 +2022,96 @@ test('文稿核对只在存在音频产物时展示音频绑定', () => {
     assert.doesNotMatch(source, /appendFact\('音频绑定', audioId \? `已绑定 · \$\{audioId\}` : '尚未绑定音频'\);/);
 });
 
+test('文稿视图按课文子类型、段落边界和自动识别形式展示校对分类', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [
+        {
+            doc_type: '课文跟读',
+            item_type: '语篇跟读',
+            metadata: {
+                category: '语篇跟读',
+                paragraph_id: 'article-1-paragraph-1',
+                paragraph_title: '',
+            },
+        },
+        {
+            doc_type: '课文跟读',
+            item_type: '语篇跟读',
+            metadata: {
+                category: '语篇跟读',
+                paragraph_id: 'article-1-paragraph-2',
+                paragraph_title: 'The watermelon farmer',
+            },
+        },
+        {
+            doc_type: '课文跟读',
+            item_type: '语篇跟读',
+            metadata: {
+                category: '语篇跟读',
+                paragraph_id: 'article-1-paragraph-2',
+                paragraph_title: 'The watermelon farmer',
+            },
+        },
+        { doc_type: '课文跟读', item_type: '句子跟读', metadata: { category: '句子跟读' } },
+    ];
+    const groups = JSON.parse(JSON.stringify(api.buildReviewTypeGroups(items)));
+    assert.deepEqual(groups.map(group => group.name), ['语篇跟读', '句子跟读']);
+
+    const discourse = groups[0];
+    const paragraphs = JSON.parse(JSON.stringify(api.reviewTextbookParagraphGroups(discourse)));
+    assert.deepEqual(paragraphs.map(paragraph => paragraph.title), ['', 'The watermelon farmer']);
+    assert.deepEqual(paragraphs.map(paragraph => paragraph.items.length), [1, 2]);
+    assert.equal(api.reviewTextbookFormForGroup(discourse), '段落');
+    assert.equal(api.reviewTextbookFormForGroup({
+        name: '语篇跟读',
+        items: [items[0]],
+    }), '同步课文');
+    assert.equal(
+        api.reviewTextbookFormForGroup(
+            { name: '语篇跟读', items: [items[0]] },
+            { unit_id: 'unit-on-the-fast-track', label: 'Section B · On the Fast Track' },
+            {
+                units: [{
+                    unit_id: 'unit-on-the-fast-track',
+                    label: 'Section B · On the Fast Track',
+                    evidence: { textbook_form: '段落' },
+                }],
+            },
+        ),
+        '段落',
+    );
+    assert.equal(
+        api.reviewTextbookFormForGroup(
+            {
+                name: '语篇跟读',
+                items: [{
+                    ...items[0],
+                    metadata: { ...items[0].metadata, entry_form: '角色扮演' },
+                }],
+            },
+            { unit_id: 'unit-on-the-fast-track' },
+            { units: [{ unit_id: 'unit-on-the-fast-track', evidence: { textbook_form: '段落' } }] },
+        ),
+        '段落',
+    );
+    assert.equal(
+        api.reviewTextbookFormForGroup(
+            { name: '语篇跟读', items: [{ ...items[0], role: 'Reporter' }] },
+            { unit_id: 'unit-on-the-fast-track' },
+            { units: [{ unit_id: 'unit-on-the-fast-track', evidence: { textbook_form: '段落' } }] },
+        ),
+        '角色扮演',
+    );
+    assert.equal(api.reviewTextbookFormForGroup(groups[1]), '角色扮演');
+
+    const source = readRendererSource();
+    const styles = readRendererStyles();
+    assert.match(source, /review-document-paragraph-heading/);
+    assert.match(source, /review-document-classification-tag/);
+    assert.match(styles, /\.review-document-paragraph \{/);
+    assert.match(styles, /\.review-document-classification-tag\.is-form/);
+});
+
 test('多单元录入目标保留切换兼容逻辑，并区分持久草稿与已保存设置', () => {
     const source = readRendererSource();
     const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
@@ -3523,7 +3613,7 @@ test('系统录入应用模板只保存多单元之间的公共页面配置', ()
     assert.equal('paperName' in mixed, false);
 });
 
-test('课文录入保存应用模板时保留全部课文分类字段', () => {
+test('课文录入保存应用模板时排除自动识别的课文形式', () => {
     const { api } = loadRendererConfigFunctions();
     const textbook = {
         textbookNameZh: '交朋友',
@@ -3541,9 +3631,10 @@ test('课文录入保存应用模板时保留全部课文分类字段', () => {
         { ...textbook, textbookNameZh: '交朋友 · 第一套' },
         { ...textbook, textbookNameZh: '交朋友 · 第二套' },
     ], 'textbook');
-    const { textbookNameZh: _textbookNameZh, ...sharedTextbook } = textbook;
+    const { textbookNameZh: _textbookNameZh, textbookForm: _textbookForm, ...sharedTextbook } = textbook;
     assert.deepEqual(JSON.parse(JSON.stringify(configuration)), sharedTextbook);
     assert.equal('textbookNameZh' in configuration, false);
+    assert.equal('textbookForm' in configuration, false);
 
     const entries = api.systemInputAppTemplateEntries([
         { ...textbook, unit_id: 'unit-1', textbookNameZh: '第一篇' },
@@ -3555,6 +3646,7 @@ test('课文录入保存应用模板时保留全部课文分类字段', () => {
     assert.equal(entries.length, 2);
     assert.equal(entries[0].configuration.textbookLesson, 'Section B');
     assert.equal(entries[1].configuration.textbookNameZh, '第二篇');
+    assert.equal('textbookForm' in entries[0].configuration, false);
     assert.equal('paperCategory' in entries[0].configuration, false);
 });
 
@@ -3691,6 +3783,7 @@ test('应用系统录入模板保留单元名称并覆盖可复用字段', () =>
         { unit_id: 'unit-textbook', textbookForm: '同步课文' },
         {
             textbook_name_zh: 'Making new friends',
+            textbookForm: '角色扮演',
             textbook_stage: '初中',
             textbook_lesson: 'Section B',
         },
@@ -3698,6 +3791,7 @@ test('应用系统录入模板保留单元名称并覆盖可复用字段', () =>
     assert.equal(textbookMerged.textbookNameZh, 'Making new friends');
     assert.equal(textbookMerged.textbookStage, '初中');
     assert.equal(textbookMerged.textbookLesson, 'Section B');
+    assert.equal(textbookMerged.textbookForm, '同步课文');
 });
 
 test('仅有安全预检失败的系统录入运行允许重新编辑配置', () => {

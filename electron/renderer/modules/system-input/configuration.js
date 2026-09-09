@@ -80,7 +80,6 @@ function systemInputCommonConfiguration(sources, inputType = 'paper') {
         ? [
             ['textbookNameZh', 'textbookNameZh', 'textbook_name_zh'],
             ['textbookNameEn', 'textbookNameEn', 'textbook_name_en'],
-            ['textbookForm', 'textbookForm', 'textbook_form'],
             ['textbookVersion', 'textbookVersion', 'textbook_version'],
             ['textbookStage', 'textbookStage', 'textbook_stage'],
             ['textbookGrade', 'textbookGrade', 'textbook_grade'],
@@ -207,7 +206,6 @@ function systemInputMergeAppTemplateIntoUnit(
     [
         ['textbookNameZh', 'textbookNameZh', 'textbook_name_zh'],
         ['textbookNameEn', 'textbookNameEn', 'textbook_name_en'],
-        ['textbookForm', 'textbookForm', 'textbook_form'],
         ['textbookVersion', 'textbookVersion', 'textbook_version'],
         ['textbookStage', 'textbookStage', 'textbook_stage'],
         ['textbookGrade', 'textbookGrade', 'textbook_grade'],
@@ -325,7 +323,6 @@ function collectSystemInputAppTemplateFormConfiguration() {
         const fields = [
             ['textbookNameZh', 'system-input-textbook-name-zh'],
             ['textbookNameEn', 'system-input-textbook-name-en'],
-            ['textbookForm', 'system-input-textbook-form'],
             ['textbookVersion', 'system-input-textbook-version'],
             ['textbookStage', 'system-input-textbook-stage'],
             ['textbookGrade', 'system-input-textbook-grade'],
@@ -408,7 +405,7 @@ function systemInputAppTemplatePayload(inputType, name, configuration) {
     // document title waiting for a future merge path to forget the rule.
     const source = configuration && typeof configuration === 'object' ? configuration : {};
     const reusable = Object.fromEntries(Object.entries(source).filter(([key]) => (
-        !['unit_id', 'entry_id', 'app_template_id', 'paperName', 'paper_name'].includes(key)
+        !['unit_id', 'entry_id', 'app_template_id', 'paperName', 'paper_name', 'textbookForm', 'textbook_form'].includes(key)
     )));
     return {
         input_type: inputType,
@@ -552,7 +549,6 @@ async function applySystemInputAppTemplate() {
         const textbookFields = [
             ['system-input-textbook-name-zh', 'textbookNameZh', 'textbook_name_zh'],
             ['system-input-textbook-name-en', 'textbookNameEn', 'textbook_name_en'],
-            ['system-input-textbook-form', 'textbookForm', 'textbook_form'],
             ['system-input-textbook-version', 'textbookVersion', 'textbook_version'],
             ['system-input-textbook-stage', 'textbookStage', 'textbook_stage'],
             ['system-input-textbook-grade', 'textbookGrade', 'textbook_grade'],

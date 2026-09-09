@@ -49,7 +49,7 @@ function loadRendererTextbookFunctions() {
         Set,
     };
     vm.createContext(context);
-    vm.runInContext(`${source}\nglobalThis.__textbookTests = { TEXTBOOK_FORM_OPTIONS, systemInputSuggestedConfiguration, systemInputTypeSelectionLocked, systemInputPaperCategoryLocked, systemInputUnitMissingFields, systemInputUnitConfiguration, systemInputNormalizeUnitConfiguration, reviewItemIsTextbook, reviewTypeGroupIsTextbook };`, context);
+    vm.runInContext(`${source}\nglobalThis.__textbookTests = { systemInputSuggestedConfiguration, systemInputTypeSelectionLocked, systemInputPaperCategoryLocked, systemInputUnitMissingFields, systemInputUnitConfiguration, systemInputNormalizeUnitConfiguration, systemInputTextbookFormValue, reviewItemIsTextbook, reviewTypeGroupIsTextbook };`, context);
     return context.__textbookTests;
 }
 
@@ -67,7 +67,10 @@ test('课文按钮不再标注“待接入页面录入”', () => {
     assert.ok(html.includes('id="system-input-textbook-unit"'));
     assert.ok(html.includes('id="system-input-textbook-lesson"'));
     assert.ok(html.includes('id="system-input-textbook-sync-btn"'));
-    assert.ok(html.includes('data-system-input-choice-group="system-input-textbook-form"'));
+    assert.equal(html.includes('data-system-input-choice-group="system-input-textbook-form"'), false);
+    assert.ok(html.includes('id="system-input-textbook-form-readout"'));
+    assert.ok(html.includes('id="system-input-textbook-form-detected"'));
+    assert.ok(html.includes('根据文档结构自动识别'));
     assert.ok(html.includes('data-system-input-picker-for="system-input-textbook-version"'));
     assert.equal(html.includes('list="system-input-textbook-form-options"'), false);
     assert.equal(html.includes('<datalist id="system-input-textbook-'), false);
@@ -75,9 +78,16 @@ test('课文按钮不再标注“待接入页面录入”', () => {
     assert.ok(html.includes('id="system-input-paper-category-detected"'));
 });
 
-test('课文形式固定为同步课文和角色扮演两个自定义选项', () => {
+test('课文形式不再作为用户可选字段，并优先展示解析器识别结果', () => {
     const api = loadRendererTextbookFunctions();
-    assert.deepEqual(Array.from(api.TEXTBOOK_FORM_OPTIONS, option => option.value), ['同步课文', '角色扮演']);
+    assert.equal(api.systemInputTextbookFormValue(
+        { textbookForm: '同步课文' },
+        { evidence: { textbook_form: '角色扮演' } },
+    ), '角色扮演');
+    assert.equal(api.systemInputTextbookFormValue(
+        { textbookForm: '角色扮演' },
+        { evidence: { textbook_form: '同步课文' } },
+    ), '同步课文');
 });
 
 test('识别结果干净时锁定录入类型选择，冲突时解锁', () => {
@@ -113,12 +123,11 @@ test('试卷分类识别结果只在干净状态下锁定', () => {
     }), false);
 });
 
-test('课文单元缺字段按平台表单九项校验', () => {
+test('课文单元缺用户字段校验，自动识别的课文形式不参与必填校验', () => {
     const api = loadRendererTextbookFunctions();
     const complete = {
         textbookNameZh: 'Section A',
         textbookNameEn: 'How do we get to know each other?',
-        textbookForm: '角色扮演',
         textbookVersion: '人教版',
         textbookStage: '初中',
         textbookGrade: '七年级',

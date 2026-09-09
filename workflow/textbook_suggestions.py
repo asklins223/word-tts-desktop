@@ -116,15 +116,21 @@ def _suggest_from_filename(filename: str) -> dict[str, dict[str, str]]:
 def _suggest_from_metadata(metadata_rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, str]]:
     suggestions: dict[str, dict[str, str]] = {}
     sections: list[str] = []
-    has_role = False
+    has_roleplay = False
     for row in metadata_rows:
         if not isinstance(row, Mapping):
             continue
         section = str(row.get("section") or "").strip()
         if section and section not in sections:
             sections.append(section)
-        if str(row.get("role") or "").strip():
-            has_role = True
+        category = str(row.get("category") or row.get("doc_type") or "").strip()
+        if (
+            category in {"句子跟读", "对话跟读"}
+            or str(row.get("role") or "").strip()
+            or str(row.get("conversation_number") or "").strip()
+            or str(row.get("entry_form") or "").strip() == _FORM_ROLEPLAY
+        ):
+            has_roleplay = True
 
     if len(sections) == 1:
         suggestions["textbookLesson"] = _field(sections[0], "document", "HIGH")
@@ -138,7 +144,7 @@ def _suggest_from_metadata(metadata_rows: Sequence[Mapping[str, Any]]) -> dict[s
             "candidates": sections[:12],
         }
 
-    form = _FORM_ROLEPLAY if has_role else _FORM_SYNC
+    form = _FORM_ROLEPLAY if has_roleplay else _FORM_SYNC
     suggestions["textbookForm"] = _field(form, "document", "MEDIUM")
     return suggestions
 

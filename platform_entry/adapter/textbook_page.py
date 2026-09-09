@@ -19,6 +19,9 @@ from .constants import (
     API_BASE_URL,
     RESOURCE_TEXT_ROUTE,
     RESOURCE_TEXT_URL,
+    TEXT_ROLE_ROUTE,
+    TEXT_ROLE_URL,
+    TEXT_ROLE_PAGE_PATH,
     TEXTBOOK_MANAGEMENT_URL,
     TEXTBOOK_PAGE_PATH,
 )
@@ -28,6 +31,24 @@ from .performance import page_perf
 
 def _text(value: Any, *, limit: int = 1024) -> str:
     return str(value or "").strip()[:limit]
+
+
+_TEXTBOOK_ROLE_PREFIX_RE = re.compile(
+    r"^\s*(?P<role>[^:：\n]{1,120})\s*[:：]\s*(?P<text>[\s\S]*)$"
+)
+
+
+def _textbook_page_text(value: Any, role: Any = None) -> str:
+    """Return page text without the selected role's label."""
+
+    text = _text(value, limit=1_000_000)
+    wanted = _text(role, limit=256)
+    if not text or not wanted:
+        return text
+    match = _TEXTBOOK_ROLE_PREFIX_RE.match(text)
+    if match and match.group("role").strip().casefold() == wanted.casefold():
+        return match.group("text").strip()
+    return text
 
 
 _PAGE_ACTION_TIMEOUT_MS = 15_000
@@ -504,8 +525,15 @@ def _click_exact(page: Any, text: str, *, timeout: int = 15_000) -> None:
     candidate.click(timeout=timeout)
 
 
-def _wait_for_cards(page: Any, count: int, timeout: int = 30_000) -> Any:
-    cards = page.locator(".expandContent:visible")
+def _wait_for_cards(
+    page: Any,
+    count: int,
+    *,
+    owner: Any | None = None,
+    timeout: int = 30_000,
+) -> Any:
+    scope = owner or page
+    cards = scope.locator(".expandContent:visible")
     deadline = time.monotonic() + timeout / 1000
     # Let Playwright wait inside its driver when available. This avoids a
     # Python -> Node -> Chromium round-trip for every 200ms poll on Windows.
@@ -530,20 +558,32 @@ def _wait_for_cards(page: Any, count: int, timeout: int = 30_000) -> Any:
     raise RuntimeError(f"等待课文句子卡片超时：需要 {count} 个")
 
 
-def _ensure_card_count(page: Any, count: int) -> Any:
-    cards = page.locator(".expandContent:visible")
+def _ensure_card_count(page: Any, count: int, *, owner: Any | None = None) -> Any:
+    scope = owner or page
+    cards = scope.locator(".expandContent:visible")
     current = cards.count()
     if current == 0:
-        _click_exact(page, "继续添加句子")
-        cards = _wait_for_cards(page, 1)
-        current = cards.count()
+        # The second page fetches the initial empty card asynchronously. Give
+        # that card a chance to appear before clicking the add control; an
+        # early click can otherwise create a duplicate first sentence.
+        try:
+            cards = _wait_for_cards(page, 1, owner=scope, timeout=5_000)
+            current = cards.count()
+        except Exception:
+            button = _visible_exact(scope, "继续添加下一句") or _visible_exact(scope, "继续添加句子")
+            if button is None:
+                raise RuntimeError(f"等待课文句子卡片超时：需要 {count} 个")
+            button.scroll_into_view_if_needed()
+            button.click()
+            cards = _wait_for_cards(page, 1, owner=scope)
+            current = cards.count()
     while current < count:
-        button = _visible_exact(page, "继续添加下一句") or _visible_exact(page, "继续添加句子")
+        button = _visible_exact(scope, "继续添加下一句") or _visible_exact(scope, "继续添加句子")
         if button is None:
             raise RuntimeError(f"无法继续添加句子：当前 {current} / {count}")
         button.scroll_into_view_if_needed()
         button.click()
-        cards = _wait_for_cards(page, current + 1)
+        cards = _wait_for_cards(page, current + 1, owner=scope)
         current = cards.count()
     return cards
 
@@ -757,6 +797,398 @@ def _select_option_impl(page: Any, index: int, value: str) -> None:
         raise RuntimeError(f"下拉框回读不一致：期望 {value!r}，实际 {shown!r}")
 
 
+def _visible_role_rows(page: Any) -> Any:
+    rows = page.locator(".el-table__body-wrapper .el-table__row:visible")
+    if rows.count() == 0:
+        rows = page.locator(".el-table__row:visible")
+    return rows
+
+
+def _role_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", _text(value, limit=256)).strip().casefold()
+
+
+def _role_volume_matches(row: Any, record: Mapping[str, Any]) -> bool:
+    row_text = _role_key(_fast_inner_text(row, timeout_ms=500)).replace(" ", "")
+    required = (
+        _text(record.get("version"), limit=128),
+        _text(record.get("stage"), limit=128),
+        _text(record.get("grade"), limit=128),
+        _text(record.get("volume"), limit=128),
+    )
+    return bool(row_text) and all(
+        _role_key(value).replace(" ", "") in row_text
+        for value in required
+        if value
+    )
+
+
+def _find_role_volume_row(page: Any, record: Mapping[str, Any]) -> Any | None:
+    """Find a volume row, walking visible role-list pagination if needed."""
+
+    visited: set[str] = set()
+    for _ in range(100):
+        rows = _visible_role_rows(page)
+        for index in range(rows.count()):
+            row = rows.nth(index)
+            if _role_volume_matches(row, record):
+                return row
+        signature = "|".join(
+            _role_key(_fast_inner_text(rows.nth(index), timeout_ms=300))
+            for index in range(rows.count())
+        )
+        if signature in visited:
+            return None
+        visited.add(signature)
+        next_button = _visible_next_button(page)
+        if next_button is None or _pagination_button_disabled(next_button):
+            return None
+        next_button.click()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            current_rows = _visible_role_rows(page)
+            current_signature = "|".join(
+                _role_key(_fast_inner_text(current_rows.nth(index), timeout_ms=300))
+                for index in range(current_rows.count())
+            )
+            if current_signature != signature:
+                break
+            page.wait_for_timeout(100)
+    return None
+
+
+def _role_form_inputs(page: Any) -> Any:
+    return page.locator("input[placeholder='如 Li Lei']:visible")
+
+
+def _role_list_row_count(page: Any) -> int:
+    try:
+        return int(_visible_role_rows(page).count())
+    except Exception:
+        return 0
+
+
+def _role_list_rows_ready(page: Any) -> bool:
+    return _role_list_row_count(page) > 0
+
+
+def _role_list_ready(page: Any) -> bool:
+    # The same hash route opens either the list or the add/edit form. The
+    # list has the filter's 查询 action; the form has the same 添加角色
+    # heading but also has the role-name inputs.
+    return (
+        _visible_exact(page, "添加角色") is not None
+        and _visible_exact(page, "查询") is not None
+        and _role_form_inputs(page).count() == 0
+    )
+
+
+def _role_list_data_ready(page: Any) -> bool:
+    """Return true only after the role table has rendered data or empty state."""
+
+    try:
+        if _role_list_rows_ready(page):
+            return True
+        for selector in (".el-table__empty-text:visible", ".el-table__empty-block:visible"):
+            if page.locator(selector).count() > 0:
+                return True
+        body = _body_text(page)
+        return "暂无数据" in body and (
+            "共 0 条记录" in body or "显示 0 到 0 条" in body
+        )
+    except Exception:
+        return False
+
+
+class TextRoleListResponseObserver:
+    """等待课文角色列表的真实 GET 响应，再允许做册别匹配。"""
+
+    def __init__(self, page: Any, *, api_base: str = API_BASE_URL) -> None:
+        self.page = page
+        self.api_base = str(api_base or "").rstrip("/")
+        self.response_count = 0
+        self.successful_response = False
+        self.auth_error = False
+        self._listener = self._on_response
+        if hasattr(page, "on"):
+            page.on("response", self._listener)
+
+    def _on_response(self, response: Any) -> None:
+        try:
+            request = response.request
+            if str(request.method or "").upper() not in {"GET", "HEAD"}:
+                return
+            parsed = urlparse(str(response.url))
+            expected = urlparse(self.api_base)
+            if parsed.path != TEXT_ROLE_PAGE_PATH:
+                return
+            if (
+                not expected.netloc
+                or parsed.scheme.casefold() != expected.scheme.casefold()
+                or parsed.netloc.casefold() != expected.netloc.casefold()
+            ):
+                return
+            self.response_count += 1
+            status = int(getattr(response, "status", 0) or 0)
+            self.auth_error = status in {401, 403}
+            # 304 is a valid cached list response. The table may already be
+            # rendered even when the browser does not expose a fresh 2xx.
+            self.successful_response = 200 <= status < 300 or status == 304
+        except Exception:
+            # A malformed/partial response must not make the script treat the
+            # still-loading table as an empty list.
+            return
+
+    def close(self) -> None:
+        if hasattr(self.page, "remove_listener"):
+            try:
+                self.page.remove_listener("response", self._listener)
+            except Exception:
+                pass
+
+
+def _role_input_value(locator: Any) -> str:
+    try:
+        value = locator.input_value()
+    except Exception:
+        try:
+            value = locator.get_attribute("value")
+        except Exception:
+            value = ""
+    return _text(value, limit=256)
+
+
+def _wait_for_role_form(page: Any, timeout: int = 30_000) -> None:
+    # 新增页面初始没有角色输入框，只有点击“添加新角色”后才会出现；
+    # 用表单自己的保存按钮作为就绪标志，不能把输入框当作必有元素。
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        save = _visible_exact(page, "保存角色")
+        if save is not None or _role_form_inputs(page).count():
+            return
+        page.wait_for_timeout(100)
+    raise RuntimeError("等待课文角色编辑表单超时")
+
+
+def _open_role_list(page: Any, login_timeout_seconds: int) -> None:
+    """Open the role-management page and wait for its first list response."""
+
+    _configure_page_timeouts(page)
+    observer = TextRoleListResponseObserver(page)
+    try:
+        page.goto(TEXT_ROLE_URL, wait_until="domcontentloaded", timeout=60_000)
+        deadline = time.monotonic() + max(1, int(login_timeout_seconds))
+        warned = False
+        while time.monotonic() < deadline:
+            current_url = str(getattr(page, "url", ""))
+            rows_rendered = _role_list_rows_ready(page)
+            if (
+                TEXT_ROLE_ROUTE in current_url
+                and _role_list_ready(page)
+                and not observer.auth_error
+                and _role_list_data_ready(page)
+                # A non-empty rendered table is sufficient when the browser
+                # served the list from cache before the response listener was
+                # attached. An explicit empty list still requires a captured
+                # successful response so a loading shell can never trigger
+                # the add branch.
+                and (observer.successful_response or (rows_rendered and not observer.response_count))
+            ):
+                print(
+                    f"[browser] 课文角色列表已就绪：{_role_list_row_count(page)} 条册别记录。",
+                    flush=True,
+                )
+                return
+            if TEXT_ROLE_ROUTE in current_url and _visible_exact(page, "保存角色") is not None:
+                cancel = _visible_exact(page, "取消")
+                if cancel is not None:
+                    cancel.click()
+                    page.wait_for_timeout(100)
+                    continue
+            body = _body_text(page)
+            login_page = "#/login" in current_url or any(
+                token in body for token in ("登录状态已失效", "欢迎登录", "扫码登录", "账号登录", "密码登录")
+            )
+            if login_page:
+                if not warned:
+                    print("[browser] 登录状态已失效，请在打开的 Chrome 窗口完成登录；脚本会继续等待。", flush=True)
+                    warned = True
+            else:
+                try:
+                    if TEXT_ROLE_ROUTE not in current_url:
+                        page.goto(TEXT_ROLE_URL, wait_until="domcontentloaded", timeout=60_000)
+                except Exception:
+                    pass
+            page.wait_for_timeout(100)
+        if observer.response_count and not observer.successful_response:
+            raise RuntimeError("课文角色列表接口返回异常，已停止新增以避免创建重复册别。")
+        raise RuntimeError("等待登录/课文角色列表数据超时；未维护任何角色。")
+    finally:
+        observer.close()
+
+
+def _wait_for_role_list(
+    page: Any,
+    timeout: int = 30_000,
+    *,
+    observer: TextRoleListResponseObserver | None = None,
+    after_response_count: int = 0,
+) -> None:
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        rows_rendered = _role_list_rows_ready(page)
+        if observer is not None:
+            if observer.auth_error and observer.response_count > after_response_count:
+                raise RuntimeError("保存角色后课文角色列表请求未通过登录校验")
+            response_ready = (
+                observer.response_count > after_response_count
+                and observer.successful_response
+            )
+            # 保存后有些部署会直接复用已缓存的列表状态，不再发新的
+            # GET。只要编辑表单已消失、列表行已经真实渲染，就说明页面
+            # 已经回到可匹配状态；空列表仍必须由成功响应确认，避免把
+            # 加载中的空壳误判成“册别不存在”。
+            cached_rows_ready = rows_rendered and observer.response_count <= after_response_count
+        else:
+            response_ready = True
+            cached_rows_ready = False
+        if (
+            _role_list_ready(page)
+            and _role_list_data_ready(page)
+            and (response_ready or cached_rows_ready)
+        ):
+            return
+        page.wait_for_timeout(100)
+    raise RuntimeError("保存角色后未返回课文角色列表")
+
+
+def _modify_role_volume(page: Any, record: Mapping[str, Any], roles: Sequence[str]) -> None:
+    target = _find_role_volume_row(page, record)
+    volume_label = " / ".join(
+        _text(record.get(field), limit=128)
+        for field in ("version", "stage", "grade", "volume")
+        if _text(record.get(field), limit=128)
+    )
+
+    if target is not None:
+        print(f"[browser] 已找到角色册别，进入修改：{volume_label}", flush=True)
+        modify = target.get_by_text("修改", exact=True)
+        if modify.count() == 0:
+            modify = target.locator("button").filter(has_text=re.compile(r"^\s*修改\s*$"))
+        if modify.count() == 0:
+            raise RuntimeError("找到对应册别，但没有找到“修改”按钮")
+        modify.last.click()
+        _wait_for_role_form(page)
+    else:
+        print(f"[browser] 未找到角色册别，准备新增：{volume_label}", flush=True)
+        _click_exact(page, "添加角色")
+        _wait_for_role_form(page)
+        for index, field in enumerate(("version", "stage", "grade", "volume")):
+            value = _text(record.get(field), limit=128)
+            if not value:
+                raise RuntimeError(f"新增角色册别缺少分类字段：{field}")
+            _select_option(page, index, value)
+
+    existing = {
+        _role_key(_role_input_value(_role_form_inputs(page).nth(index)))
+        for index in range(_role_form_inputs(page).count())
+    }
+    added = False
+    for role in roles:
+        role = _text(role, limit=256)
+        key = _role_key(role)
+        if not key or key in existing:
+            continue
+        inputs = _role_form_inputs(page)
+        empty_input = None
+        for index in range(inputs.count()):
+            candidate = inputs.nth(index)
+            if not _role_input_value(candidate):
+                empty_input = candidate
+                break
+        if empty_input is None:
+            before = inputs.count()
+            _click_exact(page, "添加新角色")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and _role_form_inputs(page).count() <= before:
+                page.wait_for_timeout(100)
+            inputs = _role_form_inputs(page)
+            if inputs.count() <= before:
+                raise RuntimeError("点击“添加新角色”后没有出现新的角色输入框")
+            empty_input = inputs.last
+        empty_input.fill(role)
+        if _role_input_value(empty_input).casefold() != role.casefold():
+            raise RuntimeError(f"角色名称回读不一致：期望 {role!r}")
+        existing.add(key)
+        added = True
+
+    if added:
+        observer = TextRoleListResponseObserver(page)
+        try:
+            baseline_response_count = observer.response_count
+            _click_exact(page, "保存角色")
+            _wait_for_role_list(
+                page,
+                observer=observer,
+                after_response_count=baseline_response_count,
+            )
+        finally:
+            observer.close()
+    else:
+        # Existing roles are intentionally untouched; leave the edit page
+        # without submitting so the idempotent update has no needless write.
+        cancel = _visible_exact(page, "取消")
+        if cancel is not None:
+            cancel.click()
+            _wait_for_role_list(page)
+
+
+def _ensure_textbook_roles(page: Any, records: Sequence[Mapping[str, Any]], login_timeout_seconds: int) -> None:
+    """Create missing volume roles and append only roles absent from a volume."""
+
+    volumes: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for record in records:
+        roles = list(record.get("roles") or [])
+        item_sources: list[Any] = [record.get("items") or []]
+        paragraphs = record.get("paragraphs")
+        if isinstance(paragraphs, Sequence) and not isinstance(paragraphs, (str, bytes, bytearray)):
+            item_sources.extend(
+                paragraph.get("items") or []
+                for paragraph in paragraphs
+                if isinstance(paragraph, Mapping)
+            )
+        for source in item_sources:
+            for item in source:
+                role = _text(item.get("role"), limit=256) if isinstance(item, Mapping) else ""
+                if role:
+                    roles.append(role)
+        unique_roles: list[str] = []
+        seen: set[str] = set()
+        for role in roles:
+            key = _role_key(role)
+            if key and key not in seen:
+                seen.add(key)
+                unique_roles.append(_text(role, limit=256))
+        if not unique_roles:
+            continue
+        key = tuple(_text(record.get(field), limit=128) for field in ("version", "stage", "grade", "volume"))
+        volume = volumes.setdefault(key, {field: record.get(field) for field in ("version", "stage", "grade", "volume")})
+        volume.setdefault("roles", []).extend(unique_roles)
+    if not volumes:
+        return
+
+    _open_role_list(page, login_timeout_seconds)
+    for volume in volumes.values():
+        roles: list[str] = []
+        seen: set[str] = set()
+        for role in volume.get("roles", []):
+            key = _role_key(role)
+            if key and key not in seen:
+                seen.add(key)
+                roles.append(role)
+        _modify_role_volume(page, volume, roles)
+
+
 def _fill_classification(page: Any, record: Mapping[str, Any]) -> None:
     chinese_name = page.get_by_placeholder("请输入课文名称（中文）", exact=True)
     english_name = page.get_by_placeholder("请输入课文名称（英文）", exact=True)
@@ -808,6 +1240,226 @@ def _wait_for_card_audio_label(
         return False
 
 
+def _visible_field(owner: Any, selectors: Sequence[str]) -> Any | None:
+    for selector in selectors:
+        try:
+            fields = owner.locator(selector)
+            for index in range(fields.count()):
+                field = fields.nth(index)
+                if field.is_visible():
+                    return field
+        except Exception:
+            continue
+    return None
+
+
+def _fill_paragraph_title(page: Any, paragraph: Any, value: Any, index: int = 0) -> None:
+    title = _text(value, limit=256)
+    if not title:
+        return
+    selectors = (
+        "input[placeholder='请输入段落标题']:visible",
+        "textarea[placeholder='请输入段落标题']:visible",
+        ".paragraph-title input:visible",
+        ".paragraph-title textarea:visible",
+    )
+    # On the real 段落 page the title input is a sibling of the sentence
+    # cards inside ``.paragraphContent``. It must be scoped to that paragraph;
+    # a page-global first-input lookup would put every later title in 段落1.
+    field = _visible_field(paragraph, selectors)
+    if field is None:
+        raise RuntimeError(f"第 {index + 1} 段没有找到段落标题字段：{title}")
+    field.fill(title)
+    try:
+        actual = _text(field.input_value(), limit=256)
+    except Exception:
+        actual = _text(field.get_attribute("value"), limit=256)
+    if actual != title:
+        raise RuntimeError(
+            f"第 {index + 1} 段标题回读不一致：期望 {title!r}，实际 {actual!r}"
+        )
+
+
+def _fill_card_role(page: Any, card: Any, value: Any, index: int) -> None:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        roles = [_text(role, limit=256) for role in value if _text(role, limit=256)]
+    else:
+        role = _text(value, limit=256)
+        roles = [role] if role else []
+    if not roles:
+        return
+    # The live role-play form uses a multi-select button grid rather than an
+    # Element Plus combobox. Selected buttons switch from characterNormal to
+    # characterSelected; do not click an already-selected role a second time.
+    # The card shell renders before the role grid is filled from the textbook
+    # role list. Wait for the roles needed by this card, otherwise the first
+    # card of a newly opened conversation can be mistaken for a card with no
+    # roles at all.
+    buttons = card.locator(".characterItem:visible")
+    missing = list(roles)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if buttons.count() == 0:
+            buttons = card.locator(".characterItem")
+        missing = [
+            role
+            for role in roles
+            if buttons.filter(
+                has_text=re.compile(rf"^\s*{re.escape(role)}\s*$")
+            ).count()
+            == 0
+        ]
+        if not missing:
+            break
+        remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+        page.wait_for_timeout(min(100, remaining_ms))
+    if buttons.count() == 0:
+        raise RuntimeError(
+            f"第 {index + 1} 条角色扮演内容没有找到角色按钮：{', '.join(roles)}"
+        )
+    if missing:
+        raise RuntimeError(f"第 {index + 1} 条没有找到角色：{missing[0]}")
+    for role in roles:
+        match = buttons.filter(
+            has_text=re.compile(rf"^\s*{re.escape(role)}\s*$")
+        )
+        if match.count() == 0:
+            raise RuntimeError(f"第 {index + 1} 条没有找到角色：{role}")
+        button = match.last
+        class_name = str(button.get_attribute("class") or "")
+        if "characterSelected" not in class_name:
+            button.click()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            class_name = str(button.get_attribute("class") or "")
+            if "characterSelected" in class_name:
+                break
+            page.wait_for_timeout(50)
+        if "characterSelected" not in class_name:
+            raise RuntimeError(f"第 {index + 1} 条角色选择回读失败：{role}")
+
+
+def _wait_for_paragraphs(page: Any, count: int, timeout: int = 30_000) -> Any:
+    paragraphs = page.locator(".paragraphContent:visible")
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        try:
+            if paragraphs.count() >= count:
+                return paragraphs
+        except Exception:
+            pass
+        remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+        page.wait_for_timeout(min(100, remaining_ms))
+    raise RuntimeError(f"等待课文段落编辑区超时：需要 {count} 个")
+
+
+def _ensure_paragraph_count(page: Any, count: int) -> Any:
+    if count <= 0:
+        raise RuntimeError("段落类型课文没有可录入的段落")
+    paragraphs = page.locator(".paragraphContent:visible")
+    current = paragraphs.count()
+    if current == 0:
+        # The page first fetches the empty outline asynchronously. Wait for it
+        # before using the global add control so a slow response cannot create
+        # an extra paragraph.
+        try:
+            paragraphs = _wait_for_paragraphs(page, 1, timeout=5_000)
+            current = paragraphs.count()
+        except Exception:
+            _click_exact(page, "继续添加段落")
+            paragraphs = _wait_for_paragraphs(page, 1)
+            current = paragraphs.count()
+    while current < count:
+        _click_exact(page, "继续添加段落")
+        paragraphs = _wait_for_paragraphs(page, current + 1)
+        current = paragraphs.count()
+    return paragraphs
+
+
+def _paragraph_specs(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    raw = record.get("paragraphs")
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        specs = [paragraph for paragraph in raw if isinstance(paragraph, Mapping)]
+        if specs:
+            return specs
+
+    # Compatibility fallback for older saved plans: rebuild blocks from the
+    # stable paragraph_id carried on each item instead of making one page
+    # paragraph per sentence.
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in record.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        key = _text(item.get("paragraph_id"), limit=256) or "paragraph-1"
+        if key not in grouped:
+            grouped[key] = {
+                "title": _text(item.get("paragraph_title"), limit=256),
+                "items": [],
+            }
+            order.append(key)
+        grouped[key]["items"].append(item)
+    return [grouped[key] for key in order]
+
+
+def _fill_content_card(
+    page: Any,
+    card: Any,
+    item: Mapping[str, Any],
+    index: int,
+    *,
+    paragraph_index: int | None = None,
+) -> None:
+    card.scroll_into_view_if_needed()
+    _fill_card_role(page, card, item.get("role"), index)
+    editors = card.locator(
+        '.rich-text-editor .editor-content[contenteditable="true"]'
+    )
+    if editors.count() < 2:
+        location = f"第 {paragraph_index + 1} 段第 {index + 1} 条" if paragraph_index is not None else f"第 {index + 1} 条"
+        raise RuntimeError(f"{location}没有找到原文/译文编辑器")
+    _replace_editor(
+        page,
+        editors.nth(0),
+        _textbook_page_text(item["original"], item.get("role")),
+        "原文",
+    )
+    _replace_editor(
+        page,
+        editors.nth(1),
+        str(item.get("translation") or ""),
+        "译文",
+    )
+
+    file_inputs = card.locator('input[type="file"]')
+    if file_inputs.count() < 1:
+        location = f"第 {paragraph_index + 1} 段第 {index + 1} 条" if paragraph_index is not None else f"第 {index + 1} 条"
+        raise RuntimeError(f"{location}没有找到音频上传控件")
+    audio_path = str(item["audio_path"])
+    file_inputs.first.set_input_files(audio_path)
+    # 平台会把文件名中的非单词字符替换成下划线后再展示。
+    stem = Path(audio_path).stem
+    normalized_stem = re.sub(r"\W+", "_", stem, flags=re.UNICODE)
+    audio_label_ready = _wait_for_card_audio_label(
+        card,
+        stem,
+        normalized_stem,
+    )
+    if audio_label_ready is None:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            card_text = _fast_inner_text(card, timeout_ms=300)
+            if stem in card_text or normalized_stem in card_text:
+                audio_label_ready = True
+                break
+            remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
+            page.wait_for_timeout(min(100, remaining_ms))
+
+    if not audio_label_ready:
+        location = f"第 {paragraph_index + 1} 段第 {index + 1} 条" if paragraph_index is not None else f"第 {index + 1} 条"
+        raise RuntimeError(f"{location}音频回读失败：{stem}")
+
+
 def _fill_content(
     page: Any,
     record: Mapping[str, Any],
@@ -826,50 +1478,49 @@ def _fill_content_impl(
     control_check: Callable[[], None] | None = None,
 ) -> None:
     items = record["items"]
+    if _text(record.get("form"), limit=64) == "段落":
+        paragraphs = _paragraph_specs(record)
+        page_paragraphs = _ensure_paragraph_count(page, len(paragraphs))
+        for paragraph_index, paragraph in enumerate(paragraphs):
+            if control_check is not None:
+                control_check()
+            paragraph_owner = page_paragraphs.nth(paragraph_index)
+            _fill_paragraph_title(
+                page,
+                paragraph_owner,
+                paragraph.get("title") or paragraph.get("paragraph_title"),
+                paragraph_index,
+            )
+            paragraph_items = [
+                item for item in paragraph.get("items") or []
+                if isinstance(item, Mapping)
+            ]
+            if not paragraph_items:
+                raise RuntimeError(f"第 {paragraph_index + 1} 段没有可录入的句子")
+            cards = _ensure_card_count(
+                page,
+                len(paragraph_items),
+                owner=paragraph_owner,
+            )
+            for item_index, item in enumerate(paragraph_items):
+                if control_check is not None:
+                    control_check()
+                _fill_content_card(
+                    page,
+                    cards.nth(item_index),
+                    item,
+                    item_index,
+                    paragraph_index=paragraph_index,
+                )
+                if control_check is not None:
+                    control_check()
+        return
+
     cards = _ensure_card_count(page, len(items))
     for index, item in enumerate(items):
         if control_check is not None:
             control_check()
-        card = cards.nth(index)
-        card.scroll_into_view_if_needed()
-        editors = card.locator(
-            '.rich-text-editor .editor-content[contenteditable="true"]'
-        )
-        if editors.count() < 2:
-            raise RuntimeError(f"第 {index + 1} 条没有找到原文/译文编辑器")
-        _replace_editor(page, editors.nth(0), str(item["original"]), "原文")
-        _replace_editor(
-            page,
-            editors.nth(1),
-            str(item.get("translation") or ""),
-            "译文",
-        )
-
-        file_inputs = card.locator('input[type="file"]')
-        if file_inputs.count() < 1:
-            raise RuntimeError(f"第 {index + 1} 条没有找到音频上传控件")
-        audio_path = str(item["audio_path"])
-        file_inputs.first.set_input_files(audio_path)
-        # 平台会把文件名中的非单词字符替换成下划线后再展示。
-        stem = Path(audio_path).stem
-        normalized_stem = re.sub(r"\W+", "_", stem, flags=re.UNICODE)
-        audio_label_ready = _wait_for_card_audio_label(
-            card,
-            stem,
-            normalized_stem,
-        )
-        if audio_label_ready is None:
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline:
-                card_text = _fast_inner_text(card, timeout_ms=300)
-                if stem in card_text or normalized_stem in card_text:
-                    audio_label_ready = True
-                    break
-                remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
-                page.wait_for_timeout(min(100, remaining_ms))
-
-        if not audio_label_ready:
-            raise RuntimeError(f"第 {index + 1} 条音频回读失败：{stem}")
+        _fill_content_card(page, cards.nth(index), item, index)
         if control_check is not None:
             control_check()
 
@@ -975,6 +1626,7 @@ def execute_records(
         if control_check is not None:
             control_check()
         try:
+            _ensure_textbook_roles(page, records, max(1, int(login_timeout)))
             _open_text_list(page, max(1, int(login_timeout)))
             observer = TextbookCatalogResponseObserver(
                 page,

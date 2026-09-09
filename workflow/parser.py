@@ -250,6 +250,12 @@ def normalize_item(
         # 角色是独立列，但课文“角色扮演/同步课文”建议依赖 metadata 里
         # 的角色事实；一并透传，保持单一事实来源。
         "role": raw.get("role"),
+        # 课文录入的结构事实：段落边界与段落小标题不能从已经切成句子
+        # 的正文里反推，否则同一篇文章会被错误合并成一条平台记录。
+        "entry_form": raw.get("entry_form"),
+        "paragraph_id": raw.get("paragraph_id"),
+        "paragraph_scope": raw.get("paragraph_scope"),
+        "paragraph_title": raw.get("paragraph_title"),
         # 课文文章切分的结构事实：文章标题/主题驱动录入单元切分与
         # 课文记录命名。
         "article_title": raw.get("article_title"),

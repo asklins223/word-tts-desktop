@@ -1087,45 +1087,166 @@ def _classify_paper_category(
     }
 
 
+_TEXTBOOK_PARAGRAPH_CATEGORIES = frozenset({"段落跟读", "语篇跟读"})
+_TEXTBOOK_DIALOGUE_CATEGORIES = frozenset({"对话跟读"})
+
+
 def _textbook_group_parts(metadata: Mapping[str, Any]) -> tuple[str, str, str, str]:
-    """Derive (section, category, subgroup, title_source) for one item."""
+    """Derive a stable group key and readable subgroup label.
+
+    A platform ``段落`` record owns several source paragraphs.  Therefore the
+    grouping key is the article/conversation scope, not ``paragraph_id``:
+    ``paragraph_id`` is only used later to rebuild the paragraph list inside
+    that one record.
+    """
 
     section = _text(metadata.get("section"), limit=128)
     category = _text(metadata.get("category") or metadata.get("doc_type"), limit=64)
-    subgroup = ""
-    if category == "段落跟读":
+    if category in _TEXTBOOK_PARAGRAPH_CATEGORIES | _TEXTBOOK_DIALOGUE_CATEGORIES:
         conversation = _text(metadata.get("conversation_number"), limit=64)
-        subgroup = f"Conversation {conversation}" if conversation else ""
-    elif category == "语篇跟读":
-        subgroup = _text(metadata.get("article_title"), limit=256)
-    return section, category, subgroup, subgroup
+        if conversation:
+            return section, category, f"conversation:{conversation}", f"Conversation {conversation}"
+        scope = _text(
+            metadata.get("paragraph_scope")
+            or metadata.get("article_title")
+            or metadata.get("article_theme")
+            or metadata.get("paragraph_id"),
+            limit=256,
+        )
+        if scope:
+            label = _text(
+                metadata.get("article_title")
+                or metadata.get("article_theme")
+                or metadata.get("paragraph_title"),
+                limit=256,
+            ) or "段落"
+            return section, category, f"scope:{scope}", label
+        label = _text(
+            metadata.get("article_title")
+            or metadata.get("article_theme")
+            or metadata.get("paragraph_title"),
+            limit=256,
+        ) or "段落"
+        return section, category, f"fallback:{label}", label
+    return section, category, "", ""
+
+
+def _textbook_entry_form(
+    category: str,
+    grouped_items: Sequence[Mapping[str, Any]],
+    paragraph_count: int,
+) -> str:
+    """Apply the platform form rules to one resolved textbook record."""
+
+    if category in {"句子跟读", "对话跟读"}:
+        return "角色扮演"
+    if any(
+        _text(item.get("role"), limit=256)
+        or _text(item.get("conversation_number"), limit=64)
+        or _text(item.get("entry_form"), limit=64) == "角色扮演"
+        for item in grouped_items
+    ):
+        return "角色扮演"
+    if category in {"段落跟读", "语篇跟读"}:
+        return "同步课文" if paragraph_count <= 1 else "段落"
+    return "同步课文"
+
+
+def _textbook_form_from_evidence(evidence: Mapping[str, Any] | None) -> str:
+    source = evidence if isinstance(evidence, Mapping) else {}
+    return _text(
+        source.get("textbook_form") or source.get("textbookForm"),
+        limit=64,
+    )
+
+
+def _force_detected_textbook_form(
+    configuration: Mapping[str, Any],
+    evidence: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep the parser-owned textbook form authoritative over old drafts."""
+
+    result = dict(configuration)
+    detected = _textbook_form_from_evidence(evidence)
+    if detected:
+        result["textbookForm"] = detected
+    return result
 
 
 def _resolve_textbook_groups(
     items: Sequence[Mapping[str, Any]],
-) -> tuple["dict[str, list[Mapping[str, Any]]]", str, dict[str, Any], "dict[str, dict[str, str]]"]:
-    """Split parsed textbook items into one entry unit per platform record.
+) -> tuple["dict[str, list[Mapping[str, Any]]]", str, dict[str, Any], "dict[str, dict[str, Any]]"]:
+    """Split parsed textbook items into page records and paragraph groups.
 
-    平台侧一条课文记录对应“章节 × 内容类型 × 文章/对话”一组内容；
-    切分完全由解析器输出的结构事实（section/category/conversation/
-    article_title）驱动，同一文档出现多组即视为多个录入单元。
+    The visible page adds a paragraph-type textbook as one record containing
+    multiple paragraph blocks.  Keep one group per article/conversation scope
+    and leave ``paragraph_id`` for the nested block reconstruction performed
+    by the page executor.
     """
 
     groups: "dict[str, list[Mapping[str, Any]]]" = {}
-    meta: "dict[str, dict[str, str]]" = {}
+    meta: "dict[str, dict[str, Any]]" = {}
     for item in items:
         if not isinstance(item, Mapping):
             continue
         item_metadata = _json_object(item.get("metadata_json"))
-        section, category, subgroup, _title = _textbook_group_parts(item_metadata)
+        section, category, subgroup, subgroup_label = _textbook_group_parts(item_metadata)
         key = "|".join((section, category, subgroup))
         groups.setdefault(key, []).append(item)
-        meta.setdefault(key, {
+        row = meta.setdefault(key, {
             "section": section,
             "category": category,
             "subgroup": subgroup,
+            "subgroup_label": subgroup_label,
             "theme": _text(item_metadata.get("article_theme"), limit=256),
+            "article_title": _text(item_metadata.get("article_title"), limit=256),
+            "paragraph_scope": _text(
+                item_metadata.get("paragraph_scope")
+                or item_metadata.get("paragraph_id"),
+                limit=256,
+            ),
+            "paragraph_title": _text(item_metadata.get("paragraph_title"), limit=256),
+            "paragraph_count": 0,
         })
+        for field in ("theme", "article_title", "paragraph_title"):
+            if not row.get(field):
+                row[field] = _text(item_metadata.get({
+                    "theme": "article_theme",
+                    "article_title": "article_title",
+                    "paragraph_title": "paragraph_title",
+                }[field]), limit=256)
+
+    for key, grouped_items in groups.items():
+        if not grouped_items:
+            continue
+        first_metadata = _json_object(grouped_items[0].get("metadata_json"))
+        _section, category, _subgroup, subgroup_label = _textbook_group_parts(first_metadata)
+        conversation = _text(first_metadata.get("conversation_number"), limit=64)
+        paragraph_ids: list[str] = []
+        if category in _TEXTBOOK_PARAGRAPH_CATEGORIES and not conversation:
+            for item in grouped_items:
+                paragraph_id = _text(
+                    _json_object(item.get("metadata_json")).get("paragraph_id"),
+                    limit=256,
+                )
+                if paragraph_id and paragraph_id not in paragraph_ids:
+                    paragraph_ids.append(paragraph_id)
+            # Older parser projections may not have a paragraph_id.  Their
+            # entire scope still represents one paragraph block.
+            paragraph_count = len(paragraph_ids) or 1
+        else:
+            paragraph_count = 0
+        meta[key]["paragraph_count"] = paragraph_count
+        meta[key]["form"] = _textbook_entry_form(
+            category,
+            [_json_object(item.get("metadata_json")) for item in grouped_items],
+            paragraph_count,
+        )
+        meta[key]["subgroup_label"] = (
+            _text(meta[key].get("article_title"), limit=256)
+            or _text(meta[key].get("theme"), limit=256)
+            or subgroup_label
+        )
     count_status = "multiple_confirmed" if len(groups) > 1 else "single_default"
     evidence = {
         "strategy": "textbook_structure",
@@ -1138,7 +1259,7 @@ def _resolve_textbook_groups(
 def _textbook_unit_label(meta: Mapping[str, Any]) -> str:
     section = _text(meta.get("section"), limit=128)
     category = _text(meta.get("category"), limit=64)
-    subgroup = _text(meta.get("subgroup"), limit=256)
+    subgroup = _text(meta.get("subgroup_label"), limit=256)
     if subgroup:
         return f"{section} · {subgroup}" if section else subgroup
     if section and category:
@@ -1154,8 +1275,11 @@ def _textbook_unit_configuration_defaults(
 
     section = _text(meta.get("section"), limit=128)
     category = _text(meta.get("category"), limit=64)
-    subgroup = _text(meta.get("subgroup"), limit=256)
+    subgroup = _text(meta.get("subgroup_label"), limit=256)
     theme = _text(meta.get("theme"), limit=256)
+    article_title = _text(meta.get("article_title"), limit=256)
+    paragraph_title = _text(meta.get("paragraph_title"), limit=256)
+    form = _text(meta.get("form"), limit=64) or "同步课文"
 
     document_defaults = suggest_textbook_configuration(source_filename, [])
     document_value = lambda field: _text(  # noqa: E731
@@ -1163,16 +1287,20 @@ def _textbook_unit_configuration_defaults(
         limit=256,
     )
 
-    name_zh = theme or section
-    if not name_zh and subgroup:
-        name_zh = subgroup
-    if category == "段落跟读" and subgroup:
-        name_zh = f"{section} {subgroup}".strip() if section else subgroup
-    name_en = subgroup if category == "语篇跟读" else document_value("textbookNameEn")
+    base_name_en = document_value("textbookNameEn")
+    name_zh = article_title or theme or paragraph_title or section or subgroup
+    if category in _TEXTBOOK_PARAGRAPH_CATEGORIES and article_title:
+        # The article title identifies the platform record; paragraph titles
+        # belong to the nested paragraph blocks on the second page.
+        name_en = article_title
+    elif subgroup:
+        name_en = f"{base_name_en} · {subgroup}".strip(" ·") if base_name_en else subgroup
+    else:
+        name_en = f"{base_name_en} · {section}".strip(" ·") if base_name_en and section else base_name_en
     return {
         "textbookNameZh": _text(name_zh, limit=256),
         "textbookNameEn": _text(name_en, limit=256),
-        "textbookForm": "同步课文",
+        "textbookForm": form,
         "textbookVersion": document_value("textbookVersion"),
         "textbookStage": document_value("textbookStage"),
         "textbookGrade": document_value("textbookGrade"),
@@ -1779,6 +1907,10 @@ def _external_operation_payload(
                 "score": _number(segment.get("score")),
                 "audio_artifact_id": _text(segment.get("audio_artifact_id"), limit=256),
                 "audio_filename_stem": _text(segment.get("audio_filename_stem"), limit=256),
+                "role": _text(segment.get("role"), limit=256),
+                "paragraph_id": _text(segment.get("paragraph_id"), limit=256),
+                "paragraph_scope": _text(segment.get("paragraph_scope"), limit=256),
+                "paragraph_title": _text(segment.get("paragraph_title"), limit=256),
                 "audio_only_auxiliary": segment.get("audio_only_auxiliary") is True,
                 # Hash the explicit semantic page facts into the durable
                 # operation identity without duplicating answer text in the
@@ -1855,6 +1987,10 @@ def _page_target_snapshot(target: Mapping[str, Any]) -> dict[str, Any]:
                     "category": _text(segment.get("category") or segment.get("item_type"), limit=128),
                     "filename_stem": _text(segment.get("filename_stem"), limit=256),
                     "audio_filename_stem": _text(segment.get("audio_filename_stem"), limit=256),
+                    "role": _text(segment.get("role"), limit=256),
+                    "paragraph_id": _text(segment.get("paragraph_id"), limit=256),
+                    "paragraph_scope": _text(segment.get("paragraph_scope"), limit=256),
+                    "paragraph_title": _text(segment.get("paragraph_title"), limit=256),
                     "audio_only_auxiliary": segment.get("audio_only_auxiliary") is True,
                     "source_locator": _text(segment.get("source_locator"), limit=512),
                     "translation": _text(segment.get("translation"), limit=1_000_000),
@@ -1919,7 +2055,7 @@ class SystemInputService:
             input_type, input_status = _classify_input_type(items, filename, config)
             selected = _extract_system_configuration(config)
             override = _text(selected.get("unit_count_override"), limit=32) or None
-            textbook_group_meta: dict[str, dict[str, str]] = {}
+            textbook_group_meta: dict[str, dict[str, Any]] = {}
             if input_type == "textbook":
                 # 课文按“章节 × 内容类型 × 文章/对话”结构切分：一个录入
                 # 单元对应平台一条课文记录，切分由解析结构事实驱动。
@@ -2031,6 +2167,11 @@ class SystemInputService:
                 }
                 if input_type == "paper":
                     evidence["paper_category"] = category_evidence
+                elif input_type == "textbook":
+                    evidence["textbook_form"] = _text(
+                        (textbook_group_meta.get(key) or {}).get("form"),
+                        limit=64,
+                    ) or "同步课文"
                 unit_config = _unit_configuration(
                     config,
                     unit_id,
@@ -2055,16 +2196,21 @@ class SystemInputService:
                 else:
                     stored_config = unit_config
                 if input_type == "textbook":
-                    # 结构推导的课文分类信息：仅在用户尚未填写该字段时
-                    # 注入，已保存/已修改的值永远优先。同时固化单元类型，
-                    # 否则投影读回时课文键会被当成未知类型剥掉。
+                    # 结构推导的课文分类信息由解析器负责，不能被旧草稿或
+                    # 模板中的手工值覆盖。同时固化单元类型，否则投影读回
+                    # 时课文键会被当成未知类型剥掉。
                     stored_config.setdefault("input_type", input_type)
                     unit_defaults = _textbook_unit_configuration_defaults(
                         textbook_group_meta.get(key) or {},
                         filename,
                     )
                     for config_field, default_value in unit_defaults.items():
-                        if not _text(stored_config.get(config_field), limit=256) and _text(default_value, limit=256):
+                        if config_field == "textbookForm":
+                            stored_config[config_field] = _text(
+                                evidence.get("textbook_form"),
+                                limit=64,
+                            ) or "同步课文"
+                        elif not _text(stored_config.get(config_field), limit=256) and _text(default_value, limit=256):
                             stored_config[config_field] = default_value
                 structure_revision = max(1, int(existing["structure_revision"] or 1)) if existing else 1
                 if existing is None:
@@ -2090,8 +2236,13 @@ class SystemInputService:
                            WHERE unit_id=? AND workflow_id=?""",
                         (batch_id, ordinal, label, input_type, count_status, effective_override,
                          input_status, category, category_status, coverage,
-                         canonical_json(source_range), canonical_json(evidence), now, unit_id, workflow_id),
+                        canonical_json(source_range), canonical_json(evidence), now, unit_id, workflow_id),
                     )
+                    if input_type == "textbook":
+                        con.execute(
+                            "UPDATE input_units SET configuration_json=? WHERE unit_id=? AND workflow_id=?",
+                            (canonical_json(stored_config), unit_id, workflow_id),
+                        )
 
                 root_id = _node_id(workflow_id, unit_id, None, "unit", label)
                 self._upsert_node(con, root_id, workflow_id, unit_id, None, 0, "unit", label, [label], source_range.get("first_locator"), 1.0, evidence, now)
@@ -2535,6 +2686,11 @@ class SystemInputService:
                     input_type=str(row["input_type"]),
                 )
                 stored_configuration.update(snapshot_configuration)
+            if str(row["input_type"]) == "textbook":
+                stored_configuration = _force_detected_textbook_form(
+                    stored_configuration,
+                    row["evidence"],
+                )
             row["configuration"] = project_system_input_configuration(stored_configuration)
         for row in nodes:
             row["path"] = _json_value(_json_array(row.pop("path_json", "[]")), fallback=[])
@@ -2548,6 +2704,10 @@ class SystemInputService:
             row["category"] = _text(segment_item_metadata.get("category"), limit=128) or None
             row["filename_stem"] = _text(segment_item_metadata.get("filename_stem"), limit=256) or None
             row["audio_filename_stem"] = _text(segment_item_metadata.get("audio_filename_stem"), limit=256) or None
+            row["role"] = _text(segment_item_metadata.get("role"), limit=256) or None
+            row["paragraph_id"] = _text(segment_item_metadata.get("paragraph_id"), limit=256) or None
+            row["paragraph_scope"] = _text(segment_item_metadata.get("paragraph_scope"), limit=256) or None
+            row["paragraph_title"] = _text(segment_item_metadata.get("paragraph_title"), limit=256) or None
             row["audio_only_auxiliary"] = segment_item_metadata.get("audio_only_auxiliary") is True
             raw_page_input = segment_item_metadata.get("page_input")
             if raw_page_input is not None:
@@ -2883,6 +3043,11 @@ class SystemInputService:
                     unit_labels=unit_labels,
                     input_type=str(unit["input_type"]),
                 )
+                if str(unit["input_type"]) == "textbook":
+                    unit_config = _force_detected_textbook_form(
+                        unit_config,
+                        _json_object(unit["evidence_json"]),
+                    )
                 con.execute(
                     "UPDATE input_units SET configuration_json=?, updated_at=? WHERE unit_id=? AND workflow_id=?",
                     (canonical_json(unit_config), now, str(unit["unit_id"]), workflow_id),
@@ -2900,6 +3065,11 @@ class SystemInputService:
                 unit_labels=unit_labels,
                 input_type=str(unit["input_type"]),
             )
+            if str(unit["input_type"]) == "textbook":
+                unit_config = _force_detected_textbook_form(
+                    unit_config,
+                    _json_object(unit["evidence_json"]),
+                )
             configured_input_type = _text(canonical.get("input_type"), limit=32)
             input_type_status = (
                 "user_override"
@@ -4013,6 +4183,10 @@ class SystemInputService:
                 "category": _text(segment_metadata.get("category"), limit=128),
                 "filename_stem": _text(segment_metadata.get("filename_stem"), limit=256),
                 "audio_filename_stem": _text(segment_metadata.get("audio_filename_stem"), limit=256),
+                "role": _text(segment_metadata.get("role"), limit=256),
+                "paragraph_id": _text(segment_metadata.get("paragraph_id"), limit=256),
+                "paragraph_scope": _text(segment_metadata.get("paragraph_scope"), limit=256),
+                "paragraph_title": _text(segment_metadata.get("paragraph_title"), limit=256),
                 "audio_only_auxiliary": segment_metadata.get("audio_only_auxiliary") is True,
                 "source_locator": _text(segment["source_locator"], limit=512),
                 # 课文页面每条句子内容都带必填的中文译文；它由解析器从
@@ -4044,6 +4218,15 @@ class SystemInputService:
                 unit_labels=unit_labels,
                 input_type=str(unit["input_type"]),
             )
+            if str(unit["input_type"]) == "textbook":
+                # The run snapshot is rebuilt from the workflow configuration,
+                # so apply the parser-owned form here as well. Otherwise an
+                # old/manual textbookForm could reappear in the page payload
+                # even though the persisted unit projection was corrected.
+                unit_config = _force_detected_textbook_form(
+                    unit_config,
+                    _json_object(unit["evidence_json"]),
+                )
             target_units.append({
                 "unit_id": str(unit["unit_id"]),
                 "unit_label": str(unit["label"]),

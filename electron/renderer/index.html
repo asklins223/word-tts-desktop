@@ -557,7 +557,7 @@
 
                     <details class="system-input-form-section system-input-disclosure" id="system-input-textbook-fields" hidden data-system-input-disclosure aria-labelledby="system-input-textbook-heading">
                         <summary class="system-input-section-heading">
-                            <div class="system-input-section-heading-copy"><h3 id="system-input-textbook-heading">课文分类信息</h3><p>与平台“新增课文”表单一致；能从文档自动识别的项已预填，其余请补齐。</p></div>
+                            <div class="system-input-section-heading-copy"><h3 id="system-input-textbook-heading">课文分类信息</h3><p>与平台“新增课文”表单一致；课文形式由文档结构自动识别，其余信息请补齐。</p></div>
                             <div class="system-input-section-meta"><span class="system-input-section-summary" id="system-input-textbook-summary">待补充</span><span class="system-input-section-detail" id="system-input-textbook-detail" hidden></span></div>
                         </summary>
                         <div class="system-input-section-body">
@@ -568,15 +568,14 @@
                                 </div>
                                 <button type="button" class="btn-secondary btn-sm" id="system-input-textbook-sync-btn">同步教材列表</button>
                             </div>
+                            <div class="system-input-textbook-form-readout" id="system-input-textbook-form-readout" aria-live="polite" aria-label="课文形式识别结果">
+                                <div class="system-input-textbook-form-readout-copy"><span>课文形式</span><strong id="system-input-textbook-form-detected">等待识别</strong></div>
+                                <small id="system-input-textbook-form-note">根据文档结构自动识别</small>
+                            </div>
                             <div class="system-input-form-grid">
                                 <label class="system-input-form-field is-required"><span>课文名称（中文） <small>必填</small></span><textarea id="system-input-textbook-name-zh" rows="2" autocomplete="off" placeholder="请输入课文名称（中文）"></textarea></label>
                                 <label class="system-input-form-field is-required"><span>课文名称（英文） <small>必填</small></span><textarea id="system-input-textbook-name-en" rows="2" autocomplete="off" placeholder="请输入课文名称（英文）"></textarea></label>
-                                <label class="system-input-form-field is-required"><span>课文形式 <small>必填</small></span><input type="hidden" id="system-input-textbook-form" value="同步课文">
-                                    <div class="system-input-choice-group system-input-choice-group-tags" data-system-input-choice-group="system-input-textbook-form" role="radiogroup" aria-label="课文形式">
-                                        <button type="button" role="radio" data-value="同步课文" aria-checked="true">同步课文</button>
-                                        <button type="button" role="radio" data-value="角色扮演" aria-checked="false">角色扮演</button>
-                                    </div>
-                                </label>
+                                <input type="hidden" id="system-input-textbook-form" value="">
                                 <label class="system-input-form-field is-required"><span>版本 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-version"><input id="system-input-textbook-version" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索教材版本"><div class="system-input-picker-menu" id="system-input-textbook-version-menu" role="listbox" aria-label="版本选项" hidden></div></div></label>
                                 <label class="system-input-form-field is-required"><span>学段 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-stage"><input id="system-input-textbook-stage" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索学段"><div class="system-input-picker-menu" id="system-input-textbook-stage-menu" role="listbox" aria-label="学段选项" hidden></div></div></label>
                                 <label class="system-input-form-field is-required"><span>年级 <small>必填</small></span><div class="system-input-picker" data-system-input-picker-for="system-input-textbook-grade"><input id="system-input-textbook-grade" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" placeholder="搜索年级"><div class="system-input-picker-menu" id="system-input-textbook-grade-menu" role="listbox" aria-label="年级选项" hidden></div></div></label>

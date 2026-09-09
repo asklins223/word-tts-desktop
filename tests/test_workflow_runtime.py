@@ -332,6 +332,41 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(item["metadata"]["gender"], "male")
         self.assertEqual(item["metadata"]["filename_stem"], "问题1")
 
+    def test_workspace_preserves_parser_textbook_structure_facts(self) -> None:
+        snapshot = self.repository.create_workflow(
+            "tts", {"generation_mode": "single_segment"}
+        )
+        item_id = self.repository.create_item(
+            snapshot.workflow_id,
+            item_type="课文跟读",
+            sequence=0,
+            normalized_content="Liu Guanghui is an agricultural technology expert.",
+            item_identity_key="textbook:paragraph:1",
+            metadata={
+                "category": "语篇跟读",
+                "entry_form": "段落",
+                "paragraph_id": "article-1-paragraph-2",
+                "paragraph_scope": "article-1",
+                "paragraph_title": "The watermelon farmer",
+                "article_title": "Love My Hometown, Build My Hometown",
+                "article_theme": "Reading Plus",
+                "role": "Narrator",
+            },
+        )
+
+        workspace = self.repository.get_workspace(snapshot.workflow_id)
+        item = next(item for item in workspace["items"] if item["item_id"] == item_id)
+        for key, expected in {
+            "entry_form": "段落",
+            "paragraph_id": "article-1-paragraph-2",
+            "paragraph_scope": "article-1",
+            "paragraph_title": "The watermelon farmer",
+            "article_title": "Love My Hometown, Build My Hometown",
+            "article_theme": "Reading Plus",
+            "role": "Narrator",
+        }.items():
+            self.assertEqual(item["metadata"][key], expected)
+
     def test_pause_resume_and_restart_takeover_are_fenced_by_server_state(self) -> None:
         workflow_id = self._workflow_with_items()
         accepted = self.repository.command(workflow_id, "generate", 0)

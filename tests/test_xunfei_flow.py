@@ -570,6 +570,75 @@ class XunfeiFlowTests(unittest.TestCase):
             [[(0, 0), (2, 2)], [(1, 1)]],
         )
 
+    def test_composite_prepare_fallback_keeps_completed_queue_groups(self):
+        """队列中途失败时只回退失败组及后续区间，不能重新输入全文。"""
+        session = XunFeiSession()
+        rows = [
+            {"text": "Amanda one.", "voice_key": "amanda", "speed": 50,
+             "pitch": 50, "volume": 50},
+            {"text": "George one.", "voice_key": "george", "speed": 50,
+             "pitch": 50, "volume": 50},
+            {"text": "Amanda two.", "voice_key": "amanda", "speed": 60,
+             "pitch": 50, "volume": 50},
+            {"text": "George two.", "voice_key": "george", "speed": 60,
+             "pitch": 50, "volume": 50},
+        ]
+        queued_ranges = []
+        contiguous_ranges = []
+        queue_apply_calls = []
+
+        def select_queue(_page, _rows, ranges, **_kwargs):
+            queued_ranges.append(ranges)
+
+        def apply_queue(_page, _rows, ranges, **_kwargs):
+            queue_apply_calls.append(ranges)
+            if len(queue_apply_calls) == 3:
+                raise XunfeiError("模拟第 3 个配置组回读失败")
+
+        def select_contiguous(_page, _rows, first, last, **_kwargs):
+            contiguous_ranges.append((first, last))
+
+        with mock.patch.object(
+            XunFeiSession,
+            "_composite_ui_rows",
+            return_value=(rows, []),
+        ), mock.patch.object(
+            XunFeiSession, "_input_composite_text"
+        ) as input_text, mock.patch.object(
+            XunFeiSession,
+            "_select_composite_queue_rows",
+            side_effect=select_queue,
+        ), mock.patch.object(
+            XunFeiSession,
+            "_apply_composite_voice_to_queue",
+            side_effect=apply_queue,
+        ), mock.patch.object(
+            XunFeiSession,
+            "_close_composite_voice_panel",
+            return_value=True,
+        ), mock.patch.object(
+            XunFeiSession, "_clear_composite_queue", return_value=True
+        ), mock.patch.object(
+            XunFeiSession,
+            "_select_editor_rows",
+            side_effect=select_contiguous,
+        ), mock.patch.object(
+            XunFeiSession,
+            "_apply_composite_voice_to_selection",
+        ), mock.patch.object(
+            XunFeiSession,
+            "_verify_composite_voice_layout",
+            return_value=True,
+        ):
+            session._prepare_composite_editor(object(), {})
+
+        self.assertEqual(input_text.call_count, 1)
+        self.assertEqual(
+            queued_ranges,
+            [[(0, 0)], [(1, 1)], [(2, 2)]],
+        )
+        self.assertEqual(contiguous_ranges, [(2, 2), (3, 3)])
+
     def test_long_editor_selection_keeps_one_batch_across_scroll(self):
         """长编辑器不可同时看见首尾时，选区仍不能退化成逐行处理。"""
         try:
@@ -795,6 +864,57 @@ class XunfeiFlowTests(unittest.TestCase):
                 self.assertTrue(page.evaluate("() => window.voiceCardClicked"))
             finally:
                 browser.close()
+
+    def test_composite_voice_card_waits_for_provider_hydration(self):
+        """点选音色后必须等讯飞参数回填完成，不能与异步回填竞态。"""
+
+        class ProviderPage:
+            url = "https://peiyin.xunfei.cn/make"
+
+            def __init__(self):
+                self.listeners = {}
+                self.hydrated = False
+
+            def on(self, event, listener):
+                self.listeners.setdefault(event, []).append(listener)
+
+            def remove_listener(self, event, listener):
+                self.listeners[event].remove(listener)
+
+            def emit(self, event, value):
+                for listener in list(self.listeners.get(event, [])):
+                    listener(value)
+
+            def wait_for_timeout(self, _milliseconds):
+                self.hydrated = True
+
+        class VoiceCard:
+            def __init__(self, page):
+                self.page = page
+
+            def click(self, **_kwargs):
+                self.page.emit(
+                    "response",
+                    mock.Mock(
+                        url=(
+                            "https://peiyin.xunfei.cn/"
+                            "video-api/proxy-zhizuo/api/asset/"
+                            "speaker/favorite/detail?speakerNo=593031758"
+                        )
+                    ),
+                )
+
+        page = ProviderPage()
+        card = VoiceCard(page)
+        self.assertTrue(
+            XunFeiSession._click_composite_voice_card(
+                page,
+                "英语-George",
+                initial_card=card,
+            )
+        )
+        self.assertTrue(page.hydrated)
+        self.assertEqual(page.listeners.get("response"), [])
 
     def test_composite_queue_selects_non_contiguous_rows_and_applies_each_voice(self):
         """多段队列必须覆盖精确行集合，并能连续套用两种音色。"""

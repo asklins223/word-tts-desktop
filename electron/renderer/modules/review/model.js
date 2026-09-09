@@ -49,6 +49,20 @@ function workspaceItemsToParseResults(workspace) {
                 ? { audio_filename_stem: segment.audio_filename_stem }
                 : {}),
             ...(segment?.category && metadata.category == null ? { category: segment.category } : {}),
+            // Paragraph/role facts are also present in content_segments.  Use
+            // them as a lossless fallback when opening a workspace produced
+            // by an older backend whose public item metadata was filtered
+            // before these parser-owned fields were added to the allowlist.
+            ...(segment?.role && metadata.role == null ? { role: segment.role } : {}),
+            ...(segment?.paragraph_id && metadata.paragraph_id == null
+                ? { paragraph_id: segment.paragraph_id }
+                : {}),
+            ...(segment?.paragraph_scope && metadata.paragraph_scope == null
+                ? { paragraph_scope: segment.paragraph_scope }
+                : {}),
+            ...(segment?.paragraph_title != null && metadata.paragraph_title == null
+                ? { paragraph_title: segment.paragraph_title }
+                : {}),
             ...(segment?.audio_only_auxiliary === true ? { audio_only_auxiliary: true } : {}),
             // The generic item metadata projection is intentionally capped;
             // page_input has its own bounded system-input projection so a

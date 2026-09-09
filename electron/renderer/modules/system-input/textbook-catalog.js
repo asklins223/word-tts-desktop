@@ -2,11 +2,6 @@
 (function attachRendererFeature_systemInput_textbookCatalog(root) {
     'use strict';
 
-const TEXTBOOK_FORM_OPTIONS = Object.freeze([
-    { value: '同步课文', label: '同步课文', detail: '与教材目录同步' },
-    { value: '角色扮演', label: '角色扮演', detail: '按角色完成对话' },
-]);
-
 const TEXTBOOK_DIRECTORY_FIELDS = Object.freeze([
     { key: 'version', id: 'system-input-textbook-version', label: '版本', placeholder: '搜索教材版本' },
     { key: 'stage', id: 'system-input-textbook-stage', label: '学段', placeholder: '搜索学段' },
@@ -678,7 +673,6 @@ async function startSystemInputTextbookCatalogSync() {
 }
 
 registerRendererModule('systemInput.textbookCatalog', {
-    TEXTBOOK_FORM_OPTIONS,
     systemInputTextbookCatalogAssessment,
     systemInputReconcileTextbookDirectory,
     renderSystemInputTextbookOptions,

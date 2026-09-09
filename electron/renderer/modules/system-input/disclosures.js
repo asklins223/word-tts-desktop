@@ -349,7 +349,7 @@ function systemInputUnitMissingFields(configuration, inputType = '') {
         : {};
     const resolvedInputType = String(inputType || source.input_type || source.inputType || 'paper').trim();
     if (resolvedInputType === 'textbook') {
-        // 课文页面的九个分类信息字段全部是平台必填项。
+        // 课文形式由文档结构自动识别；这里只校验用户需要补齐的页面字段。
         const displayValueFor = key => {
             const snake = key.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
             const raw = [key, snake]
@@ -360,7 +360,6 @@ function systemInputUnitMissingFields(configuration, inputType = '') {
         return [
             ['textbookNameZh', '课文名称（中文）'],
             ['textbookNameEn', '课文名称（英文）'],
-            ['textbookForm', '课文形式'],
             ['textbookVersion', '版本'],
             ['textbookStage', '学段'],
             ['textbookGrade', '年级'],
@@ -481,7 +480,7 @@ function focusSystemInputValidationError(error) {
     // 学段/年级/版本等同名标签在试卷与课文中指向不同控件；按当前
     // 录入类型解析，避免聚焦到已隐藏的试卷字段上。
     const paperOnlyFieldByLabel = { '学段': 'system-input-stage', '年级': 'system-input-grade' };
-    const textbookFieldByLabel = { '课文名称（中文）': 'system-input-textbook-name-zh', '课文名称（英文）': 'system-input-textbook-name-en', '课文形式': 'system-input-textbook-form', '版本': 'system-input-textbook-version', '学段': 'system-input-textbook-stage', '年级': 'system-input-textbook-grade', '册别': 'system-input-textbook-volume', '单元': 'system-input-textbook-unit', '课时': 'system-input-textbook-lesson' };
+    const textbookFieldByLabel = { '课文名称（中文）': 'system-input-textbook-name-zh', '课文名称（英文）': 'system-input-textbook-name-en', '版本': 'system-input-textbook-version', '学段': 'system-input-textbook-stage', '年级': 'system-input-textbook-grade', '册别': 'system-input-textbook-volume', '单元': 'system-input-textbook-unit', '课时': 'system-input-textbook-lesson' };
     const isTextbookFocus = ($('system-input-type')?.value || 'paper') === 'textbook';
     if (error.unitId && String(error.unitId) !== String(systemInputSelectedUnitId)) {
         const select = $('system-input-unit-select');
@@ -523,7 +522,6 @@ function validateSystemInputConfigurationForm({ focus = true } = {}) {
         const textbookRequired = [
             ['system-input-textbook-name-zh', '课文名称（中文）', '请输入课文名称（中文）'],
             ['system-input-textbook-name-en', '课文名称（英文）', '请输入课文名称（英文）'],
-            ['system-input-textbook-form', '课文形式', '请输入课文形式（角色扮演 或 同步课文）'],
             ['system-input-textbook-version', '版本', '请输入教材版本，例如：人教版'],
             ['system-input-textbook-stage', '学段', '请输入学段，例如：初中'],
             ['system-input-textbook-grade', '年级', '请输入年级，例如：七年级'],

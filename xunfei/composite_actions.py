@@ -710,7 +710,17 @@ class CompositeActionsMixin:
     def _click_composite_voice_card(
         cls, page, voice_name, *, initial_card=None, cancel_check=None
     ):
-        """Click a searched voice card while tolerating one React remount."""
+        """Click a searched voice card while tolerating one React remount.
+
+        The Xunfei page does not finish selecting a card when the card's click
+        handler returns.  It first loads the card's saved speaker settings and
+        then hydrates the three parameter inputs.  Starting to type immediately
+        races that hydration: the page can overwrite the just-entered rate
+        (George is saved at 35) after our first field has already been handled.
+        Keep the normal UI click, but wait for the provider's detail response
+        before the caller writes parameters.  This is the synchronization
+        boundary; re-applying a whole group after a failed verification is not.
+        """
         card = initial_card
         for attempt in range(3):
             _check_cancel_requested(cancel_check)
@@ -722,12 +732,65 @@ class CompositeActionsMixin:
                 if attempt < 2:
                     _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
                 continue
+
+            detail_state = None
+            detail_listener = None
+            page_url = str(getattr(page, "url", "") or "")
+            # The local unit-test pages and compatibility page stubs do not
+            # expose the provider network.  Only install this short-lived
+            # watcher on the real Xunfei page, before the click is dispatched.
+            if (
+                "peiyin.xunfei.cn" in page_url
+                and callable(getattr(page, "on", None))
+                and callable(getattr(page, "remove_listener", None))
+            ):
+                detail_state = {
+                    "common": False,
+                    "favorite": False,
+                    "last_at": time.monotonic(),
+                }
+
+                def on_response(response):
+                    response_url = str(getattr(response, "url", "") or "")
+                    if re.search(
+                        r"/video-api/asset/common_speaker_detail(?:[?]|$)",
+                        response_url,
+                    ):
+                        detail_state["common"] = True
+                        detail_state["last_at"] = time.monotonic()
+                    if (
+                        "/video-api/proxy-zhizuo/api/asset/speaker/favorite/detail"
+                        in response_url
+                    ):
+                        detail_state["favorite"] = True
+                        detail_state["last_at"] = time.monotonic()
+
+                detail_listener = on_response
+                page.on("response", detail_listener)
             try:
                 # A card found after the search is already visible. A short
                 # action timeout avoids waiting through a full provider retry
                 # when the framework replaces that node during the click.
                 card.click(timeout=1500)
                 _check_cancel_requested(cancel_check)
+
+                if detail_state is not None:
+                    # ``favorite/detail`` is the last response in the current
+                    # page flow and is followed by the input hydration.  Some
+                    # older page builds only request common_speaker_detail, so
+                    # accept that response after a short quiet window too.
+                    deadline = time.monotonic() + 0.8
+                    while time.monotonic() < deadline:
+                        _check_cancel_requested(cancel_check)
+                        if detail_state["favorite"]:
+                            _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+                            break
+                        if (
+                            detail_state["common"]
+                            and time.monotonic() - detail_state["last_at"] >= 0.18
+                        ):
+                            break
+                        _wait_with_cancel(page, 0.03, cancel_check=cancel_check)
                 return True
             except XunfeiCancelled:
                 raise
@@ -735,6 +798,12 @@ class CompositeActionsMixin:
                 card = None
                 if attempt < 2:
                     _wait_with_cancel(page, 0.08, cancel_check=cancel_check)
+            finally:
+                if detail_listener is not None:
+                    try:
+                        page.remove_listener("response", detail_listener)
+                    except Exception:
+                        pass
         return False
 
     @classmethod
@@ -1497,6 +1566,40 @@ class CompositeActionsMixin:
         )
 
     @classmethod
+    def _apply_composite_contiguous_ranges(
+        cls, page, rows, queue_plan, start_entry_index=0, *, cancel_check=None
+    ):
+        """按连续区间补完队列失败组之后的配置，不重新输入全文。
+
+        多段队列一次点击会覆盖多个不连续区间。某个配置组在页面异步
+        重绘期间失败时，前面的组已经是确定状态，不能再从第一组开始
+        选择；当前组则可能已经部分应用，也需要按同一配置重新覆盖一次。
+        这里仅把失败组及后续配置拆回原来的连续区间，保留前面已经校验
+        成功的队列组。
+        """
+        applied_count = 0
+        for entry in queue_plan[start_entry_index:]:
+            ranges = entry.get("ranges") if isinstance(entry, dict) else None
+            for first_index, last_index in ranges or ():
+                _check_cancel_requested(cancel_check)
+                cls._select_editor_rows(
+                    page,
+                    rows,
+                    first_index,
+                    last_index,
+                    cancel_check=cancel_check,
+                )
+                cls._apply_composite_voice_to_selection(
+                    page,
+                    rows,
+                    first_index,
+                    last_index,
+                    cancel_check=cancel_check,
+                )
+                applied_count += 1
+        return applied_count
+
+    @classmethod
     def _read_composite_pause_issues(cls, page, boundaries):
         """一次回读所有停顿标记，避免每个段落都单独查询 DOM。
 
@@ -1847,145 +1950,114 @@ class CompositeActionsMixin:
 
         # 讯飞新版编辑器提供真实的 Command/Ctrl 多段选择队列：同一配置的
         # 不连续行先全部加入队列，再一次点击“使用”统一设置音色和参数。
-        # 队列应用或布局失败时才回退旧的连续区间方案；选区回读失败由
-        # _select_composite_queue_rows 自己做有界的缺行补选。只有在确认
-        # 快速 Range 路径尚未发送任何 pointerup 时，才允许安全切到原生
-        # select_text；一旦页面可能已收到队列事件就必须停止。
+        # 队列应用或布局失败时，只把失败组及后续组拆回连续区间；前面已经
+        # 回读成功的组不能重新输入、重新选择，否则长文档会出现“做到第
+        # 三/四个角色又从头开始”的重复操作。
         queue_error = None
+        failed_entry_index = None
+
+        def reset_composite_queue_for_fallback():
+            closed = cls._close_composite_voice_panel(
+                page, cancel_check=cancel_check
+            )
+            cleared = cls._clear_composite_queue(
+                page, cancel_check=cancel_check
+            )
+            if not closed or not cleared:
+                raise XunfeiCompositeSelectionError(
+                    "多人配音队列清理未确认，为避免重复选择已停止",
+                    can_fallback_to_native=False,
+                )
+
         # 正常路径使用页面 Range 建立选区。选区函数内部会按页面行号只
         # 补选异步漏记的行；不能在已经可能入队后整批切换到另一套机制。
-        for queue_attempt in range(2):
+        for entry_index, entry in enumerate(queue_plan, start=1):
             _check_cancel_requested(cancel_check)
-            if queue_attempt:
-                _log(
-                    "[xunfei]   多人配音多段队列应用回读失败，"
-                    "重新输入全部文本后再试一次"
-                )
-                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
-                cls._clear_composite_queue(page, cancel_check=cancel_check)
-                cls._input_composite_text(page, rows, cancel_check=cancel_check)
+            group_started_at = time.perf_counter()
+            ranges = entry["ranges"]
             try:
-                for entry_index, entry in enumerate(queue_plan, start=1):
-                    _check_cancel_requested(cancel_check)
-                    group_started_at = time.perf_counter()
-                    ranges = entry["ranges"]
-                    try:
-                        cls._select_composite_queue_rows(
-                            page,
-                            rows,
-                            ranges,
-                            native=False,
-                            cancel_check=cancel_check,
-                        )
-                    except XunfeiCompositeSelectionError as selection_error:
-                        if not getattr(selection_error, "can_fallback_to_native", False):
-                            raise
-                        _log(
-                            "[xunfei]   快速选区在尚未入队前失败，"
-                            "安全回退原生 select_text"
-                        )
-                        cls._select_composite_queue_rows(
-                            page,
-                            rows,
-                            ranges,
-                            native=True,
-                            cancel_check=cancel_check,
-                        )
-                    cls._apply_composite_voice_to_queue(
-                        page, rows, ranges, cancel_check=cancel_check
+                try:
+                    cls._select_composite_queue_rows(
+                        page,
+                        rows,
+                        ranges,
+                        native=False,
+                        cancel_check=cancel_check,
                     )
-                    _check_cancel_requested(cancel_check)
-                    voice_name = get_voice_info(
-                        rows[ranges[0][0]].get("voice_key") or DEFAULT_FEMALE
-                    )["name"]
-                    group_duration_ms = round(
-                        (time.perf_counter() - group_started_at) * 1000
-                    )
+                except XunfeiCompositeSelectionError as selection_error:
+                    if not getattr(selection_error, "can_fallback_to_native", False):
+                        raise
                     _log(
-                        f"[xunfei]   多人配音配置组 {entry_index}/{len(queue_plan)} "
-                        f"已完成：{voice_name}，{sum(last - first + 1 for first, last in ranges)} 行，"
-                        f"耗时 {group_duration_ms}ms"
+                        "[xunfei]   快速选区在尚未入队前失败，"
+                        "安全回退原生 select_text"
                     )
-                if not cls._verify_composite_voice_layout(page, rows, queue_plan):
-                    raise XunfeiError(
-                        "多人配音全量音色标记回读失败：存在漏行、串行或重复标记"
+                    cls._select_composite_queue_rows(
+                        page,
+                        rows,
+                        ranges,
+                        native=True,
+                        cancel_check=cancel_check,
                     )
-                queue_error = None
-                break
+                cls._apply_composite_voice_to_queue(
+                    page, rows, ranges, cancel_check=cancel_check
+                )
+                _check_cancel_requested(cancel_check)
+                voice_name = get_voice_info(
+                    rows[ranges[0][0]].get("voice_key") or DEFAULT_FEMALE
+                )["name"]
+                group_duration_ms = round(
+                    (time.perf_counter() - group_started_at) * 1000
+                )
+                _log(
+                    f"[xunfei]   多人配音配置组 {entry_index}/{len(queue_plan)} "
+                    f"已完成：{voice_name}，{sum(last - first + 1 for first, last in ranges)} 行，"
+                    f"耗时 {group_duration_ms}ms"
+                )
             except XunfeiCancelled:
                 raise
             except XunfeiCompositeSelectionError:
                 # 选区函数已经做过有界的“只补缺行”处理。此类错误不能
-                # 进入下面的整批重输/连续区间回退，否则会再次选择已成功
-                # 的段落；同时交给生成层禁止通用提交重试。
+                # 进入连续区间回退，否则会再次选择可能已经入队的段落；
+                # 同时交给生成层禁止通用提交重试。
                 raise
             except XunfeiError as error:
                 queue_error = error
-                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
-                cls._clear_composite_queue(page, cancel_check=cancel_check)
+                failed_entry_index = entry_index - 1
+                reset_composite_queue_for_fallback()
+                break
 
-        try:
-            if queue_error:
-                raise queue_error
-        except XunfeiCancelled:
-            raise
-        except XunfeiError as error:
-            _log(
-                f"[xunfei]   多人配音多段队列不可用，重新输入后按连续区间处理: {error}"
+        if queue_error is None and not cls._verify_composite_voice_layout(
+            page, rows, queue_plan
+        ):
+            queue_error = XunfeiError(
+                "多人配音全量音色标记回读失败：存在漏行、串行或重复标记"
             )
-            cls._close_composite_voice_panel(page, cancel_check=cancel_check)
-            cls._clear_composite_queue(page, cancel_check=cancel_check)
-            cls._input_composite_text(page, rows, cancel_check=cancel_check)
-            marking_plan = cls._composite_marking_plan(rows)
-            base_index = marking_plan["base_index"]
-            correction_groups = marking_plan["correction_groups"]
-            try:
-                cls._select_editor_rows(
-                    page, rows, 0, len(rows) - 1, cancel_check=cancel_check
-                )
-                cls._apply_composite_voice_to_selection(
-                    page,
-                    rows,
-                    0,
-                    len(rows) - 1,
-                    config_row=rows[base_index],
-                    cancel_check=cancel_check,
-                )
-            except XunfeiCancelled:
-                raise
-            except XunfeiError as fallback_error:
-                _log(
-                    f"[xunfei]   多人配音全文基准标注失败，按连续区间处理: {fallback_error}"
-                )
-                cls._close_composite_voice_panel(page, cancel_check=cancel_check)
-                cls._input_composite_text(page, rows, cancel_check=cancel_check)
-                for first_index, last_index in groups:
-                    _check_cancel_requested(cancel_check)
-                    cls._select_editor_rows(
-                        page, rows, first_index, last_index,
-                        cancel_check=cancel_check,
-                    )
-                    cls._apply_composite_voice_to_selection(
-                        page, rows, first_index, last_index,
-                        cancel_check=cancel_check,
-                    )
-            else:
-                for first_index, last_index in correction_groups:
-                    _check_cancel_requested(cancel_check)
-                    cls._select_editor_rows(
-                        page, rows, first_index, last_index,
-                        cancel_check=cancel_check,
-                    )
-                    cls._apply_composite_voice_to_selection(
-                        page, rows, first_index, last_index,
-                        cancel_check=cancel_check,
-                    )
+            # 全量回读失败时无法安全判断是哪一组被页面串改，必须从第
+            # 一组开始做连续区间校正；仍保留现有正文和已经生成的标记，
+            # 不再重新输入整篇文本。
+            failed_entry_index = 0
+            reset_composite_queue_for_fallback()
+
+        if queue_error is not None:
+            fallback_start = max(0, int(failed_entry_index or 0))
+            _log(
+                f"[xunfei]   多人配音多段队列在配置组 {fallback_start + 1}"
+                f"/{len(queue_plan)} 回读失败：{queue_error}；"
+                f"保留前 {fallback_start} 组，后续按连续区间处理"
+            )
+            fallback_group_count = cls._apply_composite_contiguous_ranges(
+                page,
+                rows,
+                queue_plan,
+                fallback_start,
+                cancel_check=cancel_check,
+            )
             if not cls._verify_composite_voice_layout(page, rows, queue_plan):
                 raise XunfeiError(
                     "多人配音连续区间音色标记回读失败：存在漏行、串行或重复标记"
                 )
-            marking_mode = "连续区间回退"
-            marking_group_count = len(correction_groups) + 1
+            marking_mode = "多段队列+连续区间回退"
+            marking_group_count = fallback_start + fallback_group_count
         else:
             marking_mode = "多段队列"
             marking_group_count = len(queue_plan)

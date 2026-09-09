@@ -165,7 +165,8 @@ def _parse_conversation_items(
             raise TextInputPlanError(f"对话行缺少角色前缀：{paragraph}")
         conversations[current_number].append(
             {
-                "original": paragraph,
+                # 角色名作为独立的页面选择项提交；原文编辑器只填写台词。
+                "original": role_match.group("text").strip(),
                 "translation": "",
                 "role": role_match.group("role").strip(),
                 "audio_stem": f"{stem_prefix}{current_number}-{audio_number}",
@@ -183,6 +184,8 @@ def _items_from_paragraph(
     paragraph: str,
     stem_prefix: str,
     first_audio_number: int,
+    *,
+    paragraph_title: str = "",
 ) -> list[dict[str, Any]]:
     sentences = split_sentences(paragraph)
     if not sentences:
@@ -192,6 +195,7 @@ def _items_from_paragraph(
             "original": sentence,
             "translation": "",
             "audio_stem": f"{stem_prefix}{first_audio_number + index}",
+            "paragraph_title": paragraph_title,
         }
         for index, sentence in enumerate(sentences)
     ]
@@ -221,10 +225,13 @@ def _record(
     lesson: str,
     items: list[dict[str, Any]],
     audio_dir: Path,
+    roles: list[str] | None = None,
+    paragraphs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if NO_TEST_WORD in name_zh or NO_TEST_WORD in name_en:
         raise TextInputPlanError("课文名称不能包含“测试”")
-    return {
+    rendered_items = _with_audio(items, audio_dir)
+    record = {
         "name_zh": f"{name_zh}{NAME_SUFFIX}",
         "name_en": f"{name_en}{NAME_SUFFIX}",
         "form": form,
@@ -234,17 +241,35 @@ def _record(
         "volume": "上册",
         "unit": "Unit 1",
         "lesson": lesson,
-        "items": _with_audio(items, audio_dir),
+        "roles": list(dict.fromkeys(role for role in (roles or []) if str(role).strip())),
+        "items": rendered_items,
     }
+    if paragraphs is not None:
+        rendered_paragraphs = []
+        flattened: list[dict[str, Any]] = []
+        for paragraph in paragraphs:
+            paragraph_items = _with_audio(
+                list(paragraph.get("items") or []),
+                audio_dir,
+            )
+            rendered = {
+                "title": str(paragraph.get("title") or "").strip(),
+                "items": paragraph_items,
+            }
+            rendered_paragraphs.append(rendered)
+            flattened.extend(paragraph_items)
+        record["paragraphs"] = rendered_paragraphs
+        record["items"] = flattened
+    return record
 
 
 def _validate_plan(plan: dict[str, Any]) -> None:
     records = plan.get("records") or []
-    if len(records) != 7:
-        raise TextInputPlanError(f"预期 7 篇课文，实际 {len(records)} 篇")
+    if not records:
+        raise TextInputPlanError("没有生成可录入的课文记录")
     total_items = sum(len(record.get("items") or []) for record in records)
-    if total_items != 78:
-        raise TextInputPlanError(f"预期 78 条录入内容，实际 {total_items} 条")
+    if total_items <= 0:
+        raise TextInputPlanError("没有生成可录入的课文内容")
 
     names: list[str] = []
     audio_paths: list[str] = []
@@ -256,14 +281,31 @@ def _validate_plan(plan: dict[str, Any]) -> None:
             if NO_TEST_WORD in value:
                 raise TextInputPlanError(f"名称包含禁用词：{value}")
             names.append(value)
+        if record.get("form") == "段落":
+            paragraphs = record.get("paragraphs")
+            if not isinstance(paragraphs, list) or not paragraphs:
+                raise TextInputPlanError("段落类型课文必须包含至少一个段落")
+            for paragraph_index, paragraph in enumerate(paragraphs, 1):
+                if not isinstance(paragraph, dict):
+                    raise TextInputPlanError(
+                        f"段落类型课文的第 {paragraph_index} 段格式无效"
+                    )
+                paragraph_items = paragraph.get("items") or []
+                if not paragraph_items:
+                    raise TextInputPlanError(
+                        f"段落类型课文的第 {paragraph_index} 段没有句子"
+                    )
         for item in record.get("items") or []:
             audio_paths.append(str(item.get("audio_path") or ""))
+            if record.get("form") == "角色扮演" and item.get("role"):
+                if str(item.get("original") or "").startswith(f"{item['role']}:"):
+                    raise TextInputPlanError("角色扮演原文不应重复包含角色名前缀")
     if len(audio_paths) != len(set(audio_paths)):
         raise TextInputPlanError("同一个音频文件被多个录入项重复使用")
 
 
 def build_plan(document_path: Path, audio_dir: Path) -> dict[str, Any]:
-    """Parse the known Section A/B document into the seven input records."""
+    """Parse the confirmed Section A/B document into page-ready records."""
 
     document_path = document_path.expanduser().resolve()
     audio_dir = audio_dir.expanduser().resolve()
@@ -331,19 +373,30 @@ def build_plan(document_path: Path, audio_dir: Path) -> dict[str, Any]:
             f"Reading Plus 正文段落预期 5 段，实际 {len(reading_bodies)} 段"
         )
 
-    pauline_items = _items_from_paragraph(pauline_body, "SB语篇", 3)
-    peter_items = _items_from_paragraph(peter_body, "SB语篇", 13)
-    reading_items: list[dict[str, Any]] = []
+    pauline_items = _items_from_paragraph(
+        pauline_body,
+        "SB语篇",
+        3,
+        paragraph_title="Pauline Lee",
+    )
+    peter_items = _items_from_paragraph(
+        peter_body,
+        "SB语篇",
+        13,
+        paragraph_title="Peter Brown",
+    )
+    reading_paragraphs: list[dict[str, Any]] = []
     next_number = 23
     for paragraph in reading_bodies:
         items = _items_from_paragraph(paragraph, "SB语篇", next_number)
-        reading_items.extend(items)
+        reading_paragraphs.append({"title": "", "items": items})
         next_number += len(items)
-    if len(pauline_items) != 9 or len(peter_items) != 8 or len(reading_items) != 23:
+    reading_item_count = sum(len(paragraph["items"]) for paragraph in reading_paragraphs)
+    if len(pauline_items) != 9 or len(peter_items) != 8 or reading_item_count != 23:
         raise TextInputPlanError(
             "语篇切割数量异常："
             f"Pauline={len(pauline_items)}, Peter={len(peter_items)}, "
-            f"Reading Plus={len(reading_items)}"
+            f"Reading Plus={reading_item_count}"
         )
     if next_number != 46:
         raise TextInputPlanError(f"Reading Plus 音频编号应结束于 45，实际结束于 {next_number - 1}")
@@ -360,23 +413,25 @@ def build_plan(document_path: Path, audio_dir: Path) -> dict[str, Any]:
         _record(
             name_zh="Section A 1b/1c",
             name_en="Conversation 1",
-            form="同步课文",
+            form="角色扮演",
             lesson="Section A",
             items=a_conversations[1],
             audio_dir=audio_dir,
+            roles=[item["role"] for item in a_conversations[1]],
         ),
         _record(
             name_zh="Section A 1b/1c",
             name_en="Conversation 2",
-            form="同步课文",
+            form="角色扮演",
             lesson="Section A",
             items=a_conversations[2],
             audio_dir=audio_dir,
+            roles=[item["role"] for item in a_conversations[2]],
         ),
         _record(
             name_zh="Section B",
             name_en="What do we need to know about a new friend?",
-            form="同步课文",
+            form="角色扮演",
             lesson="Section B",
             items=b_sentences,
             audio_dir=audio_dir,
@@ -397,15 +452,19 @@ def build_plan(document_path: Path, audio_dir: Path) -> dict[str, Any]:
             items=peter_items,
             audio_dir=audio_dir,
         ),
+    ]
+    reading_form = "同步课文" if len(reading_paragraphs) == 1 else "段落"
+    records.append(
         _record(
             name_zh="Reading Plus",
             name_en="Making New Friends at School",
-            form="同步课文",
+            form=reading_form,
             lesson="Reading plus",
-            items=reading_items,
+            items=[],
+            paragraphs=reading_paragraphs,
             audio_dir=audio_dir,
-        ),
-    ]
+        )
+    )
     plan = {
         "source_document": str(document_path),
         "audio_dir": str(audio_dir),
@@ -433,6 +492,7 @@ def execute_plan(
         from platform_entry.adapter.textbook_page import (
             TextbookRecordObserver,
             _create_textbook_record,
+            _ensure_textbook_roles,
             _open_text_list,
         )
         from platform_entry.adapter.constants import API_BASE_URL
@@ -446,6 +506,7 @@ def execute_plan(
         context = _launch_browser(playwright, profile_dir)
         try:
             page = context.pages[0] if context.pages else context.new_page()
+            _ensure_textbook_roles(page, plan["records"], login_timeout_seconds)
             _open_text_list(page, login_timeout_seconds)
             records = plan["records"]
             observer = TextbookRecordObserver(page, api_base=API_BASE_URL)
@@ -494,6 +555,7 @@ def execute_plan_over_cdp(
         from platform_entry.adapter.textbook_page import (
             TextbookRecordObserver,
             _create_textbook_record,
+            _ensure_textbook_roles,
             _open_text_list,
         )
         from platform_entry.adapter.constants import API_BASE_URL
@@ -508,6 +570,7 @@ def execute_plan_over_cdp(
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             # 永远新开标签页，不抢占用户已打开的页面。
             page = context.new_page()
+            _ensure_textbook_roles(page, plan["records"], login_timeout_seconds)
             _open_text_list(page, login_timeout_seconds)
             records = plan["records"]
             observer = TextbookRecordObserver(page, api_base=API_BASE_URL)

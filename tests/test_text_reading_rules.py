@@ -112,10 +112,10 @@ class TextReadingRuleTests(unittest.TestCase):
         self.assertEqual(
             [item["text"] for item in paragraphs],
             [
-                "Bob: Bob's line.",
-                "Alice: Alice's line.",
-                "Teacher: Hello, class.",
-                "Class: Hello, teacher.",
+                "Bob's line.",
+                "Alice's line.",
+                "Hello, class.",
+                "Hello, teacher.",
             ],
         )
 
@@ -136,6 +136,7 @@ class TextReadingRuleTests(unittest.TestCase):
             [item["article_title"] for item in discourses],
             ["Welcome", "The First Story", "The First Story"],
         )
+        self.assertNotIn("paragraph_title", discourses[0])
 
     def test_legacy_format_keeps_legacy_sentence_splitting(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -154,7 +155,29 @@ class TextReadingRuleTests(unittest.TestCase):
             ["U-语篇1-1", "U-语篇1-2"],
         )
 
-    def test_new_non_dialogue_paragraph_stays_as_one_audio(self):
+    def test_legacy_role_discourse_exposes_roles_without_crashing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读旧格式角色语篇.docx")
+            document = Document()
+            document.add_heading("Understanding Idea", level=1)
+            document.add_heading("语篇跟读", level=2)
+            document.add_paragraph("Reporter: Welcome.")
+            document.add_paragraph("Student: Thank you.")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        self.assertEqual([item["role"] for item in discourses], ["Reporter", "Student"])
+        self.assertEqual(
+            {item["paragraph_scope"] for item in discourses},
+            {"U:语篇跟读:discourse-1"},
+        )
+        self.assertEqual(
+            {item["paragraph_id"] for item in discourses},
+            {"U:语篇跟读:discourse-1:dialogue"},
+        )
+
+    def test_new_non_dialogue_paragraph_is_entered_sentence_by_sentence(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir, "课文跟读新版普通段落.docx")
             document = Document()
@@ -169,9 +192,12 @@ class TextReadingRuleTests(unittest.TestCase):
             result = TextReadingParser(path).parse()
 
         paragraphs = [item for item in result["items"] if item["category"] == "段落跟读"]
-        self.assertEqual(len(paragraphs), 1)
-        self.assertEqual(paragraphs[0]["text"], "This is one ordinary paragraph. It contains two sentences.")
-        self.assertNotIn("role", paragraphs[0])
+        self.assertEqual(len(paragraphs), 2)
+        self.assertEqual(
+            [item["text"] for item in paragraphs],
+            ["This is one ordinary paragraph.", "It contains two sentences."],
+        )
+        self.assertTrue(all("role" not in item for item in paragraphs))
 
     def test_conversation_structure_splits_each_role_into_an_audio_and_exposes_role(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -198,12 +224,69 @@ class TextReadingRuleTests(unittest.TestCase):
         self.assertEqual(
             [item["text"] for item in paragraphs],
             [
-                "Bob: Bob's line.",
-                "Alice: Alice's line.",
-                "Teacher: Hello, class.",
-                "Class: Hello, teacher.",
+                "Bob's line.",
+                "Alice's line.",
+                "Hello, class.",
+                "Hello, teacher.",
             ],
         )
+
+    def test_sentence_role_prefix_is_removed_and_role_is_preserved(self):
+        self.assertEqual(
+            TextReadingParser._role_label("Mr. Yan: Hello."),
+            "Mr. Yan",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-句子角色样本.docx")
+            document = Document()
+            for text in [
+                "课程跟读-句子角色样本",
+                "Section A",
+                "句子跟读",
+                "1. Pauline: Hello, everyone.",
+                "中文：大家好。",
+                "2. Peter： Nice to meet you.",
+                "中文：很高兴认识你。",
+                "3. 小明：Hi.",
+                "中文：你好。",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        sentences = [item for item in result["items"] if item["category"] == "句子跟读"]
+        self.assertEqual(
+            [item["role"] for item in sentences],
+            ["Pauline", "Peter", "小明"],
+        )
+        self.assertEqual(
+            [item["text"] for item in sentences],
+            ["Hello, everyone.", "Nice to meet you.", "Hi."],
+        )
+        self.assertEqual(
+            [item["translation"] for item in sentences],
+            ["大家好。", "很高兴认识你。", "你好。"],
+        )
+        self.assertTrue(all(item["entry_form"] == "角色扮演" for item in sentences))
+
+    def test_repeated_single_role_lines_without_conversation_are_still_roleplay(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-单角色对话样本.docx")
+            document = Document()
+            for text in [
+                "课程跟读-单角色对话样本",
+                "Section B",
+                "段落跟读",
+                "Teacher: First line.",
+                "Teacher: Second line.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        paragraphs = [item for item in result["items"] if item["category"] == "段落跟读"]
+        self.assertEqual([item["role"] for item in paragraphs], ["Teacher", "Teacher"])
+        self.assertEqual([item["text"] for item in paragraphs], ["First line.", "Second line."])
 
     def test_conversation_discourse_also_splits_each_role(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -255,6 +338,34 @@ class TextReadingRuleTests(unittest.TestCase):
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
             ["SA语篇-C3-1", "SA语篇-C3-2", "SA语篇-C4-1", "SA语篇-C4-2"],
+        )
+
+    def test_numbered_discourse_groups_keep_distinct_paragraph_scopes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-多个语篇组.docx")
+            document = Document()
+            for text in [
+                "课程跟读-多个语篇组",
+                "Section B",
+                "语篇跟读",
+                "语篇1",
+                "First article",
+                "The first article has one sentence.",
+                "语篇2",
+                "Second article",
+                "The second article has one sentence.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        self.assertEqual(
+            {item["paragraph_scope"] for item in discourses},
+            {
+                "SB:语篇跟读:article-1:discourse-1",
+                "SB:语篇跟读:article-1:discourse-2",
+            },
         )
 
     def test_isolated_section_marker_does_not_switch_to_new_parser(self):
@@ -332,7 +443,11 @@ class TextReadingRuleTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["article_title"] for item in discourses],
-            ["Small title", "Small title"],
+            ["RP title", "RP title"],
+        )
+        self.assertEqual(
+            [item.get("paragraph_title") for item in discourses],
+            ["Small title", None],
         )
 
     def test_sentence_splitter_keeps_common_english_abbreviations_together(self):
@@ -403,7 +518,7 @@ class TextReadingRuleTests(unittest.TestCase):
         paragraphs = [item for item in result["items"] if item["category"] == "段落跟读"]
         self.assertEqual(
             [item["text"] for item in paragraphs],
-            ["Introductory paragraph.", "Teacher: Welcome.", "Student: Thank you."],
+            ["Introductory paragraph.", "Welcome.", "Thank you."],
         )
 
     def test_discourse_content_before_first_conversation_is_not_dropped(self):
@@ -426,7 +541,7 @@ class TextReadingRuleTests(unittest.TestCase):
         discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
         self.assertEqual(
             [item["text"] for item in discourses],
-            ["Introductory paragraph.", "Teacher: Welcome.", "Student: Thank you."],
+            ["Introductory paragraph.", "Welcome.", "Thank you."],
         )
         self.assertEqual(
             [item["filename_stem"] for item in discourses],
@@ -453,6 +568,155 @@ class TextReadingRuleTests(unittest.TestCase):
             ["The body remains a sentence."],
         )
         self.assertEqual(discourses[0]["article_title"], "Small title")
+
+    def test_reading_plus_big_title_is_not_used_as_paragraph_title(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-ReadingPlus大标题.docx")
+            document = Document()
+            for text in [
+                "课程跟读-ReadingPlus大标题",
+                "Section A",
+                "句子跟读",
+                "1. Warm up.",
+                "Section B",
+                "语篇跟读",
+                "Reading Plus",
+                "Making New Friends at School",
+                "This is the only paragraph.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        self.assertEqual(len(discourses), 1)
+        self.assertNotIn("paragraph_title", discourses[0])
+
+    def test_reading_plus_subheadings_stay_in_one_article(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-ReadingPlus小标题.docx")
+            document = Document()
+            for text in [
+                "课程跟读-ReadingPlus小标题",
+                "Section B",
+                "Reading Plus",
+                "语篇跟读",
+            ]:
+                document.add_paragraph(text)
+            big_title = document.add_paragraph()
+            big_title.add_run("Love My Hometown, Build My Hometown").bold = True
+            document.add_paragraph(
+                "The introduction has two sentences. This is still one paragraph."
+            )
+            for title, body in [
+                ("The watermelon farmer", "The first story has two sentences. It stays together."),
+                ("The flower live-streamer", "The second story has two sentences. It stays together."),
+                ("The village teacher", "The third story has two sentences. It stays together."),
+            ]:
+                heading = document.add_paragraph()
+                heading.add_run(title).bold = True
+                document.add_paragraph(body)
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        paragraph_ids = []
+        paragraph_titles = []
+        for item in discourses:
+            if item["paragraph_id"] not in paragraph_ids:
+                paragraph_ids.append(item["paragraph_id"])
+                paragraph_titles.append(item.get("paragraph_title"))
+
+        self.assertEqual(
+            {item["article_title"] for item in discourses},
+            {"Love My Hometown, Build My Hometown"},
+        )
+        self.assertEqual(
+            {item["paragraph_scope"] for item in discourses},
+            {"RP:语篇跟读:article-1"},
+        )
+        self.assertEqual(paragraph_titles, [
+            None,
+            "The watermelon farmer",
+            "The flower live-streamer",
+            "The village teacher",
+        ])
+        self.assertEqual(len(paragraph_ids), 4)
+
+    def test_reading_plus_subheading_does_not_leak_to_next_unheaded_paragraph(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-ReadingPlus标题不继承.docx")
+            document = Document()
+            for text in [
+                "课程跟读-ReadingPlus标题不继承",
+                "Section B",
+                "语篇跟读",
+                "Reading Plus",
+                "Article title",
+            ]:
+                document.add_paragraph(text)
+            heading = document.add_paragraph()
+            heading.add_run("Named paragraph").bold = True
+            document.add_paragraph("The named paragraph has one sentence.")
+            document.add_paragraph("This paragraph has no small heading.")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        by_paragraph = {}
+        for item in discourses:
+            by_paragraph.setdefault(item["paragraph_id"], item.get("paragraph_title"))
+        self.assertEqual(
+            list(by_paragraph.values()),
+            ["Named paragraph", None],
+        )
+
+    def test_bold_article_title_and_subheadings_stay_in_one_article(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "课文跟读-文章大标题和人物小标题.docx")
+            document = Document()
+            for text in ["Unit 1", "Section B", "语篇跟读"]:
+                document.add_paragraph(text)
+            for title in ["Making new friends", "Pauline Lee"]:
+                heading = document.add_paragraph()
+                heading.add_run(title).bold = True
+            document.add_paragraph("Pauline's paragraph has two sentences. It stays together.")
+            peter_heading = document.add_paragraph()
+            peter_heading.add_run("Peter Brown").bold = True
+            document.add_paragraph("Peter's paragraph has two sentences. It stays together.")
+            document.add_paragraph("Reading Plus").runs[0].bold = True
+            reading_title = document.add_paragraph()
+            reading_title.add_run("Making New Friends at School").bold = True
+            document.add_paragraph("The advice has two sentences. It is one paragraph.")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        discourses = [item for item in result["items"] if item["category"] == "语篇跟读"]
+        main_article = [item for item in discourses if item["article_title"] == "Making new friends"]
+        main_paragraphs = []
+        for item in main_article:
+            if item["paragraph_id"] not in {paragraph_id for paragraph_id, _ in main_paragraphs}:
+                main_paragraphs.append((item["paragraph_id"], item.get("paragraph_title")))
+
+        self.assertEqual(len(main_article), 4)
+        self.assertEqual(
+            [title for _, title in main_paragraphs],
+            ["Pauline Lee", "Peter Brown"],
+        )
+        self.assertEqual(
+            {item["paragraph_scope"] for item in main_article},
+            {"SB:语篇跟读:article-1"},
+        )
+
+        reading_article = [
+            item for item in discourses
+            if item["article_title"] == "Making New Friends at School"
+        ]
+        self.assertEqual(len(reading_article), 2)
+        self.assertEqual(
+            {item["paragraph_scope"] for item in reading_article},
+            {"RP:语篇跟读:article-1"},
+        )
 
 
 if __name__ == "__main__":

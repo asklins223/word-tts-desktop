@@ -530,6 +530,28 @@ class XunfeiCatalogTests(unittest.TestCase):
         self.assertEqual(by_key["amanda"]["speaker_no"], 544508087)
         self.assertEqual(by_key["george"]["speaker_no"], 593031758)
 
+    def test_live_common_default_clears_stale_fallback_speaker_number(self):
+        """common/list 刷新后应由页面回读当前变体 ID。"""
+        from xunfei.voice_catalog import VOICES, register_voice_catalog
+
+        previous = dict(VOICES.get("george") or {})
+        try:
+            VOICES["george"] = {
+                "name": "英语-George",
+                "speaker_no": 593031758,
+            }
+            register_voice_catalog([{
+                "key": "george",
+                "name": "英语-George",
+                "common_id": 10001089,
+                "speaker_no": None,
+                "gender": "male",
+            }])
+            self.assertIsNone(VOICES["george"]["speaker_no"])
+            self.assertEqual(VOICES["george"]["common_id"], 10001089)
+        finally:
+            VOICES["george"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()

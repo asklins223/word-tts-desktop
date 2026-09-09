@@ -250,6 +250,9 @@ function systemInputUnitStatusPresentation(unit, configuration, index, total) {
     return {
         unitId: String(unit?.unit_id || ''),
         label,
+        textbookForm: inputType === 'textbook'
+            ? systemInputTextbookFormValue(configuration, unit)
+            : '',
         complete: !reserved && missing.length === 0,
         missing: statusMissing,
         status: reserved
@@ -311,13 +314,23 @@ function renderSystemInputUnitOverview(systemInput, { refreshTargetEditor = true
         button.title = selected ? `正在编辑${presentation.label}` : `切换到${presentation.label}`;
         const copy = document.createElement('span');
         copy.className = 'system-input-unit-overview-copy';
+        const titleLine = document.createElement('span');
+        titleLine.className = 'system-input-unit-overview-title';
         const title = document.createElement('strong');
         title.textContent = presentation.label;
+        titleLine.append(title);
+        if (presentation.textbookForm) {
+            const formTag = document.createElement('span');
+            formTag.className = 'system-input-unit-overview-form-tag';
+            formTag.textContent = presentation.textbookForm;
+            formTag.title = '课文形式由文档结构自动识别';
+            titleLine.append(formTag);
+        }
         const detail = document.createElement('small');
         detail.textContent = presentation.complete
             ? '必填已补齐'
             : `还缺：${presentation.missing.slice(0, 3).join('、')}${presentation.missing.length > 3 ? '…' : ''}`;
-        copy.append(title, detail);
+        copy.append(titleLine, detail);
         const status = document.createElement('span');
         status.className = 'system-input-unit-overview-status';
         status.textContent = presentation.status;
@@ -473,7 +486,6 @@ function renderSystemInputUnitPicker(systemInput) {
 const SYSTEM_INPUT_TEXTBOOK_FIELDS = [
     ['textbookNameZh', 'system-input-textbook-name-zh'],
     ['textbookNameEn', 'system-input-textbook-name-en'],
-    ['textbookForm', 'system-input-textbook-form'],
     ['textbookVersion', 'system-input-textbook-version'],
     ['textbookStage', 'system-input-textbook-stage'],
     ['textbookGrade', 'system-input-textbook-grade'],
@@ -481,6 +493,36 @@ const SYSTEM_INPUT_TEXTBOOK_FIELDS = [
     ['textbookUnit', 'system-input-textbook-unit'],
     ['textbookLesson', 'system-input-textbook-lesson'],
 ];
+
+function systemInputTextbookFormValue(configuration = {}, unit = null) {
+    const unitId = String(configuration?.unit_id || '');
+    const workspaceInput = typeof systemInputInteractionWorkspace === 'function'
+        ? systemInputInteractionWorkspace()?.system_input
+        : null;
+    const resolvedUnit = unit || (unitId && Array.isArray(workspaceInput?.units)
+        ? workspaceInput.units.find(candidate => String(candidate?.unit_id || '') === unitId)
+        : null);
+    const detected = resolvedUnit?.detected_textbook_form
+        || resolvedUnit?.evidence?.textbook_form
+        || resolvedUnit?.evidence?.textbookForm;
+    const fromConfiguration = configuration?.textbookForm ?? configuration?.textbook_form;
+    return systemInputDisplayValue(detected || fromConfiguration).trim();
+}
+
+function renderSystemInputTextbookFormReadout(configuration = {}, unit = null) {
+    const container = $('system-input-textbook-form-readout');
+    const tag = $('system-input-textbook-form-detected');
+    const note = $('system-input-textbook-form-note');
+    if (!container || !tag || !note) return '';
+    const form = systemInputTextbookFormValue(configuration, unit);
+    tag.textContent = form || '等待识别';
+    tag.classList.toggle('is-pending', !form);
+    note.textContent = form ? '文档结构自动识别' : '等待文档结构识别';
+    container.setAttribute('aria-label', form
+        ? `课文形式：${form}，文档结构自动识别`
+        : '课文形式：等待文档结构识别');
+    return form;
+}
 
 function systemInputTextbookSuggestedValues(systemInput) {
     const suggested = systemInput?.suggested_configuration?.textbook;
@@ -566,6 +608,10 @@ function populateSystemInputUnitForm(systemInput, { refreshTargetEditor = true }
         // Seed suggestions once; a draft deliberately cleared by the user stays empty.
         setSystemInputField(fieldId, systemInputUnitDrafts.has(selectedId) ? existing : (existing || suggested));
     });
+    const detectedTextbookForm = systemInputTextbookFormValue(configuration, selectedUnit);
+    const textbookFormField = $('system-input-textbook-form');
+    if (textbookFormField) textbookFormField.value = detectedTextbookForm;
+    renderSystemInputTextbookFormReadout(configuration, selectedUnit);
     renderSystemInputTextbookOptions();
     const districtValue = valueFor('districtIds', 'district_ids');
     const districts = Array.isArray(districtValue) ? districtValue : [];
@@ -1197,7 +1243,10 @@ function updateSystemInputFormVisibility() {
     }
     const textbookSection = $('system-input-textbook-fields');
     if (textbookSection) textbookSection.hidden = !isTextbook;
-    if (isTextbook) renderSystemInputTextbookOptions();
+    if (isTextbook) {
+        renderSystemInputTextbookOptions();
+        renderSystemInputTextbookFormReadout(systemInputConfigForForm(systemInput));
+    }
     // 自动识别呈现：识别结果干净时锁定选择并只展示结论；冲突或未知时
     // 保留手动切换入口，让用户处理对不上的情况。
     const typeLocked = systemInputTypeSelectionLocked(systemInput);
@@ -1268,6 +1317,8 @@ registerRendererModule("systemInput.units", {
     systemInputNormalizeUnitConfiguration,
     systemInputDefaultAnswerTimeForCategory,
     systemInputUnitStatusPresentation,
+    systemInputTextbookFormValue,
+    renderSystemInputTextbookFormReadout,
     renderSystemInputUnitOverview,
     syncSystemInputUnitDraftFromForm,
     updateSystemInputAppTemplateAction,

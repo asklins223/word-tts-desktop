@@ -44,6 +44,12 @@ TEMPLATE_MANAGEMENT_URL = f"{_PLATFORM_ORIGIN}/#/resource/template"
 RESOURCE_TEXT_ROUTE = "#/resource/text"
 RESOURCE_TEXT_URL = f"{_PLATFORM_ORIGIN}/{RESOURCE_TEXT_ROUTE}"
 
+# 课文角色管理 page route.  Role records are maintained per
+# 版本/学段/年级/册别 before textbook content is submitted.
+TEXT_ROLE_ROUTE = "#/text-role"
+TEXT_ROLE_URL = f"{_PLATFORM_ORIGIN}/{TEXT_ROLE_ROUTE}"
+TEXT_ROLE_PAGE_PATH = "/admin-api/system/text-role/page"
+
 # These paths are only observed after the visible page has made the request.
 # The input workflow never calls them directly.
 PAPER_PAGE_PATH = "/admin-api/system/paper/page"

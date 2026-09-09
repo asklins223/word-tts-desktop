@@ -53,6 +53,11 @@ _ITEM_METADATA_ALLOWLIST = {
     "filename_stem",
     "type_hierarchy", "audio_filename_stem", "audio_only_auxiliary", "question_numbers",
     "_workflow_skip_reason",
+    # Parser-owned textbook structure facts.  The review view uses these to
+    # rebuild paragraph boundaries and role labels; dropping them here makes
+    # a correctly classified system-input unit look like one flat passage.
+    "role", "entry_form", "paragraph_id", "paragraph_scope", "paragraph_title",
+    "article_title", "article_theme",
     # Source facts consumed by the separate system-input projection.  Keep
     # them bounded and visible to the review UI without mixing them into the
     # TTS configuration or inferring an external write.

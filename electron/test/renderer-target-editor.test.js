@@ -147,6 +147,15 @@ test('switching input types refreshes the shared target list immediately', t => 
     assert.equal(byId('target-overview-count').textContent, '3 条课文 · 3 条待处理');
 });
 
+test('primary textbook form shows a read-only auto-detected form tag', t => {
+    const { w, byId } = editor(t, 'textbook', 1);
+    assert.equal(byId('system-input-textbook-form-readout').hidden, false);
+    assert.equal(byId('system-input-textbook-form-detected').textContent, '同步课文');
+    assert.equal(byId('system-input-textbook-form-note').textContent, '文档结构自动识别');
+    assert.equal(byId('system-input-textbook-form').type, 'hidden');
+    assert.equal(w.document.querySelector('[data-system-input-choice-group="system-input-textbook-form"]'), null);
+});
+
 test('a single vocabulary target stays in the non-editable overview', t => {
     const { byId } = editor(t, 'vocabulary', 1);
     assert.equal(byId('system-input-drawer').classList.contains('is-single-target'), false);
@@ -317,7 +326,7 @@ test('closing a target modal returns focus to its trigger before hiding it', t =
 test('single target exposes the same complete batch field grid as multiple targets', t => {
     const expected = {
         paper: ['试卷名称', '省份', '城市', '区县', '学段', '年级', '平台题型模板', '年份', '答题时间（分钟）'],
-        textbook: ['课文名称（中文）', '课文名称（英文）', '教材版本', '学段', '年级', '册别', '教材单元', '课时', '课文形式'],
+        textbook: ['课文名称（中文）', '课文名称（英文）', '教材版本', '学段', '年级', '册别', '教材单元', '课时'],
     };
     Object.entries(expected).forEach(([inputType, labels]) => {
         const { byId } = editor(t, inputType, 1);
@@ -332,6 +341,10 @@ test('single target exposes the same complete batch field grid as multiple targe
             assert.equal(fields.some(field => field.dataset.targetField === 'paperCategory'), false);
             assert.equal(fields.some(field => field.dataset.targetField === 'paperType'), false);
         } else {
+            assert.equal(byId('target-batch-textbook-form').hidden, false);
+            assert.equal(byId('target-batch-textbook-form-tag').textContent, '同步课文');
+            assert.equal(byId('target-batch-textbook-form-note').textContent, '文档结构自动识别');
+            assert.equal(fields.some(field => field.dataset.targetField === 'textbookForm'), false);
             byId('target-batch-close').click();
             byId('target-rows').querySelector('.target-row-actions button').click();
             assert.deepEqual(
@@ -544,23 +557,20 @@ test('target detail textbook cascades unlock the directory path one parent at a 
     assert.equal(run('systemInputUnitDrafts.get("unit-2").textbookLesson'), 'Section A');
 });
 
-test('target detail keeps textbook form values scalar', t => {
+test('target detail presents the detected textbook form as a read-only tag', t => {
     const { byId, run } = editor(t, 'textbook', 1);
-    run("const current = {...systemInputUnitDrafts.get('unit-1')}; delete current.textbookUnit; systemInputUnitDrafts.set('unit-1', current); refreshSystemInputTargetEditor();");
+    run("const current = {...systemInputUnitDrafts.get('unit-1'), textbookForm:'同步课文'}; systemInputUnitDrafts.set('unit-1', current); currentWorkspace.system_input.units[0].evidence = {textbook_form:'角色扮演'}; refreshSystemInputTargetEditor();");
     const action = [...byId('target-rows').querySelectorAll('.target-row-actions button')]
         .find(button => button.textContent.includes('编辑详情'));
     assert.ok(action);
     action.click();
 
-    const field = label => [...byId('target-detail-fields').querySelectorAll('.target-field')]
-        .find(node => node.querySelector(':scope > span')?.textContent === label);
-    const form = field('课文形式');
-    form.querySelector('.target-select-trigger').click();
-    [...form.querySelectorAll('.target-select-option')]
-        .find(option => option.textContent === '角色扮演')
-        ?.click();
-
-    assert.equal(run('systemInputUnitDrafts.get("unit-1").textbookForm'), '角色扮演');
+    assert.equal(byId('target-detail-textbook-form').hidden, false);
+    assert.equal(byId('target-detail-textbook-form-tag').textContent, '角色扮演');
+    assert.equal(byId('target-detail-textbook-form-note').textContent, '文档结构自动识别');
+    assert.equal(byId('target-detail-fields').querySelector('[data-target-field="textbookForm"]'), null);
+    assert.equal(byId('target-rows').querySelector('.target-textbook-form-tag').textContent, '角色扮演');
+    assert.equal(run('systemInputUnitDrafts.get("unit-1").textbookForm'), '同步课文');
     assert.equal(run('typeof systemInputUnitDrafts.get("unit-1").textbookForm'), 'string');
 });
 

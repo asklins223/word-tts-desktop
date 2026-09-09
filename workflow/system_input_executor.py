@@ -47,6 +47,10 @@ def _text(value: Any, *, limit: int = 1024) -> str:
 _LEGACY_PAGE_COLON_SPEAKER_MARKER_RE = re.compile(
     r"(?im)^[ \t]*[WwMm][ \t]*[:：][ \t]*"
 )
+def _textbook_page_text(value: Any, role: Any = None) -> str:
+    """Keep system-input record construction aligned with the page adapter."""
+
+    return textbook_page._textbook_page_text(value, role)
 
 
 def _system_input_listening_text(page_value: Any, source_value: Any) -> str:
@@ -1590,10 +1594,23 @@ class TextbookInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                 code="SYSTEM_INPUT_CONFIG_INCOMPLETE",
             )
         items: list[dict[str, Any]] = []
+        roles: list[str] = []
+        categories: set[str] = set()
+        paragraph_groups: dict[str, dict[str, Any]] = {}
+        paragraph_order: list[str] = []
         for ordinal, segment in enumerate(segments):
             if not isinstance(segment, Mapping):
                 raise SystemInputError("内容片段格式无效", code="SYSTEM_INPUT_CONFIG_INCOMPLETE")
-            original = _text(segment.get("raw_text") or segment.get("tts_text"), limit=1_000_000)
+            role = _text(segment.get("role"), limit=256)
+            category = _text(segment.get("category") or segment.get("item_type"), limit=128)
+            if role and role not in roles:
+                roles.append(role)
+            if category:
+                categories.add(category)
+            original = _textbook_page_text(
+                segment.get("raw_text") or segment.get("tts_text"),
+                role,
+            )
             translation = _text(segment.get("translation"), limit=1_000_000)
             artifact_id = _text(segment.get("audio_artifact_id"), limit=256)
             if not original:
@@ -1620,8 +1637,33 @@ class TextbookInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                 "original": original,
                 "translation": translation,
                 "audio_path": str(audio_path),
+                "role": role,
+                "paragraph_id": _text(segment.get("paragraph_id"), limit=256),
+                "paragraph_scope": _text(segment.get("paragraph_scope"), limit=256),
+                "paragraph_title": _text(segment.get("paragraph_title"), limit=256),
             })
+            paragraph_id = _text(segment.get("paragraph_id"), limit=256) or "paragraph-1"
+            if paragraph_id not in paragraph_groups:
+                paragraph_groups[paragraph_id] = {
+                    "title": _text(segment.get("paragraph_title"), limit=256),
+                    "items": [],
+                }
+                paragraph_order.append(paragraph_id)
+            elif not paragraph_groups[paragraph_id]["title"]:
+                paragraph_groups[paragraph_id]["title"] = _text(
+                    segment.get("paragraph_title"),
+                    limit=256,
+                )
+            paragraph_groups[paragraph_id]["items"].append(items[-1])
+        if roles or categories.intersection({"句子跟读", "对话跟读"}):
+            # The parser is the source of truth for sentence/dialogue rows;
+            # force the page form even when an older saved unit still carries
+            # the former “同步课文” default.
+            record["form"] = "角色扮演"
+        record["roles"] = roles
         record["items"] = items
+        if record["form"] == "段落":
+            record["paragraphs"] = [paragraph_groups[key] for key in paragraph_order]
         return [record]
 
     def preflight(self, payload: Mapping[str, Any]) -> None:

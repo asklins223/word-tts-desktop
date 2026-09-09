@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +17,11 @@ from docx import Document
 from workflow.artifact_store import ArtifactStore
 from workflow.database import WorkflowDatabase
 from workflow.repositories import WorkflowRepository
-from workflow.system_input import SystemInputError, SystemInputService
+from workflow.system_input import (
+    SystemInputError,
+    SystemInputService,
+    _resolve_textbook_groups,
+)
 from workflow.system_input_executor import TextbookInputWorkflowPageExecutor
 from workflow.textbook_suggestions import suggest_textbook_configuration
 
@@ -101,7 +106,7 @@ class TextbookSuggestionTests(unittest.TestCase):
             "课文跟读-7上.docx",
             [plain.metadata],
         )
-        self.assertEqual(suggestions["textbookForm"]["value"], "同步课文")
+        self.assertEqual(suggestions["textbookForm"]["value"], "角色扮演")
 
     def test_single_section_suggests_lesson(self) -> None:
         rows = [{"section": "Reading Plus"}, {"section": "Reading Plus"}]
@@ -180,6 +185,50 @@ class TextTranslationAttachmentTests(unittest.TestCase):
             translations_by_category.setdefault(item["category"], []).append(item.get("translation"))
         self.assertEqual(translations_by_category["句子跟读"], ["句子译文。"])
         self.assertEqual(translations_by_category["语篇跟读"], ["语篇译文。"])
+
+
+class TextbookStructureRuleTests(unittest.TestCase):
+    @staticmethod
+    def _item(item_id: str, text: str, **metadata: object) -> dict[str, object]:
+        return {
+            "item_id": item_id,
+            "sequence": int(item_id),
+            "source_locator": f"课文/{item_id}",
+            "normalized_content": text,
+            "metadata_json": json.dumps(
+                {"category": "段落跟读", "section": "Section A", **metadata},
+                ensure_ascii=False,
+            ),
+        }
+
+    def test_paragraph_count_controls_sync_or_paragraph_form(self) -> None:
+        items = [
+            self._item("0", "First.", paragraph_id="p1", paragraph_scope="article"),
+            self._item("1", "Second.", paragraph_id="p2", paragraph_scope="article"),
+        ]
+        groups, _status, _evidence, meta = _resolve_textbook_groups(items)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual({row["form"] for row in meta.values()}, {"段落"})
+        self.assertEqual({row["paragraph_count"] for row in meta.values()}, {2})
+
+        single = [self._item("0", "Only.", paragraph_id="p1", paragraph_scope="article")]
+        groups, _status, _evidence, meta = _resolve_textbook_groups(single)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(next(iter(meta.values()))["form"], "同步课文")
+
+    def test_sentence_and_named_dialogue_are_roleplay(self) -> None:
+        items = [
+            self._item("0", "May I?", category="句子跟读"),
+            self._item(
+                "1",
+                "Teng Fei: Hello.",
+                role="Teng Fei",
+                paragraph_id="conversation-1",
+            ),
+        ]
+        groups, _status, _evidence, meta = _resolve_textbook_groups(items)
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(all(row["form"] == "角色扮演" for row in meta.values()))
 
 
 class TextbookExecutorSpecTests(unittest.TestCase):
@@ -281,6 +330,59 @@ class TextbookExecutorSpecTests(unittest.TestCase):
         self.assertEqual(item["original"], "May I have your name?")
         self.assertEqual(item["translation"], "请问你叫什么名字？")
         self.assertTrue(item["audio_path"].endswith(".mp3"))
+
+    def test_build_records_extracts_role_and_paragraph_title_for_page(self) -> None:
+        payload = self._payload(self.item_id)
+        payload["unit"]["configuration"]["textbookForm"] = "同步课文"
+        payload["unit"]["segments"][0].update({
+            "raw_text": "Teng Fei: Welcome to our class!",
+            "tts_text": "Teng Fei: Welcome to our class!",
+            "category": "段落跟读",
+            "role": "Teng Fei",
+            "paragraph_title": "Welcome",
+        })
+        with tempfile.TemporaryDirectory() as temp:
+            record = self.executor._build_records(payload, Path(temp))[0]
+        self.assertEqual(record["form"], "角色扮演")
+        self.assertEqual(record["roles"], ["Teng Fei"])
+        self.assertEqual(record["items"][0]["original"], "Welcome to our class!")
+        self.assertEqual(record["items"][0]["role"], "Teng Fei")
+        self.assertEqual(record["items"][0]["paragraph_title"], "Welcome")
+
+    def test_build_records_keeps_multiple_paragraphs_in_one_page_record(self) -> None:
+        payload = self._payload(self.item_id)
+        payload["unit"]["configuration"]["textbookForm"] = "段落"
+        first = payload["unit"]["segments"][0]
+        first.update({
+            "category": "语篇跟读",
+            "paragraph_id": "article-1-paragraph-1",
+            "paragraph_scope": "article-1",
+            "paragraph_title": "第一段标题",
+        })
+        second = dict(first)
+        second.update({
+            "segment_id": "seg-2",
+            "item_id": self.item_id,
+            "ordinal": 1,
+            "raw_text": "Where are you from?",
+            "tts_text": "Where are you from?",
+            "paragraph_id": "article-1-paragraph-2",
+            "paragraph_title": "第二段标题",
+        })
+        payload["unit"]["segments"].append(second)
+        with tempfile.TemporaryDirectory() as temp:
+            record = self.executor._build_records(payload, Path(temp))[0]
+        self.assertEqual(record["form"], "段落")
+        self.assertEqual(len(record["paragraphs"]), 2)
+        self.assertEqual(
+            [paragraph["title"] for paragraph in record["paragraphs"]],
+            ["第一段标题", "第二段标题"],
+        )
+        self.assertEqual(
+            [len(paragraph["items"]) for paragraph in record["paragraphs"]],
+            [1, 1],
+        )
+        self.assertEqual(len(record["items"]), 2)
 
     def test_missing_classification_fields_fail_closed_locally(self) -> None:
         payload = self._payload(self.item_id)
@@ -397,7 +499,8 @@ class TextbookProjectionFlowTests(unittest.TestCase):
                     "unit_id": unit_id,
                     "textbookNameZh": "Section A",
                     "textbookNameEn": "How do we get to know each other?",
-                    "textbookForm": "角色扮演",
+                    # 旧草稿故意带入错误形式；句子跟读的解析结果必须覆盖它。
+                    "textbookForm": "同步课文",
                     "textbookVersion": "人教版",
                     "textbookStage": "初中",
                     "textbookGrade": "七年级",
@@ -411,6 +514,7 @@ class TextbookProjectionFlowTests(unittest.TestCase):
         self.assertEqual(unit["input_type_status"], "user_override")
         self.assertEqual(unit["configuration"]["textbookNameZh"], "Section A")
         self.assertEqual(unit["configuration"]["textbookLesson"], "Section A")
+        self.assertEqual(unit["configuration"]["textbookForm"], "角色扮演")
         entry = saved["projection"]["entries"][0]
         self.assertEqual(entry["document_name"], "Section A")
         self.assertIsNone(entry["review_url"])
@@ -477,6 +581,7 @@ class TextbookProjectionFlowTests(unittest.TestCase):
         unit = payload["unit"]
         self.assertEqual(unit["configuration"]["textbookNameZh"], "Section A")
         self.assertEqual(unit["configuration"]["textbookLesson"], "Section A")
+        self.assertEqual(unit["configuration"]["textbookForm"], "角色扮演")
         self.assertNotIn("paperName", unit["configuration"])
         self.assertEqual(len(unit["segments"]), 2)
         self.assertEqual(unit["segments"][0]["translation"], "请问你叫什么名字？")

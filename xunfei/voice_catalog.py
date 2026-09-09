@@ -56,12 +56,26 @@ def register_voice_catalog(voices):
         gender = str(voice.get("gender") or "unknown").strip().lower()
         gender_label = "女声" if gender == "female" else ("男声" if gender == "male" else "音色")
 
+        # common/list 的基础卡片只有 commonId，没有具体 speakerNo。先记住
+        # 这次输入是否明确带了 common 身份，再决定是否可以沿用内置旧 ID；
+        # 否则 live common/list 刷新会把旧的 544508087/593031758 留在内存
+        # 里，而页面实际选中的变体已经换成了新的 speakerId，回读校验就会
+        # 把一次成功的“使用”误判成失败。
+        input_common_id = voice.get("common_id")
+        if input_common_id in (None, ""):
+            input_common_id = voice.get("commonId")
+
         speaker_no = voice.get("speaker_no")
         if speaker_no in (None, ""):
             speaker_no = voice.get("speakerNo")
-        # common/list 不提供具体 speakerNo；仅对两个内置默认项保留仓库
-        # 中的已知兜底 ID，其他基础音色交给页面点击后解析实际 ID。
-        if speaker_no in (None, "") and key in {DEFAULT_FEMALE, DEFAULT_MALE}:
+        # 只有没有 common 身份的离线/旧 flat 目录才可以沿用两个内置默认
+        # 音色的兜底 ID。明确来自 common/list 时必须清掉旧 ID，让多人配音
+        # 页面在点击基础卡片后回读它当次实际生成的 speakerId。
+        if (
+            speaker_no in (None, "")
+            and input_common_id in (None, "")
+            and key in {DEFAULT_FEMALE, DEFAULT_MALE}
+        ):
             speaker_no = previous.get("speaker_no") or previous.get("speakerNo")
         common_id = voice.get("common_id")
         if common_id in (None, ""):

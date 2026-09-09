@@ -517,6 +517,105 @@ function reviewTypeGroupIsTextbook(typeGroup) {
     return name === '课文跟读' || name === 'text_reading' || name.includes('课文');
 }
 
+const REVIEW_TEXTBOOK_PARAGRAPH_TYPES = new Set(['段落跟读', '语篇跟读']);
+
+function reviewTextbookParagraphGroups(typeGroup) {
+    const items = Array.isArray(typeGroup?.items) ? typeGroup.items : [];
+    if (!items.length) return [];
+
+    const keyedItems = items.map(item => ({
+        item,
+        key: reviewDocumentItemValue(item, ['paragraph_id', 'paragraphId']),
+        title: reviewDocumentItemValue(item, ['paragraph_title', 'paragraphTitle']),
+    }));
+    // Older workspaces may not contain paragraph_id. Treat the whole group as
+    // one paragraph instead of inventing one paragraph per sentence.
+    if (!keyedItems.some(entry => entry.key)) {
+        return [{ key: 'paragraph:default', title: '', items }];
+    }
+
+    const groups = [];
+    const groupsByKey = new Map();
+    keyedItems.forEach((entry, index) => {
+        const key = entry.key || `paragraph:unlabeled:${index + 1}`;
+        let group = groupsByKey.get(key);
+        if (!group) {
+            group = { key, title: entry.title, items: [] };
+            groupsByKey.set(key, group);
+            groups.push(group);
+        } else if (!group.title && entry.title) {
+            group.title = entry.title;
+        }
+        group.items.push(entry.item);
+    });
+    return groups;
+}
+
+function reviewTextbookDetectedForm(unit, systemInput) {
+    const units = Array.isArray(systemInput?.units) ? systemInput.units : [];
+    if (!units.length) return '';
+
+    const unitId = reviewDisplayFactValue(unit?.unit_id || unit?.unitId);
+    const unitLabel = reviewDisplayFactValue(unit?.label || unit?.unit_label || unit?.unitLabel);
+    let candidates = unitId
+        ? units.filter(candidate => reviewDisplayFactValue(candidate?.unit_id) === unitId)
+        : [];
+    if (!candidates.length && unitLabel) {
+        candidates = units.filter(candidate => (
+            reviewDisplayFactValue(candidate?.label || candidate?.unit_label) === unitLabel
+        ));
+    }
+    // A single-unit document can be rendered from a legacy model without its
+    // unit id/label. The system-input projection is still authoritative in
+    // that case, so use its only unit as the unambiguous source.
+    if (!candidates.length && units.length === 1) candidates = units;
+
+    const source = candidates[0];
+    const detected = reviewDisplayFactValue(
+        source?.detected_textbook_form
+        || source?.evidence?.textbook_form
+        || source?.evidence?.textbookForm,
+    );
+    return ['角色扮演', '段落', '同步课文'].includes(detected) ? detected : '';
+}
+
+function reviewTextbookFormForGroup(typeGroup, unit = null, systemInput = null) {
+    const items = Array.isArray(typeGroup?.items) ? typeGroup.items : [];
+    const typeName = reviewTypeLabel(typeGroup?.name || '');
+    if (typeName === '句子跟读' || typeName === '对话跟读') return '角色扮演';
+
+    if (items.some(item => reviewDocumentItemValue(item, ['role', 'conversation_number']))) {
+        return '角色扮演';
+    }
+
+    const detectedForm = reviewTextbookDetectedForm(unit, systemInput);
+    if (REVIEW_TEXTBOOK_PARAGRAPH_TYPES.has(typeName) && detectedForm) {
+        // The saved smart-detection result is authoritative for paragraph
+        // records, even if an older parser put a stale entry_form on an item.
+        return detectedForm;
+    }
+
+    const explicitForms = new Set(
+        items
+            .map(item => reviewDocumentItemValue(item, ['entry_form', 'entryForm']))
+            .filter(form => ['角色扮演', '段落', '同步课文'].includes(form)),
+    );
+    if (explicitForms.size === 1) return [...explicitForms][0];
+    if (!REVIEW_TEXTBOOK_PARAGRAPH_TYPES.has(typeName)) return '';
+
+    // The target configuration has already applied the parser's smart
+    // recognition rules. Prefer that durable evidence over a best-effort
+    // reconstruction from whatever fields an older workspace exposed.
+    if (detectedForm) return detectedForm;
+
+    const paragraphIds = new Set(
+        items
+            .map(item => reviewDocumentItemValue(item, ['paragraph_id', 'paragraphId']))
+            .filter(Boolean),
+    );
+    return paragraphIds.size > 1 ? '段落' : '同步课文';
+}
+
 function syncReviewDocumentSelection(index, sectionKey = '', questionNumber = '') {
     const rawIndex = index === null || index === undefined
         || (typeof index === 'string' && !index.trim())
@@ -564,7 +663,12 @@ function buildReviewTypeGroups(items) {
     const groupsByName = new Map();
     (Array.isArray(items) ? items : []).forEach(item => {
         const typePath = reviewTypePathForItem(item, String(item?.doc_type || ''));
-        const name = reviewTypeLabel(typePath[0] || item?.doc_type || '未分类') || '未分类';
+        // Textbook entries have a useful leaf dimension (句子/段落/语篇).
+        // Keep other document families grouped by their top-level type.
+        const typeName = reviewItemIsTextbook(item)
+            ? typePath[typePath.length - 1]
+            : typePath[0];
+        const name = reviewTypeLabel(typeName || item?.doc_type || '未分类') || '未分类';
         let typeGroup = groupsByName.get(name);
         if (!typeGroup) {
             typeGroup = { name, items: [] };
@@ -1881,11 +1985,21 @@ function renderReviewDocumentView(unitModels, presentation, entrySupport = null,
             titleText.textContent = `${reviewChineseOrdinal(groupIndex + 1)}、${typeGroup.name}`;
             const titleCount = document.createElement('small');
             const groupIsTextbook = reviewTypeGroupIsTextbook(typeGroup);
+            const textbookForm = groupIsTextbook
+                ? reviewTextbookFormForGroup(typeGroup, unit, currentWorkspace?.system_input)
+                : '';
             titleCount.textContent = groupIsTextbook
                 ? `${typeGroup.items.length} 条内容`
                 : `${reviewDocumentQuestionCountForItems(typeGroup.items)} 题`;
             const groupMeta = document.createElement('div');
             groupMeta.className = 'review-document-group-meta';
+            if (textbookForm) {
+                const formTag = document.createElement('span');
+                formTag.className = 'review-document-classification-tag is-form';
+                formTag.textContent = `录入 · ${textbookForm}`;
+                formTag.title = '课文形式由解析结果自动识别';
+                groupMeta.appendChild(formTag);
+            }
             groupMeta.appendChild(titleCount);
             const groupScoreText = groupIsTextbook
                 ? ''
@@ -1899,7 +2013,60 @@ function renderReviewDocumentView(unitModels, presentation, entrySupport = null,
             groupTitle.append(titleText, groupMeta);
             groupSection.appendChild(groupTitle);
 
-            typeGroup.items.forEach((item, itemIndex) => {
+            const paragraphMode = groupIsTextbook
+                && REVIEW_TEXTBOOK_PARAGRAPH_TYPES.has(reviewTypeLabel(typeGroup.name));
+            const paragraphGroups = paragraphMode
+                ? reviewTextbookParagraphGroups(typeGroup)
+                : [{ key: 'items:default', title: '', items: typeGroup.items }];
+            let groupItemIndex = 0;
+            paragraphGroups.forEach((paragraphGroup, paragraphIndex) => {
+                let itemParent = groupSection;
+                if (paragraphMode) {
+                    const paragraphSection = document.createElement('section');
+                    paragraphSection.className = 'review-document-paragraph';
+                    const paragraphHeading = document.createElement('div');
+                    paragraphHeading.className = 'review-document-paragraph-heading';
+                    const paragraphCopy = document.createElement('div');
+                    paragraphCopy.className = 'review-document-paragraph-copy';
+                    const paragraphIndexLabel = document.createElement('span');
+                    paragraphIndexLabel.className = 'review-document-paragraph-index';
+                    paragraphIndexLabel.textContent = `第${reviewChineseOrdinal(paragraphIndex + 1)}段`;
+                    paragraphCopy.appendChild(paragraphIndexLabel);
+                    if (paragraphGroup.title) {
+                        const paragraphTitle = document.createElement('strong');
+                        paragraphTitle.className = 'review-document-paragraph-title';
+                        paragraphTitle.textContent = paragraphGroup.title;
+                        paragraphCopy.appendChild(paragraphTitle);
+                    }
+
+                    const paragraphMeta = document.createElement('div');
+                    paragraphMeta.className = 'review-document-paragraph-meta';
+                    const typeTag = document.createElement('span');
+                    typeTag.className = 'review-document-classification-tag is-type';
+                    typeTag.textContent = `识别 · ${typeGroup.name}`;
+                    typeTag.title = '课文内容类型由解析结果自动识别';
+                    paragraphMeta.appendChild(typeTag);
+                    if (textbookForm) {
+                        const formTag = document.createElement('span');
+                        formTag.className = 'review-document-classification-tag is-form';
+                        formTag.textContent = `录入 · ${textbookForm}`;
+                        formTag.title = '课文形式由解析结果自动识别';
+                        paragraphMeta.appendChild(formTag);
+                    }
+                    const paragraphCount = document.createElement('small');
+                    paragraphCount.textContent = `${paragraphGroup.items.length} 句`;
+                    paragraphMeta.appendChild(paragraphCount);
+                    paragraphHeading.append(paragraphCopy, paragraphMeta);
+                    const paragraphItems = document.createElement('div');
+                    paragraphItems.className = 'review-document-paragraph-items';
+                    paragraphSection.append(paragraphHeading, paragraphItems);
+                    groupSection.appendChild(paragraphSection);
+                    itemParent = paragraphItems;
+                }
+
+                paragraphGroup.items.forEach(item => {
+                    const itemIndex = groupItemIndex;
+                    groupItemIndex += 1;
                 const block = document.createElement('article');
                 block.className = 'review-document-item';
                 block.tabIndex = 0;
@@ -1989,7 +2156,8 @@ function renderReviewDocumentView(unitModels, presentation, entrySupport = null,
                     select(event);
                 });
                 if (actions.childElementCount > 0) block.appendChild(actions);
-                groupSection.appendChild(block);
+                    itemParent.appendChild(block);
+                });
             });
             groupsWrap.appendChild(groupSection);
         });
@@ -2012,6 +2180,10 @@ registerRendererModule("review.document", {
     reviewDocumentItemValue,
     reviewItemIsTextbook,
     reviewTypeGroupIsTextbook,
+    reviewTextbookParagraphGroups,
+    reviewTextbookDetectedForm,
+    reviewTextbookFormForGroup,
+    buildReviewTypeGroups,
     reviewPageText,
     syncReviewDocumentSelection,
     renderReviewDocumentView,

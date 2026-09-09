@@ -10,10 +10,7 @@ const BATCH_FIELDS = Object.freeze({
     ]),
     textbook: Object.freeze([
         'textbookNameZh', 'textbookNameEn', 'textbookVersion', 'textbookStage',
-        // Keep the directory cascade contiguous. `textbookForm` is an
-        // independent page-form value and belongs after the unit/lesson path
-        // in both the detail and batch editors.
-        'textbookGrade', 'textbookVolume', 'textbookUnit', 'textbookLesson', 'textbookForm',
+        'textbookGrade', 'textbookVolume', 'textbookUnit', 'textbookLesson',
     ]),
 });
 const BATCH_INDIVIDUAL_FIELDS = new Set([

@@ -7,14 +7,14 @@ const labels = {
     paperName: '试卷名称', paperCategory: '试卷分类', paperType: '考试类型', platformTemplateName: '平台题型模板',
     answerTimeMinutes: '答题时间（分钟）', textbookNameZh: '课文名称（中文）', textbookNameEn: '课文名称（英文）',
     textbookVersion: '教材版本', textbookStage: '学段', textbookGrade: '年级', textbookVolume: '册别',
-    textbookUnit: '教材单元', textbookLesson: '课时', textbookForm: '课文形式',
+    textbookUnit: '教材单元', textbookLesson: '课时',
 };
 // Required (必填) markers, mirroring the main system-input form in index.html.
 // 区县 (districtIds) 是多选可选字段，不合规字段（试卷分类/考试类型/题型模板）、
 // 单套独立字段（试卷名称/课文名称/单元/课时）不标必选，其中课文名称/单元/课时由文档自动带入。
 const requiredMarkers = Object.freeze({
     provinceId: true, cityId: true, stageId: true, gradeId: true, year: true, answerTimeMinutes: true,
-    textbookNameZh: true, textbookNameEn: true, textbookForm: true, textbookVersion: true,
+    textbookNameZh: true, textbookNameEn: true, textbookVersion: true,
     textbookStage: true, textbookGrade: true, textbookVolume: true, textbookUnit: true, textbookLesson: true,
 });
 let state = null;
@@ -109,7 +109,7 @@ function targetEditorTypeUnavailable(inputType = type()) {
     return systemInputTypeCapability(inputType, systemInputInteractionWorkspace())?.external_supported !== true;
 }
 const commonKeys = () => type() === 'textbook'
-    ? ['textbookVersion', 'textbookStage', 'textbookGrade', 'textbookVolume', 'textbookForm']
+    ? ['textbookVersion', 'textbookStage', 'textbookGrade', 'textbookVolume']
     : type() === 'paper'
         ? ['provinceId', 'cityId', 'districtIds', 'stageId', 'gradeId', 'year', 'answerTimeMinutes']
         : [];
@@ -908,7 +908,6 @@ const targetEditorFormFieldKeys = Object.freeze({
     'system-input-paper-type-search': 'paperType',
     'system-input-textbook-name-zh': 'textbookNameZh',
     'system-input-textbook-name-en': 'textbookNameEn',
-    'system-input-textbook-form': 'textbookForm',
     'system-input-textbook-version': 'textbookVersion',
     'system-input-textbook-stage': 'textbookStage',
     'system-input-textbook-grade': 'textbookGrade',
@@ -922,7 +921,7 @@ const targetEditorMissingFieldKeysByLabel = Object.freeze({
     '年级': 'gradeId', '年份': 'year', '答题时间': 'answerTimeMinutes',
     '答题时间（分钟）': 'answerTimeMinutes', '考试类型': 'paperType',
     '课文名称（中文）': 'textbookNameZh', '课文名称（英文）': 'textbookNameEn',
-    '课文形式': 'textbookForm', '版本': 'textbookVersion', '册别': 'textbookVolume',
+    '版本': 'textbookVersion', '册别': 'textbookVolume',
     '单元': 'textbookUnit', '课时': 'textbookLesson',
 });
 function targetEditorMissingFieldKeys(configuration) {
@@ -1257,9 +1256,76 @@ function renderTargetDetailCategory(configuration = {}) {
     container.setAttribute('aria-label', `试卷分类：${presentation.category}，${presentation.statusLabel}`);
     return true;
 }
+function targetEditorTextbookFormPresentation(configuration = {}) {
+    const unitId = String(configuration?.unit_id || '');
+    const unit = units().find(candidate => String(candidate?.unit_id || '') === unitId) || null;
+    const form = typeof systemInputTextbookFormValue === 'function'
+        ? systemInputTextbookFormValue(configuration, unit)
+        : text(targetFieldValue(configuration, 'textbookForm')).trim();
+    return {
+        form: form || '待识别',
+        status: form ? 'detected' : 'unknown',
+        statusLabel: form ? '文档结构自动识别' : '等待文档结构识别',
+        detected: Boolean(form),
+    };
+}
+function renderTargetDetailTextbookForm(configuration = {}) {
+    const container = $('target-detail-textbook-form');
+    const tag = $('target-detail-textbook-form-tag');
+    const note = $('target-detail-textbook-form-note');
+    if (!container || !tag || !note) return false;
+    const visible = type() === 'textbook';
+    container.hidden = !visible;
+    if (!visible) return false;
+    const presentation = targetEditorTextbookFormPresentation(configuration);
+    tag.textContent = presentation.form;
+    tag.dataset.status = presentation.status;
+    tag.classList.toggle('is-pending', !presentation.detected);
+    note.textContent = presentation.statusLabel;
+    container.setAttribute('aria-label', `课文形式：${presentation.form}，${presentation.statusLabel}`);
+    return true;
+}
 function targetEditorSelectedConfigurations() {
     const selected = state?.selected instanceof Set ? state.selected : new Set();
     return configs().filter(configuration => selected.has(String(configuration?.unit_id || '')));
+}
+function targetEditorBatchTextbookFormPresentation() {
+    const selected = targetEditorSelectedConfigurations();
+    const presentations = selected.map(targetEditorTextbookFormPresentation);
+    if (!presentations.length) {
+        return targetEditorTextbookFormPresentation(state?.batch?.values || {});
+    }
+    const forms = [...new Set(presentations.map(presentation => presentation.form))];
+    if (forms.length > 1) {
+        return {
+            form: '多种课文形式',
+            status: 'conflict',
+            statusLabel: '所选目标形式不一致',
+            detected: true,
+        };
+    }
+    const statusLabels = [...new Set(presentations.map(presentation => presentation.statusLabel).filter(Boolean))];
+    return {
+        ...presentations[0],
+        status: statusLabels.length > 1 ? 'conflict' : presentations[0].status,
+        statusLabel: statusLabels.length > 1 ? '各条目的识别状态不同' : presentations[0].statusLabel,
+    };
+}
+function renderTargetBatchTextbookForm() {
+    const container = $('target-batch-textbook-form');
+    const tag = $('target-batch-textbook-form-tag');
+    const note = $('target-batch-textbook-form-note');
+    if (!container || !tag || !note) return false;
+    const visible = type() === 'textbook';
+    container.hidden = !visible;
+    if (!visible) return false;
+    const presentation = targetEditorBatchTextbookFormPresentation();
+    tag.textContent = presentation.form;
+    tag.dataset.status = presentation.status;
+    tag.classList.toggle('is-pending', !presentation.detected || presentation.status === 'conflict');
+    note.textContent = presentation.statusLabel;
+    container.setAttribute('aria-label', `课文形式：${presentation.form}，${presentation.statusLabel}`);
+    return true;
 }
 function targetEditorBatchCategoryPresentation() {
     const selected = targetEditorSelectedConfigurations();
@@ -1390,6 +1456,7 @@ function commitTargetDetail(key, sourceValues = null) {
         populateSystemInputUnitForm(systemInputInteractionWorkspace()?.system_input, { refreshTargetEditor: false });
     }
     renderTargetDetailCategory(configuration);
+    renderTargetDetailTextbookForm(configuration);
     updateTargetDetailSummary(configuration);
     scheduleTargetEditorDraft();
 }
@@ -1402,8 +1469,11 @@ function renderTargetDetail() {
     const values = copy(configuration);
     state.detail.values = values;
     $('target-detail-title').textContent = '编辑详情 · ' + (unit?.label || id);
-    $('target-detail-description').textContent = '在这里编辑该目标的完整录入字段；修改会直接暂存，不会影响其他目标。';
+    $('target-detail-description').textContent = type() === 'textbook'
+        ? '课文形式由文档结构自动识别；其余字段只影响当前目标，修改会直接暂存。'
+        : '在这里编辑该目标的完整录入字段；修改会直接暂存，不会影响其他目标。';
     renderTargetDetailCategory(configuration);
+    renderTargetDetailTextbookForm(configuration);
     updateTargetDetailSummary(configuration);
     renderValueFields(
         $('target-detail-fields'),
@@ -1763,7 +1833,9 @@ function refreshSystemInputTargetEditor({ force = false } = {}) {
         $('target-next-issue').hidden = isVocabulary || !rows.length;
         if (overviewCopy) overviewCopy.textContent = isVocabulary
             ? '词汇配置可以先保存；页面录入适配器接入后，再补充可编辑字段。'
-            : '所有目标都在这张清单中编辑；选中条目后可统一补齐或替换字段。';
+            : type() === 'textbook'
+                ? '课文形式由文档结构自动识别；其余信息在这张清单中核对和编辑。'
+                : '所有目标都在这张清单中编辑；选中条目后可统一补齐或替换字段。';
         if (drawerCopy) drawerCopy.textContent = isVocabulary
             ? '先保存词汇配置；页面录入适配器接入后再提交。'
             : '统一在目标清单中核对和编辑；保存后由录入流程提交。';
@@ -1812,7 +1884,15 @@ function refreshSystemInputTargetEditor({ force = false } = {}) {
                     rowCheckbox.input.dataset.unitId = id;
                     label.append(rowCheckbox.wrap);
                 }
-                label.append(el('strong', '', unit?.label || id)); source.append(label);
+                label.append(el('strong', '', unit?.label || id));
+                source.append(label);
+                if (type() === 'textbook') {
+                    const form = targetEditorTextbookFormPresentation(configuration);
+                    const formTag = el('span', `target-textbook-form-tag${form.detected ? '' : ' is-pending'}`, form.form);
+                    formTag.title = form.detected ? '课文形式由文档结构自动识别' : '等待文档结构识别';
+                    formTag.setAttribute('aria-label', `课文形式：${form.form}，${form.statusLabel}`);
+                    source.append(formTag);
+                }
                 const sourceButton = button('查看来源', () => showSource(unit), 'btn-text btn-sm'); source.append(sourceButton); row.append(source);
                 fields.forEach(key => {
                     const cell = el('td', `target-cell-${key}`); cell.dataset.label = labels[key];
@@ -1887,6 +1967,7 @@ function targetEditorRefreshAfterDataLoad() {
     if (state.batch && targetModalIsOpen($('target-batch'))) {
         const fields = targetEditorBatchFields(type(), state.batch.values);
         renderTargetBatchCategory();
+        renderTargetBatchTextbookForm();
         renderValueFields($('target-batch-fields'), fields, state.batch.values, previewBatch, state.batch.fields);
         previewBatch();
     }
@@ -1903,6 +1984,7 @@ function refreshSelection() {
     updateSystemInputAppTemplateAction?.(systemInputInteractionWorkspace()?.system_input);
     if (state.batch && targetModalIsOpen($('target-batch'))) {
         renderTargetBatchCategory();
+        renderTargetBatchTextbookForm();
         previewBatch();
     }
 }
@@ -1961,7 +2043,6 @@ function fieldOptions(key, values) {
     }
     if (key === 'paperCategory') return SYSTEM_INPUT_PAPER_CATEGORIES;
     if (key === 'platformTemplateName') return targetPlatformTemplateChoices(values);
-    if (key === 'textbookForm') return SYSTEM_INPUT_TEXTBOOK_FORMS;
     if (textbookCascadeFields.includes(key)) return textbookCascadeOptions(key, values);
     return null;
 }
@@ -2151,12 +2232,12 @@ function renderValueFields(container, keys, values, onChange, selectedFields = n
                     if (option === undefined || option === null) return '';
                     if (typeof option === 'string') return text(option);
                     const label = text(option);
-                    // paperCategory and textbookForm are page-form scalars.
-                    // Storing a choice object for either one would reach the
-                    // executor as "[object Object]" instead of the visible
-                    // form value. The other choices are replayable page
-                    // references and must retain their stable ID plus label.
-                    if (key === 'paperCategory' || key === 'textbookForm') return label;
+                    // paperCategory is a page-form scalar. Storing a choice
+                    // object for it would reach the executor as
+                    // "[object Object]" instead of the visible form value.
+                    // Other choices are replayable page references and must
+                    // retain their stable ID plus label.
+                    if (key === 'paperCategory') return label;
                     const identifier = option?.id ?? option?.value;
                     return identifier === undefined
                         ? { name: label }
@@ -2320,9 +2401,12 @@ function updateBatchModalPresentation() {
         ? `确认「${templateName || '已选方案'}」将写入的字段和值，再应用到所选条目。`
         : type() === 'paper'
             ? '试卷分类由文档自动识别；先勾选需要批量写入的字段，再选择要写入的值。'
+            : type() === 'textbook'
+                ? '课文形式由文档结构自动识别；先勾选需要批量写入的字段，再选择要写入的值。'
             : '先勾选字段，再选择要写入的值；级联字段必须按上级逐级解锁。';
     if (apply) apply.textContent = templatePreview ? '确认并应用方案' : '应用本次修改';
     renderTargetBatchCategory();
+    renderTargetBatchTextbookForm();
 }
 function prepareBatch(values = null, presetFields = null, {
     open = true,
@@ -2559,9 +2643,9 @@ function mountSystemInputTargetEditor() {
     common.innerHTML = '<div class="target-modal-card" role="dialog" aria-modal="true" aria-labelledby="target-common-title"><header class="target-modal-heading"><div><h3 id="target-common-title">批次共用设置</h3><p>只设置需要复用的字段；已有单独修改的条目仍保留自己的值。</p><span id="target-common-summary" class="target-modal-summary"></span></div><button type="button" class="btn-icon target-modal-close" id="target-common-close" aria-label="关闭批次共用设置"><span class="target-close-icon" aria-hidden="true"></span></button></header><div class="target-modal-body"><select id="target-book" aria-label="选择教材"></select><div id="target-common-fields" class="target-field-grid"></div></div><footer class="target-modal-actions"><span class="target-modal-help">应用后可在清单中继续调整单独条目</span><button type="button" class="btn-secondary btn-sm" id="target-common-apply">更新批次默认值</button></footer></div>';
     Object.defineProperty(common, 'open', { configurable: true, get: () => !common.hidden, set: value => value ? openTargetModal(common) : closeTargetModal(common) });
     const batch = el('section', 'target-modal target-batch'); batch.id = 'target-batch'; batch.hidden = true; batch.setAttribute('aria-hidden', 'true');
-    batch.innerHTML = '<div class="target-modal-card" role="dialog" aria-modal="true" aria-labelledby="target-batch-title"><header class="target-modal-heading"><div><h3 id="target-batch-title">批量修改</h3><p>试卷分类由文档自动识别；先勾选需要批量写入的字段，再选择要写入的值。</p><div id="target-batch-classification" class="target-detail-classification" aria-live="polite" hidden><span class="target-detail-classification-label">试卷分类</span><span id="target-batch-category-tag" class="target-detail-category-tag"></span><small id="target-batch-category-note"></small></div></div><button type="button" class="btn-icon target-modal-close" id="target-batch-close" aria-label="关闭批量修改"><span class="target-close-icon" aria-hidden="true"></span></button></header><div class="target-modal-body"><div id="target-batch-fields" class="target-field-grid"></div><p id="target-batch-preview" class="target-modal-preview" role="status"></p></div><footer class="target-modal-actions"><label class="target-mode-label"><span>修改方式</span><select id="target-batch-mode" aria-label="修改方式"><option value="fill-empty">只补空值</option><option value="overwrite">替换已有值</option></select></label><button type="button" class="btn-secondary btn-sm" id="target-batch-apply">应用本次修改</button></footer></div>';
+    batch.innerHTML = '<div class="target-modal-card" role="dialog" aria-modal="true" aria-labelledby="target-batch-title"><header class="target-modal-heading"><div><h3 id="target-batch-title">批量修改</h3><p>试卷分类由文档自动识别；先勾选需要批量写入的字段，再选择要写入的值。</p><div id="target-batch-classification" class="target-detail-classification" aria-live="polite" hidden><span class="target-detail-classification-label">试卷分类</span><span id="target-batch-category-tag" class="target-detail-category-tag"></span><small id="target-batch-category-note"></small></div><div id="target-batch-textbook-form" class="target-detail-classification" aria-live="polite" hidden><span class="target-detail-classification-label">课文形式</span><span id="target-batch-textbook-form-tag" class="target-detail-category-tag"></span><small id="target-batch-textbook-form-note"></small></div></div><button type="button" class="btn-icon target-modal-close" id="target-batch-close" aria-label="关闭批量修改"><span class="target-close-icon" aria-hidden="true"></span></button></header><div class="target-modal-body"><div id="target-batch-fields" class="target-field-grid"></div><p id="target-batch-preview" class="target-modal-preview" role="status"></p></div><footer class="target-modal-actions"><label class="target-mode-label"><span>修改方式</span><select id="target-batch-mode" aria-label="修改方式"><option value="fill-empty">只补空值</option><option value="overwrite">替换已有值</option></select></label><button type="button" class="btn-secondary btn-sm" id="target-batch-apply">应用本次修改</button></footer></div>';
     const detail = el('section', 'target-modal target-detail'); detail.id = 'target-detail'; detail.hidden = true; detail.setAttribute('aria-hidden', 'true');
-    detail.innerHTML = '<div class="target-modal-card" role="dialog" aria-modal="true" aria-labelledby="target-detail-title"><header class="target-modal-heading"><div><h3 id="target-detail-title">编辑详情</h3><p id="target-detail-description">在这里编辑该目标的完整录入字段；修改会直接暂存，不会影响其他目标。</p><div id="target-detail-classification" class="target-detail-classification" aria-live="polite" hidden><span class="target-detail-classification-label">试卷分类</span><span id="target-detail-category-tag" class="target-detail-category-tag"></span><small id="target-detail-category-note"></small></div><span id="target-detail-summary" class="target-modal-summary" role="status"></span></div><button type="button" class="btn-icon target-modal-close" id="target-detail-close" aria-label="关闭编辑详情"><span class="target-close-icon" aria-hidden="true"></span></button></header><div class="target-modal-body"><div id="target-detail-fields" class="target-field-grid"></div></div><footer class="target-modal-actions"><span class="target-modal-help">只修改当前目标，其他目标不会被带入。</span><button type="button" class="btn-secondary btn-sm" id="target-detail-done">完成编辑</button></footer></div>';
+    detail.innerHTML = '<div class="target-modal-card" role="dialog" aria-modal="true" aria-labelledby="target-detail-title"><header class="target-modal-heading"><div><h3 id="target-detail-title">编辑详情</h3><p id="target-detail-description">在这里编辑该目标的完整录入字段；修改会直接暂存，不会影响其他目标。</p><div id="target-detail-classification" class="target-detail-classification" aria-live="polite" hidden><span class="target-detail-classification-label">试卷分类</span><span id="target-detail-category-tag" class="target-detail-category-tag"></span><small id="target-detail-category-note"></small></div><div id="target-detail-textbook-form" class="target-detail-classification" aria-live="polite" hidden><span class="target-detail-classification-label">课文形式</span><span id="target-detail-textbook-form-tag" class="target-detail-category-tag"></span><small id="target-detail-textbook-form-note"></small></div><span id="target-detail-summary" class="target-modal-summary" role="status"></span></div><button type="button" class="btn-icon target-modal-close" id="target-detail-close" aria-label="关闭编辑详情"><span class="target-close-icon" aria-hidden="true"></span></button></header><div class="target-modal-body"><div id="target-detail-fields" class="target-field-grid"></div></div><footer class="target-modal-actions"><span class="target-modal-help">只修改当前目标，其他目标不会被带入。</span><button type="button" class="btn-secondary btn-sm" id="target-detail-done">完成编辑</button></footer></div>';
     // Keep the existing form controls as a hidden canonical source for
     // collection and validation. Per-target edits use the same detail dialog
     // for one or many targets; the batch tool remains an explicit separate
