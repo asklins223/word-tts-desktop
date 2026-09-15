@@ -73,27 +73,6 @@ class InfoAcquisitionParser(BaseParser):
             for index, choice in enumerate(choices)
         ]
 
-    @staticmethod
-    def _question_prompt_with_options(prompt, options):
-        """Return the one-line prompt used by the legacy recording card.
-
-        The old page has no separate option editors for 信息获取.  Its
-        recording-card stem is one rich-text line in the form
-        ``Question? (Four. / Five. / Six.)``.  Keep the structured options on the
-        page-input question as well; this string is specifically the TTS and
-        legacy-card display form.
-        """
-
-        stem = sanitize(str(prompt or "")).strip()
-        option_texts = []
-        for option in options:
-            if not isinstance(option, dict):
-                continue
-            option_text = sanitize(str(option.get("text") or "")).strip()
-            if option_text:
-                option_texts.append(option_text)
-        return f"{stem} ({' / '.join(option_texts)})" if option_texts else stem
-
     @classmethod
     def _page_listening_text(cls, value):
         """Remove only parenthesized speaker labels from page-visible text.
@@ -143,7 +122,6 @@ class InfoAcquisitionParser(BaseParser):
         idx_by_cat = {}
         script_idx_by_cat = {}
         use_exam_naming = is_exam_paper_bundle(self.paras)
-        question_audio_items = {}
 
         def flush_questions(ordinal=None):
             nonlocal pending_questions
@@ -231,6 +209,9 @@ class InfoAcquisitionParser(BaseParser):
                 "number": question_number,
                 "filename_stem": f"问题{question_number}",
                 "voice": "male" if speaker == "M" else "female",
+                # Options are page-entry facts kept on the semantic question;
+                # this item is the TTS projection and must contain only the
+                # question stem.
                 "text": stem,
                 "audio_only_auxiliary": True,
             }
@@ -248,7 +229,6 @@ class InfoAcquisitionParser(BaseParser):
                 question_item.get("audio_filename_stem")
                 or question_item.get("filename_stem")
             )
-            question_audio_items[id(question)] = question_item
             items.append(question_item)
 
         for position, (_, text, _) in enumerate(self.paras):
@@ -406,13 +386,6 @@ class InfoAcquisitionParser(BaseParser):
                             for option in options
                             if option["option_id"] == red_option_ids[0]
                         ]
-                    audio_item = question_audio_items.get(id(question))
-                    if audio_item is not None:
-                        audio_item["text"] = self._question_prompt_with_options(
-                            question["prompt"],
-                            options,
-                        )
-
         flush()
         flush_questions(None)
 

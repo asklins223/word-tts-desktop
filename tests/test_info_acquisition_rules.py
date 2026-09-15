@@ -63,10 +63,20 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         self.assertEqual(
             [item["text"] for item in questions],
             [
-                "What is Amy doing? (Reading. / Singing. / Running.)",
-                "Where is Tom? (At home. / At school. / In a park.)",
+                "What is Amy doing?",
+                "Where is Tom?",
                 "Who helps Amy?",
                 "Why is Tom happy?",
+            ],
+        )
+        self.assertEqual(
+            [
+                [option["text"] for option in question["options"]]
+                for question in result["questions"][:2]
+            ],
+            [
+                ["Reading.", "Singing.", "Running."],
+                ["At home.", "At school.", "In a park."],
             ],
         )
         self.assertEqual(
@@ -93,8 +103,8 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         self.assertEqual(
             [text for _, text in synthesized_segments],
             [
-                "What is Amy doing? (Reading. / Singing. / Running.)",
-                "Where is Tom? (At home. / At school. / In a park.)",
+                "What is Amy doing?",
+                "Where is Tom?",
                 "Who helps Amy?",
                 "Why is Tom happy?",
             ],
