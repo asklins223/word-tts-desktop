@@ -4,7 +4,7 @@
 
 小猪wordTTS 是一款本地桌面文档配音工作台：解析教学 `.docx` 与 `.xlsx`，按文档结构核对条目，为不同角色配置声音，批量生成可试听、可单独保存或打包下载的 MP3，并可选地把已验证的音频继续录入外部教学系统。全部任务状态、产物和恢复事实保存在当前电脑，应用离线重启后可以接着做。
 
-版本以 `version.json` 为唯一来源（当前 3.2.9），构建前由 `scripts/project_version.js --sync` 同步到 Electron 的 `package.json`、`package-lock.json` 与 `CHANGELOG.md`。
+版本以 `version.json` 为唯一来源（当前 3.2.10），构建前由 `scripts/project_version.js --sync` 同步到 Electron 的 `package.json`、`package-lock.json` 与 `CHANGELOG.md`。
 
 > 仓库目录名 `edge-tts-webui-main` 与包名 `wordtts/` 是历史遗留。自 v3.x 起 Edge TTS、TTSMaker 及其回退代码已全部移除，音频统一由讯飞配音生成；`edge-tts` 不再出现在依赖清单中。
 
@@ -130,7 +130,9 @@ CI 只有三个工作流，且仅在推送 `v*` 标签或手动派发时运行�
 
 ## 常用环境变量
 
-`WORDTTS_DATA_DIR`、`WORDTTS_PORT`、`WORDTTS_API_TOKEN`、`WORDTTS_WORKFLOW_DB_PATH`、`WORDTTS_ARTIFACT_ROOT`、`WORDTTS_ENABLE_REAL_PROVIDER`、`WORDTTS_AUTO_RETRY`、`WORDTTS_LEGACY_API`、`WORDTTS_SYSTEM_INPUT_ENABLED`、`WORDTTS_XUNFEI_ACCOUNT_SCOPE`、`WORDTTS_PLATFORM_INPUT_PROFILE_DIR`、`WORDTTS_BROWSER_PERF`、`WORDTTS_DEBUG_LOGS`。
+`WORDTTS_DATA_DIR`、`WORDTTS_PORT`、`WORDTTS_API_TOKEN`、`WORDTTS_WORKFLOW_DB_PATH`、`WORDTTS_ARTIFACT_ROOT`、`WORDTTS_ENABLE_REAL_PROVIDER`、`WORDTTS_AUTO_RETRY`、`WORDTTS_LEGACY_API`、`WORDTTS_SYSTEM_INPUT_ENABLED`、`WORDTTS_XUNFEI_ACCOUNT_SCOPE`、`WORDTTS_PLATFORM_INPUT_PROFILE_DIR`、`WORDTTS_PLATFORM_INPUT_PACE`、`WORDTTS_BROWSER_PERF`、`WORDTTS_DEBUG_LOGS`。
+
+`WORDTTS_PLATFORM_INPUT_PACE` 是页面录入的速度总控档位（`0`/`off` 关闭停顿，`0.5`/`2` 按比例缩放，默认 `1`），参数落在 `platform_entry/adapter/pacing.py` 一处，详见 `docs/platform-input-script.md`。
 
 ## 数据与升级兼容
 

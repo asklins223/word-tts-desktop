@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from . import pacing
 from .page_shared import *  # noqa: F403,F401
 
 
@@ -127,6 +128,7 @@ class PlatformInputFormMixin:
             raise PlatformInputUiError(
                 f"填写“{label}”后回读不一致：期望 {text!r}，实际为 {actual!r}"
             )
+        pacing.pause(self.page, "field")
 
     def _find_input(self, label: str, *, placeholder: str = "") -> Any | None:
         input_locator = None
@@ -538,6 +540,7 @@ class PlatformInputFormMixin:
                     f"选择“{title}={name}”后页面没有显示已选值",
                     timeout_seconds=10,
                 )
+                pacing.pause(self.page, "field")
                 return
             except Exception as exc:
                 last_error = exc

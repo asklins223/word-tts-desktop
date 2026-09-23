@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import pacing
 from .page_shared import *  # noqa: F403,F401
 
 
@@ -234,6 +235,7 @@ class PlatformInputCardMixin:
             raise PlatformInputUiError(
                 f"{field}回读不一致：期望包含 {value!r}，实际为 {actual!r}"
             )
+        pacing.pause(self.page, "field")
 
     def _clear_rich_text(self, editor: Any, *, field: str) -> None:
         """按页面键盘操作清空富文本字段，并确认字段确实为空。"""
@@ -254,6 +256,7 @@ class PlatformInputCardMixin:
             raise PlatformInputUiError(
                 f"{field}清空后仍有内容：实际为 {actual!r}"
             )
+        pacing.pause(self.page, "field")
 
     def _labeled_inputs(self, labels: Sequence[str]) -> list[Any]:
         for label in labels:
@@ -613,6 +616,7 @@ class PlatformInputCardMixin:
                 timeout_seconds=10,
                 interval_ms=100,
             )
+            pacing.pause(self.page, "field")
             editors = self._option_row_editors(card)
 
         attempts = 0
@@ -636,6 +640,7 @@ class PlatformInputCardMixin:
                 timeout_seconds=10,
                 interval_ms=100,
             )
+            pacing.pause(self.page, "field")
             editors = self._option_row_editors(card)
         if len(editors) < expected:
             raise PlatformInputUiError(
@@ -800,6 +805,7 @@ class PlatformInputCardMixin:
             f"{description}答题时长",
         )
         self._select_correct_answer(card, question["answer"])
+        pacing.pause(self.page, "item")
 
     def _answer_inputs_in_card(self, card: Any) -> list[Any]:
         excluded_ids: set[str] = set()
@@ -872,6 +878,7 @@ class PlatformInputCardMixin:
                 timeout_seconds=10,
                 interval_ms=100,
             )
+            pacing.pause(self.page, "field")
             current = self._answer_inputs_in_card(card)
 
         attempts = 0
@@ -894,6 +901,7 @@ class PlatformInputCardMixin:
                 timeout_seconds=10,
                 interval_ms=100,
             )
+            pacing.pause(self.page, "field")
             current = self._answer_inputs_in_card(card)
         if len(current) < expected:
             raise PlatformInputUiError(
@@ -959,6 +967,7 @@ class PlatformInputCardMixin:
             question.get(answers_key, ()),
             description,
         )
+        pacing.pause(self.page, "item")
 
     def _fill_item_numbers(self) -> None:
         for key, labels in _ITEM_NUMBER_LABELS.items():

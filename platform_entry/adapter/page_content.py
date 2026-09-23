@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import pacing
 from .handlers import get_question_type_handler, registered_question_types
 from .page_shared import *  # noqa: F403,F401
 
@@ -57,6 +58,9 @@ class PlatformInputContentMixin:
         """Activate one lazy-loaded family and validate its visible card set."""
 
         self._activate_outline_section(group_type, outline_target=outline_target)
+        # 左侧栏目切换是一个独立的动作：人切完栏目会先看一眼题卡再生成，
+        # 后续挂载等待只负责确认页面真的渲染出了 expected_cards。
+        pacing.pause(self.page, "group")
         try:
             self._wait_until(
                 lambda: len(self._question_cards(question_kind)) == expected_cards,

@@ -17,6 +17,7 @@ try:
     from platform_entry.adapter.content_legacy_exam import PlatformInputLegacyExamContentMixin
     from platform_entry.adapter.content_record import PlatformInputRecordContentMixin
     from platform_entry.adapter.content_response import PlatformInputResponseContentMixin
+    from platform_entry.adapter import pacing
     from platform_entry.adapter.page_assets import PlatformInputAssetMixin
     from platform_entry.adapter.page_forms import PlatformInputFormMixin
     from platform_entry.adapter.page_navigation import PlatformInputNavigationMixin
@@ -239,10 +240,25 @@ class _FakeObserver:
         }
 
 
+class _PacePage:
+    """Real automation always owns a page; the pacer only needs its wait call.
+
+    ``pace_ms`` records every boundary pause so a test can prove the pauses
+    actually fired instead of relying on the production default.
+    """
+
+    def __init__(self) -> None:
+        self.pace_ms: list[int] = []
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.pace_ms.append(int(timeout_ms))
+
+
 class _FakeAutomation:
     def __init__(self, spec) -> None:
         self.spec = spec
         self.observer = _FakeObserver()
+        self.page = _PacePage()
         self.calls: list[str] = []
         self.existing_paper_id = None
 
@@ -448,6 +464,18 @@ class _FakeDropdownOption:
 
 
 class PlatformInputTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 页面动作测试会核对真实停顿区间，所以把档位固定在默认值，不跟随
+        # 调用进程里的 WORDTTS_PLATFORM_INPUT_PACE 漂移。
+        env = patch.dict(
+            os.environ,
+            {pacing.PACE_SCALE_ENV_VAR: str(pacing.PACE_SCALE)},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        pacing.reset()
+        self.addCleanup(pacing.reset)
+
     def test_page_input_preserves_internal_spaces_in_paper_title(self) -> None:
         class FakeInput:
             def __init__(self) -> None:
@@ -476,6 +504,7 @@ class PlatformInputTests(unittest.TestCase):
 
         input_node = FakeInput()
         automation = object.__new__(PlatformInputFormMixin)
+        automation.page = _PacePage()
         automation.action_timeout_ms = 1234
 
         automation._type_input_value(
@@ -486,6 +515,9 @@ class PlatformInputTests(unittest.TestCase):
 
         self.assertIn(("fill", "人教版七上-Starter Unit1-1"), input_node.events)
         self.assertEqual(input_node.value, "人教版七上-Starter Unit1-1")
+        # 一次成功的填写只在回读一致之后停一次。
+        self.assertEqual(len(automation.page.pace_ms), 1)
+        self.assertGreater(automation.page.pace_ms[0], 0)
 
     def test_ensure_paper_title_only_repairs_a_cleared_value(self) -> None:
         spec = normalize_spec(_raw_spec())
@@ -953,6 +985,12 @@ class PlatformInputTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "SUCCEEDED")
         self.assertEqual(len(checkpoints), len(automation.calls) * 2)
+        # 每个页面步骤落地后都要按 step 区间停一次；少停说明步骤又连成了一片。
+        step_low, step_high = pacing.PAUSE_WINDOWS_MS["step"]
+        self.assertEqual(len(automation.page.pace_ms), len(automation.calls))
+        self.assertTrue(
+            all(step_low <= ms <= step_high for ms in automation.page.pace_ms)
+        )
         self.assertEqual(
             automation.calls,
             [
@@ -1705,6 +1743,7 @@ class PlatformInputTests(unittest.TestCase):
 
         card = FakeCard()
         automation = object.__new__(PlatformInputPageAutomation)
+        automation.page = _PacePage()
         automation.action_timeout_ms = 1234
         automation._answer_inputs_in_card = lambda owner: [
             FakeAnswer(owner, index) for index in range(len(owner.answers))
@@ -1722,6 +1761,10 @@ class PlatformInputTests(unittest.TestCase):
         automation._fill_answer_rows(card, ["new-answer"], "模仿朗读")
 
         self.assertEqual(card.answers, ["new-answer"])
+        # 每删掉一行多余答案都要停一次；少一次停顿说明删除循环又变回连点。
+        low, high = pacing.PAUSE_WINDOWS_MS["field"]
+        self.assertEqual(len(automation.page.pace_ms), 2)
+        self.assertTrue(all(low <= ms <= high for ms in automation.page.pace_ms))
 
 
 if __name__ == "__main__":

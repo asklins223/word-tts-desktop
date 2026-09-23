@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from . import pacing
 from .constants import PAPER_CONTENT_GET_PATH, PAPER_PAGE_PATH
 from .errors import PlatformInputError
 from .models import PlatformInputSpec
@@ -110,6 +111,9 @@ def run_page_input(
             control_check()
         with tracer.span("step:" + name):
             action()
+        # 一个页面步骤落地后先停一下再检查停止请求：既给出人手的间隔，
+        # 也保证暂停/停止最迟在下一个步骤边界被看到。
+        pacing.pause(automation.page, "step")
         if control_check is not None:
             control_check()
         steps.append({"name": name, "mode": "PAGE_UI"})

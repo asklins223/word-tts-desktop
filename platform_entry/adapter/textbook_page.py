@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from . import pacing
 from .constants import (
     API_BASE_URL,
     RESOURCE_TEXT_ROUTE,
@@ -554,7 +555,7 @@ def _wait_for_cards(
         except Exception:
             pass
         remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
-        page.wait_for_timeout(min(100, remaining_ms))
+        page.wait_for_timeout(min(pacing.poll_interval_ms(100), remaining_ms))
     raise RuntimeError(f"等待课文句子卡片超时：需要 {count} 个")
 
 
@@ -584,6 +585,7 @@ def _ensure_card_count(page: Any, count: int, *, owner: Any | None = None) -> An
         button.scroll_into_view_if_needed()
         button.click()
         cards = _wait_for_cards(page, current + 1, owner=scope)
+        pacing.pause(page, "field")
         current = cards.count()
     return cards
 
@@ -637,6 +639,7 @@ def _replace_editor(page: Any, editor: Any, value: str, field_name: str) -> None
         raise RuntimeError(f"{field_name}回读不一致：期望 {expected!r}，实际 {actual!r}")
     if not expected and actual:
         raise RuntimeError(f"{field_name}清空后仍有内容：{actual!r}")
+    pacing.pause(page, "field")
 
 
 def _find_dropdown_option(page: Any, value: str) -> Any | None:
@@ -715,7 +718,10 @@ def _find_dropdown_option(page: Any, value: str) -> Any | None:
 def _select_option(page: Any, index: int, value: str) -> None:
     tracer = page_perf(page, operation="textbook-input")
     with tracer.span("select_option", index=int(index)):
-        return _select_option_impl(page, index, value)
+        result = _select_option_impl(page, index, value)
+    # 停顿放在 span 之外：select_option 的耗时仍然只统计页面动作本身。
+    pacing.pause(page, "field")
+    return result
 
 
 def _select_option_impl(page: Any, index: int, value: str) -> None:
@@ -736,7 +742,9 @@ def _select_option_impl(page: Any, index: int, value: str) -> None:
             selector_count = selectors.count()
         while time.monotonic() < selector_deadline and selector_count <= index:
             remaining_ms = int(max(1, (selector_deadline - time.monotonic()) * 1000))
-            page.wait_for_timeout(min(100, remaining_ms))
+            page.wait_for_timeout(
+                min(pacing.poll_interval_ms(100), remaining_ms)
+            )
             selector_count = selectors.count()
     if selector_count <= index:
         raise RuntimeError(f"创建页面下拉框数量不足，无法选择第 {index + 1} 项：{value}")
@@ -771,7 +779,7 @@ def _select_option_impl(page: Any, index: int, value: str) -> None:
                 selector.click()
             next_retry = time.monotonic() + 1.5
         remaining_ms = int(max(1, (open_deadline - time.monotonic()) * 1000))
-        page.wait_for_timeout(min(100, remaining_ms))
+        page.wait_for_timeout(min(pacing.poll_interval_ms(100), remaining_ms))
     if option is None:
         visible_texts = page.locator(".el-select-dropdown__item:visible").all_inner_texts()
         raise RuntimeError(
@@ -792,7 +800,7 @@ def _select_option_impl(page: Any, index: int, value: str) -> None:
             shown = ""
         if expected_normalized in shown.casefold():
             return
-        page.wait_for_timeout(50)
+        page.wait_for_timeout(pacing.poll_interval_ms(50))
     if expected_normalized not in shown.casefold():
         raise RuntimeError(f"下拉框回读不一致：期望 {value!r}，实际 {shown!r}")
 
@@ -853,7 +861,7 @@ def _find_role_volume_row(page: Any, record: Mapping[str, Any]) -> Any | None:
             )
             if current_signature != signature:
                 break
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(pacing.poll_interval_ms(100))
     return None
 
 
@@ -966,7 +974,7 @@ def _wait_for_role_form(page: Any, timeout: int = 30_000) -> None:
         save = _visible_exact(page, "保存角色")
         if save is not None or _role_form_inputs(page).count():
             return
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(pacing.poll_interval_ms(100))
     raise RuntimeError("等待课文角色编辑表单超时")
 
 
@@ -1003,7 +1011,7 @@ def _open_role_list(page: Any, login_timeout_seconds: int) -> None:
                 cancel = _visible_exact(page, "取消")
                 if cancel is not None:
                     cancel.click()
-                    page.wait_for_timeout(100)
+                    page.wait_for_timeout(pacing.poll_interval_ms(100))
                     continue
             body = _body_text(page)
             login_page = "#/login" in current_url or any(
@@ -1019,7 +1027,7 @@ def _open_role_list(page: Any, login_timeout_seconds: int) -> None:
                         page.goto(TEXT_ROLE_URL, wait_until="domcontentloaded", timeout=60_000)
                 except Exception:
                     pass
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(pacing.poll_interval_ms(100))
         if observer.response_count and not observer.successful_response:
             raise RuntimeError("课文角色列表接口返回异常，已停止新增以避免创建重复册别。")
         raise RuntimeError("等待登录/课文角色列表数据超时；未维护任何角色。")
@@ -1058,7 +1066,7 @@ def _wait_for_role_list(
             and (response_ready or cached_rows_ready)
         ):
             return
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(pacing.poll_interval_ms(100))
     raise RuntimeError("保存角色后未返回课文角色列表")
 
 
@@ -1111,7 +1119,7 @@ def _modify_role_volume(page: Any, record: Mapping[str, Any], roles: Sequence[st
             _click_exact(page, "添加新角色")
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline and _role_form_inputs(page).count() <= before:
-                page.wait_for_timeout(100)
+                page.wait_for_timeout(pacing.poll_interval_ms(100))
             inputs = _role_form_inputs(page)
             if inputs.count() <= before:
                 raise RuntimeError("点击“添加新角色”后没有出现新的角色输入框")
@@ -1119,6 +1127,7 @@ def _modify_role_volume(page: Any, record: Mapping[str, Any], roles: Sequence[st
         empty_input.fill(role)
         if _role_input_value(empty_input).casefold() != role.casefold():
             raise RuntimeError(f"角色名称回读不一致：期望 {role!r}")
+        pacing.pause(page, "field")
         existing.add(key)
         added = True
 
@@ -1194,6 +1203,7 @@ def _fill_classification(page: Any, record: Mapping[str, Any]) -> None:
     english_name = page.get_by_placeholder("请输入课文名称（英文）", exact=True)
     chinese_name.fill(str(record["name_zh"]))
     english_name.fill(str(record["name_en"]))
+    pacing.pause(page, "field")
 
     values = [
         record["form"],
@@ -1278,6 +1288,7 @@ def _fill_paragraph_title(page: Any, paragraph: Any, value: Any, index: int = 0)
         raise RuntimeError(
             f"第 {index + 1} 段标题回读不一致：期望 {title!r}，实际 {actual!r}"
         )
+    pacing.pause(page, "field")
 
 
 def _fill_card_role(page: Any, card: Any, value: Any, index: int) -> None:
@@ -1312,7 +1323,7 @@ def _fill_card_role(page: Any, card: Any, value: Any, index: int) -> None:
         if not missing:
             break
         remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
-        page.wait_for_timeout(min(100, remaining_ms))
+        page.wait_for_timeout(min(pacing.poll_interval_ms(100), remaining_ms))
     if buttons.count() == 0:
         raise RuntimeError(
             f"第 {index + 1} 条角色扮演内容没有找到角色按钮：{', '.join(roles)}"
@@ -1334,9 +1345,10 @@ def _fill_card_role(page: Any, card: Any, value: Any, index: int) -> None:
             class_name = str(button.get_attribute("class") or "")
             if "characterSelected" in class_name:
                 break
-            page.wait_for_timeout(50)
+            page.wait_for_timeout(pacing.poll_interval_ms(50))
         if "characterSelected" not in class_name:
             raise RuntimeError(f"第 {index + 1} 条角色选择回读失败：{role}")
+    pacing.pause(page, "field")
 
 
 def _wait_for_paragraphs(page: Any, count: int, timeout: int = 30_000) -> Any:
@@ -1349,7 +1361,7 @@ def _wait_for_paragraphs(page: Any, count: int, timeout: int = 30_000) -> Any:
         except Exception:
             pass
         remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
-        page.wait_for_timeout(min(100, remaining_ms))
+        page.wait_for_timeout(min(pacing.poll_interval_ms(100), remaining_ms))
     raise RuntimeError(f"等待课文段落编辑区超时：需要 {count} 个")
 
 
@@ -1372,6 +1384,7 @@ def _ensure_paragraph_count(page: Any, count: int) -> Any:
     while current < count:
         _click_exact(page, "继续添加段落")
         paragraphs = _wait_for_paragraphs(page, current + 1)
+        pacing.pause(page, "field")
         current = paragraphs.count()
     return paragraphs
 
@@ -1453,11 +1466,12 @@ def _fill_content_card(
                 audio_label_ready = True
                 break
             remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
-            page.wait_for_timeout(min(100, remaining_ms))
+            page.wait_for_timeout(min(pacing.poll_interval_ms(100), remaining_ms))
 
     if not audio_label_ready:
         location = f"第 {paragraph_index + 1} 段第 {index + 1} 条" if paragraph_index is not None else f"第 {index + 1} 条"
         raise RuntimeError(f"{location}音频回读失败：{stem}")
+    pacing.pause(page, "item")
 
 
 def _fill_content(
@@ -1484,6 +1498,9 @@ def _fill_content_impl(
         for paragraph_index, paragraph in enumerate(paragraphs):
             if control_check is not None:
                 control_check()
+            if paragraph_index:
+                # 上一段的卡片刚填完，换段前先留出读屏的间隔。
+                pacing.pause(page, "group")
             paragraph_owner = page_paragraphs.nth(paragraph_index)
             _fill_paragraph_title(
                 page,
@@ -1553,7 +1570,7 @@ def _open_text_list(page: Any, login_timeout_seconds: int) -> None:
                     page.goto(RESOURCE_TEXT_URL, wait_until="domcontentloaded", timeout=60_000)
             except Exception:
                 pass
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(pacing.poll_interval_ms(200))
     raise RuntimeError("等待登录/课文管理页面超时；未创建任何课文记录。")
 
 
@@ -1602,6 +1619,9 @@ def _create_textbook_record(
         page.get_by_text("新增课文", exact=True).wait_for(state="visible", timeout=30_000)
         if control_check is not None:
             control_check()
+    # 一条课文落地后停一下再进下一条；放在这里而不是调用方的循环里，
+    # 桌面执行器和两条命令行入口共用同一个间隔。
+    pacing.pause(page, "step")
     return record_id
 
 

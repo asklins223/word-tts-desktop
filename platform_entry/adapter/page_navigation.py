@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import pacing
 from .page_shared import *  # noqa: F403,F401
 from .performance import page_perf
 
@@ -216,9 +217,15 @@ class PlatformInputNavigationMixin:
                     last_error = type(exc).__name__
                 self._control_checkpoint()
                 remaining_ms = int(max(1, (deadline - time.monotonic()) * 1000))
-                if remaining_ms <= 0:
-                    break
-                self.page.wait_for_timeout(min(max(1, int(interval_ms)), remaining_ms))
+                # The jitter shortens the effective poll window instead of
+                # extending it, so every existing timeout_seconds budget keeps
+                # its meaning while the tick stops being a fixed heartbeat.
+                self.page.wait_for_timeout(
+                    min(
+                        pacing.poll_interval_ms(interval_ms),
+                        remaining_ms,
+                    )
+                )
             self._control_checkpoint()
             metadata["attempts"] = attempts
             metadata["timed_out"] = True
@@ -260,7 +267,7 @@ class PlatformInputNavigationMixin:
                     # 登录页尚未完成或菜单正在切换时可能暂时不能点击；
                     # 下一轮会继续通过页面菜单尝试。
                     pass
-            self.page.wait_for_timeout(200)
+            self.page.wait_for_timeout(pacing.poll_interval_ms(200))
 
         raise PlatformInputLoginError(
             "未进入外部平台试卷管理页；本次等待已结束，请重新发起录入并在打开的 Chrome 窗口完成登录"

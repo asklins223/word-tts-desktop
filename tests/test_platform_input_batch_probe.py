@@ -9,16 +9,19 @@ in-browser probe disagrees with the stubbed engine calls.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
+    from platform_entry.adapter import pacing
     from platform_entry.adapter.page_cards import (
         PlatformInputCardMixin,
         _QUESTION_CARD_LEVEL_JS,
@@ -424,11 +427,36 @@ class _FakeRichEditor:
         return self._readback_values.pop(0)
 
 
-class _PageWithoutKeyboard:
-    pass
+class _FakeRichPage:
+    """Real page shim: exposes the keyboard only when the editor has one.
+
+    ``wait_for_timeout`` is a Playwright page capability the shared pacer uses
+    for its boundary pauses, so the shim needs it too; ``wait_ms`` records how
+    often a fill paused.
+    """
+
+    def __init__(self, keyboard: object | None = None) -> None:
+        self.wait_ms: list[int] = []
+        if keyboard is not None:
+            self.keyboard = keyboard
+
+    def wait_for_timeout(self, timeout_ms: int) -> None:
+        self.wait_ms.append(int(timeout_ms))
 
 
 class ReplaceRichTextTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 这三条用例会数页面被 wait 了几次，所以把档位固定在默认值，
+        # 不跟随调用进程里的 WORDTTS_PLATFORM_INPUT_PACE。
+        env = mock.patch.dict(
+            os.environ,
+            {pacing.PACE_SCALE_ENV_VAR: str(pacing.PACE_SCALE)},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        pacing.reset()
+        self.addCleanup(pacing.reset)
+
     def _run(self, page: object, editor: object) -> None:
         owner = SimpleNamespace(page=page, action_timeout_ms=5_000)
         PlatformInputCardMixin._replace_rich_text(owner, editor, "目标内容")
@@ -436,28 +464,35 @@ class ReplaceRichTextTests(unittest.TestCase):
     def test_insert_text_first_and_type_fallback_on_mismatch(self) -> None:
         keyboard = _FakeKeyboard()
         editor = _FakeRichEditor(readback_values=["旧内容", "目标内容"])
-        page = SimpleNamespace(keyboard=keyboard)
+        page = _FakeRichPage(keyboard=keyboard)
         self._run(page, editor)
         self.assertEqual(keyboard.insert_text_calls, ["目标内容"])
         # The char-by-char path replays exactly once after the mismatch.
         self.assertEqual(editor.type_calls, ["目标内容"])
         self.assertEqual(editor.click_calls, 2)
+        # 回读一致之后只停一次，而不是每次驱动往返都停。
+        self.assertEqual(len(page.wait_ms), 1)
+        self.assertGreater(page.wait_ms[0], 0)
 
     def test_missing_keyboard_attribute_still_fills_via_type(self) -> None:
         editor = _FakeRichEditor(readback_values=["目标内容"])
-        self._run(_PageWithoutKeyboard(), editor)
+        page = _FakeRichPage()
+        self._run(page, editor)
         self.assertEqual(editor.type_calls, ["目标内容"])
         self.assertEqual(editor.click_calls, 1)
+        self.assertEqual(len(page.wait_ms), 1)
 
     def test_persistent_mismatch_raises_ui_error(self) -> None:
         keyboard = _FakeKeyboard()
         editor = _FakeRichEditor(readback_values=["旧内容", "仍然不符"])
-        page = SimpleNamespace(keyboard=keyboard)
+        page = _FakeRichPage(keyboard=keyboard)
         owner = SimpleNamespace(page=page, action_timeout_ms=5_000)
         with self.assertRaises(PlatformInputUiError):
             PlatformInputCardMixin._replace_rich_text(
                 owner, editor, "目标内容"
             )
+        # 回读失败时不留下“成功一次”的停顿，录入失败要立刻上报。
+        self.assertEqual(page.wait_ms, [])
 
 
 class QuestionCardBatchProbeTests(unittest.TestCase):

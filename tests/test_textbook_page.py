@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest import mock
 
-from platform_entry.adapter import textbook_page
+from platform_entry.adapter import pacing, textbook_page
 
 
 class TextbookPageInputTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 这几条用例会数页面被 wait 了几次，所以把档位固定在默认值，不跟随
+        # 调用进程里的 WORDTTS_PLATFORM_INPUT_PACE。
+        env = mock.patch.dict(
+            os.environ,
+            {pacing.PACE_SCALE_ENV_VAR: str(pacing.PACE_SCALE)},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        pacing.reset()
+        self.addCleanup(pacing.reset)
     def test_page_text_removes_selected_role_prefix(self) -> None:
         self.assertEqual(
             textbook_page._textbook_page_text(
@@ -189,13 +201,24 @@ class TextbookPageInputTests(unittest.TestCase):
             def inner_text(self, **_kwargs: object) -> str:
                 return self.readbacks.pop(0)
 
-        page = type("Page", (), {"keyboard": Keyboard()})()
+        waits: list[int] = []
+        page = type(
+            "Page",
+            (),
+            {
+                "keyboard": Keyboard(),
+                "wait_for_timeout": lambda _self, ms: waits.append(int(ms)),
+            },
+        )()
         editor = Editor(["一段很长的课文"])
 
         textbook_page._replace_editor(page, editor, "一段很长的课文", "原文")
 
         self.assertEqual(page.keyboard.inserted, ["一段很长的课文"])
         self.assertEqual(editor.typed, [])
+        # 整段一次性 insertText 之后只停一次；打字回退没有被触发。
+        self.assertEqual(len(waits), 1)
+        self.assertGreater(waits[0], 0)
 
     def test_replace_editor_replays_typing_only_after_mismatch(self) -> None:
         class Keyboard:
@@ -223,11 +246,21 @@ class TextbookPageInputTests(unittest.TestCase):
                 return self.readbacks.pop(0)
 
         editor = Editor()
-        page = type("Page", (), {"keyboard": Keyboard()})()
+        waits: list[int] = []
+        page = type(
+            "Page",
+            (),
+            {
+                "keyboard": Keyboard(),
+                "wait_for_timeout": lambda _self, ms: waits.append(int(ms)),
+            },
+        )()
 
         textbook_page._replace_editor(page, editor, "目标内容", "原文")
 
         self.assertEqual(editor.typed, ["目标内容"])
+        # 回退重放只是同一次填写的延续，停顿仍然只在成功后出现一次。
+        self.assertEqual(len(waits), 1)
 
     def test_select_option_accepts_platform_case_difference_on_readback(self) -> None:
         class Locator:
@@ -257,6 +290,9 @@ class TextbookPageInputTests(unittest.TestCase):
                 return Locator()
 
         class Page:
+            def __init__(self) -> None:
+                self.wait_ms: list[int] = []
+
             def locator(self, selector: str) -> Locator:
                 if selector == ".el-select__wrapper:visible":
                     return Locator(count=1, text="Reading plus")
@@ -265,10 +301,15 @@ class TextbookPageInputTests(unittest.TestCase):
             def get_by_role(self, *_args: object, **_kwargs: object) -> Locator:
                 return Locator()
 
-            def wait_for_timeout(self, _milliseconds: int) -> None:
-                return None
+            def wait_for_timeout(self, milliseconds: int) -> None:
+                self.wait_ms.append(int(milliseconds))
 
-        textbook_page._select_option(Page(), 0, "Reading Plus")
+        # 这条成功路径不需要轮询补等，所以唯一的 wait 就是选完一项之后那一次停顿。
+        page = Page()
+        textbook_page._select_option(page, 0, "Reading Plus")
+        self.assertEqual(len(page.wait_ms), 1)
+        low, high = pacing.PAUSE_WINDOWS_MS["field"]
+        self.assertIn(page.wait_ms[0], range(low, high + 1))
 
     def test_fill_card_role_clicks_real_multi_select_role_buttons(self) -> None:
         class Button:
