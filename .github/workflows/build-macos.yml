@@ -98,6 +98,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements_electron.txt
 
+      - name: Install Playwright browsers
+        # 上面的缓存只是省时间：GitHub 会在七天无人访问后清掉缓存，
+        # 而文档块图片提取要用 Chromium 渲染。缺了这一步，缓存一过期
+        # 逻辑冒烟就会以“内置 Chromium 文档渲染依赖不可用”失败。
+        run: python -m playwright install chromium
+
       - name: Install Electron dependencies
         working-directory: electron
         run: npm ci --prefer-offline --no-audit --fund=false
