@@ -20,6 +20,7 @@ from .config import (
     DOWNLOAD_PAGE_URL,
     HOME_URL,
     _provider_success_code,
+    works_ready_timeout,
 )
 from .errors import (
     XunfeiCancelled,
@@ -271,9 +272,11 @@ class DownloadMixin:
         self._last_works_list_scan_complete = scan_complete
         return records
 
-    def _wait_for_works_entry(self, page, works_id, timeout=120, cancel_check=None):
+    def _wait_for_works_entry(self, page, works_id, timeout=None, cancel_check=None):
         """等待同一个 worksId 出现在作品列表中，严禁按名称或最新记录替代。"""
         expected = str(works_id)
+        if timeout is None:
+            timeout = works_ready_timeout(1)
         deadline = time.time() + timeout
         logged_wait = False
         while time.time() < deadline:
@@ -293,9 +296,11 @@ class DownloadMixin:
         _log(f"[xunfei]   ⚠️ 作品列表未匹配到 worksId: {expected}")
         return None
 
-    def _wait_for_works_ready(self, page, works_id, timeout=180, cancel_check=None):
+    def _wait_for_works_ready(self, page, works_id, timeout=None, cancel_check=None):
         """等待精确 worksId 对应的音频文件真正可下载。"""
         expected = str(works_id)
+        if timeout is None:
+            timeout = works_ready_timeout(1)
         deadline = time.time() + timeout
         matched_logged = False
         waiting_logged = False
@@ -1015,10 +1020,17 @@ class DownloadMixin:
                 "stage": "downloading",
                 "downloaded": False,
             })
+        # 合成可能很慢，窗口必须按批次规模给足；不够长会被误判成
+        # “作品未在下载页按 worksId 就绪”，让已经合成好的音频白等一场。
+        ready_timeout = works_ready_timeout(len(pending_items))
+        _log(
+            f"[xunfei]   等待本批 {len(pending_items)} 条作品就绪，"
+            f"最长等待 {ready_timeout / 60:.0f} 分钟"
+        )
         ready = self._wait_for_pending_ready(
             page,
             pending_items,
-            timeout=180,
+            timeout=ready_timeout,
             cancel_check=cancel_check,
         )
         _check_cancel_requested(cancel_check)

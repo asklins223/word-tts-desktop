@@ -29,6 +29,58 @@ DOWNLOAD_PAGE_URL = "https://peiyin.xunfei.cn/user"
 API_WORKS_LIST_URL = "https://peiyin.xunfei.cn/video-api/synth/qry_works_synth_list"
 API_SIGN_URL = "https://peiyin.xunfei.cn/video-api/synth/get_work_sign_url"
 
+# 讯飞合成耗时随文本长度、账号负载和服务端队列波动很大：短句常常几十秒，
+# 长课文或赶上高峰可能好几分钟。下载页等待作品就绪的窗口必须显著长于最坏
+# 合成耗时，否则慢批次会被误判成“作品未在下载页按 worksId 就绪”。这里给
+# 的是默认值；用户遇到更慢的账号可以用环境变量放大，不必重新打包。
+WORKS_READY_TIMEOUT_ENV_VAR = "WORDTTS_XUNFEI_READY_TIMEOUT"
+# 单批等待的基线：15 分钟。
+WORKS_READY_TIMEOUT_BASE_SECONDS = 900
+# 每多一条待下载作品追加的余量（服务端可能串行排队）。
+WORKS_READY_TIMEOUT_PER_ITEM_SECONDS = 20
+# 硬上限，避免配置写错时任务永久挂起；用户仍可随时手动停止。
+WORKS_READY_TIMEOUT_MAX_SECONDS = 3600
+WORKS_READY_TIMEOUT_MIN_SECONDS = 120
+
+
+def _env_float(name, default):
+    """读取正数环境变量；非法值回退到默认，不让配置错误中断任务。"""
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
+        return float(default)
+    return value
+
+
+def works_ready_timeout(item_count=1, override=None):
+    """本批作品在下载页等待就绪的窗口，单位秒。
+
+    基线之外按待下载条数追加余量：作品已经全部提交，等待的是最慢的一条，
+    但服务端可能串行排队，条数越多尾部越靠后。``override`` / 环境变量
+    ``WORDTTS_XUNFEI_READY_TIMEOUT`` 直接指定总秒数，两者都做上下限保护。
+    """
+    if override is None:
+        override = _env_float(WORKS_READY_TIMEOUT_ENV_VAR, 0.0)
+    if override > 0:
+        total = override
+    else:
+        try:
+            count = max(1, int(item_count or 1))
+        except (TypeError, ValueError, OverflowError):
+            count = 1
+        total = (
+            WORKS_READY_TIMEOUT_BASE_SECONDS
+            + WORKS_READY_TIMEOUT_PER_ITEM_SECONDS * (count - 1)
+        )
+    return float(
+        min(WORKS_READY_TIMEOUT_MAX_SECONDS, max(WORKS_READY_TIMEOUT_MIN_SECONDS, total))
+    )
+
 # 持久化浏览器配置目录（保存 cookies / 登录状态）。
 # 首次升级时优先复用旧目录，避免用户被迫重新扫码登录；新安装统一放在
 # WordTTS 数据目录内，和音频、音色缓存保持同一数据边界。不能只用

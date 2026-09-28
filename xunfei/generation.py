@@ -11,7 +11,7 @@ import os
 import time
 import uuid
 
-from .config import OUTPUT_DIR, PARAM_DEFAULT, clamp_param
+from .config import OUTPUT_DIR, PARAM_DEFAULT, clamp_param, works_ready_timeout
 from .errors import (
     XunfeiCancelled,
     XunfeiCompositeSelectionError,
@@ -388,11 +388,13 @@ class GenerationMixin:
         self,
         page,
         pending_items,
-        timeout=180,
+        timeout=None,
         cancel_check=None,
     ):
         """批量等待精确 worksId 对应的音频地址就绪。"""
         _check_cancel_requested(cancel_check)
+        if timeout is None:
+            timeout = works_ready_timeout(len(pending_items or []))
         duplicate_ids = self._duplicate_pending_work_ids(pending_items)
         if duplicate_ids:
             raise XunfeiError(
@@ -411,6 +413,10 @@ class GenerationMixin:
         deadline = time.time() + timeout
         matched = set()
         target_count = max(len(remaining), 1)
+        # 等待窗口现在是十几分钟，2 秒一条“仍在等待”会把日志刷成几百行。
+        # 改成按固定间隔播报，并带上剩余时间，让长等待既可见又不刷屏。
+        wait_log_interval = 15.0
+        next_wait_log = time.monotonic()
         while remaining and time.time() < deadline:
             _check_cancel_requested(cancel_check)
             fetch_kwargs = {
@@ -449,13 +455,16 @@ class GenerationMixin:
                     _log(f"[xunfei]   ✅ 匹配作品音频已就绪 worksId: {expected}")
 
             if remaining:
-                if not matched:
-                    _log(
-                        f"[xunfei]   ⏳ 等待 {len(remaining)} 条作品匹配 worksId"
+                now = time.monotonic()
+                if now >= next_wait_log:
+                    next_wait_log = now + wait_log_interval
+                    left = max(0.0, deadline - time.time())
+                    tail = (
+                        "匹配 worksId" if not matched else "等待音频就绪"
                     )
-                else:
                     _log(
-                        f"[xunfei]   ⏳ 仍有 {len(remaining)} 条作品等待音频就绪"
+                        f"[xunfei]   ⏳ 仍有 {len(remaining)} 条作品{tail}"
+                        f"（最多再等 {left / 60:.0f} 分钟）"
                     )
                 _check_cancel_requested(cancel_check)
                 _wait_with_cancel(page, 2.0, cancel_check=cancel_check)

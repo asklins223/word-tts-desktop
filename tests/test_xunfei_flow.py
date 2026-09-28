@@ -3612,6 +3612,70 @@ class XunfeiFlowTests(unittest.TestCase):
                     "items": [],
                 }])
 
+    def test_works_ready_timeout_scales_and_honors_env_override(self):
+        """等待作品就绪的窗口必须远大于旧的三分钟，并且可以按需放大。"""
+        from xunfei.config import (
+            WORKS_READY_TIMEOUT_MAX_SECONDS,
+            WORKS_READY_TIMEOUT_MIN_SECONDS,
+            works_ready_timeout,
+        )
+
+        # 旧值是 180 秒；慢批次正是被这个窗口判成“未在下载页就绪”的。
+        self.assertGreater(works_ready_timeout(1), 600)
+        # 条数越多尾部越靠后，窗口随之变长。
+        self.assertGreater(works_ready_timeout(20), works_ready_timeout(1))
+
+        env_var = xunfei_config.WORKS_READY_TIMEOUT_ENV_VAR
+        with mock.patch.dict(os.environ, {env_var: "1800"}):
+            self.assertEqual(works_ready_timeout(1), 1800.0)
+        with mock.patch.dict(os.environ, {env_var: "不是数字"}):
+            self.assertEqual(works_ready_timeout(1), works_ready_timeout(1, override=0))
+        with mock.patch.dict(os.environ, {env_var: "999999"}):
+            self.assertEqual(works_ready_timeout(1), WORKS_READY_TIMEOUT_MAX_SECONDS)
+        with mock.patch.dict(os.environ, {env_var: "1"}):
+            self.assertEqual(works_ready_timeout(1), WORKS_READY_TIMEOUT_MIN_SECONDS)
+
+    def test_batch_download_uses_the_scaled_ready_timeout(self):
+        """统一下载必须把按批次算出的长窗口传给等待逻辑，而不是写死 180 秒。"""
+        session = XunFeiSession()
+        captured = {}
+
+        class FakePage:
+            url = "https://peiyin.xunfei.cn/user"
+
+            def goto(self, *_args, **_kwargs):
+                return None
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        def fake_wait(_page, pending_items, timeout=None, cancel_check=None):
+            captured["timeout"] = timeout
+            captured["count"] = len(pending_items)
+            return {}
+
+        class FakePage:
+            url = "https://peiyin.xunfei.cn/user"
+
+            def goto(self, *_args, **_kwargs):
+                return None
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        session._page = FakePage()
+        session._wait_download_page_ready = lambda *_a, **_k: True
+        session._wait_for_pending_ready = fake_wait
+        session._fetch_works_list_pages = lambda *_a, **_k: []
+
+        pending = [
+            {"job_id": f"job-{index}", "works_id": f"works-{index}", "works_name": f"w{index}"}
+            for index in range(4)
+        ]
+        session._download_pending_batch(pending, cancel_check=None)
+        self.assertEqual(captured["count"], 4)
+        self.assertGreater(captured["timeout"], 600)
+
     def test_works_id_matching_is_exact(self):
         session = XunFeiSession()
 
