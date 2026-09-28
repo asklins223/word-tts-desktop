@@ -25,8 +25,11 @@ from .config import (
     _find_bundled_chromium,
     _platform_user_agent,
     configure_playwright_runtime,
+    mark_system_chrome_suspect,
     playwright_runtime_diagnostics,
+    prefer_system_chrome,
     shared_chrome_launch_args,
+    system_chrome_is_suspect,
 )
 from .errors import (
     XunfeiBrowserLaunchError,
@@ -44,6 +47,16 @@ from .page_actions import PageActionsMixin
 from .downloads import DownloadMixin
 from .composite_actions import CompositeActionsMixin
 from .generation import GenerationMixin
+
+
+def _is_system_chrome(executable_path):
+    """这个可执行文件是否是本机的系统 Chrome（而非随包 Chromium）。"""
+    if not executable_path:
+        return False
+    path = str(executable_path).replace("\\", "/")
+    if "playwright_browsers" in path or "/chromium-" in path:
+        return False
+    return "chrome" in os.path.basename(path).casefold()
 
 
 class SessionLifecycleMixin:
@@ -264,6 +277,10 @@ class SessionLifecycleMixin:
         # could not be dismissed) into a false browser-disconnected signal.
         self._close_requested = False
         self._real_ua = None
+        # 实际启动起来的浏览器。只有系统 Chrome 会在崩溃后被降级，随包
+        # Chromium 是降级目的地。
+        self._launched_browser_path = None
+        self._launched_browser_label = None
         # 页面状态跟踪（页面复用的关键）。音色 key 和页面显示名称都保留：
         # key 防止同名音色串用，页面回读防止讯飞提交后把音色恢复为默认值。
         self._current_voice_key = None
@@ -319,6 +336,12 @@ class SessionLifecycleMixin:
             self._logged_in = False
         if not already_disconnected:
             _log("[xunfei] 浏览器窗口已关闭或连接断开，将在下次任务中重建会话")
+        # 这份系统 Chrome 崩过（或被外部回收）就记一笔，下次会话自动改用
+        # 随包 Chromium，而不是让同一条路径再崩一次。随包 Chromium 本身
+        # 不记：它就是降级后的目的地，再记只会绕圈。
+        launched = getattr(self, "_launched_browser_path", None)
+        if launched and _is_system_chrome(launched):
+            mark_system_chrome_suspect(launched, "浏览器进程意外退出")
 
     def runtime_status_snapshot(self):
         """Return a consistent, thread-safe health view for UI projections."""
@@ -407,14 +430,29 @@ class SessionLifecycleMixin:
             self._clear_stale_profile_lock(PROFILE_DIR)
         _log(f"[xunfei] 浏览器配置目录: {PROFILE_DIR}")
 
-        # 优先使用系统 Chrome（真实 UA / 真实指纹）。如果系统 Chrome 不在
-        # PATH 或启动失败，直接使用打包的 Chromium 路径；这一步不再依赖
-        # Playwright registry 能否正确解析 PyInstaller 的资源目录。
+        # 系统 Chrome 优先（真实 UA / 真实指纹）。但这份 Chrome 曾经在讯飞
+        # 下载页上稳定复现浏览器进程 SIGSEGV，所以只要它在任务中崩过一次，
+        # 后续会话就自动改用随包 Chromium；也可以用
+        # WORDTTS_XUNFEI_BROWSER=chromium 立即切换，不必等记号。
+        system_chrome_suspect = bool(
+            prefer_system_chrome()
+            and chrome_path
+            and system_chrome_is_suspect(chrome_path)
+        )
         browser_candidates = []
-        if chrome_path:
+        if system_chrome_suspect:
+            _log(
+                "[xunfei] 系统 Chrome 此前崩溃过，本次改用内置 Chromium: "
+                f"{chrome_path}"
+            )
+            if bundled_chromium:
+                browser_candidates.append(("内置 Chromium", bundled_chromium, True))
             browser_candidates.append(("系统 Chrome", chrome_path, False))
-        if bundled_chromium and bundled_chromium != chrome_path:
-            browser_candidates.append(("内置 Chromium", bundled_chromium, True))
+        else:
+            if chrome_path:
+                browser_candidates.append(("系统 Chrome", chrome_path, False))
+            if bundled_chromium and bundled_chromium != chrome_path:
+                browser_candidates.append(("内置 Chromium", bundled_chromium, True))
         # Keep the registry lookup as a final source-install compatibility
         # path.  Packaged builds normally use the explicit staged path above.
         browser_candidates.append(("Playwright Chromium", None, True))
@@ -436,6 +474,11 @@ class SessionLifecycleMixin:
                         **candidate_kwargs
                     )
                     _log(f"[xunfei] 已启动{browser_label}: {executable_path or 'registry'}")
+                    # Remember what actually launched.  Only the system Chrome
+                    # is demoted after a crash; the bundled Chromium is what we
+                    # fall back to, so demoting it would be a no-op loop.
+                    self._launched_browser_path = executable_path
+                    self._launched_browser_label = browser_label
                     break
                 except Exception as error:
                     launch_error = error

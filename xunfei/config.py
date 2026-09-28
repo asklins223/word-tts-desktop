@@ -7,13 +7,17 @@ split without changing the legacy public module's values.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from app_paths import ensure_data_dir, resource_dir
+
+from .errors import _log
 
 
 BASE_DIR = ensure_data_dir()
@@ -471,6 +475,78 @@ def _provider_bool(value, default=False):
     if text in {"1", "true", "yes", "y", "是", "vip"}:
         return True
     return bool(default)
+
+
+def prefer_system_chrome():
+    """是否优先用系统 Chrome 驱动讯飞浏览器，默认是。
+
+    历史行为即系统 Chrome 优先（真实 UA / 真实指纹），保持不变。系统
+    Chrome 一旦在任务中崩溃，会被 :func:`mark_system_chrome_suspect`
+    记为可疑，之后的会话自动改用随包 Chromium；设
+    ``WORDTTS_XUNFEI_BROWSER=chromium`` 可立即强制切换，不必等记号。
+    """
+    raw = str(os.environ.get("WORDTTS_XUNFEI_BROWSER") or "").strip().casefold()
+    if raw in {"chromium", "bundled", "内置", "内置chromium"}:
+        return False
+    return True
+
+
+def system_chrome_is_suspect(chrome_path=None):
+    """这份系统 Chrome 是否在最近一次任务中崩溃过。
+
+    记号按可执行文件路径绑定：换一份 Chrome（比如升级）等于换了二进制，
+    记号自动失效，不需要手工清理。
+    """
+    marker = _read_system_chrome_suspect()
+    if not marker:
+        return False
+    if not chrome_path:
+        return True
+    return str(marker.get("chrome_path") or "") == str(chrome_path)
+
+
+def mark_system_chrome_suspect(chrome_path, reason=""):
+    """记下"这份系统 Chrome 崩过"，让下次会话改用随包 Chromium。"""
+    if not chrome_path:
+        return
+    path = _system_chrome_suspect_file()
+    payload = {
+        "chrome_path": str(chrome_path),
+        "reason": " ".join(str(reason or "").split())[:300],
+        "marked_at": int(time.time()),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        _log(f"[xunfei] 系统 Chrome 已标记为可疑，下次改用内置 Chromium: {chrome_path}")
+    except OSError as error:
+        _log(f"[xunfei] 写入浏览器记号失败（继续用系统 Chrome）: {error}")
+
+
+def clear_system_chrome_suspect():
+    """清除可疑记号，恢复"系统 Chrome 优先"。"""
+    try:
+        _system_chrome_suspect_file().unlink(missing_ok=True)
+    except OSError as error:
+        _log(f"[xunfei] 清除浏览器记号失败（已忽略）: {error}")
+
+
+def _system_chrome_suspect_file():
+    return Path(BASE_DIR) / "system_chrome_suspect.json"
+
+
+def _read_system_chrome_suspect():
+    try:
+        raw = _system_chrome_suspect_file().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _find_chrome():

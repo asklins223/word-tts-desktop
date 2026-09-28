@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from concurrent.futures import Future
 import os
 import signal
@@ -21,6 +22,20 @@ from xunfei import (
     XunfeiError,
     XunfeiLoginRequired,
 )
+
+
+@contextlib.contextmanager
+def _temporary_chrome_suspect_marker(marker):
+    """Isolate the system-Chrome demotion marker from the real user profile."""
+    had = marker.exists()
+    saved = marker.read_text(encoding="utf-8") if had else None
+    marker.unlink(missing_ok=True)
+    try:
+        yield marker
+    finally:
+        marker.unlink(missing_ok=True)
+        if had and saved is not None:
+            marker.write_text(saved, encoding="utf-8")
 
 
 class _FakeKeyboard:
@@ -4668,6 +4683,73 @@ class XunfeiFlowTests(unittest.TestCase):
         session._logged_in = True
         session._download_pending_batch = lambda *_a, **_k: self.fail("不应进入统一下载")
         self.assertEqual(session.download_submitted_works([{"job_id": "job-1"}]), {})
+
+
+
+    def test_system_chrome_is_demoted_only_after_it_crashes(self):
+        """系统 Chrome 优先；只有它真崩过一次，后续会话才改用随包 Chromium。"""
+        from xunfei import session as xunfei_session
+
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        bundled = (
+            "/app/playwright_browsers/chromium-1194/chrome-mac"
+            "/Chromium.app/Contents/MacOS/Chromium"
+        )
+        marker = xunfei_config._system_chrome_suspect_file()
+        with _temporary_chrome_suspect_marker(marker):
+            # 默认行为与历史一致：系统 Chrome 优先，没有可疑记号。
+            self.assertTrue(xunfei_config.prefer_system_chrome())
+            self.assertFalse(xunfei_config.system_chrome_is_suspect(chrome))
+            # 只有系统 Chrome 会被记号，内置 Chromium 不会（否则降级会绕圈）。
+            self.assertTrue(xunfei_session._is_system_chrome(chrome))
+            self.assertFalse(xunfei_session._is_system_chrome(bundled))
+            self.assertFalse(xunfei_session._is_system_chrome(None))
+
+            # 系统 Chrome 崩过一次 → 记号生效。
+            xunfei_config.mark_system_chrome_suspect(chrome, "浏览器进程意外退出")
+            self.assertTrue(xunfei_config.system_chrome_is_suspect(chrome))
+            # 换一份 Chrome（升级过）等于换了二进制，记号自动失效。
+            self.assertFalse(
+                xunfei_config.system_chrome_is_suspect("/other/Google Chrome")
+            )
+            # 记号可以清掉，恢复"系统 Chrome 优先"。
+            xunfei_config.clear_system_chrome_suspect()
+            self.assertFalse(xunfei_config.system_chrome_is_suspect(chrome))
+
+    def test_crashed_system_chrome_is_marked_and_bundled_is_not(self):
+        """只有真正启动起来的是系统 Chrome 时，崩溃才写降级记号。"""
+        from xunfei import session as xunfei_session
+
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        bundled = (
+            "/app/playwright_browsers/chromium-1194/chrome-mac"
+            "/Chromium.app/Contents/MacOS/Chromium"
+        )
+        marker = xunfei_config._system_chrome_suspect_file()
+        with _temporary_chrome_suspect_marker(marker):
+            session = xunfei_session.XunFeiSession()
+            session._launched_browser_path = chrome
+            session._mark_browser_disconnected()
+            self.assertTrue(xunfei_config.system_chrome_is_suspect(chrome))
+
+            marker.unlink(missing_ok=True)
+            session = xunfei_session.XunFeiSession()
+            session._launched_browser_path = bundled
+            session._mark_browser_disconnected()
+            self.assertFalse(marker.exists(), "随包 Chromium 不该被记号")
+
+    def test_our_own_close_does_not_demote_the_system_chrome(self):
+        """应用主动关闭浏览器不算崩溃，不得触发降级。"""
+        from xunfei import session as xunfei_session
+
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        marker = xunfei_config._system_chrome_suspect_file()
+        with _temporary_chrome_suspect_marker(marker):
+            session = xunfei_session.XunFeiSession()
+            session._launched_browser_path = chrome
+            session._close_requested = True
+            session._mark_browser_disconnected()
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":
