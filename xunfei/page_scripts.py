@@ -1021,6 +1021,40 @@ class JS:
         const variants = Array.isArray(aiKeywordVariants) ? aiKeywordVariants : [];
         const bodyText = normalize(document.body?.innerText || '');
         let aiModal = false;
+        // 讯飞在“作品设置”里把 AI 标识开关关掉时，会再叠一层合规提示框：
+        // 标题“提示”，正文“……应主动对合成内容进行显著标识（包括添加文字、
+        // 水印等方式）……”，按钮是“取消 / 已明确并使用”。它既没有“不再提示”
+        // 也不提“AI 标识”，因此不会被 AI 说明弹窗的关键词命中，却会盖住开关：
+        // 继续点开关只会反复弹出同一个框，回读与点击都停不下来，任务因此循环。
+        const aiSwitchConfirmKeywords = ['标识', '水印', 'AI声明', 'AI合成'];
+        // 确认按钮文案会随版本变化，用白名单 + “取消/返回 在场时取最后一个
+        // 可点按钮”两条规则兜底，避免只认“确定/确认”时漏掉“已明确并使用”。
+        const aiSwitchConfirmLabels = new Set([
+            '确定', '确认', '知道了', '我知道了', '继续',
+            '确定关闭', '确认关闭', '仍要关闭', '继续关闭', '知道了继续',
+            '已明确并使用', '明确并使用', '我已知悉并使用', '已知悉并使用',
+            '我已知晓并使用', '已知晓并使用', '已知晓', '我已知晓',
+            '我已了解', '已了解', '已知', '明白', '我明白', '好的',
+        ]);
+        const aiSwitchConfirmDismissLabels = new Set([
+            '取消', '返回', '返回修改', '稍后再说', '暂不', '暂不设置',
+        ]);
+        // 关闭用的 X 只有 aria-label、textContent 为空；空文案不参与匹配，
+        // 否则它会挤进“最后一个可点按钮”的位置。
+        const actionableButtonLabels = (modal) => {
+            const labels = [];
+            const buttons = modal.querySelectorAll('button, [role="button"], .ant-btn');
+            for (const button of buttons) {
+                if (!visible(button)) continue;
+                const aria = String(button.getAttribute('aria-label') || '');
+                if (/^close$/i.test(aria.trim())) continue;
+                const label = normalize(button.textContent || '');
+                if (!label) continue;
+                labels.push(label);
+            }
+            return labels;
+        };
+        let aiSwitchConfirm = false;
         let englishVoiceWarning = false;
         let order = bodyText.includes('去下载');
         let free = false;
@@ -1042,6 +1076,21 @@ class JS:
             }
             return switches[0] || null;
         };
+        // 这层提示框是“作品设置”之外的独立弹窗：没有 switch、没有“确认合成”，
+        // 也不带“不再提示”。判据不依赖标题，只要求它讲到标识/水印，且是一组
+        // “确认 + 取消”式的按钮，避免和订单/登录等弹窗混淆。
+        const isAiSwitchConfirm = (modal, text) => {
+            if (text.includes('不再提示')) return false;
+            if (text.includes('确认合成') || text.includes('作品名称')) return false;
+            if (text.includes('作品设置')) return false;
+            if (modal.querySelector(switchSelector)) return false;
+            if (!aiSwitchConfirmKeywords.some((kw) => text.includes(kw))) return false;
+            const labels = actionableButtonLabels(modal);
+            if (labels.some((label) => aiSwitchConfirmLabels.has(label))) return true;
+            // 取消/返回在场时，右侧还有一个可点按钮，就是确认动作。
+            return labels.length >= 2
+                && labels.some((label) => aiSwitchConfirmDismissLabels.has(label));
+        };
 
         for (const modal of modals) {
             const text = normalize(modal.innerText || modal.textContent || '');
@@ -1051,6 +1100,9 @@ class JS:
                 && group.every(keyword => text.includes(normalize(keyword)))
             ));
             if (isAi) aiModal = true;
+            if (!aiSwitchConfirm && isAiSwitchConfirm(modal, text)) {
+                aiSwitchConfirm = true;
+            }
             if (
                 text.includes('英文发音人提示')
                 || (text.includes('英文发音人') && text.includes('继续提交'))
@@ -1108,6 +1160,7 @@ class JS:
         return {
             state,
             ai_modal: aiModal,
+            ai_switch_confirm: aiSwitchConfirm,
             english_voice_warning: englishVoiceWarning,
             ai_switch: aiSwitch,
             order,
@@ -1238,6 +1291,72 @@ class JS:
             // 处理器收到的是 button[role=switch] 的点击，而不是只点内部装饰节点。
             sw.click();
             return 'clicked';
+        }
+        return 'not_found';
+    }
+    """
+
+    CLICK_AI_SWITCH_CONFIRM = """
+    () => {
+        // 关闭“AI 标识”开关后讯飞会再叠一层确认框。它没有 switch、也没有
+        // “确认合成”，所以上面的 CLICK_AI_SWITCH 永远不会点到它；必须单列
+        // 一个探针把它关掉，否则遮罩会挡住开关，任务在轮询里死循环。
+        const modals = document.querySelectorAll(
+            '.ant-modal, .ant-modal-content, [role="dialog"], ' +
+            '.el-dialog, .el-message-box'
+        );
+        const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && style.opacity !== '0'
+                && rect.width > 0
+                && rect.height > 0;
+        };
+        const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+        const switchSelector = '[role="switch"], .ant-switch, button[aria-pressed]';
+        const keywords = ['标识', '水印', 'AI声明', 'AI合成'];
+        const confirmLabels = new Set([
+            '确定', '确认', '知道了', '我知道了', '继续',
+            '确定关闭', '确认关闭', '仍要关闭', '继续关闭', '知道了继续',
+            '已明确并使用', '明确并使用', '我已知悉并使用', '已知悉并使用',
+            '我已知晓并使用', '已知晓并使用', '已知晓', '我已知晓',
+            '我已了解', '已了解', '已知', '明白', '我明白', '好的',
+        ]);
+        const dismissLabels = new Set([
+            '取消', '返回', '返回修改', '稍后再说', '暂不', '暂不设置',
+        ]);
+        for (const modal of modals) {
+            if (!visible(modal)) continue;
+            const text = normalize(modal.textContent || '');
+            if (text.includes('不再提示')) continue;
+            if (text.includes('确认合成') || text.includes('作品名称')) continue;
+            if (text.includes('作品设置')) continue;
+            if (modal.querySelector(switchSelector)) continue;
+            if (!keywords.some((kw) => text.includes(kw))) continue;
+            const buttons = modal.querySelectorAll('button, [role="button"], .ant-btn');
+            const candidates = [];
+            for (const button of buttons) {
+                if (!visible(button)) continue;
+                const aria = String(button.getAttribute('aria-label') || '');
+                if (/^close$/i.test(aria.trim())) continue;
+                const label = normalize(button.textContent || '');
+                if (!label) continue;
+                candidates.push({button, label});
+            }
+            // 优先点白名单里的确认按钮；文案再变时，退回“取消在场 + 取最后
+            // 一个可点按钮”，真实 DOM 的“取消 / 已明确并使用”正是这个形状。
+            const matched = candidates.find((item) => confirmLabels.has(item.label));
+            if (matched) {
+                matched.button.click();
+                return 'clicked';
+            }
+            if (candidates.length >= 2
+                && candidates.some((item) => dismissLabels.has(item.label))) {
+                candidates[candidates.length - 1].button.click();
+                return 'clicked';
+            }
         }
         return 'not_found';
     }

@@ -1567,6 +1567,11 @@ class PageActionsMixin:
 
         def probe():
             info = _probe_synth_state(page)
+            # 关闭 AI 标识的二次确认框会遮住后续动作；这一轮只负责关掉它，
+            # 不把被遮住的页面读成“没有任何状态”。
+            if info and info.get("ai_switch_confirm"):
+                self._dismiss_ai_switch_confirm(page, cancel_check=cancel_check)
+                return None
             state = (info or {}).get("state")
             # 第一次确认后，确认按钮本身可能还没卸载；这里只接受真正的
             # AI/错误/订单状态，避免把旧的确认弹窗当成已完成。
@@ -1715,6 +1720,104 @@ class PageActionsMixin:
             pass
         return None
 
+    @classmethod
+    def _click_ai_switch_confirm_with_locator(cls, page):
+        """用 locator 兜底关闭关闭 AI 标识后弹出的合规提示框。
+
+        真实弹窗是“提示 + 取消 / 已明确并使用”，没有 switch 也没有“确认合成”，
+        因此 CLICK_AI_SWITCH 永远点不到它；不关掉它，遮罩会挡住开关和确认合成。
+        """
+        try:
+            dialogs = page.locator(
+                '.ant-modal:visible, .ant-modal-content:visible, [role="dialog"]:visible, '
+                '.el-dialog:visible, .el-message-box:visible'
+            )
+            affirmative = {
+                "确定", "确认", "知道了", "我知道了", "继续",
+                "确定关闭", "确认关闭", "仍要关闭", "继续关闭", "知道了继续",
+                "已明确并使用", "明确并使用", "我已知悉并使用", "已知悉并使用",
+                "我已知晓并使用", "已知晓并使用", "已知晓", "我已知晓",
+                "我已了解", "已了解", "已知", "明白", "我明白", "好的",
+            }
+            dismiss = {"取消", "返回", "返回修改", "稍后再说", "暂不", "暂不设置"}
+            keywords = ("标识", "水印", "AI声明", "AI合成")
+            switches = (
+                'button[role="switch"], [role="switch"], .ant-switch, '
+                'button[aria-pressed]'
+            )
+            for index in range(min(dialogs.count(), 20)):
+                dialog = dialogs.nth(index)
+                text = re.sub(r"\s+", "", dialog.inner_text(timeout=500))
+                if "不再提示" in text:
+                    continue
+                if "确认合成" in text or "作品名称" in text or "作品设置" in text:
+                    continue
+                if dialog.locator(switches).count():
+                    continue
+                if not any(keyword in text for keyword in keywords):
+                    continue
+                buttons = dialog.locator('button, [role="button"], .ant-btn')
+                candidates = []
+                for button_index in range(buttons.count()):
+                    button = buttons.nth(button_index)
+                    try:
+                        label = re.sub(r"\s+", "", button.inner_text(timeout=500)).strip()
+                    except Exception:
+                        continue
+                    if label:
+                        candidates.append((button, label))
+                for button, label in candidates:
+                    if label in affirmative:
+                        button.click(force=True, timeout=2000)
+                        return True
+                if len(candidates) >= 2 and any(
+                    label in dismiss for _, label in candidates
+                ):
+                    candidates[-1][0].click(force=True, timeout=2000)
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _dismiss_ai_switch_confirm(self, page, cancel_check=None):
+        """关闭“关闭 AI 标识”触发的合规提示弹窗。
+
+        真实弹窗是“提示 + 取消 / 已明确并使用”：既没有“不再提示”也不提
+        “AI 标识”，不会被 AI 说明弹窗的关键词命中，却会盖住作品设置里的开关
+        和“确认合成”。此时继续点开关只会反复弹出同一个框，开关回读和确认合成
+        都停不下来，任务因此陷入循环。必须先确认掉它再继续。
+        """
+        clicked = _safe_eval(page, JS.CLICK_AI_SWITCH_CONFIRM) == "clicked"
+        if not clicked:
+            clicked = self._click_ai_switch_confirm_with_locator(page)
+        if not clicked:
+            return False
+        _log("[xunfei]   已确认“关闭 AI 标识”的合规提示弹窗")
+        self._pause(page, 0.15, 0.05, cancel_check=cancel_check)
+        return True
+
+    def _clear_blocking_ai_confirm(self, page, cancel_check=None, timeout=2.5):
+        """点“确认合成”前等合规提示弹窗消失。
+
+        这层弹窗是开关点下去之后异步挂载的，可能比开关回读更晚出现。此时
+        locator 的 force 点击会落在遮罩上，页面毫无反应，流程只能重试。
+        """
+        def probe():
+            info = _probe_synth_state(page)
+            if not (info or {}).get("ai_switch_confirm"):
+                return True
+            self._dismiss_ai_switch_confirm(page, cancel_check=cancel_check)
+            return None
+
+        return bool(_poll(
+            probe,
+            timeout=timeout,
+            interval=0.15,
+            max_interval=0.6,
+            page=page,
+            cancel_check=cancel_check,
+        ))
+
     def _ensure_ai_switch_off(self, page, timeout=12, cancel_check=None):
         """确保作品设置中的 AI 标识开关为关闭状态。
 
@@ -1725,10 +1828,19 @@ class PageActionsMixin:
         last_state = "not_found"
         js_click_attempted = False
         last_locator_attempt = 0.0
+        switched_at = 0.0
 
         def probe():
-            nonlocal last_state, js_click_attempted, last_locator_attempt
+            nonlocal last_state, js_click_attempted, last_locator_attempt, switched_at
             info = _probe_synth_state(page)
+            # 合规提示框优先于一切：它遮住开关，此时既不能回读也不能再点
+            # 开关。先关掉它，并把点击节流状态复位，重新走一次回读。
+            if info and info.get("ai_switch_confirm"):
+                if self._dismiss_ai_switch_confirm(page, cancel_check=cancel_check):
+                    js_click_attempted = False
+                    last_locator_attempt = 0.0
+                    switched_at = 0.0
+                return None
             if info and info.get("ai_modal"):
                 # 说明弹窗可以延迟挂载；处理成功后从头回读作品设置，
                 # 不把“当前还没看到 switch”误判为关闭成功。
@@ -1739,11 +1851,18 @@ class PageActionsMixin:
                 ):
                     js_click_attempted = False
                     last_locator_attempt = 0.0
+                    switched_at = 0.0
                 return None
 
             state = str((info or {}).get("ai_switch") or "not_found")
             last_state = state
             if state == "off":
+                # 刚点下开关时，受控组件会先把 aria-checked 翻成 off，提示框却
+                # 还没挂载。此时直接判成功就会把遮罩留给后面的“确认合成”，
+                # 那里点不动、也读不到状态，任务因此反复重试；必须留一段落定
+                # 窗口，确认这段时间里提示框没有再冒出来。
+                if switched_at and time.monotonic() - switched_at < 2.0:
+                    return None
                 return "off"
             if state == "on":
                 if not js_click_attempted:
@@ -1752,6 +1871,7 @@ class PageActionsMixin:
                         return None
                     if clicked == "clicked":
                         js_click_attempted = True
+                        switched_at = time.monotonic()
                         self._pause(page, 0.10, 0.03, cancel_check=cancel_check)
                         return None
                 # JS click 没有让 React 受控状态变化时，降低频率再用
@@ -1760,6 +1880,7 @@ class PageActionsMixin:
                 if now - last_locator_attempt >= 0.65:
                     last_locator_attempt = now
                     if self._click_ai_switch_with_locator(page):
+                        switched_at = now
                         self._pause(page, 0.12, 0.04, cancel_check=cancel_check)
                 return None
 
@@ -1769,6 +1890,7 @@ class PageActionsMixin:
             if now - last_locator_attempt >= 0.65:
                 last_locator_attempt = now
                 if self._click_ai_switch_with_locator(page):
+                    switched_at = now
                     self._pause(page, 0.12, 0.04, cancel_check=cancel_check)
             return None
 
@@ -1886,6 +2008,11 @@ class PageActionsMixin:
     def _wait_order_or_error(self, page, timeout, cancel_check=None):
         def probe():
             info = _probe_synth_state(page)
+            # 二次确认框只挡住页面，不代表订单或错误已经出现；先关掉它再继续
+            # 等订单，否则整个等待窗口会被白白耗尽。
+            if info and info.get("ai_switch_confirm"):
+                self._dismiss_ai_switch_confirm(page, cancel_check=cancel_check)
+                return None
             state = (info or {}).get("state")
             if state == "order":
                 return "ok"
@@ -1985,8 +2112,28 @@ class PageActionsMixin:
             _log(f"[xunfei]   合成前 AI 标识开关状态: {state}")
             return state == "off"
 
+        def resolve_ai_switch_confirm(info):
+            """本轮状态快照是否是“关闭 AI 标识”的二次确认框。
+
+            该框会盖住作品设置里的开关和确认合成按钮，必须先确认掉再继续按
+            原状态轮询；否则每一轮都读到同一个被遮挡的页面，流程会一直循环。
+            """
+            if not (info or {}).get("ai_switch_confirm"):
+                return False
+            _log("[xunfei]   检测到关闭 AI 标识的二次确认弹窗")
+            if not self._dismiss_ai_switch_confirm(page, cancel_check=cancel_check):
+                snapshot = _safe_eval(page, JS.SNAPSHOT_DIALOGS)
+                if snapshot:
+                    _log(
+                        "[xunfei]   AI 标识二次确认弹窗未关闭，当前可见弹窗: "
+                        + json.dumps(snapshot, ensure_ascii=False)[:1800]
+                    )
+            return True
+
         def confirm_state():
             info = _probe_synth_state(page)
+            if resolve_ai_switch_confirm(info):
+                return None
             state = (info or {}).get("state")
             return state if state in {
                 "confirm", "ai_modal", "english_voice_warning", "order",
@@ -2015,6 +2162,8 @@ class PageActionsMixin:
 
             def state_after_english_warning():
                 info = _probe_synth_state(page)
+                if resolve_ai_switch_confirm(info):
+                    return None
                 state = (info or {}).get("state")
                 if state == "english_voice_warning":
                     return None
@@ -2086,6 +2235,8 @@ class PageActionsMixin:
 
         # 第一次点击"确认合成"
         _check_cancel_requested(cancel_check)
+        # 开关关掉后异步挂载的合规提示框会吃掉这次点击，必须先等它消失。
+        self._clear_blocking_ai_confirm(page, cancel_check=cancel_check)
         clicked = self._click_confirm_synth_button(page)
         if not clicked:
             clicked = bool(_safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"))
@@ -2126,6 +2277,8 @@ class PageActionsMixin:
             # 与第一次确认后的探测保持相同优先级；不要在一轮中重复执行
             # 多个 page.evaluate，延迟挂载时仍由外层轮询继续等待。
             info = _probe_synth_state(page)
+            if resolve_ai_switch_confirm(info):
+                return None
             state = (info or {}).get("state")
             return state if state in {
                 "ai_modal", "english_voice_warning", "insufficient",
@@ -2166,6 +2319,8 @@ class PageActionsMixin:
 
             def probe_after_english_warning():
                 info = _probe_synth_state(page)
+                if resolve_ai_switch_confirm(info):
+                    return None
                 state = (info or {}).get("state")
                 if state == "english_voice_warning":
                     return None
@@ -2193,8 +2348,13 @@ class PageActionsMixin:
         if not ensure_ai_setting(allow_missing=True):
             return uncertain_after_confirm("确认合成后作品设置回读失败，提交结果不确定")
         clicked2 = bool(_poll(
-            lambda: self._click_confirm_synth_button(page)
-            or _safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成"),
+            lambda: (
+                self._clear_blocking_ai_confirm(page, cancel_check=cancel_check)
+                and (
+                    self._click_confirm_synth_button(page)
+                    or _safe_eval(page, JS.CLICK_BTN_IN_MODAL, "确认合成")
+                )
+            ),
             timeout=12,
             interval=0.35,
             max_interval=1.0,

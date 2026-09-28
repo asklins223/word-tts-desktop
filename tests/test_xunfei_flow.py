@@ -2853,6 +2853,187 @@ class XunfeiFlowTests(unittest.TestCase):
             self.assertEqual(page.evaluate(xunfei.JS.GET_AI_SWITCH_STATE), "off")
             browser.close()
 
+    # 关闭“AI 标识”后讯飞真实弹出的合规提示框（用户提供 DOM）。
+    _AI_FLAG_COMPLIANCE_MODAL_HTML = """
+    <div class="ant-modal" role="dialog" aria-modal="true" style="width: 480px">
+      <div class="ant-modal-content">
+        <button type="button" aria-label="Close" class="ant-modal-close">
+          <span class="ant-modal-close-x" aria-label="Close">×</span>
+        </button>
+        <div class="ant-modal-header">
+          <div class="ant-modal-title">
+            <div class="simpleTitle">
+              <svg class="infoIcon" width="20" height="20"></svg>提示
+            </div>
+          </div>
+        </div>
+        <div class="ant-modal-body">
+          <div class="py-2">
+            <p>如您向对外发布、传播、使用合成内容时，应主动对合成内容进行显著标识
+            （包括添加文字、水印等方式），避免公众混淆或者误认。</p>
+            <p>此外，我们将对特殊申请的作品做重点单独审查，并依法留存提供对象
+            信息等相关日志不少于六个月。</p>
+          </div>
+        </div>
+        <div class="ant-modal-footer">
+          <div class="flex justify-end gap-2">
+            <button class="border border-gray-300">取消</button>
+            <button class="bg-blue-500 text-white">已明确并使用</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
+    _SETTINGS_MODAL_HTML = """
+    <div role="dialog" aria-modal="true" class="ant-modal" style="width: 420px">
+      <div class="ant-modal-content">
+        <div class="ant-modal-title">作品设置</div>
+        <div class="flex items-center justify-between">
+          <span>AI 标识</span>
+          <button type="button" role="switch" aria-checked="true"
+                  class="ant-switch ant-switch-checked">
+            <div class="ant-switch-handle"></div>
+          </button>
+        </div>
+        <label><input type="radio" name="exportFormat" value="mp3" checked><span>MP3</span></label>
+        <button>确认合成</button>
+      </div>
+    </div>
+    """
+
+    def test_ai_switch_compliance_modal_is_detected_and_confirmed(self):
+        """关闭 AI 标识后弹出的合规提示框必须被识别并点掉。
+
+        真实按钮是“已明确并使用”，不是“确定/确认”；这层框又会盖住开关和
+        “确认合成”，不关掉它整条确认流程就会一直重试。
+        """
+        from playwright.sync_api import sync_playwright
+
+        html = self._SETTINGS_MODAL_HTML + self._AI_FLAG_COMPLIANCE_MODAL_HTML
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            # “已明确并使用”关掉提示框后，讯飞才把开关真正落成 off。
+            page.evaluate(
+                """() => {
+                    const confirm = Array.from(document.querySelectorAll('button'))
+                        .find((b) => b.textContent.trim() === '已明确并使用');
+                    confirm.addEventListener('click', () => {
+                        document.querySelectorAll('.ant-modal')[1].remove();
+                        const sw = document.querySelector('[role=switch]');
+                        sw.setAttribute('aria-checked', 'false');
+                        sw.classList.remove('ant-switch-checked');
+                    });
+                }"""
+            )
+
+            probe = page.evaluate(
+                xunfei.JS.PROBE_SYNTH_STATE,
+                xunfei.AI_FLAG_KEYWORD_VARIANTS,
+            )
+            # 这层框既没有“不再提示”也不提“AI 标识”，旧逻辑完全看不到它。
+            self.assertFalse(probe["ai_modal"])
+            self.assertTrue(probe["ai_switch_confirm"])
+            # 作品设置弹窗本身不能被当成合规提示框。
+            self.assertEqual(probe["ai_switch"], "on")
+            self.assertEqual(probe["state"], "confirm")
+
+            self.assertEqual(page.evaluate(xunfei.JS.CLICK_AI_SWITCH_CONFIRM), "clicked")
+            page.wait_for_timeout(30)
+            self.assertEqual(page.locator('.ant-modal').count(), 1)
+            self.assertFalse(
+                page.evaluate(
+                    xunfei.JS.PROBE_SYNTH_STATE,
+                    xunfei.AI_FLAG_KEYWORD_VARIANTS,
+                )["ai_switch_confirm"]
+            )
+            self.assertEqual(page.evaluate(xunfei.JS.GET_AI_SWITCH_STATE), "off")
+            browser.close()
+
+    def test_ai_switch_compliance_modal_variants_do_not_match(self):
+        """订单/登录/英文提示等弹窗不能被误判成 AI 标识合规提示框。"""
+        from playwright.sync_api import sync_playwright
+
+        cases = {
+            "order": """
+            <div class="ant-modal" role="dialog" style="width: 400px">
+              <div class="ant-modal-content">
+                <div class="ant-modal-title">订单支付</div>
+                <p>本次消费 1 元，请完成支付。</p>
+                <button>去支付</button><button>取消</button>
+              </div>
+            </div>
+            """,
+            "login": """
+            <div class="ant-modal" role="dialog" style="width: 400px">
+              <div class="ant-modal-content">
+                <div class="ant-modal-title">登录</div>
+                <p>请使用手机号扫码登录。</p>
+                <button>取消</button>
+              </div>
+            </div>
+            """,
+            "english": """
+            <div class="ant-modal" role="dialog" style="width: 400px">
+              <div class="ant-modal-content">
+                <div class="ant-modal-title">英文发音人提示</div>
+                <p>以下英文发音人的文本中包含中文内容，可能导致合成失败。</p>
+                <button>继续提交</button><button>返回修改</button>
+              </div>
+            </div>
+            """,
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            for name, html in cases.items():
+                page.set_content(html)
+                probe = page.evaluate(
+                    xunfei.JS.PROBE_SYNTH_STATE,
+                    xunfei.AI_FLAG_KEYWORD_VARIANTS,
+                )
+                self.assertFalse(probe["ai_switch_confirm"], name)
+                self.assertEqual(
+                    page.evaluate(xunfei.JS.CLICK_AI_SWITCH_CONFIRM), "not_found", name
+                )
+            browser.close()
+
+    def test_ensure_ai_switch_off_closes_compliance_modal_before_reading(self):
+        """回读开关前必须先关掉合规提示框，且不会反复点开关。"""
+        session = XunFeiSession()
+        switch_clicks = []
+        modal_visible = {"value": True}
+
+        class FakePage:
+            def evaluate(self, script, arg=None):
+                if script == xunfei.JS.PROBE_SYNTH_STATE:
+                    return {
+                        "state": "confirm",
+                        "ai_modal": False,
+                        # 提示框还在时，讯飞不会把开关落成 off。
+                        "ai_switch": "on" if modal_visible["value"] else "off",
+                        "ai_switch_confirm": modal_visible["value"],
+                    }
+                if script == xunfei.JS.CLICK_AI_SWITCH:
+                    switch_clicks.append(script)
+                    return "clicked"
+                if script == xunfei.JS.CLICK_AI_SWITCH_CONFIRM:
+                    if not modal_visible["value"]:
+                        return "not_found"
+                    modal_visible["value"] = False
+                    return "clicked"
+                return None
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        self.assertEqual(session._ensure_ai_switch_off(FakePage(), timeout=6), "off")
+        # 提示框还开着时不能点开关；它由 CLICK_AI_SWITCH_CONFIRM 单独关掉。
+        self.assertEqual(switch_clicks, [])
+        self.assertFalse(modal_visible["value"])
+
     def test_export_format_selects_mp3_by_real_radio_label(self):
         """验证真实“作品设置”DOM 从 WAV 默认值切换到 MP3。"""
         from playwright.sync_api import sync_playwright
