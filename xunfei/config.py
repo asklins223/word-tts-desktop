@@ -131,6 +131,32 @@ def _resolve_profile_dir(base_dir, legacy_profile_dir):
 
 PROFILE_DIR = _resolve_profile_dir(BASE_DIR, _legacy_profile_dir)
 
+
+def _resolve_chromium_profile_dir(base_dir):
+    """随包 Chromium 专用 Profile，绝不与系统 Chrome 共用。
+
+    系统 Chrome 写出的 Profile 带版本标记；随包 Chromium 比它旧一两个大
+    版本，读到就直接启动失败 —— 浏览器一起来就死，系统反复弹崩溃框。
+    共用目录等于把"会崩"换成"起不来"，所以这里彻底分开。代价是降级后
+    需要重新登录一次，那是可以接受的；起不来则完全不可用。
+    """
+    legacy = os.path.join(os.path.expanduser("~"), ".xunfei_chromium_profile")
+    if _has_persistent_browser_state(legacy):
+        return os.path.abspath(legacy)
+    return os.path.join(base_dir, "xunfei_chromium_profile")
+
+
+CHROMIUM_PROFILE_DIR = _resolve_chromium_profile_dir(BASE_DIR)
+
+
+def chromium_profile_needs_login():
+    """随包 Chromium 的 Profile 是否还是全新的（需要用户再登录一次）。
+
+    降级到 Chromium 时用的是独立 Profile，里面没有系统 Chrome 保存的登录
+    态。必须提前说清楚，否则用户只会看到浏览器卡在登录页。
+    """
+    return not _has_persistent_browser_state(CHROMIUM_PROFILE_DIR)
+
 # Chrome 可执行文件路径候选。Windows 不应该依赖 PATH：普通安装通常把
 # chrome.exe 放在 Program Files 或用户的 LocalAppData 中，而桌面应用启动
 # 时拿到的 PATH 可能被 Electron/安装器裁剪过。

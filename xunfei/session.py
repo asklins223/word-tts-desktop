@@ -17,6 +17,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 from .config import (
+    CHROMIUM_PROFILE_DIR,
     HOME_URL,
     MUTE_AUDIO_SCRIPT,
     PROFILE_DIR,
@@ -24,6 +25,7 @@ from .config import (
     _find_chrome,
     _find_bundled_chromium,
     _platform_user_agent,
+    chromium_profile_needs_login,
     configure_playwright_runtime,
     mark_system_chrome_suspect,
     playwright_runtime_diagnostics,
@@ -281,6 +283,7 @@ class SessionLifecycleMixin:
         # Chromium 是降级目的地。
         self._launched_browser_path = None
         self._launched_browser_label = None
+        self._launched_profile_dir = None
         # 页面状态跟踪（页面复用的关键）。音色 key 和页面显示名称都保留：
         # key 防止同名音色串用，页面回读防止讯飞提交后把音色恢复为默认值。
         self._current_voice_key = None
@@ -447,6 +450,15 @@ class SessionLifecycleMixin:
             )
             if bundled_chromium:
                 browser_candidates.append(("内置 Chromium", bundled_chromium, True))
+                if chromium_profile_needs_login():
+                    _log(
+                        "[xunfei] 内置 Chromium 首次使用，需要重新登录一次讯飞账号"
+                    )
+                    _notify_runtime_progress(
+                        progress_callback,
+                        stage="waiting_login",
+                        message="系统 Chrome 崩溃后已切换到内置 Chromium，请重新登录讯飞账号",
+                    )
             browser_candidates.append(("系统 Chrome", chrome_path, False))
         else:
             if chrome_path:
@@ -459,7 +471,11 @@ class SessionLifecycleMixin:
 
         launch_error = None
         for browser_label, executable_path, is_fallback in browser_candidates:
+            # 随包 Chromium 必须用自己的 Profile：它读不了系统 Chrome 写的
+            # 版本标记，共用目录会一启动就死。
+            profile_dir = CHROMIUM_PROFILE_DIR if is_fallback else PROFILE_DIR
             candidate_kwargs = dict(launch_kwargs)
+            candidate_kwargs["user_data_dir"] = profile_dir
             if executable_path:
                 candidate_kwargs["executable_path"] = executable_path
             if is_fallback:
@@ -468,6 +484,7 @@ class SessionLifecycleMixin:
             # The browser can exit between the preflight check and launch. A
             # single retry after removing an ownerless profile lock handles
             # that race without deleting a lock held by a live process.
+            os.makedirs(profile_dir, exist_ok=True)
             for launch_attempt in range(2):
                 try:
                     self._ctx = self._playwright.chromium.launch_persistent_context(
@@ -479,12 +496,15 @@ class SessionLifecycleMixin:
                     # fall back to, so demoting it would be a no-op loop.
                     self._launched_browser_path = executable_path
                     self._launched_browser_label = browser_label
+                    self._launched_profile_dir = profile_dir
+                    if profile_dir != PROFILE_DIR:
+                        _log(f"[xunfei] {browser_label} 使用独立浏览器配置目录: {profile_dir}")
                     break
                 except Exception as error:
                     launch_error = error
                     recovered = (
                         launch_attempt == 0
-                        and self._clear_stale_profile_lock(PROFILE_DIR)
+                        and self._clear_stale_profile_lock(profile_dir)
                     )
                     if recovered:
                         continue

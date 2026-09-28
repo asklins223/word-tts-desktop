@@ -16,6 +16,10 @@ import xunfei
 import xunfei.config as xunfei_config
 import xunfei.downloads as xunfei_downloads
 import xunfei.runtime as xunfei_runtime
+def pathlib_read(relative):
+    return (Path(__file__).resolve().parent.parent / relative).read_text(encoding="utf-8")
+
+
 from xunfei import (
     XunFeiSession,
     XunfeiCompositeSelectionError,
@@ -4750,6 +4754,50 @@ class XunfeiFlowTests(unittest.TestCase):
             session._close_requested = True
             session._mark_browser_disconnected()
             self.assertFalse(marker.exists())
+
+
+
+    def test_bundled_chromium_uses_its_own_profile(self):
+        """随包 Chromium 绝不能共用系统 Chrome 的 Profile。
+
+        真实故障：共用时 Chromium 141 读到 Chrome 153 写的版本标记，
+        浏览器一起来就死，系统反复弹崩溃框 —— 等于把"会崩"换成
+        "起不来"。降级功能因此完全不可用。
+        """
+        self.assertNotEqual(
+            xunfei_config.PROFILE_DIR,
+            xunfei_config.CHROMIUM_PROFILE_DIR,
+            "内置 Chromium 必须使用独立的 Profile 目录",
+        )
+        self.assertIn("chromium", xunfei_config.CHROMIUM_PROFILE_DIR.casefold())
+
+    def test_browser_candidates_get_a_profile_matching_their_engine(self):
+        """候选列表里的每个浏览器都要拿到与自身版本匹配的 Profile。"""
+        from xunfei import session as xunfei_session
+
+        session = xunfei_session.XunFeiSession()
+        session._logged_in = True
+        launched = []
+
+        class FakeContext:
+            pages = []
+            def on(self, *_a, **_k):
+                return None
+            def add_init_script(self, *_a, **_k):
+                return None
+
+        def fake_login(self, **_kwargs):
+            self._ctx = FakeContext()
+            self._page = None
+            return True
+
+        # 直接验证选型函数：系统 Chrome 拿 PROFILE_DIR，fallback 拿 Chromium 的。
+        source = pathlib_read("xunfei/session.py")
+        self.assertIn("profile_dir = CHROMIUM_PROFILE_DIR if is_fallback else PROFILE_DIR",
+                      source)
+        self.assertIn("self._clear_stale_profile_lock(profile_dir)", source)
+        self.assertNotIn("self._clear_stale_profile_lock(PROFILE_DIR)\n                    )",
+                         source.split("for browser_label")[1][:3000])
 
 
 if __name__ == "__main__":
