@@ -688,6 +688,153 @@ async def synth_xunfei(
         )
 
 
+def _browser_gone_download_items(results, normalized, *, id_key):
+    """Pick works that were submitted but whose audio never reached disk.
+
+    Only entries the submission layer already confirmed — a ``worksId`` is in
+    hand and the failure is the browser disappearing — are resumable.  A work
+    whose submission is itself uncertain is deliberately left out: replaying
+    it here would either drop a paid work or submit a second billable copy.
+    """
+    resumable = []
+    for entry in normalized or []:
+        entity_id = str(entry.get(id_key) or "")
+        if not entity_id:
+            continue
+        result = results.get(entity_id) if isinstance(results, dict) else None
+        if not isinstance(result, dict) or result.get("downloaded"):
+            continue
+        if not result.get("ambiguous_works_id"):
+            continue
+        works_id = str(result.get("works_id") or "")
+        output_path = str(result.get("output_path") or "")
+        if not works_id or not output_path:
+            continue
+        resumable.append({
+            **result,
+            id_key: entity_id,
+            "job_id": entity_id,
+            "works_id": works_id,
+            "output_path": output_path,
+        })
+    return resumable
+
+
+def _merge_resumed_downloads(results, items, recovered, *, id_key):
+    """Fold recovered downloads back into the per-work result mapping."""
+    if not isinstance(recovered, dict) or not isinstance(results, dict):
+        return 0
+    merged = 0
+    for item in items:
+        entry = recovered.get(str(item.get("works_id") or ""))
+        if not isinstance(entry, dict) or not entry.get("downloaded"):
+            continue
+        entity_id = str(item.get(id_key) or "")
+        previous = results.get(entity_id)
+        if not entity_id or not isinstance(previous, dict):
+            continue
+        results[entity_id] = {
+            **previous,
+            **entry,
+            id_key: entity_id,
+            "job_id": entity_id,
+            "downloaded": True,
+            "ambiguous_works_id": False,
+            "error": None,
+        }
+        merged += 1
+    return merged
+
+
+async def _resume_browser_gone_download(
+    items,
+    *,
+    voice_key,
+    progress_callback=None,
+    cancel_check=None,
+):
+    """Rebuild the browser and pull already-submitted works back down.
+
+    Returns ``(session, recovered_by_works_id)``.  ``session`` is the session
+    that must be closed afterwards — the replacement one when the browser was
+    successfully rebuilt, otherwise the caller's original.  This helper never
+    raises: a failed resume must degrade to the ordinary per-work failure, not
+    replace it with an unrelated crash.
+    """
+    _log(
+        f"[xunfei] 讯飞浏览器已中断，正在重新打开并续传 {len(items)} 条已提交作品"
+    )
+    _notify_batch_progress(progress_callback, {
+        "stage": "browser_recovering",
+        "downloaded": False,
+    })
+    session = None
+    try:
+        session = await ensure_session(
+            voice_key=voice_key,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
+        )
+        download_kwargs = {}
+        if callable(progress_callback):
+            download_kwargs["progress_callback"] = progress_callback
+        if cancel_check is not None:
+            download_kwargs["cancel_check"] = cancel_check
+        recovered = await _run_playwright_sync(
+            session.download_submitted_works,
+            items,
+            **download_kwargs,
+        )
+    except XunfeiCancelled:
+        # A browser opened only for the resume must not outlive the cancelled
+        # generation: the caller's cleanup still fences on the *old* session
+        # and would leave this one running as an orphan window.
+        if session is not None:
+            try:
+                await close_session(expected_session=session)
+            except Exception as close_error:
+                _log(f"[xunfei] 取消续传后关闭浏览器异常（已忽略）: {close_error}")
+        raise
+    except Exception as error:
+        _log(f"[xunfei] ❌ 续传已提交作品未成功: {error}")
+        return session, {}
+    return session, recovered if isinstance(recovered, dict) else {}
+
+
+async def _resume_after_browser_loss(
+    results,
+    normalized,
+    *,
+    id_key,
+    voice_key,
+    fallback_session,
+    progress_callback=None,
+    cancel_check=None,
+):
+    """Resume a download whose browser died after the works were submitted.
+
+    Returns the session the caller must close.  A crash here is recoverable:
+    the work exists on the provider, so rebuilding the browser and re-running
+    only the download is always worth one attempt, and never bills twice.
+    """
+    resumable = _browser_gone_download_items(results, normalized, id_key=id_key)
+    if not resumable:
+        return fallback_session
+    session, recovered = await _resume_browser_gone_download(
+        resumable,
+        voice_key=voice_key,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+    )
+    merged = _merge_resumed_downloads(
+        results, resumable, recovered, id_key=id_key,
+    )
+    _log(
+        f"[xunfei] 浏览器中断后续传结果: {merged}/{len(resumable)} 条音频已取回本地"
+    )
+    return session or fallback_session
+
+
 @_serialize_generation(cancel_check_position=2)
 async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
     """批量讯飞合成：按音色/参数分组提交，最后统一下载并解码。
@@ -730,6 +877,18 @@ async def synth_xunfei_batch(jobs, progress_callback=None, cancel_check=None):
             normalized_jobs,
             4,
             **batch_kwargs,
+        )
+        # A browser that dies after the works are submitted must not cost the
+        # user the audio.  Rebuild the session and pull the confirmed works
+        # back down by worksId — never resubmit them.
+        session = await _resume_after_browser_loss(
+            raw_results,
+            normalized_jobs,
+            id_key="job_id",
+            voice_key=first_voice,
+            fallback_session=session,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
         decoded = {}
         from pydub import AudioSegment
@@ -861,6 +1020,19 @@ async def synth_xunfei_composite(
             normalized_works,
             4,
             **composite_kwargs,
+        )
+        # The composite page can die between "submitted" and "downloading" —
+        # a crashed Chrome does exactly that.  The works are already billed
+        # and their worksIds are in hand, so rebuild the browser and finish
+        # the download instead of failing the whole task.
+        session = await _resume_after_browser_loss(
+            raw_results,
+            normalized_works,
+            id_key="work_id",
+            voice_key=first_voice,
+            fallback_session=session,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
         decoded = {}
         from pydub import AudioSegment

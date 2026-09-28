@@ -23,6 +23,7 @@ from .config import (
     clamp_param,
 )
 from .errors import (
+    XunfeiBrowserGone,
     XunfeiBrowserLaunchError,
     XunfeiCancelled,
     XunfeiCompositeSelectionError,
@@ -31,6 +32,7 @@ from .errors import (
     XunfeiQuotaExceeded,
     XunfeiRateLimited,
     XunfeiSubmissionAmbiguous,
+    is_browser_gone,
 )
 from .page_scripts import AI_FLAG_KEYWORD_VARIANTS, JS
 from .runtime import (
@@ -73,6 +75,7 @@ __all__ = [
     "STEALTH_SCRIPT",
     "VOICES",
     "XunfeiCancelled",
+    "XunfeiBrowserGone",
     "XunfeiBrowserLaunchError",
     "XunfeiCompositeSelectionError",
     "XunfeiError",
@@ -86,6 +89,7 @@ __all__ = [
     "ensure_session",
     "get_voice_info",
     "is_available",
+    "is_browser_gone",
     "register_voice_aliases",
     "register_voice_catalog",
     "synth_xunfei",

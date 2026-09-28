@@ -51,6 +51,34 @@ class XunfeiCancelled(XunfeiError):
     """批量任务被上层取消，停止后续提交/下载。"""
 
 
+class XunfeiBrowserGone(XunfeiCancelled):
+    """浏览器页面或上下文消失。
+
+    这不是用户取消：用户没有按下停止，是浏览器窗口被关掉、崩溃或被外部
+    回收。继承 ``XunfeiCancelled`` 是为了让既有中断处理保持原样，同时让
+    需要区分的调用方能先捕获本类型。
+
+    区分的重要性在于副作用：提交已经完成、worksId 已经拿到时，页面消失
+    只能让“下载”失败，绝不能把它当成取消或提交被拒——否则已经付过费的
+    作品会被当成没提交过，重试可能重复计费。
+    """
+
+
+def is_browser_gone(error):
+    """判断异常是否表示浏览器/页面已经不在了。
+
+    Playwright 在两次状态检查之间关闭目标时，抛出的是 ``TargetClosedError``
+    而不是本模块的类型；按类名兜底可以覆盖“检查时还活着、调用时已死”
+    这条竞态，而不必在这里 import playwright。
+    """
+    if isinstance(error, XunfeiBrowserGone):
+        return True
+    for klass in type(error).__mro__:
+        if "TargetClosed" in klass.__name__ or "BrowserClosed" in klass.__name__:
+            return True
+    return False
+
+
 class XunfeiCompositeSelectionError(XunfeiError):
     """多人配音选区未完成，不能由提交层盲目整批重选。"""
 
@@ -85,7 +113,7 @@ def _check_page_open(page):
         # ``MagicMock``/旧测试桩返回的对象不能按 truthiness 判断，否则会
         # 被误认为已关闭；真实 Playwright API 返回精确 bool。
         if callable(is_closed) and is_closed() is True:
-            raise XunfeiCancelled("讯飞浏览器页面已关闭，已停止当前操作")
+            raise XunfeiBrowserGone("讯飞浏览器页面已关闭，已停止当前操作")
     except XunfeiCancelled:
         raise
     except Exception:

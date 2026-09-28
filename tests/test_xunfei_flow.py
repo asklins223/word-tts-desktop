@@ -3612,6 +3612,100 @@ class XunfeiFlowTests(unittest.TestCase):
                     "items": [],
                 }])
 
+    def test_browser_gone_during_download_keeps_the_submitted_works_id(self):
+        """浏览器在下载阶段消失时，已提交的 worksId 不能被当成“未提交”丢掉。
+
+        真实故障：作品已提交并进入合成（worksId 已拿到），浏览器随后关闭，
+        旧实现把这个中断当成用户取消，整批连同 worksId 一起丢弃并报
+        “提交未被接受”，而讯飞侧的音频其实已经生成。
+        """
+        from xunfei.errors import XunfeiBrowserGone
+
+        session = XunFeiSession()
+        session._logged_in = True
+
+        def fake_generate(*_args, **_kwargs):
+            return {
+                "works_id": "works-paid",
+                "output_path": "/tmp/does-not-matter.mp3",
+                "works_name": "wordtts_composite_0001_abc",
+                "voice_key": "amanda",
+                "voice_name": "Amanda",
+            }
+
+        session._generate_pending_composite = fake_generate
+
+        def browser_vanished(*_args, **_kwargs):
+            raise XunfeiBrowserGone("讯飞浏览器页面已关闭，已停止当前操作")
+
+        session._download_pending_batch = browser_vanished
+
+        results = session.synth_composite([
+            {"work_id": "composite:1", "item_count": 2, "work_index": 1},
+        ])
+
+        result = results["composite:1"]
+        self.assertFalse(result["downloaded"])
+        # 提交已经完成，worksId 与作品名必须保留，供后续恢复而不是重���提交。
+        self.assertEqual(result["works_id"], "works-paid")
+        self.assertEqual(result["works_name"], "wordtts_composite_0001_abc")
+        self.assertTrue(result["ambiguous_works_id"])
+        self.assertIn("浏览器在下载前关闭", result["error"])
+
+    def test_browser_gone_is_not_a_user_cancellation(self):
+        """页面消失不能被当成用户按下停止，否则会误开新浏览器重试。"""
+        from xunfei.errors import XunfeiBrowserGone, is_browser_gone
+        from xunfei.errors import _wait_with_cancel
+        from xunfei.errors import XunfeiCancelled
+
+        self.assertTrue(issubclass(XunfeiBrowserGone, XunfeiCancelled))
+
+        class ClosedPage:
+            def is_closed(self):
+                return True
+
+            def wait_for_timeout(self, _ms):
+                return None
+
+        with self.assertRaises(XunfeiBrowserGone):
+            _wait_with_cancel(ClosedPage(), 1)
+        class TargetClosedError(Exception):
+            pass
+
+        self.assertTrue(is_browser_gone(XunfeiBrowserGone("x")))
+        self.assertTrue(is_browser_gone(TargetClosedError()))
+        self.assertFalse(is_browser_gone(XunfeiCancelled("用户停止")))
+
+    def test_batch_download_keeps_works_id_when_browser_closes(self):
+        """单条批量路径同样不能在浏览器消失时丢掉 worksId。"""
+        from xunfei.errors import XunfeiBrowserGone
+
+        session = XunFeiSession()
+        session._logged_in = True
+        session._duplicate_pending_work_ids = lambda _items: set()
+        session._generate_pending_one = lambda *a, **k: {
+            "works_id": "works-1",
+            "output_path": "/tmp/x.mp3",
+            "works_name": "w1",
+            "voice_key": "amanda",
+            "voice_name": "Amanda",
+            "speed": 50,
+            "pitch": 50,
+            "volume": 50,
+        }
+
+        def browser_vanished(*_args, **_kwargs):
+            raise XunfeiBrowserGone("讯飞浏览器页面已关闭，已停止当前操作")
+
+        session._download_pending_batch = browser_vanished
+        results = session.synth_batch([
+            {"text": "hello", "voice_key": "amanda", "job_id": "job-1"},
+        ])
+        result = results["job-1"]
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(result["works_id"], "works-1")
+        self.assertTrue(result["ambiguous_works_id"])
+
     def test_works_ready_timeout_scales_and_honors_env_override(self):
         """等待作品就绪的窗口必须远大于旧的三分钟，并且可以按需放大。"""
         from xunfei.config import (
@@ -4368,6 +4462,212 @@ class XunfeiFlowTests(unittest.TestCase):
             xunfei_runtime._session = original_session
             xunfei_runtime.is_available = original_available
             xunfei_runtime.XunFeiSession = original_session_class
+
+
+    def test_browser_gone_download_items_only_resumes_confirmed_works(self):
+        """只有“已确认 worksId + 浏览器消失”的条目才允许自动续传。"""
+        results = {
+            "confirmed": {
+                "works_id": "works-1",
+                "output_path": "/tmp/works-1.mp3",
+                "downloaded": False,
+                "ambiguous_works_id": True,
+            },
+            "already-downloaded": {
+                "works_id": "works-2",
+                "output_path": "/tmp/works-2.mp3",
+                "downloaded": True,
+            },
+            # 提交结果本身不确定：没有 worksId，绝不能在这里被静默重放。
+            "unconfirmed": {
+                "downloaded": False,
+                "ambiguous_works_id": True,
+            },
+            # 普通失败（例如作品没就绪）不是浏览器消失，不走续传。
+            "plain-failure": {
+                "works_id": "works-3",
+                "output_path": "/tmp/works-3.mp3",
+                "downloaded": False,
+            },
+        }
+        normalized = [
+            {"job_id": key} for key in
+            ("confirmed", "already-downloaded", "unconfirmed", "plain-failure")
+        ]
+
+        resumable = xunfei_runtime._browser_gone_download_items(
+            results, normalized, id_key="job_id",
+        )
+
+        self.assertEqual([item["job_id"] for item in resumable], ["confirmed"])
+        self.assertEqual(resumable[0]["works_id"], "works-1")
+        self.assertEqual(resumable[0]["output_path"], "/tmp/works-1.mp3")
+
+    def test_merge_resumed_downloads_marks_the_work_downloaded(self):
+        results = {
+            "work-1": {
+                "works_id": "works-1",
+                "output_path": "/tmp/works-1.mp3",
+                "downloaded": False,
+                "ambiguous_works_id": True,
+                "error": "浏览器在下载前关闭",
+            },
+        }
+        items = xunfei_runtime._browser_gone_download_items(
+            results, [{"work_id": "work-1"}], id_key="work_id",
+        )
+        recovered = {
+            "works-1": {**results["work-1"], "downloaded": True, "size": 2048},
+        }
+
+        merged = xunfei_runtime._merge_resumed_downloads(
+            results, items, recovered, id_key="work_id",
+        )
+
+        self.assertEqual(merged, 1)
+        self.assertTrue(results["work-1"]["downloaded"])
+        self.assertFalse(results["work-1"]["ambiguous_works_id"])
+        self.assertIsNone(results["work-1"]["error"])
+
+    def test_composite_resumes_download_after_the_browser_crashes(self):
+        """真实故障回归：作品已提交、浏览器随后崩溃，音频必须被取回而不是整批判失败。"""
+        first_session = mock.Mock(name="crashed-session")
+        second_session = mock.Mock(name="rebuilt-session")
+
+        submitted = {
+            "composite:1": {
+                "work_id": "composite:1",
+                "job_id": "composite:1",
+                "works_id": "works-paid",
+                "works_name": "wordtts_composite_0001_abc",
+                "output_path": "/tmp/composite-1.mp3",
+                "downloaded": False,
+                "ambiguous_works_id": True,
+                "error": "作品已提交并进入合成，但讯飞浏览器在下载前关闭，音频未能保存；重新生成会重新提交",
+            },
+        }
+        resumed = {
+            "composite:1": {
+                "work_id": "composite:1",
+                "works_id": "works-paid",
+                "output_path": "/tmp/composite-1.mp3",
+                "downloaded": True,
+                "size": 4096,
+            },
+        }
+
+        resumed_calls = []
+
+        async def fake_run(function, *args, **kwargs):
+            if function == first_session.synth_composite:
+                return submitted
+            if function == second_session.download_submitted_works:
+                # 续传必须按已确认的 worksId 取回，且不得再提交任何作品。
+                resumed_calls.append(list(args[0]))
+                return {
+                    "works-paid": {
+                        **resumed["composite:1"],
+                        "downloaded": True,
+                    },
+                }
+            raise AssertionError(f"unexpected call: {function}")
+
+        ensure_session = mock.AsyncMock(side_effect=[first_session, second_session])
+
+        with mock.patch.object(xunfei_runtime, "is_available", return_value=True), \
+            mock.patch.object(xunfei_runtime, "ensure_session", new=ensure_session), \
+            mock.patch.object(xunfei_runtime, "_run_playwright_sync", new=fake_run), \
+            mock.patch.object(xunfei_runtime, "_cancel_auto_close"), \
+            mock.patch.object(xunfei_runtime, "close_session", new=mock.AsyncMock()):
+            decoded = asyncio.run(
+                xunfei_runtime.synth_xunfei_composite(
+                    [{"work_id": "composite:1", "items": []}],
+                )
+            )
+
+        # 浏览器被重新打开过一次，续传也真的按已确认的 worksId 发生了一次。
+        self.assertEqual(ensure_session.await_count, 2)
+        self.assertEqual(len(resumed_calls), 1)
+        self.assertEqual(
+            [item["works_id"] for item in resumed_calls[0]], ["works-paid"],
+        )
+        # 关键：浏览器崩溃不再是该条目的失败原因——它已经走到解码阶段，
+        # 剩下的失败只可能来自本机文件（测试里没有这个 mp3）。
+        entry = decoded["composite:1"]
+        self.assertNotIn("浏览器", str(entry.get("error")))
+        self.assertFalse(entry.get("ambiguous_works_id"))
+
+    def test_a_failed_resume_degrades_to_the_confirmed_works_failure(self):
+        """续传本身再失败时不能让整批抛异常，必须退回单条失败结论。"""
+        first_session = mock.Mock(name="crashed-session")
+
+        submitted = {
+            "composite:1": {
+                "work_id": "composite:1",
+                "works_id": "works-paid",
+                "output_path": "/tmp/composite-1.mp3",
+                "downloaded": False,
+                "ambiguous_works_id": True,
+                "error": "作品已提交并进入合成，但讯飞浏览器在下载前关闭，音频未能保存；重新生成会重新提交",
+            },
+        }
+
+        async def fake_run(function, *args, **kwargs):
+            return submitted
+
+        ensure_session = mock.AsyncMock(side_effect=[first_session, RuntimeError("浏览器无法重新启动")])
+
+        with mock.patch.object(xunfei_runtime, "is_available", return_value=True), \
+            mock.patch.object(xunfei_runtime, "ensure_session", new=ensure_session), \
+            mock.patch.object(xunfei_runtime, "_run_playwright_sync", new=fake_run), \
+            mock.patch.object(xunfei_runtime, "_cancel_auto_close"), \
+            mock.patch.object(xunfei_runtime, "close_session", new=mock.AsyncMock()):
+            decoded = asyncio.run(
+                xunfei_runtime.synth_xunfei_composite(
+                    [{"work_id": "composite:1", "items": []}],
+                )
+            )
+
+        entry = decoded["composite:1"]
+        self.assertIsNone(entry["audio"])
+        self.assertEqual(entry["works_id"], "works-paid")
+        self.assertTrue(entry["ambiguous_works_id"])
+
+    def test_download_submitted_works_never_submits_again(self):
+        """续传入口只能下载：它绝不能触发任何提交动作。"""
+        session = XunFeiSession()
+        session._logged_in = True
+        seen = {}
+
+        def fake_download(pending, **kwargs):
+            seen["pending"] = list(pending)
+            seen["kwargs"] = kwargs
+            return {"works-1": {**pending[0], "downloaded": True}}
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("续传路径不得重新提交作品")
+
+        session._download_pending_batch = fake_download
+        session._generate_pending_one = forbidden
+        session._generate_pending_composite = forbidden
+
+        result = session.download_submitted_works(
+            [{
+                "job_id": "job-1",
+                "works_id": "works-1",
+                "output_path": "/tmp/works-1.mp3",
+                "works_name": "w1",
+            }],
+        )
+
+        self.assertEqual([item["works_id"] for item in seen["pending"]], ["works-1"])
+        self.assertTrue(result["works-1"]["downloaded"])
+
+    def test_download_submitted_works_skips_items_without_a_works_id(self):
+        session = XunFeiSession()
+        session._logged_in = True
+        session._download_pending_batch = lambda *_a, **_k: self.fail("不应进入统一下载")
+        self.assertEqual(session.download_submitted_works([{"job_id": "job-1"}]), {})
 
 
 if __name__ == "__main__":

@@ -1966,6 +1966,9 @@ def _schedule_generation_task(
                     "downloading": "已在下载页等待合并音频就绪",
                     "downloaded": "合并音频已下载，正在按停顿切割",
                     "cut": "合并音频切割完成，正在整理输出",
+                    # 浏览器崩溃/被关掉后、作品已提交时：只续传已提交的作品，
+                    # 不会重新提交，因此不会重复计费。
+                    "browser_recovering": "讯飞浏览器已中断，正在重新打开并续传已提交的音频",
                 }
                 last_provider_progress: dict[str, Any] = {}
 

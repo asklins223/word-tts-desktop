@@ -773,7 +773,13 @@ class XunfeiTTSAdapter:
             # failure. Normalizing it into ``LOCAL_SUBMISSION_NOT_CONFIRMED``
             # would put the workflow back into WAITING_RETRY and let the
             # automatic dispatcher open a new browser after a user stop.
-            if type(exc).__name__ == "XunfeiCancelled":
+            # ``XunfeiBrowserGone`` is a *subclass* of it, so compare by
+            # identity against the real class: a browser that disappeared is
+            # not a user stop, and the page-closed classification below needs
+            # to see it.
+            cancelled_exact = type(exc).__name__ == "XunfeiCancelled"
+            browser_gone_exact = type(exc).__name__ == "XunfeiBrowserGone"
+            if cancelled_exact and not browser_gone_exact:
                 raise
             active_session = getattr(legacy, "_session", None)
             page_closed = False
@@ -804,6 +810,24 @@ class XunfeiTTSAdapter:
             raise _normalize_legacy_error(exc, works_name=works_name) from exc
         if not isinstance(result, Mapping) or result.get("audio") is None:
             if isinstance(result, Mapping) and result.get("ambiguous_works_id"):
+                # A confirmed ``works_id`` means the work was accepted and
+                # billed on the provider.  Reporting that as "submission not
+                # accepted" hides a paid work from the user and invites a blind
+                # resubmission, so state plainly that the audio is missing and
+                # that regenerating submits a second copy.
+                confirmed_works_id = str(result.get("works_id") or "")
+                if confirmed_works_id:
+                    raise ProviderError(
+                        "作品已提交到讯飞并已计费，但讯飞浏览器在下载前中断，"
+                        "音频未能保存到本地；重新生成会重新提交一份作品",
+                        code="LOCAL_SUBMISSION_NOT_CONFIRMED",
+                        details={
+                            "works_name": result.get("works_name") or works_name,
+                            "works_id": confirmed_works_id,
+                            "submission_confirmed": True,
+                        },
+                        ambiguous=False,
+                    )
                 raise ProviderError(
                     _safe_provider_message(result.get("error"), "讯飞任务未返回本地任务 ID，可重新生成"),
                     code="LOCAL_SUBMISSION_NOT_CONFIRMED",

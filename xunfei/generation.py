@@ -23,6 +23,7 @@ from .errors import (
     _check_cancel_requested,
     _log,
     _wait_with_cancel,
+    is_browser_gone,
 )
 from .helpers import notify_batch_progress as _notify_batch_progress
 from .voice_catalog import DEFAULT_FEMALE, get_voice_info
@@ -657,6 +658,7 @@ class GenerationMixin:
             })
 
         download_error = None
+        browser_gone = False
         try:
             _check_cancel_requested(cancel_check)
             download_kwargs = {}
@@ -668,12 +670,24 @@ class GenerationMixin:
                 pending_for_download,
                 **download_kwargs,
             )
-        except (XunfeiCancelled, XunfeiLoginRequired):
-            raise
         except Exception as error:
-            downloaded = {}
-            download_error = f"讯飞批量统一下载异常：{error}"
-            _log(f"[xunfei] ❌ {download_error}")
+            if is_browser_gone(error):
+                # 浏览器没了，但提交早已完成、worksId 也已经拿到。这里只让
+                # 下载失败，绝不能当成用户取消或提交被拒：否则已经付过费的
+                # 作品会被当成没提交过，worksId 也跟着丢掉。
+                browser_gone = True
+                downloaded = {}
+                download_error = (
+                    "音频已提交并进入合成，但讯飞浏览器在下载前关闭，音频未能保存；"
+                    "重新生成会重新提交"
+                )
+                _log(f"[xunfei] ❌ {download_error}（已保留 worksId {len(pending_for_download)} 条）")
+            elif isinstance(error, (XunfeiCancelled, XunfeiLoginRequired)):
+                raise
+            else:
+                downloaded = {}
+                download_error = f"讯飞批量统一下载异常：{error}"
+                _log(f"[xunfei] ❌ {download_error}")
 
         for item in pending_for_download:
             job_id = str(item["job_id"])
@@ -686,6 +700,8 @@ class GenerationMixin:
                     **item,
                     "job_id": job_id,
                     "downloaded": False,
+                    # 浏览器消失时 worksId 已经确认存在，不能按“未提交”归档。
+                    "ambiguous_works_id": browser_gone,
                     "error": download_error or "合成已提交但统一下载失败",
                 }
                 results[job_id] = result
@@ -892,6 +908,7 @@ class GenerationMixin:
             })
 
         download_error = None
+        browser_gone = False
         try:
             _check_cancel_requested(cancel_check)
             download_kwargs = {
@@ -903,12 +920,24 @@ class GenerationMixin:
                 pending_for_download,
                 **download_kwargs,
             )
-        except (XunfeiCancelled, XunfeiLoginRequired):
-            raise
         except Exception as error:
-            downloaded = {}
-            download_error = f"讯飞多人配音统一下载异常：{error}"
-            _log(f"[xunfei] ❌ {download_error}")
+            if is_browser_gone(error):
+                # 浏览器没了，但作品早已提交、worksId 也已经拿到。这里只让
+                # 下载失败，绝不能当成用户取消或提交被拒：否则已经付过费的
+                # 作品会被当成没提交过，worksId 也跟着丢掉。
+                browser_gone = True
+                downloaded = {}
+                download_error = (
+                    "作品已提交并进入合成，但讯飞浏览器在下载前关闭，音频未能保存；"
+                    "重新生成会重新提交"
+                )
+                _log(f"[xunfei] ❌ {download_error}（已保留 worksId {len(pending_for_download)} 条）")
+            elif isinstance(error, (XunfeiCancelled, XunfeiLoginRequired)):
+                raise
+            else:
+                downloaded = {}
+                download_error = f"讯飞多人配音统一下载异常：{error}"
+                _log(f"[xunfei] ❌ {download_error}")
 
         for pending_item in pending_for_download:
             _check_cancel_requested(cancel_check)
@@ -923,6 +952,8 @@ class GenerationMixin:
                     "work_id": work_id,
                     "job_id": work_id,
                     "downloaded": False,
+                    # 浏览器消失时 worksId 已经确认存在，不能按“未提交”归档。
+                    "ambiguous_works_id": browser_gone,
                     "error": download_error or "多人配音作品已提交但统一下载失败",
                 }
             if callable(progress_callback) and (work_id, "saved") not in reported_progress:
@@ -936,6 +967,36 @@ class GenerationMixin:
                     "error": results[work_id].get("error"),
                 })
         return results
+
+    def download_submitted_works(
+        self,
+        pending_items,
+        progress_callback=None,
+        cancel_check=None,
+    ):
+        """重新登录后按已确认的 worksId 续传音频，不提交任何新作品。
+
+        浏览器在“提交完成 → 开始下载”之间崩溃时，作品已经存在于讯飞服务端
+        并已计费：唯一正确的补救是把音频取回本地。这条路径绝不调用提交接口，
+        因此不可能产生第二份计费作品。
+        """
+        _check_cancel_requested(cancel_check)
+        items = [
+            item
+            for item in (pending_items or [])
+            if isinstance(item, dict) and str(item.get("works_id") or "")
+        ]
+        if not items:
+            return {}
+        if not self._logged_in:
+            raise XunfeiError("尚未登录，无法续传已提交的讯飞作品")
+        download_kwargs = {}
+        if callable(progress_callback):
+            download_kwargs["progress_callback"] = progress_callback
+        if cancel_check is not None:
+            download_kwargs["cancel_check"] = cancel_check
+        _log(f"[xunfei] 续传已提交作品 {len(items)} 条（按 worksId 取回，不重新提交）")
+        return self._download_pending_batch(items, **download_kwargs)
 
     def synth_one(
         self,
