@@ -226,6 +226,59 @@ class ProviderTests(unittest.TestCase):
             with self.assertRaises(XunfeiCancelled):
                 provider._submit_legacy_xunfei("submission-key", payload)
 
+    def test_browser_gone_after_confirmation_is_never_auto_retried(self) -> None:
+        """浏览器在提交后消失绝不能被归成可自动重试的错误。
+
+        真实故障：作品已提交并计费，浏览器在下载阶段崩溃，异常以
+        ``XunfeiBrowserGone`` 冒泡。它是 ``XunfeiCancelled`` 的子类，
+        按类名比较的旧分支抓不到，于是落到通用兜底 —— 而兜底默认的
+        ``TRANSIENT_PROVIDER_ERROR`` 属于 ``RetryPolicy.RETRYABLE``，
+        调度器随即对全部条目重新提交，等于把已付费的作品再买一遍。
+        """
+        from xunfei.errors import XunfeiBrowserGone
+
+        normalized = _normalize_legacy_error(
+            XunfeiBrowserGone("讯飞浏览器页面已关闭，已停止当前操作"),
+        )
+        self.assertEqual(normalized.code, "LOCAL_SUBMISSION_NOT_CONFIRMED")
+        self.assertFalse(normalized.ambiguous)
+        self.assertTrue(normalized.details["browser_gone"])
+        self.assertFalse(
+            RetryPolicy().decide(normalized.code, attempt_no=1).automatic,
+            "浏览器消失属于可能已计费的中断，不能触发自动重试",
+        )
+
+    def test_browser_gone_from_a_confirmed_session_is_not_normalized_to_retry(self) -> None:
+        """已确认提交后浏览器消失，走适配器也必须是非自动重试的错误码。"""
+        from xunfei.errors import XunfeiBrowserGone
+
+        import xunfei.runtime as legacy
+
+        class ClosedPage:
+            def is_closed(self):
+                return True
+
+        class ConfirmedSession:
+            _page = ClosedPage()
+            _browser_disconnected = True
+            # 提交确认发生过：作品已存在并计费。
+            _confirm_click_succeeded = True
+            _submission_state_uncertain = False
+
+        provider = XunfeiTTSAdapter(account_scope="test-account", allow_real=True)
+        payload = {"plan": [{"item_id": "item-1", "content": "hello", "voice_key": "amanda"}]}
+        with mock.patch.object(legacy, "_session", ConfirmedSession()), \
+                mock.patch(
+                    "workflow.providers._run_sync",
+                    side_effect=XunfeiBrowserGone("讯飞浏览器页面已关闭，已停止当前操作"),
+                ):
+            with self.assertRaises(ProviderError) as context:
+                provider._submit_legacy_xunfei("submission-key", payload)
+        self.assertEqual(context.exception.code, "LOCAL_SUBMISSION_NOT_CONFIRMED")
+        self.assertFalse(
+            RetryPolicy().decide(context.exception.code, attempt_no=1).automatic,
+        )
+
     def test_legacy_audio_export_honors_persisted_quality(self) -> None:
         audio = _ExportableAudio()
         output = _audio_to_mp3_bytes(audio, quality="320 kbps（极高）")

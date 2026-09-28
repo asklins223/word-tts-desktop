@@ -153,6 +153,19 @@ def _normalize_legacy_error(error: Exception, *, works_name: str | None = None) 
             details=details,
             ambiguous=False,
         )
+    if class_name == "XunfeiBrowserGone":
+        # The browser vanished mid-task.  It must never fall through to the
+        # generic branch below: that branch's default ``TRANSIENT_PROVIDER_ERROR``
+        # is in ``RetryPolicy.RETRYABLE``, so the dispatcher would resubmit every
+        # item of the batch and buy a second copy of works that were already
+        # submitted and billed before the browser died.
+        return ProviderError(
+            "讯飞浏览器在任务中途消失，作品可能已提交并计费；"
+            "为避免重复提交已停止自动重试，请确认后手动重试",
+            code="LOCAL_SUBMISSION_NOT_CONFIRMED",
+            details={**details, "browser_gone": True},
+            ambiguous=False,
+        )
     if class_name == "XunfeiCancelled":
         return ProviderError(
             "讯飞浏览器任务已取消，可重新生成",
