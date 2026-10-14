@@ -1275,6 +1275,11 @@ async function handleAudioImportDrop(event) {
 }
 
 function initAudioImportModule() {
+    // Renderer helpers are also evaluated in lightweight VM-based tests with
+    // a partial document. Keep module registration usable there; the real
+    // Electron renderer always provides querySelectorAll.
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+
     $('audio-asr-install-btn')?.addEventListener('click', () => { void installAudioAsrExtension(); });
     $('audio-import-select-btn')?.addEventListener('click', () => { void selectAudioImportFiles(); });
     $('audio-import-folder-btn')?.addEventListener('click', () => { void selectAudioImportFiles({ source: 'folder' }); });
