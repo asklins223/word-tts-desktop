@@ -209,6 +209,12 @@ class TextReadingParser(BaseParser):
     RE_ROLE_LABEL = re.compile(r'^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$')
     RE_ARTICLE_SUBTITLE = re.compile(r'^//\s*(.*)$')
     RE_CONTENT_HEADING = re.compile(r'^(Reading\s+Plus)\s*[：:]?\s*$', re.I)
+    # Numbered section labels can introduce a new passage inside the final
+    # discourse-reading block. Require Word's formatting evidence at the call
+    # site so ordinary mentions of a section number remain spoken text.
+    RE_NUMBERED_SECTION_HEADING = re.compile(
+        r'^Section\s*\d+\s*[.：:]?\s*$', re.I
+    )
 
     def __init__(self, filepath, **kwargs):
         # kwargs 透传 preloaded_paras（统一分段器一次加载，方案阶段3）
@@ -609,6 +615,36 @@ class TextReadingParser(BaseParser):
         return value, False
 
     @classmethod
+    def _is_short_format_heading(cls, text, formatting_hint=False):
+        """判断独立 Word 段落是否是带格式的小标题。
+
+        格式提示本身还不够：较短的朗读正文也可能采用粗体。要求标题
+        保持为一个短段落，且没有句读标点、编号或角色冒号。
+        """
+        value = sanitize(text)
+        if not formatting_hint or not value or '\n' in value:
+            return False
+        if len(value) > 80 or len(re.split(r'\s+', value)) > 12:
+            return False
+        if cls._role_label(value) or cls.RE_NUMBERED.match(value):
+            return False
+        if cls._new_subsection_name(value) or cls.RE_CONVERSATION.match(value):
+            return False
+        if re.search(r'[.!?。！？,，;；:：]', value):
+            return False
+        return True
+
+    @classmethod
+    def _is_numbered_section_boundary(cls, text, formatting_hint=False):
+        """Only treat a visibly formatted numbered Section label as a boundary."""
+        return bool(
+            formatting_hint
+            and cls.RE_NUMBERED_SECTION_HEADING.fullmatch(
+                cls._normalized_heading(text)
+            )
+        )
+
+    @classmethod
     def _looks_like_article_heading(
         cls,
         text,
@@ -700,6 +736,7 @@ class TextReadingParser(BaseParser):
         paragraph_conversation_mode = False
         paragraph_current_number = None
         paragraph_current_lines = []
+        paragraph_pending_title = None
 
         # 非 Conversation 语篇单元保存为 ``(文本, 是否带标题格式提示)``；
         # 这样 Normal 样式但粗体/大字号的小标题也能被正确识别。
@@ -713,12 +750,13 @@ class TextReadingParser(BaseParser):
         def reset_paragraph_state():
             nonlocal paragraph_units, paragraph_blocks
             nonlocal paragraph_conversation_mode, paragraph_current_number
-            nonlocal paragraph_current_lines
+            nonlocal paragraph_current_lines, paragraph_pending_title
             paragraph_units = []
             paragraph_blocks = []
             paragraph_conversation_mode = False
             paragraph_current_number = None
             paragraph_current_lines = []
+            paragraph_pending_title = None
 
         def reset_discourse_state():
             nonlocal discourse_units, discourse_blocks
@@ -835,11 +873,10 @@ class TextReadingParser(BaseParser):
                         append_article_items(units)
                     else:
                         for unit in units:
-                            unit_text = (
-                                unit[0]
-                                if isinstance(unit, (tuple, list)) and len(unit) == 2
-                                else unit
-                            )
+                            if isinstance(unit, (tuple, list)) and len(unit) == 2:
+                                unit_text, paragraph_title = unit
+                            else:
+                                unit_text, paragraph_title = unit, None
                             append_new_block_item(
                                 category,
                                 self._new_clean_text([unit_text]),
@@ -850,6 +887,7 @@ class TextReadingParser(BaseParser):
                                 paragraph_scope=(
                                     f"{current_audio_prefix}:{category}:intro"
                                 ),
+                                paragraph_title=paragraph_title,
                             )
                 groups = [
                     (
@@ -858,6 +896,7 @@ class TextReadingParser(BaseParser):
                         None,
                         f"{current_audio_prefix}:{category}:conversation-"
                         f"{conversation_number}",
+                        None,
                     )
                     for conversation_number, text in blocks
                 ]
@@ -867,13 +906,21 @@ class TextReadingParser(BaseParser):
                 # 保留这些段落边界，否则整个对话会被错误合成一条音频。
                 # 非对话文本仍沿用原来的“一段 Word 段落一条音频”规则。
                 groups = []
-                is_dialogue = self._contains_role_dialogue(units)
+                unit_entries = [
+                    (str(unit[0]), unit[1])
+                    if isinstance(unit, (tuple, list)) and len(unit) == 2
+                    else (str(unit), None)
+                    for unit in units
+                ]
+                is_dialogue = self._contains_role_dialogue(
+                    [unit_text for unit_text, _paragraph_title in unit_entries]
+                )
                 dialogue_id = (
                     f"{current_audio_prefix}:{category}:dialogue"
                     if is_dialogue
                     else ""
                 )
-                for unit_index, unit in enumerate(units, 1):
+                for unit_index, (unit, paragraph_title) in enumerate(unit_entries, 1):
                     paragraph_id = (
                         dialogue_id
                         or f"{current_audio_prefix}:{category}:paragraph-{unit_index}"
@@ -882,7 +929,7 @@ class TextReadingParser(BaseParser):
                     role_segments = self._role_segments(unit)
                     if is_dialogue and len(role_segments) > 1:
                         groups.extend(
-                            (None, role_text, role, paragraph_id)
+                            (None, role_text, role, paragraph_id, paragraph_title)
                             for role, role_text in role_segments
                         )
                         continue
@@ -901,8 +948,15 @@ class TextReadingParser(BaseParser):
                         role_text,
                         role_hint,
                         paragraph_id,
+                        paragraph_title,
                     ))
-            for conversation_number, text, role_hint, paragraph_id in groups:
+            for (
+                conversation_number,
+                text,
+                role_hint,
+                paragraph_id,
+                paragraph_title,
+            ) in groups:
                 if isinstance(text, list):
                     text = self._new_clean_text(text)
                 output_scope = paragraph_id
@@ -919,6 +973,7 @@ class TextReadingParser(BaseParser):
                             role=role,
                             paragraph_id=paragraph_id,
                             paragraph_scope=paragraph_id,
+                            paragraph_title=paragraph_title,
                         )
                 else:
                     # 句子/角色对话是一行一条；只有普通段落才在保留
@@ -931,6 +986,7 @@ class TextReadingParser(BaseParser):
                             role=role_hint,
                             paragraph_id=paragraph_id,
                             paragraph_scope=paragraph_id,
+                            paragraph_title=paragraph_title,
                         )
                     else:
                         sentences = split_sentences(str(text or "")) or [text]
@@ -940,10 +996,12 @@ class TextReadingParser(BaseParser):
                                 sentence,
                                 paragraph_id=paragraph_id,
                                 paragraph_scope=output_scope,
+                                paragraph_title=paragraph_title,
                             )
 
         def flush_paragraph():
             nonlocal paragraph_current_lines, paragraph_current_number
+            nonlocal paragraph_pending_title
             if paragraph_conversation_mode and paragraph_current_lines:
                 paragraph_blocks.append((
                     paragraph_current_number,
@@ -1189,7 +1247,19 @@ class TextReadingParser(BaseParser):
                             title_like = True
                             title_text = heading_text
                 if title_like:
-                    if current_article is not None and current_article.get("structured_subheadings") and not is_explicit:
+                    is_numbered_section_boundary = bool(
+                        formatting_hint
+                        and self._is_numbered_section_boundary(
+                            title_text,
+                            formatting_hint=True,
+                        )
+                    )
+                    if (
+                        current_article is not None
+                        and current_article.get("structured_subheadings")
+                        and not is_explicit
+                        and not is_numbered_section_boundary
+                    ):
                         # 进入“带小标题的单篇文章”后，后续短标题都是
                         # 下一段的标题；显式 // 仍保留为新文章边界。
                         current_article["pending_paragraph_title"] = title_text
@@ -1322,6 +1392,14 @@ class TextReadingParser(BaseParser):
             flush_discourse()
 
         def append_new_content(target, text, *, heading_hint=False):
+            nonlocal paragraph_pending_title
+            if (
+                target == self.SUB_PARAGRAPH
+                and not paragraph_conversation_mode
+                and self._is_short_format_heading(text, heading_hint)
+            ):
+                paragraph_pending_title = sanitize(text)
+                return
             lines = self._new_english_lines(text)
             if not lines:
                 return
@@ -1329,7 +1407,11 @@ class TextReadingParser(BaseParser):
                 if paragraph_conversation_mode:
                     paragraph_current_lines.extend(lines)
                 else:
-                    paragraph_units.append('\n'.join(lines))
+                    paragraph_units.append((
+                        '\n'.join(lines),
+                        paragraph_pending_title,
+                    ))
+                    paragraph_pending_title = None
             elif target == self.SUB_DISCOURSE:
                 if discourse_conversation_mode:
                     discourse_current_lines.extend(lines)
@@ -1407,7 +1489,11 @@ class TextReadingParser(BaseParser):
                     paragraph_current_number = int(conversation_match.group(1))
                     paragraph_current_lines = []
                     continue
-                append_new_content(self.SUB_PARAGRAPH, text)
+                append_new_content(
+                    self.SUB_PARAGRAPH,
+                    text,
+                    heading_hint=heading_hint,
+                )
                 continue
 
             if current_sub == self.SUB_DISCOURSE:
@@ -1438,10 +1524,14 @@ class TextReadingParser(BaseParser):
 
         # 句子跟读临时存储: [(序号, 英文), ...]
         sentence_buf = []
-        # 段落跟读临时存储: [行, ...]
+        # 段落跟读临时存储: [(正文, 小标题), ...]
         paragraph_buf = []
-        # 语篇跟读临时存储: {序号: [行, ...]}
+        # 语篇跟读临时存储: {序号: [行, ...]}；编号 Section 标题会创建
+        # 独立文章组，标题保存为文章元数据，不作为朗读正文。
         discourse_buf = {}
+        discourse_titles = {}
+        active_discourse_number = None
+        paragraph_pending_title = None
 
         def flush_sentences():
             nonlocal sentence_buf
@@ -1467,18 +1557,29 @@ class TextReadingParser(BaseParser):
                 sentence_buf = []
 
         def flush_paragraph():
-            nonlocal paragraph_buf
+            nonlocal paragraph_buf, paragraph_pending_title
             if paragraph_buf:
                 prefix = self._section_prefix(current_section)
                 paragraph_scope = f"{prefix or current_section}:段落跟读:paragraphs"
                 audio_index = 0
-                is_dialogue = self._contains_role_dialogue(paragraph_buf)
+                paragraph_entries = [
+                    (str(entry[0]), entry[1])
+                    if isinstance(entry, (tuple, list)) and len(entry) == 2
+                    else (str(entry), None)
+                    for entry in paragraph_buf
+                ]
+                is_dialogue = self._contains_role_dialogue(
+                    [paragraph for paragraph, _title in paragraph_entries]
+                )
                 dialogue_id = (
                     f"{prefix or current_section}:段落跟读:dialogue"
                     if is_dialogue
                     else ""
                 )
-                for paragraph_index, paragraph in enumerate(paragraph_buf, 1):
+                for paragraph_index, (paragraph, paragraph_title) in enumerate(
+                    paragraph_entries,
+                    1,
+                ):
                     full_text = sanitize(paragraph)
                     paragraph_id = dialogue_id or (
                         f"{prefix or current_section}:段落跟读:paragraph-"
@@ -1501,6 +1602,8 @@ class TextReadingParser(BaseParser):
                             "paragraph_id": paragraph_id,
                             "paragraph_scope": paragraph_scope,
                         }
+                        if paragraph_title:
+                            item["paragraph_title"] = paragraph_title
                         if role:
                             item["role"] = role
                             item["entry_form"] = "角色扮演"
@@ -1509,13 +1612,18 @@ class TextReadingParser(BaseParser):
                             item["filename_stem"] = f"{prefix}-段落{audio_index}"
                         items.append(item)
                 paragraph_buf = []
+            paragraph_pending_title = None
 
         def flush_discourse():
-            nonlocal discourse_buf
+            nonlocal discourse_buf, discourse_titles, active_discourse_number
             if discourse_buf:
                 prefix = self._section_prefix(current_section)
                 discourse_count = len(discourse_buf)
-                for num in sorted(discourse_buf.keys()):
+                normalize_default_group = (
+                    discourse_count > 1 and 0 in discourse_buf
+                )
+                has_numbered_section_split = bool(discourse_titles)
+                for article_index, num in enumerate(sorted(discourse_buf.keys()), 1):
                     lines = discourse_buf[num]
                     if not lines:
                         continue
@@ -1525,14 +1633,23 @@ class TextReadingParser(BaseParser):
                             voice = "male"
                             display_num = 1  # 仅一篇时也用「语篇1」
                         else:
-                            voice = self._discourse_voice(current_section, num)
-                            display_num = num
+                            display_num = article_index if normalize_default_group else num
+                            voice = self._discourse_voice(current_section, display_num)
                     elif prefix == "R":
-                        voice = self._discourse_voice(current_section, num)
-                        display_num = 1  # R 章节仅一篇，用「语篇1」
+                        voice = self._discourse_voice(
+                            current_section,
+                            article_index if has_numbered_section_split else num,
+                        )
+                        display_num = (
+                            article_index if has_numbered_section_split else 1
+                        )
                     else:
                         voice = "female"
-                        display_num = max(num, 1)
+                        display_num = (
+                            article_index
+                            if normalize_default_group
+                            else max(num, 1)
+                        )
                     sentence_index = 0
                     is_dialogue = self._contains_role_dialogue(lines)
                     paragraph_scope = (
@@ -1563,6 +1680,9 @@ class TextReadingParser(BaseParser):
                                 "paragraph_id": paragraph_id,
                                 "paragraph_scope": paragraph_scope,
                             }
+                            article_title = discourse_titles.get(num)
+                            if article_title:
+                                item["article_title"] = article_title
                             if role:
                                 item["role"] = role
                                 item["entry_form"] = "角色扮演"
@@ -1573,13 +1693,21 @@ class TextReadingParser(BaseParser):
                                 )
                             items.append(item)
                 discourse_buf = {}
+                discourse_titles = {}
+            active_discourse_number = None
 
         def flush_all():
             flush_sentences()
             flush_paragraph()
             flush_discourse()
 
-        for _, text, style in self.paras:
+        for position, (_, text, style) in enumerate(self.paras):
+            paragraph_metadata = (
+                self.paragraph_metadata[position]
+                if position < len(self.paragraph_metadata)
+                else {}
+            )
+            heading_hint = bool(paragraph_metadata.get("heading_hint"))
             # ---- 子章节标记（优先于 Heading 检查，兼容新格式中
             #      子章节使用 Heading 2 样式的情况）----
             if text == self.SUB_SENTENCE:
@@ -1595,6 +1723,54 @@ class TextReadingParser(BaseParser):
                 current_sub = self.SUB_DISCOURSE
                 continue
 
+            # 已知章节名优先保持为大章节边界；段落中的粗体小标题继续
+            # 由后面的格式规则处理。
+            if (
+                self._normalized_heading(text).casefold() in self.KNOWN_SECTIONS
+                and self._is_section_heading(style, text)
+            ):
+                flush_all()
+                current_section = text
+                current_sub = None
+                continue
+
+            # 数字 Section 标题出现在语篇正文中时，是下一篇文章的结构
+            # 边界。规则使用通用编号形式并要求 Word 标题格式证据，不
+            # 依赖某个具体的 Section 文本。
+            if current_sub == self.SUB_DISCOURSE:
+                discourse_marker = self.RE_DISCOURSE_NUM.match(text)
+                if discourse_marker:
+                    active_discourse_number = int(discourse_marker.group(1))
+                    discourse_buf.setdefault(active_discourse_number, [])
+                    continue
+
+                if self._is_numbered_section_boundary(text, heading_hint):
+                    if active_discourse_number is None:
+                        active_discourse_number = 0
+                    elif discourse_buf.get(active_discourse_number):
+                        active_discourse_number = max(
+                            discourse_buf,
+                            default=active_discourse_number,
+                        ) + 1
+                    discourse_buf.setdefault(active_discourse_number, [])
+                    discourse_titles[active_discourse_number] = sanitize(text)
+                    continue
+
+                if active_discourse_number is None:
+                    active_discourse_number = 0
+                discourse_buf.setdefault(active_discourse_number, []).append(text)
+                continue
+
+            if current_sub == self.SUB_PARAGRAPH:
+                if self.RE_CHINESE_PREFIX.match(text):
+                    continue
+                if self._is_short_format_heading(text, heading_hint):
+                    paragraph_pending_title = sanitize(text)
+                    continue
+                paragraph_buf.append((text, paragraph_pending_title))
+                paragraph_pending_title = None
+                continue
+
             # ---- Heading：新章节 ----
             if self._is_section_heading(style, text):
                 flush_all()
@@ -1605,14 +1781,6 @@ class TextReadingParser(BaseParser):
             # ---- 根据子章节处理内容 ----
             if current_sub == self.SUB_SENTENCE:
                 self._handle_sentence(text, sentence_buf)
-
-            elif current_sub == self.SUB_PARAGRAPH:
-                # 跳过中文翻译行
-                if not self.RE_CHINESE_PREFIX.match(text):
-                    paragraph_buf.append(text)
-
-            elif current_sub == self.SUB_DISCOURSE:
-                self._handle_discourse(text, discourse_buf)
 
         # 文档末尾兜底
         flush_all()
