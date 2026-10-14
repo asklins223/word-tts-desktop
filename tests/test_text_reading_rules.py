@@ -388,6 +388,99 @@ class TextReadingRuleTests(unittest.TestCase):
 
         self.assertEqual(result["items"][0]["filename_stem"], "U-句子1")
 
+    def test_numbered_section_can_start_sentence_reading_after_discourse(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "沪教版课文跟读-Section3句子跟读.docx")
+            document = Document()
+            for text in ["Section 2", "语篇跟读", "An earlier passage."]:
+                document.add_paragraph(text)
+            section_heading = document.add_paragraph("Section 3")
+            section_heading.runs[0].bold = True
+            subsection = document.add_paragraph("句子跟读：\u200b")
+            subsection.runs[0].bold = True
+            document.add_paragraph("1. I live in Guangzhou.")
+            document.add_paragraph("中文：我住在广州。")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        sentences = [
+            item for item in result["items"]
+            if item["category"] == "句子跟读"
+        ]
+        discourses = [
+            item for item in result["items"]
+            if item["category"] == "语篇跟读"
+        ]
+        self.assertEqual([item["text"] for item in sentences], ["I live in Guangzhou."])
+        self.assertEqual([item["translation"] for item in sentences], ["我住在广州。"])
+        self.assertEqual([item["text"] for item in discourses], ["An earlier passage."])
+
+    def test_numbered_section_heading_starts_a_new_sentence_reading_group(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "沪教版课文跟读-编号章节句子跟读.docx")
+            document = Document()
+            first_section = document.add_paragraph("Section 2")
+            first_section.runs[0].bold = True
+            document.add_paragraph("句子跟读")
+            document.add_paragraph("1. The first section has a sentence.")
+            second_section = document.add_paragraph("Section 3")
+            second_section.runs[0].bold = True
+            document.add_paragraph("句子跟读")
+            document.add_paragraph("1. I live in Guangzhou.")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        sentences = [
+            item for item in result["items"]
+            if item["category"] == "句子跟读"
+        ]
+        self.assertEqual(
+            [item["text"] for item in sentences],
+            ["The first section has a sentence.", "I live in Guangzhou."],
+        )
+        self.assertEqual(
+            [item["section"] for item in sentences],
+            ["Section 2", "Section 3"],
+        )
+        self.assertEqual([item["number"] for item in sentences], [1, 1])
+
+    def test_shanghai_unit3_example_keeps_sentence_and_final_passages_separate(self):
+        path = ROOT / "examples" / "documents" / "沪教版七上Unit3 The Seasons课文跟读.docx"
+        result = TextReadingParser(path).parse()
+        sentences = [
+            item for item in result["items"]
+            if item["category"] == "句子跟读"
+        ]
+        discourses = [
+            item for item in result["items"]
+            if item["category"] == "语篇跟读"
+        ]
+
+        self.assertEqual(len(sentences), 20)
+        self.assertEqual(
+            [
+                item["text"]
+                for item in sentences
+                if item["section"] == "Section 3"
+            ][0],
+            "I live in Guangzhou.",
+        )
+        self.assertFalse(
+            any(item["text"] in {"Section 3", "Section 4"} for item in result["items"])
+        )
+        self.assertEqual(len(discourses), 28)
+        discourse_groups = {}
+        for item in discourses:
+            discourse_groups.setdefault(item["paragraph_scope"], []).append(item)
+        self.assertEqual(
+            sorted(len(group) for group in discourse_groups.values()),
+            [14, 14],
+        )
+        self.assertEqual(
+            {group[0].get("article_title") for group in discourse_groups.values()},
+            {None, "Section 4"},
+        )
+
     def test_new_structure_wins_when_old_and_new_sections_are_both_present(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir, "课文跟读混合结构.docx")

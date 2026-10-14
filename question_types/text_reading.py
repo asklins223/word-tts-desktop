@@ -159,9 +159,9 @@ class TextReadingParser(BaseParser):
                 line = line.strip()
                 if not line:
                     continue
-                sub_section = self.RE_NEW_SUB_SECTION.match(line)
+                sub_section = self._new_subsection_name(line)
                 if sub_section:
-                    region = sub_section.group(1)
+                    region = sub_section
                     saw_sub_section = True
                     last_key = ''
                     continue
@@ -205,7 +205,6 @@ class TextReadingParser(BaseParser):
     # 或 Word 段落决定，不能套用旧版的逐句切分规则。
     RE_SECTION_AB = re.compile(r'^Section\s+([A-Za-z])\s*[：:]?\s*$', re.I)
     RE_CONVERSATION = re.compile(r'^Conversation\s*(\d+)\s*[：:]?\s*$', re.I)
-    RE_NEW_SUB_SECTION = re.compile(r'^(句子跟读|段落跟读|语篇跟读)\s*[：:]?\s*$')
     RE_ROLE_LABEL = re.compile(r'^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$')
     RE_ARTICLE_SUBTITLE = re.compile(r'^//\s*(.*)$')
     RE_CONTENT_HEADING = re.compile(r'^(Reading\s+Plus)\s*[：:]?\s*$', re.I)
@@ -246,14 +245,16 @@ class TextReadingParser(BaseParser):
     @classmethod
     def _normalized_heading(cls, text):
         """统一标题末尾中英文冒号和空白，供结构检测使用。"""
-        value = str(text or '').strip()
+        value = sanitize(str(text or ''))
+        value = re.sub(r'\s+', ' ', value)
         return re.sub(r'[：:]\s*$', '', value).strip()
 
     @classmethod
     def _new_subsection_name(cls, text):
         """返回新版跟读子题型名；普通正文返回 None。"""
         value = cls._normalized_heading(text)
-        return value if value in cls._SUB_SECTION_NAMES else None
+        compact_value = re.sub(r'\s+', '', value)
+        return compact_value if compact_value in cls._SUB_SECTION_NAMES else None
 
     @classmethod
     def _is_reading_plus_heading(cls, text):
@@ -1467,10 +1468,10 @@ class TextReadingParser(BaseParser):
                 current_sub = self.SUB_DISCOURSE if was_discourse_subsection else None
                 continue
 
-            sub_match = self.RE_NEW_SUB_SECTION.match(text)
-            if sub_match:
+            subsection = self._new_subsection_name(text)
+            if subsection:
                 flush_all_new()
-                current_sub = sub_match.group(1)
+                current_sub = subsection
                 continue
 
             if current_sub == self.SUB_SENTENCE:
@@ -1710,17 +1711,23 @@ class TextReadingParser(BaseParser):
             heading_hint = bool(paragraph_metadata.get("heading_hint"))
             # ---- 子章节标记（优先于 Heading 检查，兼容新格式中
             #      子章节使用 Heading 2 样式的情况）----
-            if text == self.SUB_SENTENCE:
+            subsection = self._new_subsection_name(text)
+            if subsection:
                 flush_all()
-                current_sub = self.SUB_SENTENCE
+                current_sub = subsection
                 continue
-            if text == self.SUB_PARAGRAPH:
+
+            # 编号 Section 标题也会出现在句子/段落区块之间。仅依赖
+            # discourse 分支会把此类标题误收为朗读文本；在其他区块中，
+            # 有 Word 格式证据的独立编号标题应先结束当前区块并开启新章节。
+            # discourse 分支保留下面的专门逻辑，以便把它当成文章边界。
+            if (
+                current_sub != self.SUB_DISCOURSE
+                and self._is_numbered_section_boundary(text, heading_hint)
+            ):
                 flush_all()
-                current_sub = self.SUB_PARAGRAPH
-                continue
-            if text == self.SUB_DISCOURSE:
-                flush_all()
-                current_sub = self.SUB_DISCOURSE
+                current_section = sanitize(text)
+                current_sub = None
                 continue
 
             # 已知章节名优先保持为大章节边界；段落中的粗体小标题继续
