@@ -99,6 +99,12 @@ function pendingSourceFilePresentation(
 }
 
 function globalFileDropPresentation(serviceState = sourceImportServiceState) {
+    if (root.WORDTTS_RENDERER?.getModule?.('systemInput.delivery')?.isExternalAudioImportModeActive?.()) {
+        return {
+            title: '松开以导入音频文件',
+            hint: '支持 MP3、WAV、M4A、AAC、OGG、OPUS、FLAC 和 ZIP · 将匹配当前待处理题目',
+        };
+    }
     if (serviceState === 'unavailable') {
         return {
             title: '松开后保留文档',

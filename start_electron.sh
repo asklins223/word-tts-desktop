@@ -155,6 +155,13 @@ echo "[3/3] 检查 Python 依赖..."
     echo "  安装 Word 文档块图片依赖 (Pillow)..."
     "$PYTHON_BIN" -m pip install Pillow
 }
+# The packaged backend carries sherpa-onnx in its frozen runtime. The
+# development backend runs directly from this interpreter, so keep the local
+# environment aligned with the release dependency manifest as well.
+"$PYTHON_BIN" -c "import sherpa_onnx" 2>/dev/null || {
+    echo "  安装本地语音识别运行组件 (sherpa-onnx)..."
+    "$PYTHON_BIN" -m pip install "sherpa-onnx==1.12.26" "sherpa-onnx-bin==1.12.26"
+}
 # 开发模式下需要 Chromium 浏览器（打包后内置，开发时需手动安装）
 _pw_cache="$("$PYTHON_BIN" -c "import os; print(os.path.join(os.path.expanduser('~'), 'Library', 'Caches', 'ms-playwright'))" 2>/dev/null)"
 if [ -n "$_pw_cache" ] && ! ls "$_pw_cache"/chromium-* 1>/dev/null 2>&1; then

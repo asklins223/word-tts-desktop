@@ -19,6 +19,10 @@ function resetGenerateState() {
 
 async function requestRestart() {
     if (isRestarting) return;
+    if (root.WORDTTS_RENDERER?.getModule?.('extensions.audioImport')?.isBusy?.()) {
+        showToast('音频正在上传、识别或提交，请等待当前操作完成后再更换文档', 'warning');
+        return;
+    }
     if (currentSession) {
         let confirmation = {
             kicker: '当前任务',
@@ -67,6 +71,13 @@ async function requestRestart() {
 }
 
 async function restart({ notify = true } = {}) {
+    const audioImport = root.WORDTTS_RENDERER?.getModule?.('extensions.audioImport');
+    if (audioImport?.isBusy?.()) {
+        showToast('音频正在上传、识别或提交，请等待当前操作完成后再更换文档', 'warning');
+        return false;
+    }
+    root.WORDTTS_RENDERER?.getModule?.('systemInput.delivery')?.exitExternalAudioImportMode?.();
+    await audioImport?.hideAudioImportWorkspace?.();
     destroyWaveSurfers();
     if (activeArtifactTransfer) {
         await cancelArtifactTransfer();

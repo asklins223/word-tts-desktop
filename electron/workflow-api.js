@@ -85,6 +85,124 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
             const response = await call('GET', `/api/v1/workflows/${encode(workflowId)}/system-input`);
             return response?.system_input || null;
         },
+        async getAudioAsrExtension() {
+            return call('GET', '/api/v1/extensions/audio-asr');
+        },
+        async installAudioAsrExtension() {
+            return mutate('POST', '/api/v1/extensions/audio-asr/install', {});
+        },
+        async createAudioImportBatch(workflowId, input) {
+            return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/audio-import-batches`, input);
+        },
+        async uploadAudioImportFile(workflowId, batchId, fileIndex, file, options = {}) {
+            const pathname = `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/files/${encode(fileIndex)}`;
+            const headers = {
+                'X-Idempotency-Key': idempotencyKey(),
+                'Content-Type': 'application/octet-stream',
+            };
+            if (file && typeof file === 'object' && file.sourceFileId && typeof uploadSourceFile === 'function') {
+                const uploadId = String(options?.uploadId || `audio-upload-${randomUUID()}`);
+                const signal = options?.signal || null;
+                const abort = () => {
+                    if (typeof cancelSourceUpload === 'function') {
+                        void cancelSourceUpload({ uploadId }).catch(() => {});
+                    }
+                };
+                signal?.addEventListener?.('abort', abort, { once: true });
+                try {
+                    const response = await uploadSourceFile({
+                        pathname,
+                        headers,
+                        sourceFileId: String(file.sourceFileId),
+                        uploadId,
+                        onProgress: options?.onProgress,
+                    });
+                    if (signal?.aborted) {
+                        const error = new Error('audio import was cancelled');
+                        error.name = 'AbortError';
+                        error.code = 'USER_CANCELLED';
+                        throw error;
+                    }
+                    return unwrapResponse(response, 'workflow audio upload');
+                } finally {
+                    signal?.removeEventListener?.('abort', abort);
+                }
+            }
+            if (typeof upload === 'function') {
+                const response = await upload({
+                    pathname,
+                    headers,
+                    content: file,
+                    signal: options?.signal || null,
+                    onProgress: options?.onProgress,
+                });
+                return unwrapResponse(response, 'workflow audio upload');
+            }
+            const bytes = await toBytes(file);
+            return call('PUT', pathname, bytes, headers, options);
+        },
+        async uploadAudioImportArchive(workflowId, batchId, file, options = {}) {
+            const pathname = `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/archive`;
+            const headers = {
+                'X-Idempotency-Key': idempotencyKey(),
+                'Content-Type': 'application/octet-stream',
+            };
+            if (file && typeof file === 'object' && file.sourceFileId && typeof uploadSourceFile === 'function') {
+                const uploadId = String(options?.uploadId || `audio-archive-${randomUUID()}`);
+                const signal = options?.signal || null;
+                const abort = () => {
+                    if (typeof cancelSourceUpload === 'function') {
+                        void cancelSourceUpload({ uploadId }).catch(() => {});
+                    }
+                };
+                signal?.addEventListener?.('abort', abort, { once: true });
+                try {
+                    const response = await uploadSourceFile({
+                        pathname,
+                        headers,
+                        sourceFileId: String(file.sourceFileId),
+                        uploadId,
+                        onProgress: options?.onProgress,
+                    });
+                    if (signal?.aborted) {
+                        const error = new Error('audio import was cancelled');
+                        error.name = 'AbortError';
+                        error.code = 'USER_CANCELLED';
+                        throw error;
+                    }
+                    return unwrapResponse(response, 'workflow audio archive upload');
+                } finally {
+                    signal?.removeEventListener?.('abort', abort);
+                }
+            }
+            if (typeof upload === 'function') {
+                const response = await upload({
+                    pathname,
+                    headers,
+                    content: file,
+                    signal: options?.signal || null,
+                    onProgress: options?.onProgress,
+                });
+                return unwrapResponse(response, 'workflow audio archive upload');
+            }
+            const bytes = await toBytes(file);
+            return call('PUT', pathname, bytes, headers, options);
+        },
+        async analyzeAudioImportBatch(workflowId, batchId) {
+            return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/analyze`, {});
+        },
+        async commitAudioImportBatch(workflowId, batchId, input, options = {}) {
+            return mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/commit`,
+                input,
+                options?.idempotencyKey || null,
+                options,
+            );
+        },
+        async abortAudioImportBatch(workflowId, batchId) {
+            return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/abort`, {});
+        },
         async saveSystemInputConfiguration(workflowId, input, options = {}) {
             const response = await mutate(
                 'PATCH',
@@ -530,6 +648,22 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
                 filename,
             };
             return stream;
+        },
+        async openAudioImportFile(workflowId, batchId, fileIndex) {
+            const index = Number(fileIndex);
+            if (!workflowId || !batchId || !Number.isSafeInteger(index) || index < 0 || index >= 2000) {
+                throw new TypeError('audio import preview target is invalid');
+            }
+            if (typeof openArtifactStream !== 'function') {
+                throw new Error('本地音频试听通道不可用');
+            }
+            return openArtifactStream({
+                audioImportFile: {
+                    workflowId: String(workflowId),
+                    batchId: String(batchId),
+                    fileIndex: index,
+                },
+            });
         },
     });
 }

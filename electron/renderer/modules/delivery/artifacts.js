@@ -98,6 +98,12 @@ async function openRendererArtifactStream(artifactId) {
     return rendererReadableArtifactStream(transport);
 }
 
+async function openRendererAudioImportStream(workflowId, batchId, fileIndex) {
+    if (!workflowApi?.openAudioImportFile) throw new Error('本地音频试听通道不可用');
+    const transport = await workflowApi.openAudioImportFile(workflowId, batchId, fileIndex);
+    return rendererReadableArtifactStream(transport);
+}
+
 async function readArtifactBytes(artifactId, maxBytes = MAX_BUFFERED_ARTIFACT_BYTES) {
     if (!workflowApi || !artifactId) throw new Error('Artifact 标识缺失');
     const byteLimit = Number.isSafeInteger(maxBytes) && maxBytes > 0
@@ -301,6 +307,7 @@ function ensureFinalDeliveryResultButton() {
 registerRendererModule("delivery.artifacts", {
     rendererReadableArtifactStream,
     openRendererArtifactStream,
+    openRendererAudioImportStream,
     readArtifactBytes,
     artifactMime,
     filenameWithExtension,

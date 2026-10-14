@@ -32,6 +32,7 @@ from audio_naming import audio_filename_from_stem
 from application.workflow_service import WorkflowApplicationService
 from db.migration_runner import MigrationError
 from workflow.artifact_store import ArtifactStore, ArtifactStoreError, ArtifactTooLarge
+from workflow.audio_asr import AudioAsrExtension, AudioImportCoordinator, transcode_audio_to_mp3
 from workflow.data_safety import redact_public_json
 from workflow.database import WorkflowDatabase
 from workflow.domain import DomainError, content_hash, new_id
@@ -164,6 +165,37 @@ class SourceImportBody(BaseModel):
     expected_size_bytes: int | None = None
     expected_sha256: str | None = None
     content_type: str | None = None
+
+    class Config:
+        extra = "forbid"
+
+
+class AudioImportFileSpecBody(BaseModel):
+    file_name: str = Field(min_length=1, max_length=256)
+    size_bytes: int = Field(gt=0, le=512 * 1024 * 1024)
+
+    class Config:
+        extra = "forbid"
+
+
+class AudioImportBatchBody(BaseModel):
+    files: list[AudioImportFileSpecBody] = Field(default_factory=list, max_length=2000)
+    archive: AudioImportFileSpecBody | None = None
+
+    class Config:
+        extra = "forbid"
+
+
+class AudioImportBindingBody(BaseModel):
+    file_index: int = Field(ge=0, le=1999)
+    item_id: str = Field(min_length=1, max_length=256)
+
+    class Config:
+        extra = "forbid"
+
+
+class AudioImportCommitBody(BaseModel):
+    bindings: list[AudioImportBindingBody] = Field(min_length=1, max_length=2000)
 
     class Config:
         extra = "forbid"
@@ -434,6 +466,8 @@ class WorkflowRuntime:
     application: WorkflowApplicationService
     providers: ProviderRegistry
     tickets: OneTimeTicketManager
+    audio_asr: AudioAsrExtension | None = None
+    audio_imports: AudioImportCoordinator | None = None
     capability: str | None = None
     system_input: SystemInputService | None = None
     textbook_catalog: TextbookCatalogService | None = None
@@ -474,6 +508,10 @@ class WorkflowRuntime:
             self.textbook_catalog = TextbookCatalogService()
         if self.platform_template_catalog is None:
             self.platform_template_catalog = PlatformTemplateCatalogService()
+        if self.audio_asr is None:
+            self.audio_asr = AudioAsrExtension(self.artifacts.root.parent / "extensions" / "audio-asr")
+        if self.audio_imports is None:
+            self.audio_imports = AudioImportCoordinator(self.repository, self.artifacts)
 
     @classmethod
     def from_paths(
@@ -2390,6 +2428,229 @@ def install_workflow_api(
             raise TicketError("missing or invalid desktop capability")
 
     router = APIRouter(prefix="/api/v1", dependencies=[Depends(capability_dependency)])
+
+    @router.get("/extensions/audio-asr")
+    async def get_audio_asr_extension():
+        runtime.ensure_initialized()
+        assert runtime.audio_asr is not None
+        return runtime.audio_asr.status()
+
+    @router.post("/extensions/audio-asr/install", status_code=202)
+    async def install_audio_asr_extension(idempotency_key: str = Header(..., alias="X-Idempotency-Key")):
+        runtime.ensure_initialized()
+        _idempotency_key(idempotency_key)
+        assert runtime.audio_asr is not None
+        return runtime.audio_asr.start_install()
+
+    @router.post("/workflows/{workflow_id}/audio-import-batches", status_code=201)
+    async def create_audio_import_batch(
+        workflow_id: str,
+        body: AudioImportBatchBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        _idempotency_key(idempotency_key)
+        assert runtime.audio_imports is not None
+        if body.archive is not None:
+            if body.files:
+                raise DomainError("VALIDATION_ERROR", "一次只能导入普通音频列表或一个 ZIP 文件")
+            return runtime.audio_imports.create_archive_batch(
+                workflow_id,
+                body.archive.file_name,
+                body.archive.size_bytes,
+            )
+        if not body.files:
+            raise DomainError("VALIDATION_ERROR", "请选择音频文件或 ZIP 文件")
+        return runtime.audio_imports.create_batch(
+            workflow_id,
+            [entry.model_dump() for entry in body.files],
+        )
+
+    @router.put("/workflows/{workflow_id}/audio-import-batches/{batch_id}/files/{file_index}", status_code=201)
+    async def upload_audio_import_file(
+        workflow_id: str,
+        batch_id: str,
+        file_index: int,
+        request: Request,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        _idempotency_key(idempotency_key)
+        assert runtime.audio_imports is not None
+        result = await runtime.audio_imports.upload(
+            workflow_id,
+            batch_id,
+            file_index,
+            request.stream(),
+        )
+        return result
+
+    @router.get("/workflows/{workflow_id}/audio-import-batches/{batch_id}/files/{file_index}/content")
+    async def preview_audio_import_file(workflow_id: str, batch_id: str, file_index: int):
+        runtime.ensure_initialized()
+        assert runtime.audio_imports is not None
+        source, filename, size_bytes = runtime.audio_imports.open_preview(
+            workflow_id,
+            batch_id,
+            file_index,
+        )
+
+        def chunks():
+            try:
+                while True:
+                    chunk = source.read(256 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                source.close()
+
+        extension = Path(filename).suffix.lower()
+        content_type = {
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+            ".m4a": "audio/mp4",
+            ".aac": "audio/aac",
+            ".ogg": "audio/ogg",
+            ".opus": "audio/ogg",
+            ".flac": "audio/flac",
+        }.get(extension, "application/octet-stream")
+        return StreamingResponse(
+            chunks(),
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename, safe='')}",
+                "Content-Length": str(size_bytes),
+                "X-Audio-Import-Filename": quote(filename, safe=""),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.put("/workflows/{workflow_id}/audio-import-batches/{batch_id}/archive", status_code=201)
+    async def upload_audio_import_archive(
+        workflow_id: str,
+        batch_id: str,
+        request: Request,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        _idempotency_key(idempotency_key)
+        assert runtime.audio_imports is not None
+        return await runtime.audio_imports.upload_archive(workflow_id, batch_id, request.stream())
+
+    @router.post("/workflows/{workflow_id}/audio-import-batches/{batch_id}/analyze", status_code=200)
+    async def analyze_audio_import_batch(
+        workflow_id: str,
+        batch_id: str,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        _idempotency_key(idempotency_key)
+        assert runtime.audio_asr is not None and runtime.audio_imports is not None
+        return await asyncio.to_thread(runtime.audio_imports.analyze, workflow_id, batch_id, runtime.audio_asr)
+
+    @router.post("/workflows/{workflow_id}/audio-import-batches/{batch_id}/commit", status_code=201)
+    async def commit_audio_import_batch(
+        workflow_id: str,
+        batch_id: str,
+        body: AudioImportCommitBody,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        key = _idempotency_key(idempotency_key)
+        payload = body.model_dump()
+        idem_id, cached = runtime.repository.begin_idempotency(
+            scope=f"workflow:{workflow_id}",
+            client_key=key,
+            command_name="importExternalAudio",
+            method="POST",
+            resource_id=workflow_id,
+            target={"batch_id": batch_id},
+            request=payload,
+            workflow_id=workflow_id,
+            recovery=_event_idempotency_recovery(
+                runtime,
+                {"AUDIO_IMPORT_COMPLETED"},
+                lambda row, event: (
+                    201,
+                    _command_response(
+                        runtime.repository.get_workflow(workflow_id),
+                        "import-audio",
+                        str(row["idempotency_id"]),
+                        imported_artifact_ids=(event.get("payload") or {}).get("artifact_ids", []),
+                        input_mode="external_audio",
+                    ),
+                ),
+            ),
+        )
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+
+        batch = None
+        domain_committed = False
+        try:
+            assert runtime.audio_imports is not None
+            batch, bindings = runtime.audio_imports.validate_bindings(
+                workflow_id,
+                batch_id,
+                [entry.model_dump() for entry in body.bindings],
+            )
+
+            def publish_import():
+                prepared: list[dict[str, Any]] = []
+                for binding in bindings:
+                    staged = batch.staged[binding["file_index"]]
+                    blob = transcode_audio_to_mp3(staged.path, runtime.artifacts)
+                    prepared.append({
+                        "item_id": binding["item_id"],
+                        "artifact_id": new_id("artifact"),
+                        "blob": blob,
+                    })
+                snapshot = runtime.repository.complete_external_audio_import(
+                    workflow_id,
+                    bindings=prepared,
+                    expected_items=batch.items,
+                    request_id=idem_id,
+                )
+                return snapshot, prepared
+
+            snapshot, prepared = await asyncio.to_thread(publish_import)
+            domain_committed = True
+            response = _command_response(
+                snapshot,
+                "import-audio",
+                idem_id,
+                imported_artifact_ids=[entry["artifact_id"] for entry in prepared],
+                input_mode="external_audio",
+            )
+            runtime.repository.complete_idempotency(
+                idem_id,
+                response_status=201,
+                response=response,
+                workflow_id=workflow_id,
+            )
+            runtime.audio_imports.finish_commit(batch, response)
+            return JSONResponse(response, status_code=201)
+        except Exception:
+            if batch is not None:
+                runtime.audio_imports.finish_commit(batch, None)
+            if domain_committed:
+                runtime.repository.release_idempotency_owner(idem_id)
+            else:
+                runtime.repository.abandon_idempotency(client_key=key, resource_id=workflow_id)
+            raise
+
+    @router.post("/workflows/{workflow_id}/audio-import-batches/{batch_id}/abort", status_code=202)
+    async def abort_audio_import_batch(
+        workflow_id: str,
+        batch_id: str,
+        idempotency_key: str = Header(..., alias="X-Idempotency-Key"),
+    ):
+        runtime.ensure_initialized()
+        _idempotency_key(idempotency_key)
+        assert runtime.audio_imports is not None
+        return runtime.audio_imports.abort(workflow_id, batch_id)
 
     @router.post("/workflows", status_code=201)
     async def create_workflow(body: WorkflowCreateBody, request: Request, idempotency_key: str = Header(..., alias="X-Idempotency-Key")):

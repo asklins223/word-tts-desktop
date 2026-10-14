@@ -20,6 +20,11 @@ Pillow>=11.0.0
 # ---- 音频处理 ----
 pydub>=0.25.1
 imageio-ffmpeg>=0.5.1
+# 本地按需下载 SenseVoice Small int8 模型的 CPU 推理运行时；模型权重不在
+# requirements 或安装包中，首次使用时由设置中心的扩展板块单独下载到用户数据目录。
+sherpa-onnx==1.12.26
+sherpa-onnx-bin==1.12.26
+numpy>=1.26,<3
 
 # ---- 文件上传 ----
 # FastAPI 的 UploadFile/File 路由在运行时需要此包。

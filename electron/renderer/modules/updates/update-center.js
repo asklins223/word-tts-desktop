@@ -250,7 +250,7 @@ function renderVersionCenter() {
     renderVersionReleaseNotes(hasUpdate ? state.releaseNotes : '');
 
     const badge = $('version-nav-badge');
-    const versionNav = $('version-nav-btn');
+    const versionNav = $('settings-nav-btn');
     const badgeVisible = hasUpdate && !['up-to-date', 'disabled', 'installing'].includes(state.status);
     if (badge) {
         badge.hidden = !badgeVisible;

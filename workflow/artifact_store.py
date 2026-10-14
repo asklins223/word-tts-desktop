@@ -11,7 +11,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import BinaryIO, Iterable
+from typing import AsyncIterable, BinaryIO, Iterable
 
 
 class ArtifactStoreError(RuntimeError):
@@ -92,6 +92,49 @@ class ArtifactStore:
                     for chunk in source:
                         if not chunk:
                             continue
+                        size = self._write_chunk(target, digest, chunk, size)
+                target.flush()
+                os.fsync(target.fileno())
+            if expected_size is not None and size != expected_size:
+                raise ArtifactIntegrityError("artifact size does not match the declared size")
+            actual_sha256 = digest.hexdigest()
+            if expected_sha256 and actual_sha256 != expected_sha256.lower():
+                raise ArtifactIntegrityError("artifact SHA-256 does not match the declared digest")
+            return StagedFile(key, path, size, actual_sha256)
+        except Exception:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            raise
+
+    async def stage_async_stream(
+        self,
+        source: AsyncIterable[bytes],
+        *,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> StagedFile:
+        """Stage an ASGI request body without buffering the complete upload."""
+
+        if expected_size is not None and (expected_size < 0 or expected_size > self.max_bytes):
+            raise ArtifactTooLarge("expected artifact size exceeds the local storage budget")
+        key, path = self._new_staging_path()
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with path.open("xb") as target:
+                async for chunk in source:
+                    if not chunk:
+                        continue
+                    if len(chunk) > chunk_size:
+                        # ASGI servers normally cap their own chunks. Split
+                        # defensively so one oversized frame cannot bypass the
+                        # same bounded write path as synchronous uploads.
+                        for offset in range(0, len(chunk), chunk_size):
+                            size = self._write_chunk(target, digest, chunk[offset:offset + chunk_size], size)
+                    else:
                         size = self._write_chunk(target, digest, chunk, size)
                 target.flush()
                 os.fsync(target.fileno())

@@ -22,7 +22,7 @@ function ensureSystemInputDeliveryChoicePanel() {
     title.id = 'system-input-delivery-choice-title';
     title.textContent = '选择生成后的去向';
     const summary = document.createElement('p');
-    summary.textContent = '录入是可选步骤：可以只生成音频，也可以在音频验收后继续录入系统。';
+    summary.textContent = '可以生成音频、导入已有音频，或在音频验收后继续录入系统。';
     copy.append(title, summary);
     const status = document.createElement('span');
     status.className = 'system-input-intent-status';
@@ -44,6 +44,11 @@ function ensureSystemInputDeliveryChoicePanel() {
             value: 'audio_and_input',
             title: '生成音频并录入系统',
             description: '音频验收后，按录入单元提交到平台；不会重新生成音频。',
+        },
+        {
+            value: 'external_audio',
+            title: '导入已有音频',
+            description: '跳过音频生成，导入文件夹或 ZIP 后自动识别并匹配题目。',
         },
     ].forEach(optionData => {
         const option = document.createElement('label');

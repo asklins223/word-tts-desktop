@@ -156,7 +156,7 @@ function bindEvents() {
         }
     });
     $('history-nav-btn').addEventListener('click', () => showHistoryPage());
-    $('version-nav-btn')?.addEventListener('click', () => showVersionPage());
+    $('settings-nav-btn')?.addEventListener('click', () => showSettingsPage());
     $('import-history-link')?.addEventListener('click', () => showHistoryPage());
     $('back-to-history-btn').addEventListener('click', () => showHistoryPage());
     $('history-back-btn').addEventListener('click', returnToWorkflow);
@@ -293,8 +293,7 @@ function bindEvents() {
         void handleIncomingSourceFile(file);
     });
 
-    // 全局文件拖拽：无论用户当前在哪个步骤，都先拦截系统默认打开行为，
-    // 显示统一导入层，并把文件交给同一条“新任务”确认/导入链路。
+    // 全局文件拖拽：根据当前工作模式显示导入提示，并把文件交给文档或音频导入流程。
     window.addEventListener('dragenter', event => {
         if (!isFileDragEvent(event)) return;
         event.preventDefault();
@@ -314,6 +313,14 @@ function bindEvents() {
         if (!isFileDragEvent(event)) return;
         event.preventDefault();
         setGlobalFileDropActive(false);
+        const delivery = root.WORDTTS_RENDERER?.getModule?.('systemInput.delivery');
+        if (delivery?.isExternalAudioImportModeActive?.()) {
+            const audioImport = root.WORDTTS_RENDERER?.getModule?.('extensions.audioImport');
+            if (typeof audioImport?.handleAudioImportDrop === 'function') {
+                void audioImport.handleAudioImportDrop(event);
+                return;
+            }
+        }
         const file = event.dataTransfer?.files?.[0];
         void handleIncomingSourceFile(file);
     });
@@ -411,6 +418,7 @@ function bindEvents() {
         goToStep(3);
         startProcessing(false);
     });
+    $('import-existing-audio-btn')?.addEventListener('click', () => { void openAudioImportDialog(); });
 
     $('audio-search-input').addEventListener('input', scheduleAudioFilter);
     $('audio-type-filter').addEventListener('change', scheduleAudioFilter);

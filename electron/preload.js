@@ -29,6 +29,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // method remains as a compatibility fallback for older renderer callers.
     selectFile: () => ipcRenderer.invoke('select-source-file'),
     selectFileStream: () => ipcRenderer.invoke('select-source-file-stream'),
+    selectAudioFiles: () => ipcRenderer.invoke('select-audio-files-stream'),
+    selectAudioFolder: () => ipcRenderer.invoke('select-audio-folder-stream'),
+    openAudioDropFiles: (files) => {
+        const selectedFiles = Array.from(files || []);
+        const paths = selectedFiles.map((file) => {
+            try { return typeof webUtils?.getPathForFile === 'function' ? webUtils.getPathForFile(file) : null; }
+            catch (_) { return null; }
+        });
+        if (!paths.length || paths.some((pathname) => typeof pathname !== 'string' || pathname.length === 0)) {
+            return Promise.resolve({
+                success: false,
+                reason: 'file-path-unavailable',
+                error: '无法安全读取部分拖入文件，请使用“选择音频或 ZIP”或“选择文件夹”重新导入。',
+            });
+        }
+        return ipcRenderer.invoke('open-audio-drop-files-stream', { paths });
+    },
     releaseSourceFile: (sourceFileId) => ipcRenderer.invoke('release-source-file', { sourceFileId }),
     saveFile: (bytes, suggestedName) => ipcRenderer.invoke('save-artifact-file', bytes, suggestedName),
     saveArtifactStream: (artifactId, suggestedName) => ipcRenderer.invoke(

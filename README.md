@@ -2,11 +2,11 @@
 
 ![小猪wordTTS 应用图标](electron/renderer/assets/app-icon.png)
 
-小猪wordTTS 是一款本地桌面文档配音工作台：解析教学 `.docx` 与 `.xlsx`，按文档结构核对条目，为不同角色配置声音，批量生成可试听、可单独保存或打包下载的 MP3，并可选地把已验证的音频继续录入外部教学系统。全部任务状态、产物和恢复事实保存在当前电脑，应用离线重启后可以接着做。
+小猪wordTTS 是一款本地桌面文档配音工作台：解析教学 `.docx` 与 `.xlsx`，按文档结构核对条目，为不同角色配置声音，批量生成或导入可试听、可单独保存或打包下载的 MP3，并可选地把已验证的音频继续录入外部教学系统。全部任务状态、产物和恢复事实保存在当前电脑，应用离线重启后可以接着做。
 
 版本以 `version.json` 为唯一来源（当前 3.2.16），构建前由 `scripts/project_version.js --sync` 同步到 Electron 的 `package.json`、`package-lock.json` 与 `CHANGELOG.md`。
 
-> 仓库目录名 `edge-tts-webui-main` 与包名 `wordtts/` 是历史遗留。自 v3.x 起 Edge TTS、TTSMaker 及其回退代码已全部移除，音频统一由讯飞配音生成；`edge-tts` 不再出现在依赖清单中。
+> 仓库目录名 `edge-tts-webui-main` 与包名 `wordtts/` 是历史遗留。自 v3.x 起 Edge TTS、TTSMaker 及其回退代码已全部移除，新生成音频由讯飞配音提供，也支持直接导入外部音频；`edge-tts` 不再出现在依赖清单中。
 
 ## 主要能力
 
@@ -15,10 +15,11 @@
 - 默认音色：`w/W` 与 `m/M` 标记分别落到可配置的默认女声/男声（出厂为英语-Amanda、英语-George），无标识内容默认女声，单词与例句始终女声。另有两条容易踩水的例外：题干角色使用「题干音色」（晓燕 `common:10000023`，参数 40/50/50），解析器主动判定为男声的条目会覆盖「默认女声」规则。`Reporter:`、`Mr Yan:` 一类通用角色按称谓自动归入男/女声，可在配置中心改名。
 - 语速、语调、音量支持 0-100 任意整数（默认 50），输出固定 MP3，质量选项对应 MP3 码率；配置方案可保存为预设复用。
 - 生成方式默认「全部生成后切割」：整批提交后按安全停顿切回每段，减少提交次数；无法确认边界时保留合并音频并报告异常，不静默伪造分段。另一个选项是逐条生成。
+- 配置中心支持导入音频文件、文件夹或 ZIP。设置中心的扩展板块可按需下载 SenseVoice Small int8；本机先识别每段音频开头并按题目文本匹配，只有重复开头时才识别整段复核，所有待处理题目都绑定音频后才能进入交付。
 - 只有同时满足 `READY + verified=true`、Artifact 与字节 Blob 双 `READY`、且 SHA256/大小/扩展名/MIME 事实一致的 `tts-segment` 产物才会进入交付列表；源文档与解析产物不会伪装成音频，ZIP 打包要求全部父项 SUCCEEDED。
 - 断线恢复、暂停/恢复/取消/重试/对账由服务端 `available_actions` 投影授权；未决外部副作用不自动重试。讯飞 TTS 明确不提供供应商对账路径（`RECONCILIATION_DISABLED`），此时按可重试呈现而不是猜测结果。
 - 本机历史中心最多 20 个任务，可重新查看、试听、下载或归档；归档保留审计事实和 Artifact，不等于物理删除。
-- macOS 与 Windows 安装包均由 GitHub Actions 构建；桌面端内置版本中心，自动检查 GitHub Releases，支持可选/强制更新、下载与重启安装。
+- macOS 与 Windows 安装包均由 GitHub Actions 构建；桌面端内置设置中心的版本板块，自动检查 GitHub Releases，支持可选/强制更新、下载与重启安装。
 - Windows 使用自绘 HTML Setup.exe（`installer-prototype/`），安装、更新、卸载共用同一套界面，支持选择安装目录与数据保留策略，更新优先走 `.blockmap` 差分下载，条件不满足回退全量；macOS 保持打开即用或拖入 Applications。
 - 正式桌面 App 默认开启真实讯飞调用，双击安装包即用。Electron 的 `--smoke-test` 始终只走逻辑离线流程，不打开真实页面；后端独立诊断时可用 `--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 显式离线。
 
@@ -43,6 +44,8 @@
 | `installer-prototype/` | Windows 自绘安装器（独立 Electron 工程 + 惰性 7z payload） |
 
 `app_paths.py` 统一解析只读资源目录与可写数据目录：Electron 通过 `WORDTTS_DATA_DIR` 指定，源码直接运行时使用 `.runtime/`，打包态使用 `~/Library/Application Support/WordTTS` 或 `%APPDATA%\WordTTS`。
+
+本地语音识别模型通过「设置中心 → 扩展」从 ModelScope 下载，放在该数据目录的 `extensions/audio-asr/` 下；模型权重不提交到 Git，也不放进应用安装包。桌面应用更新只替换应用文件，不会覆盖或删除这份扩展数据。
 
 ### 鉴权与并发约束
 
@@ -138,7 +141,7 @@ CI 只有三个工作流，且仅在推送 `v*` 标签或手动派发时运行�
 
 ## 数据与升级兼容
 
-应用沿用原 `WordTTS` 用户数据目录、应用 ID、API Header 与环境变量，已生成历史不会丢失。`workflow.db` 在用户数据目录中，不在 `.app` 或安装目录里，覆盖安装不会删除它。固定数据目录不可访问时应用会停止启动并提示，不会退回到空的默认目录。讯飞版配置使用独立本地命名空间，旧版倍率/音色预设不会误套用。首次生成需要在讯飞配音浏览器窗口完成登录，登录态保存在本机持久化 profile 目录。
+应用沿用原 `WordTTS` 用户数据目录、应用 ID、API Header 与环境变量，已生成历史不会丢失。`workflow.db` 在用户数据目录中，不在 `.app` 或安装目录里，覆盖安装不会删除它；按需安装的本地语音识别模型也保存在用户数据目录。固定数据目录不可访问时应用会停止启动并提示，不会退回到空的默认目录。讯飞版配置使用独立本地命名空间，旧版倍率/音色预设不会误套用。首次生成需要在讯飞配音浏览器窗口完成登录，登录态保存在本机持久化 profile 目录。
 
 从旧版 JSON/会话目录切换到工作流 SQLite 时，旧文件保留但不自动导入；需要纳入新工作台时先用 `tools/import_legacy_readonly.py` 做 dry-run，再显式 `--apply`。`tools/backfill_legacy.py` 用于原子模型侧的补齐。
 

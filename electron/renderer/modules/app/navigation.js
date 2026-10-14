@@ -6,6 +6,43 @@
 // 步骤导航
 // ============================================================================
 
+let activeSettingsPanel = 'version';
+
+function settingsPanelPage(panel) {
+    return panel === 'extensions' ? 'page-extensions' : 'page-version';
+}
+
+function ensureSettingsPanelNavigation() {
+    const entries = [['version', '版本'], ['extensions', '扩展']];
+    for (const panel of ['version', 'extensions']) {
+        const page = $(settingsPanelPage(panel));
+        const heading = page?.querySelector('.workspace-heading');
+        if (!page || !heading || page.querySelector('.settings-panel-nav')) continue;
+        const nav = document.createElement('nav');
+        nav.className = 'settings-panel-nav';
+        nav.setAttribute('aria-label', '设置中心板块');
+        for (const [key, label] of entries) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'settings-panel-tab';
+            button.dataset.settingsPanel = key;
+            button.textContent = label;
+            button.addEventListener('click', () => showSettingsPanel(key));
+            nav.appendChild(button);
+        }
+        heading.insertAdjacentElement('afterend', nav);
+    }
+}
+
+function syncSettingsPanelNavigation() {
+    document.querySelectorAll('[data-settings-panel]').forEach(button => {
+        const active = button.dataset.settingsPanel === activeSettingsPanel;
+        button.classList.toggle('active', active);
+        if (active) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
+    });
+}
+
 function updateResultScrollTopButton() {
     const button = $('result-scroll-top');
     const scrollPage = $('page-4')?.querySelector('.page-scroll');
@@ -140,9 +177,7 @@ function goToStep(step) {
     const historyNav = $('history-nav-btn');
     historyNav?.classList.remove('active');
     historyNav?.removeAttribute('aria-current');
-    const versionNav = $('version-nav-btn');
-    versionNav?.classList.remove('active');
-    versionNav?.removeAttribute('aria-current');
+    setSettingsNavActive(false);
     const backToHistoryBtn = $('back-to-history-btn');
     if (backToHistoryBtn) backToHistoryBtn.hidden = true;
 
@@ -447,7 +482,7 @@ function updateStepper() {
     const isCurrentTaskContext = currentView === 'workflow' || (isSubpage && !isHistorySubpage);
     if (toolbarContextLabel) toolbarContextLabel.textContent = isTaskContext
         ? (isHistorySubpage ? '历史任务' : '当前任务')
-        : (currentView === 'version' ? '应用' : '任务中心');
+        : (['version', 'extensions'].includes(currentView) ? '设置' : '任务中心');
     if (taskBadge) taskBadge.hidden = !isCurrentTaskContext;
     if (toolbarCounts) toolbarCounts.hidden = !isCurrentTaskContext;
     if (toolbarDocument) toolbarDocument.hidden = !isCurrentTaskContext || !toolbarDocument.textContent.trim();
@@ -459,7 +494,7 @@ function updateStepper() {
                 : '';
         toolbarStep.textContent = isTaskContext
             ? `${String(activeIndex + 1).padStart(2, '0')} / ${subpageTitle || WORKSPACE_TITLES[activeWorkspace] || STEP_TITLES[currentStep] || ''}`
-            : (currentView === 'version' ? '版本中心' : '历史记录');
+            : (currentView === 'version' ? '设置中心 · 版本' : (currentView === 'extensions' ? '设置中心 · 扩展' : '历史记录'));
     }
     updateDeliveryStageRail();
     // A completed task opened from history owns its result-page workspace in
@@ -484,12 +519,12 @@ function setHistoryNavActive(active) {
     else historyNav.removeAttribute('aria-current');
 }
 
-function setVersionNavActive(active) {
-    const versionNav = $('version-nav-btn');
-    if (!versionNav) return;
-    versionNav.classList.toggle('active', active);
-    if (active) versionNav.setAttribute('aria-current', 'page');
-    else versionNav.removeAttribute('aria-current');
+function setSettingsNavActive(active) {
+    const settingsNav = $('settings-nav-btn');
+    if (!settingsNav) return;
+    settingsNav.classList.toggle('active', active);
+    if (active) settingsNav.setAttribute('aria-current', 'page');
+    else settingsNav.removeAttribute('aria-current');
 }
 
 function activateStandalonePage(pageId, view) {
@@ -499,7 +534,12 @@ function activateStandalonePage(pageId, view) {
     const page = $(pageId);
     page?.classList.add('active');
     setHistoryNavActive(view === 'history');
-    setVersionNavActive(view === 'version');
+    setSettingsNavActive(view === 'version' || view === 'extensions');
+    if (view === 'version' || view === 'extensions') {
+        activeSettingsPanel = view;
+        ensureSettingsPanelNavigation();
+        syncSettingsPanelNavigation();
+    }
     updateStepper();
 
     const scrollPage = page?.querySelector('.page-scroll, .page-center');
@@ -518,9 +558,7 @@ function activateTaskSubpage(pageId, view) {
     const historyNav = $('history-nav-btn');
     historyNav?.classList.remove('active');
     historyNav?.removeAttribute('aria-current');
-    const versionNav = $('version-nav-btn');
-    versionNav?.classList.remove('active');
-    versionNav?.removeAttribute('aria-current');
+    setSettingsNavActive(false);
     $$('.step-page').forEach(page => page.classList.remove('active'));
     const page = $(pageId);
     page?.classList.add('active');
@@ -594,6 +632,10 @@ function returnFromTaskSubpage() {
 
 function showHistoryPage({ refresh = true } = {}) {
     if (isRestarting) return;
+    if (root.WORDTTS_RENDERER?.getModule?.('extensions.audioImport')?.isBusy?.()) {
+        showToast('音频正在上传、识别或提交，请等待当前操作完成后再切换任务', 'warning');
+        return;
+    }
     if (currentView === 'workflow' || isSystemInputSubpageView()) {
         historyReturnStep = generationResult === 'done' && latestCurrentResultEvent ? 4 : currentStep;
     }
@@ -608,12 +650,32 @@ function showHistoryPage({ refresh = true } = {}) {
 }
 
 function showVersionPage({ fromUpdate = false } = {}) {
+    showSettingsPanel('version', { fromUpdate });
+}
+
+function showExtensionsPage() {
+    showSettingsPanel('extensions');
+}
+
+function showSettingsPage() {
+    showSettingsPanel(activeSettingsPanel);
+}
+
+function showSettingsPanel(panel, { fromUpdate = false } = {}) {
     if (isRestarting) return;
     destroyWaveSurfers();
-    activateStandalonePage('page-version', 'version');
-    renderVersionCenter();
-    if (!fromUpdate && updateState.status === 'idle' && isElectron) {
-        void runUpdateAction('check', $('version-check-btn'));
+    const selected = panel === 'extensions' ? 'extensions' : 'version';
+    activeSettingsPanel = selected;
+    ensureSettingsPanelNavigation();
+    activateStandalonePage(settingsPanelPage(selected), selected);
+    syncSettingsPanelNavigation();
+    if (selected === 'version') {
+        renderVersionCenter();
+        if (!fromUpdate && updateState.status === 'idle' && isElectron) {
+            void runUpdateAction('check', $('version-check-btn'));
+        }
+    } else if (typeof refreshAudioAsrExtension === 'function') {
+        void refreshAudioAsrExtension();
     }
 }
 
@@ -642,7 +704,7 @@ registerRendererModule("app.navigation", {
     deliveryStageNavigationAllowed,
     navigateDeliveryStage,
     setHistoryNavActive,
-    setVersionNavActive,
+    setSettingsNavActive,
     activateStandalonePage,
     activateTaskSubpage,
     taskSubpageWorkspace,
@@ -652,6 +714,9 @@ registerRendererModule("app.navigation", {
     returnFromTaskSubpage,
     showHistoryPage,
     showVersionPage,
+    showExtensionsPage,
+    showSettingsPage,
+    showSettingsPanel,
     returnToWorkflow,
 });
 })(typeof globalThis !== 'undefined' ? globalThis : window);

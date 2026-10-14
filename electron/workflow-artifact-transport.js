@@ -132,7 +132,7 @@ function createWorkflowArtifactEventTransport(ipcRenderer) {
         throw new TypeError('ipcRenderer is required');
     }
 
-    return async ({ artifactId }) => {
+    return async ({ artifactId, audioImportFile = null } = {}) => {
         const requestId = randomUUID();
         let streamId = null;
         let closed = false;
@@ -219,7 +219,10 @@ function createWorkflowArtifactEventTransport(ipcRenderer) {
         ipcRenderer.on?.('workflow-artifact-end', onEnd);
         ipcRenderer.on?.('workflow-artifact-error', onError);
         try {
-            streamId = await ipcRenderer.invoke('workflow-artifact-open', { artifactId, requestId });
+            const openInput = audioImportFile
+                ? { audioImportFile, requestId }
+                : { artifactId, requestId };
+            streamId = await ipcRenderer.invoke('workflow-artifact-open', openInput);
             if (!streamId) throw new Error('workflow artifact stream was not opened');
         } catch (error) {
             finishError(error);

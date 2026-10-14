@@ -26,6 +26,7 @@ function createNativeFileDialogs({
     maxStreamBytes = 512 * 1024 * 1024,
 }) {
     const supportedDocumentExtensions = new Set(['.docx', '.xlsx']);
+    const supportedAudioExtensions = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.zip']);
 
     function isSupportedDocumentPath(filePath) {
         return supportedDocumentExtensions.has(path.extname(String(filePath || '')).toLowerCase());
@@ -366,6 +367,142 @@ function createNativeFileDialogs({
         }
     }
 
+    async function openAudioFileSources(filePaths) {
+        const opened = [];
+        try {
+            if (!Array.isArray(filePaths) || filePaths.length === 0) return { success: false, reason: 'user-cancelled' };
+            if (filePaths.length > 2000) {
+                return { success: false, reason: 'too-many-files' };
+            }
+            let totalBytes = 0;
+            for (const filePath of filePaths) {
+                const file = await inspectAudioFileSource(filePath);
+                if (!file.success) return file;
+                totalBytes += file.sizeBytes;
+                if (totalBytes > 4 * 1024 * 1024 * 1024) {
+                    return { success: false, reason: 'batch-too-large', error: '本次音频总大小不能超过 4 GB' };
+                }
+                opened.push({ filePath: file.filePath, fileName: file.fileName, sizeBytes: file.sizeBytes });
+            }
+            return { success: true, files: opened };
+        } catch (error) {
+            logger.error('[main] 打开音频文件流失败:', error);
+            return {
+                success: false,
+                reason: error?.code === 'SYMLINK_REJECTED' ? 'file-check-error' : 'file-read-error',
+                error: error.message,
+            };
+        }
+    }
+
+    async function inspectAudioFileSource(filePath) {
+        if (!supportedAudioExtensions.has(path.extname(String(filePath || '')).toLowerCase())) {
+            return { success: false, reason: 'unsupported-file-type' };
+        }
+        let handle = null;
+        try {
+            const flags = (fs.constants?.O_RDONLY || 0) | (fs.constants?.O_NOFOLLOW || 0);
+            handle = await openReadOnlyRegularFile(filePath, flags);
+            const stat = await handle.stat();
+            if (!stat.isFile()) return { success: false, reason: 'file-check-error', error: '只能读取普通音频文件' };
+            if (stat.size <= 0 || stat.size > maxSourceBytes) {
+                return { success: false, reason: 'file-too-large', error: '音频文件为空或超过本机单文件限制' };
+            }
+            return { success: true, filePath: path.resolve(filePath), fileName: path.basename(filePath), sizeBytes: stat.size };
+        } finally {
+            try { await handle?.close?.(); } catch (_) { /* best effort cleanup */ }
+        }
+    }
+
+    async function openAudioFileSource(filePath) {
+        const inspected = await inspectAudioFileSource(filePath);
+        if (!inspected.success) return inspected;
+        try {
+            const flags = (fs.constants?.O_RDONLY || 0) | (fs.constants?.O_NOFOLLOW || 0);
+            const handle = await openReadOnlyRegularFile(inspected.filePath, flags);
+            const stat = await handle.stat();
+            if (!stat.isFile() || stat.size !== inspected.sizeBytes) {
+                await handle.close();
+                return { success: false, reason: 'file-check-error', error: '音频文件在选择后发生变化，请重新选择' };
+            }
+            return { ...inspected, handle };
+        } catch (error) {
+            return { success: false, reason: error?.code === 'SYMLINK_REJECTED' ? 'file-check-error' : 'file-read-error', error: error.message };
+        }
+    }
+
+    async function selectAudioFileSources(event) {
+        const ownerWindow = getDialogOwnerWindow(event);
+        if (!ownerWindow) return { success: false, reason: 'untrusted-sender' };
+        try {
+            focusDialogOwner(ownerWindow);
+            const result = await dialog.showOpenDialog(ownerWindow, {
+                title: '选择要导入的音频文件或 ZIP',
+                filters: [{
+                    name: '音频文件或 ZIP',
+                    extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'zip'],
+                }],
+                properties: ['openFile', 'multiSelections'],
+            });
+            if (!result || typeof result !== 'object' || !Array.isArray(result.filePaths)) {
+                return { success: false, reason: 'dialog-error', error: '系统文件框未返回有效结果' };
+            }
+            if (result.canceled || result.filePaths.length === 0) return { success: false, reason: 'user-cancelled' };
+            return openAudioFileSources(result.filePaths);
+        } catch (error) {
+            logger.error('[main] 打开音频文件框失败:', error);
+            return { success: false, reason: 'dialog-error', error: error.message };
+        }
+    }
+
+    async function openAudioDropFileSources(event, filePaths) {
+        if (!getDialogOwnerWindow(event)) return { success: false, reason: 'untrusted-sender' };
+        return openAudioFileSources(filePaths);
+    }
+
+    async function selectAudioFolderSources(event) {
+        const ownerWindow = getDialogOwnerWindow(event);
+        if (!ownerWindow) return { success: false, reason: 'untrusted-sender' };
+        try {
+            focusDialogOwner(ownerWindow);
+            const result = await dialog.showOpenDialog(ownerWindow, {
+                title: '选择包含音频的文件夹',
+                properties: ['openDirectory'],
+            });
+            if (!result || typeof result !== 'object' || !Array.isArray(result.filePaths)) {
+                return { success: false, reason: 'dialog-error', error: '系统文件框未返回有效结果' };
+            }
+            if (result.canceled || result.filePaths.length === 0) return { success: false, reason: 'user-cancelled' };
+            const rootPath = path.resolve(result.filePaths[0]);
+            const filePaths = [];
+            const pending = [rootPath];
+            let visitedEntries = 0;
+            while (pending.length) {
+                const directory = pending.pop();
+                const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+                for (const entry of entries) {
+                    visitedEntries += 1;
+                    if (visitedEntries > 10000) {
+                        return { success: false, reason: 'too-many-files', error: '文件夹条目超过 10000 个，请先整理后再导入' };
+                    }
+                    const entryPath = path.join(directory, entry.name);
+                    if (entry.isDirectory()) pending.push(entryPath);
+                    else if (entry.isFile() && supportedAudioExtensions.has(path.extname(entry.name).toLowerCase())
+                        && path.extname(entry.name).toLowerCase() !== '.zip') {
+                        filePaths.push(entryPath);
+                        if (filePaths.length > 2000) return { success: false, reason: 'too-many-files' };
+                    }
+                }
+            }
+            filePaths.sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }));
+            if (!filePaths.length) return { success: false, reason: 'no-audio-files', error: '文件夹中没有支持的音频文件' };
+            return openAudioFileSources(filePaths);
+        } catch (error) {
+            logger.error('[main] 读取音频文件夹失败:', error);
+            return { success: false, reason: 'file-read-error', error: error.message };
+        }
+    }
+
     async function saveFileContent(event, content, suggestedName) {
         const currentWindow = getMainWindow();
         if (!currentWindow || currentWindow.isDestroyed()) {
@@ -549,6 +686,10 @@ function createNativeFileDialogs({
         saveFileByPath,
         selectFileContent,
         selectFileSource,
+        selectAudioFileSources,
+        openAudioFileSource,
+        openAudioDropFileSources,
+        selectAudioFolderSources,
         saveFileContent,
         saveFileStream,
     });

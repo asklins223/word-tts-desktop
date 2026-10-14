@@ -54,7 +54,7 @@ Windows Setup 是一个短生命周期的 Electron 包，启动时只携带自�
 
 6. Setup 使用与首次安装相同的自绘界面，必要时通过 UAC 启动带操作计划的管理员实例，关闭旧应用后原子替换应用目录。
 
-更新下载失败、校验失败或 Setup 启动失败都会回到版本中心的错误状态，不会静默覆盖旧版本。
+更新下载失败、校验失败或 Setup 启动失败都会回到设置中心的版本板块显示错误，不会静默覆盖旧版本。
 
 ## 更新元数据
 
@@ -95,7 +95,7 @@ macOS 仍按 `latest-mac.yml` 的格式发布 ZIP；Windows JSON 和 macOS YAML 
 - `mode: "optional"`：显示可选更新，不打断正在进行的任务。
 - `mode: "force"`：收到有效更新包后显示强更遮罩，必须下载并重启安装。
 - `minimumSupportedVersion`：只淘汰低于指定版本的客户端。
-- `message`：显示在版本中心和强更提示中，最多 500 个字符。
+- `message`：显示在设置中心的版本板块和强更提示中，最多 500 个字符。
 
 版本号不在策略文件里重复维护，统一从根目录 `version.json` 读取；构建时会同步到
 `electron/package.json`、`electron/package-lock.json` 和安装器构建元数据。Release 的

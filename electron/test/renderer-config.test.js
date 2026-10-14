@@ -1132,9 +1132,9 @@ test('版本中心有可用更新时使用独立的高对比度强调色', () =>
     const styles = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
     assert.match(styles, /--release-accent:\s*#b74725/);
     assert.match(styles, /--release-accent-strong:\s*#a63f20/);
-    assert.match(styles, /\.version-nav-btn\.has-update/);
+    assert.match(styles, /\.settings-nav-btn\.has-update/);
     assert.match(styles, /\.version-status-card\.is-info\.has-update/);
-    assert.match(styles, /\.version-nav-btn\.has-update \.version-nav-badge[^}]*box-shadow/);
+    assert.match(styles, /\.settings-nav-btn\.has-update \.version-nav-badge[^}]*box-shadow/);
 });
 
 test('工作流快照同步只推进状态版本，不会被旧 SSE 快照回退', () => {

@@ -34,7 +34,7 @@ for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, 'reconfigure'):
         _stream.reconfigure(encoding='utf-8', errors='backslashreplace')
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 # ============================================================================
 # 数据文件（资源）
@@ -130,7 +130,20 @@ hiddenimports = [
     'python_multipart',
     'multipart',
     'multipart.multipart',
+    'numpy',
+    'sherpa_onnx',
+    'sherpa_onnx_core',
+    'sherpa_onnx_bin',
 ]
+
+# Local audio recognition runtime only. SenseVoice model weights are never
+# collected here: the extension center downloads them under userData at run
+# time so normal application updates cannot replace or remove them.
+for _recognition_package in ('sherpa_onnx', 'sherpa_onnx_core', 'sherpa_onnx_bin'):
+    _recognition_datas, _recognition_binaries, _recognition_hidden = collect_all(_recognition_package)
+    datas += _recognition_datas
+    binaries += _recognition_binaries
+    hiddenimports += _recognition_hidden
 
 # ============================================================================
 # 构建
@@ -163,7 +176,7 @@ a = Analysis(
         'mysql', 'mysql_mcp_server', 'pymysql', 'mysql.connector', 'aiomysql',
         'sqlalchemy', 'alembic', 'redis', 'celery',
         'pytest', 'IPython', 'notebook', 'jupyter',
-        'numpy', 'cv2', 'sklearn', 'scipy', 'torch', 'tensorflow',
+        'cv2', 'sklearn', 'scipy', 'torch', 'tensorflow',
         'torchaudio', 'torchvision', 'transformers', 'datasets', 'sympy',
         'pandas', 'pyarrow', 'matplotlib', 'h5py',
         'moviepy', 'librosa', 'soundfile', 'selenium', 'langchain',

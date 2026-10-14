@@ -2,6 +2,52 @@
 (function attachRendererFeature_systemInput_delivery(root) {
     'use strict';
 
+let externalAudioImportModeActive = false;
+let externalAudioImportWorkflowId = '';
+
+function workflowIdForAudioMode(workspace = currentWorkspace) {
+    return String(workspace?.snapshot?.workflow_id || currentSession?.session_id || '');
+}
+
+function audioImportFeature() {
+    return root.WORDTTS_RENDERER?.getModule?.('extensions.audioImport') || null;
+}
+
+function exitExternalAudioImportMode({ cleanup = true } = {}) {
+    if (externalAudioImportModeActive && audioImportFeature()?.isBusy?.()) {
+        showToast('音频正在上传或提交，请等待当前操作完成', 'warning');
+        return false;
+    }
+    externalAudioImportModeActive = false;
+    externalAudioImportWorkflowId = '';
+    if (cleanup) void audioImportFeature()?.hideAudioImportWorkspace?.();
+    renderSystemInputSurface(systemInputInteractionWorkspace());
+    return true;
+}
+
+function activateExternalAudioImportMode(workspace = systemInputInteractionWorkspace()) {
+    const systemInput = workspace?.system_input;
+    const workflowId = workflowIdForAudioMode(workspace);
+    if (!systemInput
+        || systemInput.available === false
+        || systemInputDeliveryModeIsLocked(systemInput)
+        || !systemInputConfigurationEditable(systemInput)) return false;
+    if (audioImportFeature()?.canOpenWorkflow?.(workflowId) === false) {
+        showToast('另一个任务的音频正在上传、识别或提交，请先等待完成', 'warning');
+        return false;
+    }
+    externalAudioImportModeActive = true;
+    externalAudioImportWorkflowId = workflowId;
+    renderSystemInputSurface(workspace);
+    void audioImportFeature()?.openAudioImportWorkspace?.(workspace);
+    return true;
+}
+
+function isExternalAudioImportModeActive() {
+    return externalAudioImportModeActive
+        && (!externalAudioImportWorkflowId || externalAudioImportWorkflowId === workflowIdForAudioMode());
+}
+
 function systemInputDocumentEntryIsSupported(workspace = currentWorkspace) {
     const support = workspace?.system_input?.document_entry_support;
     if (!support || typeof support !== 'object' || support.supported !== true) return false;
@@ -294,7 +340,15 @@ function renderSystemInputDeliveryChoice(workspace = currentWorkspace) {
         && systemInput.available !== false
         && systemInputDocumentEntryIsSupported(workspace),
     );
+    const workflowId = workflowIdForAudioMode(workspace);
+    if (externalAudioImportModeActive && externalAudioImportWorkflowId !== workflowId) {
+        externalAudioImportModeActive = false;
+        externalAudioImportWorkflowId = '';
+        if (!audioImportFeature()?.isBusy?.()) void audioImportFeature()?.hideAudioImportWorkspace?.();
+    }
     panel.hidden = !enabled;
+    const legacyImportButton = $('import-existing-audio-btn');
+    if (legacyImportButton) legacyImportButton.hidden = enabled;
     if (!enabled) {
         systemInputDeliveryModeDraft = '';
         return;
@@ -308,12 +362,13 @@ function renderSystemInputDeliveryChoice(workspace = currentWorkspace) {
         systemInputDeliveryModeDraft = '';
     }
     const mode = systemInputVisibleDeliveryMode(workspace);
-    const modeDisabled = deliveryModeLocked || systemInputDeliveryModeBusy;
+    const modeDisabled = deliveryModeLocked || systemInputDeliveryModeBusy
+        || (externalAudioImportModeActive && Boolean(audioImportFeature()?.isBusy?.()));
     const terminalSuccess = String(systemInput.input_status || '').trim().toLowerCase() === 'succeeded'
         || String(systemInput.input_run?.status || '').trim().toUpperCase() === 'SUCCEEDED';
     const deliveryComplete = systemInputRunIsComplete(systemInput);
     const status = $('system-input-delivery-choice-status');
-    if (status) status.textContent = `${deliveryModeLocked ? '已锁定' : '当前'} · ${mode === 'audio_and_input' ? '生成并录入系统' : '只生成音频'}`;
+    if (status) status.textContent = `${deliveryModeLocked ? '已锁定' : '当前'} · ${externalAudioImportModeActive ? '导入已有音频' : (mode === 'audio_and_input' ? '生成并录入系统' : '只生成音频')}`;
     const choiceTitle = panel.querySelector('.system-input-intent-heading h2');
     const choiceSummary = panel.querySelector('.system-input-intent-heading p');
     if (choiceTitle) choiceTitle.textContent = deliveryModeLocked ? '交付方式已锁定' : '选择生成后的去向';
@@ -323,12 +378,17 @@ function renderSystemInputDeliveryChoice(workspace = currentWorkspace) {
             : terminalSuccess
                 ? '服务端已返回完成汇总，交付方式已锁定；如有未明确单元，请在最终结果页核验。'
                 : '当前录入运行存在未核验状态，交付方式暂时锁定。')
-        : '录入是可选步骤：可以只生成音频，也可以在音频验收后继续录入系统。';
+        : externalAudioImportModeActive
+            ? '音频生成已跳过。请在下方导入覆盖全部待处理题目的音频文件。'
+            : '录入是可选步骤：可以只生成音频，也可以在音频验收后继续录入系统。';
     const deliveryOptions = panel.querySelector('#system-input-delivery-options');
     deliveryOptions?.setAttribute('aria-label', deliveryModeLocked ? '已完成的交付方式（不可修改）' : '本次任务交付方式');
     panel.classList.toggle('is-locked', deliveryModeLocked);
     document.querySelectorAll('input.system-input-delivery-choice').forEach(input => {
-        const selected = input.value === mode;
+        const inMainChoice = Boolean(input.closest('#system-input-delivery-options'));
+        const selected = externalAudioImportModeActive && inMainChoice
+            ? input.value === 'external_audio'
+            : input.value === mode;
         input.checked = selected;
         input.disabled = modeDisabled;
         const option = input.closest('.system-input-intent-option, .system-input-route-option');
@@ -355,7 +415,9 @@ function renderSystemInputDeliveryChoice(workspace = currentWorkspace) {
             : terminalSuccess
                 ? '服务端已返回完成汇总，交付方式已锁定；请在最终结果页核验未明确的单元。'
                 : '当前录入运行暂时锁定交付方式，请按页面提示处理未核验状态。')
-        : mode === 'audio_and_input'
+        : externalAudioImportModeActive
+            ? '识别并核对题目绑定后即可导入；缺少音频或题目绑定时不能提交。'
+            : mode === 'audio_and_input'
             ? '下一步：设置录入目标。保存后才会进入录入准备，音频不会重新生成。'
             : '音频完成后仍可在音频交付中心开启系统录入；当前不需要填写任何平台信息。';
 }
@@ -416,11 +478,59 @@ async function persistSystemInputDeliveryMode(workspace, mode) {
     }
 }
 
+async function selectExternalAudioImportMode(workspace) {
+    const workflowId = workflowIdForAudioMode(workspace);
+    systemInputDeliveryModeBusy = true;
+    renderSystemInputDeliveryChoice(workspace);
+    try {
+        // Always query the backend when the option is selected. The extension
+        // page may have installed the model since the last time this choice
+        // was rendered.
+        const extension = await audioImportFeature()?.refreshAudioAsrExtension?.();
+        if (workflowIdForAudioMode(systemInputInteractionWorkspace()) !== workflowId) return false;
+        if (!extension?.installed) {
+            const downloading = extension?.state === 'downloading';
+            const goToExtensions = await showConfirmDialog({
+                kicker: '需要本地语音识别',
+                title: downloading ? '音频识别模型正在下载' : '请先安装音频识别模型',
+                message: downloading
+                    ? '模型安装完成前，暂时不能导入并匹配音频。可以前往设置中心的“扩展”板块查看下载进度。'
+                    : '“导入已有音频”需要本地语音识别模型。请前往设置中心的“扩展”板块下载并安装。',
+                detail: '安装完成后返回此处重新选择“导入已有音频”，应用会重新检查模型状态并继续。',
+                tone: 'warning',
+                confirmLabel: '前往设置中心',
+                cancelLabel: '稍后再说',
+            });
+            if (goToExtensions) showExtensionsPage();
+            return false;
+        }
+
+        systemInputDeliveryModeBusy = false;
+        return activateExternalAudioImportMode(workspace);
+    } catch (error) {
+        showToast(`无法确认音频识别模型状态：${error.message || '请稍后重试'}`, 'error');
+        return false;
+    } finally {
+        systemInputDeliveryModeBusy = false;
+        renderSystemInputDeliveryChoice(systemInputInteractionWorkspace());
+    }
+}
+
 function handleSystemInputDeliveryModeChange(event) {
     const input = event.target.closest('input.system-input-delivery-choice');
     if (!input || input.disabled || systemInputDeliveryModeBusy) return;
     const workspace = systemInputInteractionWorkspace();
     const systemInput = workspace?.system_input;
+    if (input.value === 'external_audio') {
+        void selectExternalAudioImportMode(workspace);
+        return;
+    }
+    if (externalAudioImportModeActive) {
+        if (!exitExternalAudioImportMode()) {
+            renderSystemInputDeliveryChoice(workspace);
+            return;
+        }
+    }
     const requestedMode = input.value === 'audio_and_input' ? 'audio_and_input' : 'audio_only';
     const savedMode = systemInputSavedDeliveryMode(workspace);
     if (!systemInput
@@ -1058,6 +1168,9 @@ registerRendererModule("systemInput.delivery", {
     systemInputDiagnosticText,
     systemInputDeliveryModeIsLocked,
     renderSystemInputDeliveryChoice,
+    exitExternalAudioImportMode,
+    activateExternalAudioImportMode,
+    isExternalAudioImportModeActive,
     persistSystemInputDeliveryMode,
     handleSystemInputDeliveryModeChange,
     renderSystemInputDrawerContext,

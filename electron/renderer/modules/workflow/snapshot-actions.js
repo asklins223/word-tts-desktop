@@ -1045,7 +1045,7 @@ function setRestartingUI(restarting) {
         'history-start-btn',
         'history-back-btn',
         'back-to-history-btn',
-        'version-nav-btn',
+        'settings-nav-btn',
         'version-check-btn',
         'version-download-btn',
         'version-install-btn',

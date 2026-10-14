@@ -3168,6 +3168,168 @@ class WorkflowRepository:
                 raise ConflictError(f"imported artifact cannot be bound: {exc}", code="ARTIFACT_INVALID") from exc
         return artifact_id
 
+    def complete_external_audio_import(
+        self,
+        workflow_id: str,
+        *,
+        bindings: list[Mapping[str, Any]],
+        expected_items: Sequence[Mapping[str, Any]],
+        request_id: str | None = None,
+    ) -> WorkflowSnapshot:
+        """Atomically publish verified user-supplied audio as TTS segments."""
+
+        now = utc_now()
+        step_id = new_id("step")
+        artifact_ids = [str(entry.get("artifact_id") or "") for entry in bindings]
+        if not bindings or any(not artifact_id for artifact_id in artifact_ids):
+            raise RepositoryError("audio import has no bound artifacts", code="AUDIO_IMPORT_FILES_MISSING")
+        if len(set(artifact_ids)) != len(artifact_ids):
+            raise RepositoryError("audio import artifact ids must be unique", code="VALIDATION_ERROR")
+
+        with self.database.transaction() as con:
+            workflow = con.execute("SELECT * FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone()
+            if workflow is None:
+                raise NotFoundError(f"workflow does not exist: {workflow_id}")
+            snapshot = _snapshot_from_connection(con, workflow_id)
+            if (
+                str(workflow["status"]) != "ACTIVE"
+                or str(workflow["execution_state"]) != "PREPARING"
+                or str(workflow["control_state"]) != "RUNNING"
+                or str(workflow["result_status"]) != "IN_PROGRESS"
+            ):
+                raise ConflictError("external audio can only be imported before generation", code="STATE_CONFLICT")
+            parsed = con.execute(
+                "SELECT status FROM workflow_steps WHERE workflow_id=? AND step_key='parse' ORDER BY step_id LIMIT 1",
+                (workflow_id,),
+            ).fetchone()
+            if parsed is None or str(parsed["status"]) != "SUCCEEDED":
+                raise ConflictError("workflow must be parsed before audio import", code="WORKFLOW_NOT_PARSED")
+            generation_started = con.execute(
+                """SELECT 1 FROM workflow_events WHERE workflow_id=? AND event_type='WORKFLOW_GENERATE'
+                   UNION ALL SELECT 1 FROM workflow_steps WHERE workflow_id=? AND step_type='TTS'
+                   UNION ALL SELECT 1 FROM step_attempts WHERE workflow_id=? AND attempt_kind='EXECUTE'
+                   LIMIT 1""",
+                (workflow_id, workflow_id, workflow_id),
+            ).fetchone()
+            if generation_started:
+                raise ConflictError("generation has already started for this workflow", code="STATE_CONFLICT")
+            existing_tts_step = con.execute(
+                "SELECT 1 FROM workflow_steps WHERE workflow_id=? AND step_key='tts' LIMIT 1",
+                (workflow_id,),
+            ).fetchone()
+            if existing_tts_step:
+                raise ConflictError("workflow already has a TTS step", code="STATE_CONFLICT")
+
+            item_rows = [dict(row) for row in con.execute(
+                "SELECT item_id, sequence, status, normalized_content FROM work_items WHERE workflow_id=? ORDER BY sequence, item_id",
+                (workflow_id,),
+            ).fetchall()]
+            required_ids = {str(row["item_id"]) for row in item_rows if str(row["status"]) != "SKIPPED"}
+            expected_by_id = {str(item.get("item_id") or ""): item for item in expected_items}
+            if set(expected_by_id) != required_ids or any(
+                int(expected_by_id[str(row["item_id"])].get("sequence") or 0) != int(row["sequence"])
+                or str(expected_by_id[str(row["item_id"])].get("normalized_content") or "") != str(row["normalized_content"] or "")
+                for row in item_rows if str(row["item_id"]) in required_ids
+            ):
+                raise ConflictError("题目内容在识别后发生变化，请重新匹配音频", code="AUDIO_IMPORT_STALE")
+            bound_ids = [str(entry.get("item_id") or "") for entry in bindings]
+            if len(bound_ids) != len(required_ids) or set(bound_ids) != required_ids or len(set(bound_ids)) != len(bound_ids):
+                raise ConflictError(
+                    "every non-skipped question must have exactly one imported audio file",
+                    code="AUDIO_IMPORT_FILES_MISSING",
+                    details={"required_item_count": len(required_ids), "bound_item_count": len(set(bound_ids))},
+                )
+            if any(str(row["status"]) != "PENDING" for row in item_rows if str(row["item_id"]) in required_ids):
+                raise ConflictError("workflow items are no longer eligible for audio import", code="STATE_CONFLICT")
+
+            con.execute(
+                """INSERT INTO workflow_steps(
+                    step_id, workflow_id, scope, item_id, step_key, step_type,
+                    step_definition_version, dependency_keys_json, status,
+                    current_attempt_id, attempt_count, state_version,
+                    aggregate_operation_key, operation_key_type, input_hash,
+                    output_reference_json, retry_after, error_code,
+                    error_details_json, started_at, finished_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (step_id, workflow_id, "workflow", None, "tts", "TTS", "1", '["parse"]',
+                 "SUCCEEDED", None, 0, 1, None, None,
+                 content_hash({"audio_import": artifact_ids}),
+                 canonical_json({"mode": "external-audio-import", "artifact_ids": artifact_ids}),
+                 None, None, None, now, now),
+            )
+
+            for entry in bindings:
+                item_id = str(entry["item_id"])
+                artifact_id = str(entry["artifact_id"])
+                blob = entry["blob"]
+                if str(blob.format).lower().lstrip(".") != "mp3" or int(blob.size_bytes) <= 0:
+                    raise RepositoryError("imported audio is not a valid MP3 Blob", code="ARTIFACT_INVALID")
+                blob_row = con.execute("SELECT * FROM artifact_blobs WHERE sha256=?", (blob.sha256,)).fetchone()
+                if blob_row is None:
+                    blob_id = new_id("blob")
+                    con.execute(
+                        """INSERT INTO artifact_blobs(
+                           blob_id, sha256, size_bytes, format, storage_key, lifecycle_state,
+                           verified_at, created_at, deleted_at) VALUES (?,?,?,?,?,?,?,?,NULL)""",
+                        (blob_id, blob.sha256, blob.size_bytes, "mp3", blob.storage_key, "READY", now, now),
+                    )
+                else:
+                    if (
+                        str(blob_row["storage_key"]) != str(blob.storage_key)
+                        or int(blob_row["size_bytes"]) != int(blob.size_bytes)
+                        or str(blob_row["format"]).lower() != "mp3"
+                        or str(blob_row["lifecycle_state"]) != "READY"
+                    ):
+                        raise RepositoryError("content-addressed audio Blob fingerprint conflicts", code="ARTIFACT_INVALID")
+                    blob_id = str(blob_row["blob_id"])
+                try:
+                    con.execute(
+                        """INSERT INTO artifacts(
+                           artifact_id, workflow_id, item_id, step_id, attempt_id, work_unit_id,
+                           work_unit_segment_id, source_import_id, source_import_generation,
+                           source_import_generation_id, blob_id, staging_ref, artifact_type,
+                           sha256, size_bytes, format, producer, producer_version, verified,
+                           verified_at, lifecycle_state, schema_version, created_at, updated_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (artifact_id, workflow_id, item_id, step_id, None, None, None, None, None, None,
+                         blob_id, None, "tts-segment", blob.sha256, blob.size_bytes, "mp3",
+                         "audio-import", "1", 1, now, "READY", "1", now, now),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ConflictError("imported audio cannot be bound to the selected question", code="ARTIFACT_INVALID") from exc
+                con.execute(
+                    """UPDATE work_items SET status='SUCCEEDED', state_version=state_version+1, updated_at=?
+                       WHERE workflow_id=? AND item_id=? AND status='PENDING'""",
+                    (now, workflow_id, item_id),
+                )
+
+            con.execute(
+                """UPDATE workflow_groups SET lifecycle_state='ACTIVE', accepted_at=COALESCE(accepted_at, ?),
+                   state_version=state_version+1, updated_at=? WHERE workflow_group_id=?""",
+                (now, now, workflow["workflow_group_id"]),
+            )
+            con.execute(
+                """UPDATE workflows SET result_status='SUCCEEDED', execution_state='TERMINAL',
+                   control_state='TERMINATED', cleanup_state='SUCCEEDED', status='ACTIVE',
+                   current_step_id=?, last_error_code=NULL, last_error_message=NULL,
+                   accepted_at=COALESCE(accepted_at, ?), finished_at=?, state_version=state_version+1, updated_at=?
+                   WHERE workflow_id=?""",
+                (step_id, now, now, now, workflow_id),
+            )
+            self.events.append_in_transaction(
+                con,
+                workflow_id,
+                "AUDIO_IMPORT_COMPLETED",
+                {"step_id": step_id, "artifact_ids": artifact_ids, "item_count": len(required_ids)},
+                request_id=request_id,
+                actor_type="SYSTEM",
+                actor_id="audio-import",
+                step_id=step_id,
+            )
+            updated = _snapshot_from_connection(con, workflow_id)
+            self.events.write_snapshot_in_transaction(con, workflow_id, updated.as_dict())
+            return updated
+
     def attach_export_artifact(
         self,
         workflow_id: str,
@@ -6416,6 +6578,11 @@ class WorkflowRepository:
     def _idempotency_forget(self, idempotency_id: str) -> None:
         with self._idempotency_activity_lock:
             self._active_idempotency_ids.discard(str(idempotency_id))
+
+    def release_idempotency_owner(self, idempotency_id: str) -> None:
+        """Mark a failed route owner inactive while retaining recoverable facts."""
+
+        self._idempotency_forget(idempotency_id)
 
     def abandon_idempotency(self, *, client_key: str, resource_id: str | None = None) -> int:
         """Release a reservation whose route failed before a response was saved.

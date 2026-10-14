@@ -57,6 +57,7 @@ const workflowSourceUploads = new Map();
 const cancelledWorkflowSourceUploads = new Set();
 let sourceUploadStaging = null;
 const SOURCE_FILE_TOKEN_TTL_MS = 5 * 60 * 1000;
+const AUDIO_SOURCE_FILE_TOKEN_TTL_MS = 60 * 60 * 1000;
 const MAX_WORKFLOW_ARTIFACT_STREAMS = 4;
 const MAX_WORKFLOW_ARTIFACT_DOWNLOADS = 4;
 // A renderer acknowledgement can be delayed by a busy main/UI thread while
@@ -891,6 +892,31 @@ function artifactDownloadError(error) {
     };
 }
 
+function registerAudioSourceHandles(event, selected) {
+    if (!selected?.success || !Array.isArray(selected.files)) return selected;
+    const files = [];
+    for (const entry of selected.files) {
+        const sourceFileId = newStreamId();
+        const state = {
+            handle: entry.handle || null,
+            filePath: entry.filePath || null,
+            senderId: event.sender.id,
+            fileName: entry.fileName,
+            sizeBytes: Number(entry.sizeBytes),
+            expiryTimer: null,
+        };
+        state.expiryTimer = setTimeout(() => {
+            if (workflowSourceFiles.get(sourceFileId) !== state) return;
+            workflowSourceFiles.delete(sourceFileId);
+            closeWorkflowSourceFile(state);
+        }, AUDIO_SOURCE_FILE_TOKEN_TTL_MS);
+        state.expiryTimer.unref?.();
+        workflowSourceFiles.set(sourceFileId, state);
+        files.push({ sourceFileId, fileName: state.fileName, sizeBytes: state.sizeBytes });
+    }
+    return { success: true, files };
+}
+
 function registerIpcHandlers() {
     const nativeFileDialogs = createNativeFileDialogs({
         app,
@@ -1088,6 +1114,23 @@ function registerIpcHandlers() {
         };
     });
 
+    ipcMain.handle('select-audio-files-stream', async (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return registerAudioSourceHandles(event, await nativeFileDialogs.selectAudioFileSources(event));
+    });
+
+    ipcMain.handle('select-audio-folder-stream', async (event) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        return registerAudioSourceHandles(event, await nativeFileDialogs.selectAudioFolderSources(event));
+    });
+
+    ipcMain.handle('open-audio-drop-files-stream', async (event, input = {}) => {
+        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        const paths = Array.isArray(input.paths) ? input.paths.slice(0, 2000) : [];
+        if (!paths.length) return { success: false, reason: 'unsupported-file-type' };
+        return registerAudioSourceHandles(event, await nativeFileDialogs.openAudioDropFileSources(event, paths));
+    });
+
     ipcMain.handle('release-source-file', async (event, input = {}) => {
         if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
         const sourceFileId = String(input.sourceFileId || '');
@@ -1107,13 +1150,24 @@ function registerIpcHandlers() {
         if (!sourceFileId || !state || state.senderId !== event.sender.id) {
             throw new Error('source file handle is missing or expired');
         }
+        if (!state.handle && state.filePath) {
+            const opened = await nativeFileDialogs.openAudioFileSource(state.filePath);
+            if (!opened?.success || !opened.handle || Number(opened.sizeBytes) !== Number(state.sizeBytes)) {
+                workflowSourceFiles.delete(sourceFileId);
+                closeWorkflowSourceFile(state);
+                throw new Error(opened?.error || 'audio file changed or is no longer readable');
+            }
+            state.handle = opened.handle;
+        }
         if (!Number.isSafeInteger(state.sizeBytes) || state.sizeBytes <= 0) {
             workflowSourceFiles.delete(sourceFileId);
             closeWorkflowSourceFile(state);
             throw new Error('source file size is invalid');
         }
         const pathname = String(input.pathname || '');
-        if (!/^\/api\/v1\/source-imports\/[^/]+\/content$/.test(pathname)) {
+        const isSourceImportPath = /^\/api\/v1\/source-imports\/[^/]+\/content$/.test(pathname);
+        const isAudioImportPath = /^\/api\/v1\/workflows\/[^/]+\/audio-import-batches\/[^/]+\/(?:files\/\d+|archive)$/.test(pathname);
+        if (!isSourceImportPath && !isAudioImportPath) {
             throw new Error('workflow source upload path is not allowed');
         }
         const incomingHeaders = input.headers && typeof input.headers === 'object' ? input.headers : {};
@@ -1127,7 +1181,7 @@ function registerIpcHandlers() {
         ].forEach((name) => {
             if (incomingHeaders[name] != null) headers[name] = String(incomingHeaders[name]);
         });
-        if (!headers['X-Idempotency-Key'] || !headers['X-Staging-Generation'] || !headers['X-Source-Write-Grant']) {
+        if (!headers['X-Idempotency-Key'] || (isSourceImportPath && (!headers['X-Staging-Generation'] || !headers['X-Source-Write-Grant']))) {
             throw new Error('source upload grant headers are incomplete');
         }
 
@@ -1360,8 +1414,11 @@ function registerIpcHandlers() {
         if (!isTrustedRendererEvent(event)) throw new Error('untrusted workflow artifact sender');
         const senderEpoch = rendererLifecycleEpoch;
         const artifactId = String(input.artifactId || '');
+        const preview = input.audioImportFile && typeof input.audioImportFile === 'object'
+            ? input.audioImportFile
+            : null;
         const requestId = String(input.requestId || '');
-        if (!artifactId || !requestId) throw new Error('artifact id and request id are required');
+        if (!requestId || (!artifactId && !preview)) throw new Error('artifact id or audio import file and request id are required');
         if (workflowArtifactStreams.size + pendingWorkflowArtifactStreams >= MAX_WORKFLOW_ARTIFACT_STREAMS) {
             const error = new Error('too many artifact streams are active');
             error.code = 'RESOURCE_EXHAUSTED';
@@ -1369,28 +1426,46 @@ function registerIpcHandlers() {
         }
         pendingWorkflowArtifactStreams += 1;
         try {
-            const ticketResponse = await requestWorkflow({
-            http,
-            baseUrl: serverUrl,
-            capability: serverToken,
-            method: 'POST',
-            pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content-tickets`,
-            });
-            const ticket = ticketResponse.body?.ticket;
-            if (ticketResponse.status < 200 || ticketResponse.status >= 300 || !ticket) {
-                const error = new Error(ticketResponse.body?.message || `artifact ticket failed: HTTP ${ticketResponse.status}`);
-                error.status = ticketResponse.status;
-                throw error;
-            }
             const streamId = newStreamId();
-            const stream = await requestWorkflowStream({
-            http,
-            baseUrl: serverUrl,
-            capability: serverToken,
-            method: 'GET',
-            pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`,
-            headers: { 'X-Artifact-Ticket': ticket },
-            });
+            let stream;
+            if (preview) {
+                const workflowId = String(preview.workflowId || '');
+                const batchId = String(preview.batchId || '');
+                const fileIndex = Number(preview.fileIndex);
+                if (!workflowId || workflowId.length > 256 || !batchId || batchId.length > 256
+                    || !Number.isSafeInteger(fileIndex) || fileIndex < 0 || fileIndex >= 2000) {
+                    throw new Error('audio import preview target is invalid');
+                }
+                stream = await requestWorkflowStream({
+                    http,
+                    baseUrl: serverUrl,
+                    capability: serverToken,
+                    method: 'GET',
+                    pathname: `/api/v1/workflows/${encodeURIComponent(workflowId)}/audio-import-batches/${encodeURIComponent(batchId)}/files/${fileIndex}/content`,
+                });
+            } else {
+                const ticketResponse = await requestWorkflow({
+                    http,
+                    baseUrl: serverUrl,
+                    capability: serverToken,
+                    method: 'POST',
+                    pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content-tickets`,
+                });
+                const ticket = ticketResponse.body?.ticket;
+                if (ticketResponse.status < 200 || ticketResponse.status >= 300 || !ticket) {
+                    const error = new Error(ticketResponse.body?.message || `artifact ticket failed: HTTP ${ticketResponse.status}`);
+                    error.status = ticketResponse.status;
+                    throw error;
+                }
+                stream = await requestWorkflowStream({
+                    http,
+                    baseUrl: serverUrl,
+                    capability: serverToken,
+                    method: 'GET',
+                    pathname: `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`,
+                    headers: { 'X-Artifact-Ticket': ticket },
+                });
+            }
             if (senderEpoch !== rendererLifecycleEpoch || event.sender.isDestroyed?.()) {
                 stream.destroy(new Error('renderer was reloaded while opening artifact stream'));
                 throw new Error('renderer was reloaded while opening artifact stream');
@@ -1432,7 +1507,7 @@ function registerIpcHandlers() {
             const headers = stream.headers || {};
             const rawDisposition = String(headers['content-disposition'] || '');
             const encodedFilename = rawDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1] || '';
-            let filename = String(headers['x-artifact-filename'] || '').trim();
+            let filename = String(headers['x-audio-import-filename'] || headers['x-artifact-filename'] || '').trim();
             if (filename) {
                 try { filename = decodeURIComponent(filename); } catch (_) { filename = ''; }
             }
