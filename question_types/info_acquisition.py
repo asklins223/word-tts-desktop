@@ -105,6 +105,7 @@ class InfoAcquisitionParser(BaseParser):
         items = []
         questions = []
         pending_questions = []
+        question_audio_items = {}
         answer_map = {}
         in_section = False
         current_category = ""
@@ -229,6 +230,7 @@ class InfoAcquisitionParser(BaseParser):
                 question_item.get("audio_filename_stem")
                 or question_item.get("filename_stem")
             )
+            question_audio_items[id(question)] = question_item
             items.append(question_item)
 
         for position, (_, text, _) in enumerate(self.paras):
@@ -364,6 +366,18 @@ class InfoAcquisitionParser(BaseParser):
                 if options:
                     question = pending_questions[-1]
                     question["options"] = options
+                    if use_exam_naming:
+                        # 旧版套卷中的听选信息题目需要把选项一起读出；
+                        # 专项练习的音频仍只读题干，选项只作为页面录入事实。
+                        audio_item = question_audio_items.get(id(question))
+                        if audio_item is not None:
+                            option_text = " / ".join(
+                                option["text"] for option in options
+                            )
+                            if option_text:
+                                audio_item["text"] = (
+                                    f"{question['stem']} ({option_text})"
+                                )
                     metadata = (
                         self.paragraph_metadata[position]
                         if position < len(self.paragraph_metadata)
