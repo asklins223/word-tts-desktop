@@ -31,12 +31,12 @@ test('SSE parser handles standard event ids, multi-line JSON and heartbeats', ()
     assert.deepEqual(frames, [{ id: 'event-1', event: 'workflow_event', data: { seq: 2 } }]);
 });
 
-test('SSE transport stays open by default and resets an opted-in inactivity timeout on data', async () => {
+test('SSE inactivity timeout resets after data and reports a normal stream close', async () => {
     const server = http.createServer((_req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         res.write('data: {"seq":1}\n\n');
-        setTimeout(() => res.write(': heartbeat\n\n'), 60);
-        setTimeout(() => res.end(), 130);
+        setTimeout(() => res.write(': heartbeat\n\n'), 500);
+        setTimeout(() => res.end(), 1100);
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
@@ -50,9 +50,9 @@ test('SSE transport stays open by default and resets an opted-in inactivity time
             pathname: '/api/v1/workflows/workflow-1/events',
             onFrame: frame => frames.push(frame),
             onError: error => errors.push(error),
-            timeoutMs: 100,
+            timeoutMs: 800,
         });
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 1200));
         stream.close();
         assert.equal(frames.length, 1);
         assert.equal(errors.length, 1);

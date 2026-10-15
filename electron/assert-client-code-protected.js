@@ -5,7 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 module.exports = async function assertClientCodeProtected(context) {
-    const appDirectory = context?.packager?.appDir;
+    const appDirectory = context?.packager?.info?.appDir || context?.packager?.appDir;
     if (!appDirectory) throw new Error('无法检查客户端代码保护构建目录');
 
     const rendererDirectory = path.join(appDirectory, 'renderer');
