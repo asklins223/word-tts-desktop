@@ -172,6 +172,33 @@ function createRangeServer({ installerPath, newBlockMapBytes, oldBlockMapBytes, 
     return { server, metrics };
 }
 
+function createLocalReleaseFetch(localBaseUrl) {
+    const localBase = new URL(localBaseUrl);
+    const repositoryPath = '/asklins223/word-tts-desktop';
+    return async (requestUrl, init = {}) => {
+        const releaseUrl = new URL(String(requestUrl));
+        if (releaseUrl.origin !== 'https://github.com'
+            || !releaseUrl.pathname.startsWith(`${repositoryPath}/releases/download/`)) {
+            throw new Error(`差分审计请求了意外的发布地址：${releaseUrl.origin}${releaseUrl.pathname}`);
+        }
+        const localPath = `${localBase.pathname.replace(/\/$/, '')}${releaseUrl.pathname.slice(repositoryPath.length)}`;
+        const localUrl = new URL(`${localPath}${releaseUrl.search}`, localBase.origin);
+        const response = await globalThis.fetch(localUrl, { ...init, redirect: 'manual' });
+        // Keep the production URL visible to the same trust checks used by the
+        // updater while serving bytes from this script's local Range fixture.
+        return {
+            status: response.status,
+            statusText: response.statusText,
+            ok: response.ok,
+            url: releaseUrl.toString(),
+            headers: response.headers,
+            body: response.body,
+            arrayBuffer: response.arrayBuffer.bind(response),
+            text: response.text.bind(response),
+        };
+    };
+}
+
 async function main(argv = process.argv.slice(2)) {
     const installerPath = path.resolve(requiredArgument(argv, '--installer'));
     const blockmapPath = path.resolve(requiredArgument(argv, '--blockmap'));
@@ -222,14 +249,14 @@ async function main(argv = process.argv.slice(2)) {
         });
         const address = server.address();
         const baseUrl = `http://127.0.0.1:${address.port}/repo`;
-        const artifactUrl = `${baseUrl}/releases/download/v${version}/wordTTS-Setup-${version}-x64.exe`;
-        const blockmapUrl = `${artifactUrl}.blockmap`;
+        const artifactName = `wordTTS-Setup-${version}-x64.exe`;
+        const blockmapName = `${artifactName}.blockmap`;
         client = createWindowsUpdateClient({
-            releaseUrl: `${baseUrl}/releases/tag/v${version}`,
+            releaseUrl: `https://github.com/asklins223/word-tts-desktop/releases/tag/v${version}`,
             currentVersion: '0.0.0',
             currentInstallerPath: oldInstallerPath,
             tempDirectory: tempDownloadDir,
-            fetchImpl: globalThis.fetch,
+            fetchImpl: createLocalReleaseFetch(baseUrl),
             logger: { info() {}, warn() {}, debug() {} },
         });
         const downloadedPath = await client.download({
@@ -237,8 +264,8 @@ async function main(argv = process.argv.slice(2)) {
             version,
             tag: `v${version}`,
             artifact: {
-                url: artifactUrl,
-                blockmap: blockmapUrl,
+                url: artifactName,
+                blockmap: blockmapName,
                 sha512: installerDigest.sha512,
                 size: installerDigest.size,
             },
