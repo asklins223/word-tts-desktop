@@ -132,6 +132,62 @@ class InfoRetellingParser(BaseParser):
             values.append(values[0] + 1)
         return tuple(values)
 
+    def _recording_block_image_selector(self):
+        """Resolve an inline mind-map image, falling back to floating shapes."""
+
+        mind_map_paragraphs = []
+        for paragraph_index, value, *_rest in self.paras:
+            if "思维导图" not in str(value or ""):
+                continue
+            try:
+                # Paragraph metadata in DOCX blocks is zero-based; parser
+                # paragraph rows are one-based.
+                mind_map_paragraphs.append(max(0, int(paragraph_index) - 1))
+            except (TypeError, ValueError):
+                continue
+
+        image_blocks = []
+        for block in self.document_blocks or ():
+            if self._block_value(block, "kind") != "embedded_image":
+                continue
+            metadata = self._block_value(block, "metadata", {})
+            if not isinstance(metadata, Mapping):
+                continue
+            try:
+                paragraph_index = int(metadata.get("paragraph_index"))
+                image_index = int(metadata.get("embedded_image_index"))
+            except (TypeError, ValueError):
+                continue
+            if image_index < 0:
+                continue
+            image_blocks.append((paragraph_index, image_index))
+
+        image_indices = []
+        for anchor in mind_map_paragraphs:
+            # Prefer the first image after the mind-map instruction. Some
+            # DOCX files place it in the same paragraph or just before it.
+            following = [
+                (paragraph_index - anchor, image_index)
+                for paragraph_index, image_index in image_blocks
+                if 0 <= paragraph_index - anchor <= 8
+            ]
+            nearby = following or [
+                (anchor - paragraph_index, image_index)
+                for paragraph_index, image_index in image_blocks
+                if 0 < anchor - paragraph_index <= 2
+            ]
+            if nearby:
+                _distance, image_index = min(nearby)
+                if image_index not in image_indices:
+                    image_indices.append(image_index)
+        if image_indices:
+            return "embedded_image", tuple(image_indices)
+
+        drawing_groups = self._recording_drawing_group_indices()
+        if drawing_groups:
+            return "drawing_group", drawing_groups
+        return "", ()
+
     @staticmethod
     def _is_english_payload(value):
         return bool(re.search(r"[A-Za-z]", str(value or "")))
@@ -260,7 +316,7 @@ class InfoRetellingParser(BaseParser):
             or cls._score(cls.RE_BARE_SCORE, value),
         )
 
-    def _new_group(self, block_index):
+    def _new_group(self, block_index, block_kind=""):
         return {
             "instruction_text": None,
             "prompt": None,
@@ -269,6 +325,7 @@ class InfoRetellingParser(BaseParser):
             "reference_answers": [],
             "score": None,
             "block_index": block_index,
+            "block_kind": block_kind,
             "asking": [],
         }
 
@@ -287,7 +344,7 @@ class InfoRetellingParser(BaseParser):
         retelling_score = None
         asking_score = None
         use_exam_naming = is_exam_paper_bundle(self.paras)
-        block_indices = self._recording_drawing_group_indices()
+        block_kind, block_indices = self._recording_block_image_selector()
 
         def flush_script():
             nonlocal collecting_script
@@ -304,7 +361,7 @@ class InfoRetellingParser(BaseParser):
                     "text": sanitize("\n".join(lines)),
                     "score": current_group.get("score") or 0,
                     "block_image_required": bool(block_indices),
-                    "block_kind": "drawing_group" if block_indices else None,
+                    "block_kind": current_group.get("block_kind") if block_indices else None,
                     "block_index": current_group.get("block_index"),
                 }
                 item["listening_text"] = self._page_listening_text(item["text"])
@@ -327,7 +384,7 @@ class InfoRetellingParser(BaseParser):
             block_index = block_indices[group_number] if group_number < len(block_indices) else (
                 block_indices[0] if block_indices else None
             )
-            current_group = self._new_group(block_index)
+            current_group = self._new_group(block_index, block_kind=block_kind)
             groups.append(current_group)
             mode = "retelling"
             answer_region = False
@@ -560,7 +617,7 @@ class InfoRetellingParser(BaseParser):
             if items[0].get("block_image_required"):
                 recording.update({
                     "block_image_required": True,
-                    "block_kind": "drawing_group",
+                    "block_kind": items[0].get("block_kind") or block_kind,
                     "block_index": items[0].get("block_index"),
                 })
             retelling = {

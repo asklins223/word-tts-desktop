@@ -34,7 +34,7 @@ test('Windows 更新地址固定到 latest-win.json 和 Release 下载资产', (
     );
     assert.equal(
         buildWindowsBlockMapUrl('', 'v3.0.2', 'https://cdn.example.test/setup.exe?download=1'),
-        'https://cdn.example.test/setup.exe.blockmap?download=1',
+        null,
     );
 });
 
@@ -79,12 +79,12 @@ test('Windows 更新元数据会跳过错误候选并统一选中的安装包字
         tag: 'v3.0.2',
         artifact: { url: 'other-app-3.0.2-x64.exe', sha512: 'wrong', size: 1 },
         files: [
-            { url: 'wordTTS-Setup-3.0.2-x64.exe', sha512: 'right', size: 2 },
+            { url: 'wordTTS-Setup-3.0.2-x64.exe', sha512: Buffer.alloc(64, 1).toString('base64'), size: 2 },
         ],
     });
     assert.deepEqual(normalized.artifact, normalized.files[0]);
     assert.equal(normalized.path, 'wordTTS-Setup-3.0.2-x64.exe');
-    assert.equal(normalized.sha512, 'right');
+    assert.equal(normalized.sha512, Buffer.alloc(64, 1).toString('base64'));
     assert.equal(normalized.size, 2);
 });
 
@@ -141,7 +141,7 @@ test('Windows 更新优先使用 Setup.exe blockmap 做分块差分，失败时�
                         arrayBuffer: async () => newBlockmapBytes.buffer.slice(newBlockmapBytes.byteOffset, newBlockmapBytes.byteOffset + newBlockmapBytes.byteLength),
                     };
                 }
-                const range = String(request.headers?.Range || request.headers?.range || '');
+                const range = String(request.headers?.get?.('range') || request.headers?.Range || request.headers?.range || '');
                 const match = range.match(/^bytes=(\d+)-(\d+)$/);
                 if (!match) throw new Error(`unexpected non-range request: ${url}`);
                 const start = Number(match[1]);
@@ -157,10 +157,10 @@ test('Windows 更新优先使用 Setup.exe blockmap 做分块差分，失败时�
 
         const downloadedPath = await client.download(metadata);
         assert.deepEqual(await fsp.readFile(downloadedPath), newBytes);
-        const rangeRequests = requests.filter(entry => entry.request.headers?.Range || entry.request.headers?.range);
+        const rangeRequests = requests.filter(entry => entry.request.headers?.get?.('range') || entry.request.headers?.Range || entry.request.headers?.range);
         assert.ok(rangeRequests.length > 0, 'expected at least one HTTP range request');
         const downloadedBytes = rangeRequests.reduce((sum, entry) => {
-            const match = String(entry.request.headers.Range || entry.request.headers.range).match(/bytes=\d+-(\d+)/);
+            const match = String(entry.request.headers?.get?.('range') || entry.request.headers.Range || entry.request.headers.range).match(/bytes=\d+-(\d+)/);
             return sum + Number(match[1]) + 1;
         }, 0);
         assert.ok(downloadedBytes < newBytes.length * 0.95, 'differential path should download less than the full Setup');
@@ -227,7 +227,7 @@ test('Windows 更新在差分索引缺失、Range 不可用、差分损坏或节
                         if (url.includes('3.0.1-x64.exe.blockmap')) return responseFor(oldBlockmapBytes);
                         return responseFor(newBlockmapBytes);
                     }
-                    const range = String(request.headers?.Range || request.headers?.range || '');
+                    const range = String(request.headers?.get?.('range') || request.headers?.Range || request.headers?.range || '');
                     const match = range.match(/^bytes=(\d+)-(\d+)$/);
                     if (match) {
                         const start = Number(match[1]);
@@ -242,9 +242,9 @@ test('Windows 更新在差分索引缺失、Range 不可用、差分损坏或节
 
             const downloadedPath = await client.download(metadata);
             assert.deepEqual(await fsp.readFile(downloadedPath), newBytes, scenario);
-            const rangeRequests = requests.filter(entry => entry.request.headers?.Range || entry.request.headers?.range);
+            const rangeRequests = requests.filter(entry => entry.request.headers?.get?.('range') || entry.request.headers?.Range || entry.request.headers?.range);
             const fullRequests = requests.filter(entry => !entry.url.includes('.blockmap')
-                && !(entry.request.headers?.Range || entry.request.headers?.range));
+                && !(entry.request.headers?.get?.('range') || entry.request.headers?.Range || entry.request.headers?.range));
             assert.ok(fullRequests.length >= 1, `${scenario}: expected full-download fallback`);
             if (['range-unsupported', 'corrupt-range'].includes(scenario)) {
                 assert.ok(rangeRequests.length >= 1, `${scenario}: expected differential attempt before fallback`);
@@ -265,7 +265,10 @@ test('Windows 更新包落盘失败时会收敛为可捕获错误而不会悬挂
             () => downloadResponseToFile(
                 {
                     ok: true,
-                    arrayBuffer: async () => Buffer.from('setup').buffer,
+                    arrayBuffer: async () => {
+                        const bytes = Buffer.from('setup');
+                        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+                    },
                 },
                 path.join(root, 'missing-parent', 'setup.exe'),
                 5,
@@ -309,6 +312,7 @@ test('Windows 更新客户端下载后校验并启动自绘 Setup.exe', async ()
                         ok: true,
                         status: 200,
                         json: async () => metadata,
+                        arrayBuffer: async () => Buffer.from(JSON.stringify(metadata)),
                     };
                 }
                 return {

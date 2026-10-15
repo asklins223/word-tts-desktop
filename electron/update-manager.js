@@ -33,10 +33,16 @@ const VERSION_PATTERN = new RegExp(
 const RELEASE_NOTES_LIMIT = 200_000;
 const DEFAULT_RELEASE_URL = 'https://github.com/asklins223/word-tts-desktop/releases';
 const UPDATE_ARTIFACT_PROBE_TIMEOUT_MS = 8_000;
+const MAX_UPDATE_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_VERSION_LENGTH = 128;
+const ARTIFACT_PROBE_RANGE_BYTES = 4;
 const { createWindowsUpdateClient } = require('./windows-update-client');
+const { fetchTrustedReleaseUrl, isTrustedReleaseUrl } = require('./release-network');
 
 function parseVersion(value) {
-    const match = String(value || '').trim().match(VERSION_PATTERN);
+    const text = String(value || '').trim();
+    if (text.length > MAX_VERSION_LENGTH) return null;
+    const match = text.match(VERSION_PATTERN);
     if (!match) return null;
     return {
         major: Number(match[1]),
@@ -47,6 +53,26 @@ function parseVersion(value) {
         patchText: match[3],
         prerelease: match[4] ? match[4].split('.') : [],
     };
+}
+
+function isValidSha512(value) {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(value)) return false;
+    const decoded = Buffer.from(value, 'base64');
+    return decoded.length === 64 && decoded.toString('base64') === value;
+}
+
+function isValidUpdatePolicyMetadata(info) {
+    if (!info || typeof info !== 'object' || Array.isArray(info)) return false;
+    const suppliedModes = [info.updateMode, info.mode].filter(value => value !== undefined && value !== null && value !== '');
+    if (suppliedModes.some(value => value !== 'force' && value !== 'optional')) return false;
+    if (new Set(suppliedModes).size > 1) return false;
+    if (info.minimumSupportedVersion !== undefined
+        && info.minimumSupportedVersion !== null
+        && info.minimumSupportedVersion !== '') {
+        if (!parseVersion(info.minimumSupportedVersion) || !parseVersion(info.version)
+            || compareVersions(info.minimumSupportedVersion, info.version) > 0) return false;
+    }
+    return true;
 }
 
 function compareNumericIdentifiers(left, right) {
@@ -145,7 +171,7 @@ function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function updateArtifactForPlatform(updateInfo, platform) {
+function updateArtifactForPlatform(updateInfo, platform, architecture) {
     const info = updateInfo && typeof updateInfo === 'object' ? updateInfo : {};
     if (!['win32', 'darwin'].includes(platform)) return null;
     const expectedExtension = platform === 'win32' ? '.exe' : '.zip';
@@ -153,6 +179,7 @@ function updateArtifactForPlatform(updateInfo, platform) {
     const normalizedVersion = parsedVersion
         ? String(info.version).trim().replace(/^v/i, '')
         : null;
+    const macArchitectures = architecture ? `${escapeRegExp(architecture)}|universal` : 'arm64|x64|universal';
     const expectedNamePattern = normalizedVersion
         ? platform === 'win32'
             ? new RegExp(
@@ -160,7 +187,7 @@ function updateArtifactForPlatform(updateInfo, platform) {
                 'i',
             )
             : new RegExp(
-                `^(?:wordTTS|小猪wordTTS)-${escapeRegExp(normalizedVersion)}-(?:arm64|x64|universal)\\.zip$`,
+                `^(?:wordTTS|小猪wordTTS)-${escapeRegExp(normalizedVersion)}-(?:${macArchitectures})\\.zip$`,
                 'i',
             )
         : null;
@@ -178,7 +205,8 @@ function updateArtifactForPlatform(updateInfo, platform) {
             && isSafeArtifactReference(file.url)
             && expectedNamePattern
             && expectedNamePattern.test(file.name)
-            && file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(expectedExtension));
+            && file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(expectedExtension)
+            && isValidSha512(file.sha512));
 
     // Older electron-updater metadata can use the legacy top-level path. It
     // is still accepted only when it has the same concrete platform suffix,
@@ -194,15 +222,27 @@ function updateArtifactForPlatform(updateInfo, platform) {
             });
         }
     }
-    const artifact = candidates.find(file => (
+    const validCandidates = candidates.filter(file => (
         file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith(expectedExtension)
         && file.name
         && expectedNamePattern
         && expectedNamePattern.test(file.name)
-        && file.sha512
+        && isValidSha512(file.sha512)
         && Number.isSafeInteger(file.size)
         && file.size > 0
+        && file.size <= MAX_UPDATE_ARTIFACT_BYTES
     ));
+    // electron-updater prefers an arm64 ZIP on Apple Silicon whenever one is
+    // present, regardless of metadata order. Probe the same asset so startup
+    // cannot green-light a universal ZIP while the updater later selects a
+    // missing arm64 package.
+    const artifact = platform === 'darwin' && architecture === 'arm64'
+        ? validCandidates.find(file => /-arm64\.zip$/i.test(file.name))
+            || validCandidates.find(file => /-universal\.zip$/i.test(file.name))
+        : platform === 'darwin' && architecture === 'x64'
+            ? validCandidates.find(file => /-x64\.zip$/i.test(file.name))
+                || validCandidates.find(file => /-universal\.zip$/i.test(file.name))
+            : validCandidates[0];
     if (!artifact) return null;
     return {
         ...artifact,
@@ -212,22 +252,35 @@ function updateArtifactForPlatform(updateInfo, platform) {
 function buildUpdateArtifactUrl(releaseUrl, tag, artifactName) {
     const rawName = String(artifactName || '').trim();
     if (!rawName) return null;
-    if (/^https?:\/\//i.test(rawName)) return rawName;
-    if (!isSafeArtifactReference(rawName)) return null;
     try {
         const releasesUrl = new URL(String(releaseUrl || DEFAULT_RELEASE_URL));
         const releaseIndex = releasesUrl.pathname.indexOf('/releases');
-        if (releaseIndex < 0) return null;
+        if (releasesUrl.protocol !== 'https:' || releaseIndex < 0) return null;
         const repositoryPath = releasesUrl.pathname.slice(0, releaseIndex);
+        const releaseTag = String(tag || '').trim();
+        if (!repositoryPath || !parseVersion(releaseTag)) return null;
+        if (/^https?:\/\//i.test(rawName)) {
+            const artifactUrl = new URL(rawName);
+            if (artifactUrl.protocol !== 'https:'
+                || artifactUrl.origin !== releasesUrl.origin
+                || !artifactUrl.pathname.startsWith(`${repositoryPath}/releases/download/`)
+                || artifactUrl.username
+                || artifactUrl.password) return null;
+            const artifactFileName = decodeURIComponent(artifactUrl.pathname.split('/').pop() || '');
+            const expectedPath = `${repositoryPath}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(artifactFileName)}`;
+            if (artifactUrl.pathname !== expectedPath) return null;
+            return artifactUrl.toString();
+        }
+        if (!isSafeArtifactReference(rawName)) return null;
         const filePath = rawName
             .split(/[?#]/, 1)[0]
             .split('/')
             .filter(Boolean)
             .map(segment => encodeURIComponent(decodeURIComponent(segment)))
             .join('/');
-        const releaseTag = encodeURIComponent(String(tag || '').trim());
-        if (!repositoryPath || !releaseTag || !filePath) return null;
-        return `${releasesUrl.origin}${repositoryPath}/releases/download/${releaseTag}/${filePath}`;
+        const encodedTag = encodeURIComponent(releaseTag);
+        if (!filePath) return null;
+        return `${releasesUrl.origin}${repositoryPath}/releases/download/${encodedTag}/${filePath}`;
     } catch (_) {
         return null;
     }
@@ -236,6 +289,8 @@ function buildUpdateArtifactUrl(releaseUrl, tag, artifactName) {
 async function probeUpdateArtifact(url, {
     fetchImpl = globalThis.fetch,
     timeoutMs = UPDATE_ARTIFACT_PROBE_TIMEOUT_MS,
+    signal,
+    expectedSize,
 } = {}) {
     if (!url || typeof fetchImpl !== 'function') {
         return { available: false, reason: 'artifact-probe-unavailable' };
@@ -243,29 +298,88 @@ async function probeUpdateArtifact(url, {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timeout = setTimeout(() => controller?.abort(), Math.max(500, Number(timeoutMs) || UPDATE_ARTIFACT_PROBE_TIMEOUT_MS));
     const request = {
-        method: 'HEAD',
-        redirect: 'follow',
-        ...(controller ? { signal: controller.signal } : {}),
+        // A successful HEAD does not prove the installer can be downloaded.
+        // Read the platform file signature from a tiny range GET instead.
+        method: 'GET',
+        headers: { Range: `bytes=0-${ARTIFACT_PROBE_RANGE_BYTES - 1}` },
+        cache: 'no-store',
+        signal: signal && controller
+            ? AbortSignal.any([signal, controller.signal])
+            : signal || controller?.signal,
     };
-    try {
-        let response = await fetchImpl(url, request);
-        // A few release mirrors do not implement HEAD. A one-byte ranged GET
-        // still proves the asset exists without downloading the installer.
-        if (response?.status === 405 || response?.status === 403) {
-            response = await fetchImpl(url, {
-                ...request,
-                method: 'GET',
-                headers: { Range: 'bytes=0-0' },
-            });
+    let abort;
+    const cancelled = new Promise((_, reject) => {
+        abort = () => reject(request.signal.reason || new Error('安装包探测已取消。'));
+        request.signal?.addEventListener('abort', abort, { once: true });
+        if (request.signal?.aborted) abort();
+    });
+    const readProbeBytes = async (response) => {
+        const reader = response?.body?.getReader?.();
+        if (!reader) return null;
+        const chunks = [];
+        let total = 0;
+        try {
+            while (total < ARTIFACT_PROBE_RANGE_BYTES) {
+                const pendingRead = reader.read();
+                const part = request.signal
+                    ? await Promise.race([pendingRead, cancelled])
+                    : await pendingRead;
+                if (part.done) break;
+                const chunk = Buffer.from(part.value || []);
+                total += chunk.length;
+                if (total > ARTIFACT_PROBE_RANGE_BYTES) return null;
+                chunks.push(chunk);
+            }
+        } finally {
+            try { await reader.cancel(); } catch (_) { /* best effort */ }
+            reader.releaseLock?.();
+        }
+        return total === ARTIFACT_PROBE_RANGE_BYTES
+            ? Buffer.concat(chunks, total)
+            : null;
+    };
+    const probe = async () => {
+        const response = await fetchTrustedReleaseUrl(url, request, fetchImpl);
+        if (response?.url && !isTrustedReleaseUrl(url, response.url)) {
+            await response.body?.cancel?.();
+            return { available: false, reason: 'untrusted-release-redirect' };
         }
         const status = Number(response?.status) || 0;
-        try {
-            await response?.body?.cancel?.();
-        } catch (_) {
-            // The probe result is already known; a body cleanup failure is not
-            // a reason to turn a valid release into an update error.
-        }
-        return { available: status >= 200 && status < 300, status };
+        const contentType = String(response?.headers?.get?.('content-type') || '').toLowerCase();
+        const clearlyNotAnInstaller = /^(?:text\/html|text\/plain|application\/(?:json|problem\+json|xhtml\+xml))(?:\s*;|$)/.test(contentType);
+        const expectedBytes = Number(expectedSize);
+        const rawContentLength = response?.headers?.get?.('content-length');
+        const contentLength = rawContentLength === null || rawContentLength === undefined || rawContentLength === ''
+            ? Number.NaN
+            : Number(rawContentLength);
+        const contentRange = String(response?.headers?.get?.('content-range') || '');
+        const rangeMatch = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+        const rangeMismatch = !rangeMatch
+            || Number(rangeMatch[1]) !== 0
+            || Number(rangeMatch[2]) !== ARTIFACT_PROBE_RANGE_BYTES - 1
+            || rangeMatch[3] === '*'
+            || (Number.isFinite(expectedBytes) && expectedBytes > 0
+                && Number(rangeMatch[3]) !== expectedBytes);
+        const lengthMismatch = Number.isFinite(contentLength)
+            && contentLength !== ARTIFACT_PROBE_RANGE_BYTES;
+        const packageSignature = await readProbeBytes(response);
+        const filePath = new URL(url).pathname.toLowerCase();
+        const validSignature = filePath.endsWith('.exe')
+            ? packageSignature?.[0] === 0x4d && packageSignature?.[1] === 0x5a
+            : filePath.endsWith('.zip')
+                ? packageSignature?.[0] === 0x50 && packageSignature?.[1] === 0x4b
+                    && [0x03, 0x05, 0x07].includes(packageSignature?.[2])
+                : false;
+        const available = status === 206 && !clearlyNotAnInstaller && !rangeMismatch
+            && !lengthMismatch && validSignature;
+        return {
+            available,
+            status,
+            reason: available ? undefined : 'artifact-response-invalid',
+        };
+    };
+    try {
+        return await Promise.race([probe(), cancelled]);
     } catch (error) {
         return {
             available: false,
@@ -274,6 +388,7 @@ async function probeUpdateArtifact(url, {
         };
     } finally {
         clearTimeout(timeout);
+        request.signal?.removeEventListener('abort', abort);
     }
 }
 
@@ -332,6 +447,7 @@ function createUpdateManager(options = {}) {
     const env = options.env || process.env;
     const app = options.app || null;
     const platform = options.platform || process.platform;
+    const architecture = options.architecture || process.arch;
     const currentVersion = String(
         options.appVersion
         || app?.getVersion?.()
@@ -344,7 +460,7 @@ function createUpdateManager(options = {}) {
         isPackaged
         && ['win32', 'darwin'].includes(platform)
         && !isSmokeTest
-        && env.WORDTTS_DISABLE_AUTO_UPDATE !== '1'
+        && (env.WORDTTS_DISABLE_AUTO_UPDATE !== '1' || options.enforceStartupUpdates === true)
         && options.disabled !== true,
     );
     const now = typeof options.now === 'function' ? options.now : () => new Date().toISOString();
@@ -427,13 +543,13 @@ function createUpdateManager(options = {}) {
 
     const updateInfoKey = (info) => {
         const policy = deriveUpdatePolicy(info, currentVersion);
-        const artifact = updateArtifactForPlatform(info, platform);
+        const artifact = updateArtifactForPlatform(info, platform, architecture);
         if (!policy.version || !artifact) return null;
         return `${platform}:${policy.version}:${artifact.url}`;
     };
 
     const verifyUpdateArtifact = (info) => {
-        const artifact = updateArtifactForPlatform(info, platform);
+        const artifact = updateArtifactForPlatform(info, platform, architecture);
         const policy = deriveUpdatePolicy(info, currentVersion);
         if (!artifact || !policy.version) {
             return Promise.resolve({ available: false, reason: 'missing-platform-artifact' });
@@ -458,6 +574,7 @@ function createUpdateManager(options = {}) {
                 return probeUpdateArtifact(url, {
                     fetchImpl: options.fetchImpl || globalThis.fetch,
                     timeoutMs: options.artifactProbeTimeoutMs,
+                    expectedSize: artifact.size,
                 });
             })
             .then(result => {
@@ -476,12 +593,20 @@ function createUpdateManager(options = {}) {
         return promise;
     };
 
-    const acceptUpdateInfo = async (info, generation = checkGeneration) => {
+    const acceptUpdateInfo = async (info, generation = checkGeneration, { artifactAlreadyProbed = false } = {}) => {
         if (generation !== checkGeneration) return false;
+        if (!isValidUpdatePolicyMetadata(info)) {
+            publishError(Object.assign(new Error('线上更新策略信息无效，已阻止进入应用。'), {
+                code: 'INVALID_UPDATE_POLICY',
+            }));
+            return false;
+        }
         const policy = deriveUpdatePolicy(info, currentVersion);
         if (!policy.version || compareVersions(policy.version, currentVersion) <= 0) return false;
         if (state.version && compareVersions(policy.version, state.version) < 0) return false;
-        const artifactResult = await verifyUpdateArtifact(info);
+        const artifactResult = artifactAlreadyProbed
+            ? { available: true }
+            : await verifyUpdateArtifact(info);
         // A provider can emit update-available and update-not-available close
         // together, or resolve its check promise before the artifact probe
         // finishes. Do not resurrect an update after a newer check result has
@@ -561,6 +686,13 @@ function createUpdateManager(options = {}) {
         // app into a new version after an optional download.
         updater.autoInstallOnAppQuit = false;
         attach('checking-for-update', () => {
+            // Keep the required-update overlay in place during a periodic
+            // network refresh. Clearing an available force update here would
+            // briefly make the whole renderer interactive again.
+            if (updateInfo && state.isForced) {
+                publish({ error: null });
+                return;
+            }
             if (updateInfo && ['downloading', 'downloaded', 'installing'].includes(state.status)) {
                 publish({ error: null });
                 return;
@@ -598,12 +730,14 @@ function createUpdateManager(options = {}) {
         attach('error', (error) => publishError(error));
     }
 
-    async function checkCustomWindows() {
+    async function checkCustomWindows({ refresh = false } = {}) {
         if (!enabled || !windowsClient || disposed) return getStatus();
-        if (['downloading', 'downloaded', 'installing'].includes(state.status)) return getStatus();
+        if (state.status === 'downloading') return getStatus();
+        if (!refresh && ['downloaded', 'installing'].includes(state.status)) return getStatus();
         if (checkPromise) return checkPromise;
         const generation = ++checkGeneration;
-        publish({ status: 'checking', error: null, progress: null });
+        if (state.isForced && updateInfo) publish({ error: null });
+        else publish({ status: 'checking', error: null, progress: null });
         checkPromise = Promise.resolve()
             .then(() => windowsClient.check())
             .then(async (info) => {
@@ -626,10 +760,11 @@ function createUpdateManager(options = {}) {
         return checkPromise;
     }
 
-    async function check() {
-        if (windowsClient) return checkCustomWindows();
+    async function check({ refresh = false } = {}) {
+        if (windowsClient) return checkCustomWindows({ refresh });
         if (!enabled || !updater || disposed) return getStatus();
-        if (['downloading', 'downloaded', 'installing'].includes(state.status)) return getStatus();
+        if (state.status === 'downloading') return getStatus();
+        if (!refresh && ['downloaded', 'installing'].includes(state.status)) return getStatus();
         if (checkPromise) return checkPromise;
         const generation = ++checkGeneration;
         publish({ status: 'checking', error: null, progress: null });
@@ -659,6 +794,105 @@ function createUpdateManager(options = {}) {
                 checkPromise = null;
             });
         return checkPromise;
+    }
+
+    async function acceptVerifiedUpdate(info, { verifiedArtifactUrl } = {}) {
+        if (!enabled || disposed) return getStatus();
+        if (!isValidUpdatePolicyMetadata(info)) {
+            throw Object.assign(new Error('线上更新策略信息无效。'), { code: 'INVALID_UPDATE_POLICY' });
+        }
+        const policy = deriveUpdatePolicy(info, currentVersion);
+        if (!policy.version || compareVersions(policy.version, currentVersion) <= 0) {
+            throw Object.assign(new Error('线上强制更新版本信息无效。'), { code: 'INVALID_FORCED_UPDATE' });
+        }
+        if (state.status === 'downloading' && state.version
+            && compareVersions(policy.version, state.version) > 0) {
+            throw Object.assign(new Error('下载期间线上发布了更高的强制更新。请重新打开软件完成更新。'), {
+                code: 'FORCED_UPDATE_CHANGED_DURING_DOWNLOAD',
+            });
+        }
+        const verifiedVersion = String(policy.version);
+        const existingVersionIsNewer = state.version
+            && compareVersions(verifiedVersion, state.version) < 0;
+        if (existingVersionIsNewer
+            && ['downloading', 'downloaded', 'installing'].includes(state.status)) {
+            // An already downloaded or in-flight higher package still meets
+            // this verified minimum. Keep its lifecycle intact.
+            return getStatus();
+        }
+        let artifactAlreadyProbed = false;
+        if (verifiedArtifactUrl !== undefined) {
+            const artifact = updateArtifactForPlatform(info, platform, architecture);
+            const tag = String(info?.tag || `v${policy.version}`).trim();
+            const expectedUrl = artifact && buildUpdateArtifactUrl(releaseUrl, tag, artifact.url);
+            if (!expectedUrl || verifiedArtifactUrl !== expectedUrl) {
+                throw Object.assign(new Error('线上安装包与启动门禁验证的地址不一致。'), {
+                    code: 'UNVERIFIED_UPDATE_ARTIFACT',
+                });
+            }
+            artifactAlreadyProbed = true;
+        }
+        const generation = ++checkGeneration;
+        if (existingVersionIsNewer) {
+            // A previously advertised but uninstalled release may have been
+            // withdrawn. A fresh gate-verified release supersedes that stale
+            // available/error state instead of being rejected as a rollback.
+            updateInfo = null;
+            publish({
+                status: 'up-to-date',
+                version: null,
+                isForced: false,
+                updateMode: null,
+                minimumSupportedVersion: null,
+                releaseName: '',
+                releaseNotes: '',
+                releaseDate: null,
+                updateMessage: '',
+                progress: null,
+                error: null,
+                checkedAt: now(),
+                latestVersion: currentVersion,
+            });
+        }
+        const accepted = await acceptUpdateInfo(info, generation, { artifactAlreadyProbed });
+        if (!accepted) {
+            throw Object.assign(new Error('无法验证线上强制更新包，请稍后重试。'), {
+                code: 'FORCED_UPDATE_UNAVAILABLE',
+            });
+        }
+        return getStatus();
+    }
+
+    function markVerifiedCurrentRelease(version) {
+        if (!enabled || disposed) return getStatus();
+        if (!parseVersion(version) || compareVersions(version, currentVersion) !== 0) {
+            throw Object.assign(new Error('线上当前版本信息与已安装版本不一致。'), {
+                code: 'INVALID_CURRENT_RELEASE',
+            });
+        }
+        // A user-initiated check or an already accepted package owns the
+        // visible lifecycle state. The startup gate should not erase it.
+        if (checkPromise || ['downloading', 'downloaded', 'installing'].includes(state.status)) {
+            return getStatus();
+        }
+        checkGeneration += 1;
+        updateInfo = null;
+        publish({
+            status: 'up-to-date',
+            version: null,
+            isForced: false,
+            updateMode: null,
+            minimumSupportedVersion: null,
+            releaseName: '',
+            releaseNotes: '',
+            releaseDate: null,
+            updateMessage: '',
+            progress: null,
+            error: null,
+            checkedAt: now(),
+            latestVersion: String(version).replace(/^v/i, ''),
+        });
+        return getStatus();
     }
 
     async function download() {
@@ -725,13 +959,14 @@ function createUpdateManager(options = {}) {
         return getStatus();
     }
 
-    function start({ delayMs = 6_000, intervalMs = 6 * 60 * 60 * 1_000 } = {}) {
+    function start({ delayMs = 30 * 60 * 1_000, intervalMs = 30 * 60 * 1_000 } = {}) {
         if (!enabled || (!updater && !windowsClient) || started || disposed) return getStatus();
+        if (env.WORDTTS_DISABLE_AUTO_UPDATE === '1') return getStatus();
         started = true;
         const run = () => {
             if (disposed) return;
             void check();
-            intervalTimer = setTimeout(run, Math.max(60_000, Number(intervalMs) || 6 * 60 * 60 * 1_000));
+            intervalTimer = setTimeout(run, Math.max(60_000, Number(intervalMs) || 30 * 60 * 1_000));
             intervalTimer.unref?.();
         };
         initialTimer = setTimeout(run, Math.max(0, Number(delayMs) || 0));
@@ -755,6 +990,8 @@ function createUpdateManager(options = {}) {
 
     return {
         check,
+        acceptVerifiedUpdate,
+        markVerifiedCurrentRelease,
         download,
         install,
         start,
@@ -769,6 +1006,7 @@ module.exports = {
     compareVersions,
     createUpdateManager,
     deriveUpdatePolicy,
+    isValidUpdatePolicyMetadata,
     normalizeNotes,
     parseVersion,
     probeUpdateArtifact,

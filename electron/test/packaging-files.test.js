@@ -387,9 +387,9 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
         path.join(installerSourceDir, 'installer-service.js'),
         'utf8',
     );
-    assert.match(packageJson.scripts['build:win'], /electron-builder --win dir --publish never/);
+    assert.match(packageJson.scripts['build:win'], /build_protected_electron\.js --win dir --publish never/);
     assert.match(packageJson.scripts['build:win'], /build_windows_installer\.js --payload/);
-    assert.match(windowsWorkflow, /electron-builder --win dir --publish never/);
+    assert.match(windowsWorkflow, /build_protected_electron\.js --win dir --publish never/);
     assert.match(windowsWorkflow, /build_windows_installer\.js --payload release\/win-unpacked/);
     assert.doesNotMatch(windowsWorkflow, /libreoffice|soffice|stage_libreoffice/i);
     assert.match(windowsWorkflow, /verify_windows_installer_update\.js/);
@@ -469,7 +469,7 @@ test('Windows 使用完整的自绘 Setup.exe，并覆盖安装、更新、卸�
     assert.match(windowsWorkflow, /wordtts-.*\.exe\.blockmap|差分索引/);
     assert.doesNotMatch(windowsWorkflow, /-Filter "\*-Setup-\*\.exe"/);
     assert.doesNotMatch(windowsWorkflow, /Get-ChildItem -Path "electron\/release" -Filter "\*\.exe"/);
-    assert.match(windowsBuildScript, /electron-builder --win dir --publish never/);
+    assert.match(windowsBuildScript, /build_protected_electron\.js --win dir --publish never/);
     assert.match(windowsBuildScript, /scripts\\build_windows_installer\.js --payload/);
     assert.match(windowsBuildScript, /Setup-!PACKAGE_VERSION!-x64\.exe/);
     assert.doesNotMatch(windowsBuildScript, /NSIS/);

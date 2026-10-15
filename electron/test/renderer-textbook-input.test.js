@@ -11,7 +11,9 @@ function loadRendererTextbookFunctions() {
     const html = fs.readFileSync(path.join(rendererDir, 'index.html'), 'utf8');
     const scripts = [...html.matchAll(/<script\s+src="([^"]+)"><\/script>/g)]
         .map(match => match[1])
-        .filter(script => script !== 'vendor/wavesurfer.min.js' && script !== 'ui-components.js');
+        .filter(script => script !== 'vendor/wavesurfer.min.js'
+            && script !== 'ui-components.js'
+            && script !== 'modules/app/client-code-loader.js');
     const source = scripts
         .map(script => fs.readFileSync(path.join(rendererDir, script), 'utf8'))
         .join('\n')

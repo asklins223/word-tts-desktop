@@ -154,8 +154,8 @@ check_environment() {
     node "$SCRIPT_DIR/scripts/project_version.js" --sync
 
     # electron-builder
-    if [ ! -d "$ELECTRON_DIR/node_modules/electron-builder" ]; then
-        warn "electron-builder 未安装，正在安装..."
+    if [ ! -d "$ELECTRON_DIR/node_modules/electron-builder" ] || [ ! -d "$ELECTRON_DIR/node_modules/javascript-obfuscator" ]; then
+        warn "Electron 构建依赖未安装完整，正在安装..."
         cd "$ELECTRON_DIR"
         npm install
         cd "$SCRIPT_DIR"
@@ -313,7 +313,7 @@ build_electron_app() {
     fi
 
     cd "$ELECTRON_DIR"
-    npx electron-builder --mac "$BUILDER_ARCH_FLAG" \
+    node ../scripts/build_protected_electron.js --mac "$BUILDER_ARCH_FLAG" \
         --publish never \
         -c.mac.minimumSystemVersion="$effective_macos_min"
 
@@ -420,11 +420,8 @@ build_electron_app() {
     log "验证打包 Playwright/Chromium..."
     "$app_path/Contents/Resources/server_backend/server_backend" --smoke-playwright
 
-    # 再验证最终 Electron 壳、主进程、Preload、Renderer 和后端启动协议；
-    # --smoke-test 会强制离线，不登录讯飞、不产生第三方副作用。
-    log "验证打包 Electron 桌面端..."
-    env -u ELECTRON_RUN_AS_NODE -u PLAYWRIGHT_NODEJS_PATH \
-        "$app_path/Contents/MacOS/$PRODUCT_NAME" --smoke-test
+    # Electron 启动门禁由 npm test 中的主进程顺序测试覆盖。正式产物
+    # 不包含任何运行时环境可启用的 smoke 绕过开关。
 
     # ---- 手动创建 DMG（绕过 electron-builder 的 dmgbuild bug） ----
     log "创建 DMG 安装包..."

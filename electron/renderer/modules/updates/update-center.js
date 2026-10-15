@@ -260,7 +260,7 @@ function renderVersionCenter() {
     const overlay = $('update-required-overlay');
     const forcedVisible = Boolean(
         state.isForced
-        && (hasUpdate || (state.version && state.status === 'installing'))
+        && state.version
         && !['disabled', 'idle', 'up-to-date'].includes(state.status),
     );
     const appRoot = $('app');

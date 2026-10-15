@@ -17,7 +17,10 @@ const net = require('net');
 const { pathToFileURL } = require('url');
 const { createNativeFileDialogs } = require('./file-dialogs');
 const { createSourceUploadStaging } = require('./source-staging');
-const { createUpdateManager } = require('./update-manager');
+const { compareVersions, createUpdateManager, deriveUpdatePolicy } = require('./update-manager');
+const { createReleaseMonitor, verifyStartupRelease } = require('./startup-release-check');
+const { createStartupUpdateWindow, runStartupUpdate } = require('./startup-update');
+const { loadProtectedClientAssets } = require('./client-code-protection');
 const { scheduleWindowActivation } = require('./window-activation');
 const {
     newStreamId,
@@ -36,11 +39,19 @@ let serverUrl = null;
 let serverToken = null;
 let serverInstance = null;
 let desktopServicesReady = false;
+let startupReleaseVerified = false;
+let startupUpdateComplete = false;
+let protectedRendererReady = !app.isPackaged;
+let startupUpdateProgress = null;
+let releaseMonitor = null;
+let serviceFailureShutdown = false;
+let verifiedForcedRelease = null;
 let backendReady = false;
 let rendererReady = false;
 let rendererFatalShown = false;
 let updateManager = null;
 let latestUpdateState = null;
+let protectedClientAssets = new Map();
 let cancelMainWindowActivation = () => {};
 let pendingMainWindowActivation = false;
 let pythonStopPromise = null;
@@ -66,10 +77,17 @@ const MAX_WORKFLOW_ARTIFACT_DOWNLOADS = 4;
 const WORKFLOW_ARTIFACT_STREAM_IDLE_TIMEOUT_MS = 90_000;
 const MAX_PENDING_WORKFLOW_EVENT_FRAMES = 512;
 let rendererLifecycleEpoch = 0;
-const isSmokeTest = process.argv.includes('--smoke-test');
+// This stays false in every release build. The protected build script may turn
+// it on only in a separate, non-distributable CI smoke package; runtime flags
+// and environment variables alone must never bypass the online release gate.
+const CI_SMOKE_BUILD = false;
+const isSmokeTest = CI_SMOKE_BUILD
+    && process.argv.includes('--smoke-test')
+    && process.env.GITHUB_ACTIONS === 'true'
+    && process.env.CI === 'true';
 const PRODUCT_NAME = '小猪wordTTS';
 const RELEASES_URL = 'https://github.com/asklins223/word-tts-desktop/releases';
-// 正式 App 默认启用真实讯飞 Provider；只有打包/启动 smoke 明确使用
+// 正式 App 默认启用真实讯飞 Provider；只有独立 CI smoke 包传入
 // --smoke-test 时才强制离线。后端环境变量由这里统一写成 1，避免用户
 // 直接双击安装包时因为没有额外 shell 环境变量而落入“Provider 未启用”。
 const realProviderEnabled = !isSmokeTest;
@@ -178,9 +196,33 @@ function flushAppNotices() {
 }
 
 function sendUpdateState(state) {
-    latestUpdateState = state;
+    let effectiveState = state;
+    if (verifiedForcedRelease) {
+        const meetsRequiredVersion = state?.version
+            && compareVersions(state.version, verifiedForcedRelease.version) >= 0;
+        effectiveState = {
+            ...state,
+            version: meetsRequiredVersion ? state.version : verifiedForcedRelease.version,
+            latestVersion: meetsRequiredVersion ? state.latestVersion : verifiedForcedRelease.version,
+            isForced: true,
+            updateMode: 'force',
+            minimumSupportedVersion: verifiedForcedRelease.updateInfo?.minimumSupportedVersion
+                || state.minimumSupportedVersion
+                || null,
+            updateMessage: state.updateMessage || verifiedForcedRelease.updateInfo?.updateMessage || '',
+        };
+        if (!meetsRequiredVersion) {
+            effectiveState.canDownload = false;
+            effectiveState.canInstall = false;
+            if (['available', 'downloaded', 'up-to-date', 'idle'].includes(effectiveState.status)) {
+                effectiveState.status = 'checking';
+            }
+        }
+    }
+    latestUpdateState = effectiveState;
+    startupUpdateProgress?.update(effectiveState);
     if (rendererReady && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('app-update', state);
+        mainWindow.webContents.send('app-update', effectiveState);
     }
 }
 
@@ -190,6 +232,7 @@ function initializeUpdateManager() {
         appVersion: app.getVersion(),
         isPackaged: app.isPackaged,
         isSmokeTest,
+        enforceStartupUpdates: true,
         platform: process.platform,
         releaseUrl: RELEASES_URL,
         send: sendUpdateState,
@@ -197,7 +240,123 @@ function initializeUpdateManager() {
     latestUpdateState = updateManager.getStatus();
 }
 
+function verifyOnlineRelease() {
+    return verifyStartupRelease({
+        isPackaged: app.isPackaged,
+        isSmokeTest,
+        currentVersion: app.getVersion(),
+        platform: process.platform,
+        architecture: process.arch,
+        releaseUrl: RELEASES_URL,
+    });
+}
+
+function startReleaseMonitor() {
+    if (releaseMonitor || !app.isPackaged || isSmokeTest || isQuitting) return;
+    releaseMonitor = createReleaseMonitor({
+        check: async () => {
+            const release = await verifyOnlineRelease();
+            if (isQuitting) return;
+            if (!release.updateAvailable) {
+                verifiedForcedRelease = null;
+                updateManager.markVerifiedCurrentRelease?.(release.version);
+                return;
+            }
+            const releasePolicy = release.updateAvailable
+                ? deriveUpdatePolicy(release.updateInfo, app.getVersion())
+                : null;
+            verifiedForcedRelease = releasePolicy?.isForced ? release : null;
+            if (!releasePolicy) return;
+            let updateState = updateManager.getStatus();
+            const stateBehindVerifiedRelease = !updateState.version
+                || compareVersions(updateState.version, release.version) < 0;
+            // Do not refresh the update manager while a package is in flight:
+            // its normal check path can replace `downloading`/`installing`
+            // with `checking` and lose the installable lifecycle state.
+            if (updateState.status === 'installing') {
+                if (stateBehindVerifiedRelease && releasePolicy.isForced) {
+                    throw new Error('安装期间线上发布了更高的强制更新，应用已停用。');
+                }
+                if (releasePolicy.isForced) sendUpdateState(updateState);
+                return;
+            }
+            if (updateState.status === 'downloading') {
+                if (stateBehindVerifiedRelease) {
+                    if (releasePolicy.isForced) {
+                        throw new Error('下载期间线上发布了更高的强制更新，应用已停用。');
+                    }
+                    return;
+                }
+                if (releasePolicy.isForced) sendUpdateState(updateState);
+                return;
+            }
+            if (stateBehindVerifiedRelease || (releasePolicy.isForced && !updateState.isForced)) {
+                updateState = await updateManager.acceptVerifiedUpdate(release.updateInfo, {
+                    verifiedArtifactUrl: release.artifactUrl,
+                });
+            }
+            if (releasePolicy.isForced) {
+                sendUpdateState(updateState);
+                const installable = updateState.canDownload
+                    || (updateState.status === 'downloaded' && updateState.canInstall)
+                    || ['downloading', 'installing'].includes(updateState.status);
+                const meetsVerifiedMinimum = updateState.version
+                    && compareVersions(updateState.version, release.version) >= 0;
+                if ((!updateState.isForced && !meetsVerifiedMinimum) || !installable) {
+                    throw new Error('无法应用线上强制更新策略，应用已停用。');
+                }
+            }
+        },
+        onFailure: stopForServiceError,
+    });
+}
+
+async function stopForServiceError(error) {
+    if (serviceFailureShutdown || isQuitting) return;
+    serviceFailureShutdown = true;
+    isQuitting = true;
+    startupReleaseVerified = false;
+    startupUpdateComplete = false;
+    verifiedForcedRelease = null;
+    desktopServicesReady = false;
+    releaseMonitor?.dispose();
+    updateManager?.dispose();
+    cancelMainWindowActivation();
+    console.error(`[main] 运行中服务检查失败: ${error.detail || error.message}`);
+    for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.destroy();
+    }
+    try {
+        await stopPythonServerAsync();
+        dialog.showErrorBox(`${PRODUCT_NAME} 服务错误`, error.message);
+    } finally {
+        app.exit(1);
+    }
+}
+
+function isForcedUpdateRequired() {
+    const state = updateManager?.getStatus?.();
+    return Boolean(verifiedForcedRelease || (state?.isForced && state.version));
+}
+
+async function reconcileVerifiedForcedUpdate() {
+    if (!verifiedForcedRelease || !updateManager) return updateManager?.getStatus?.() || safeUpdateStatus();
+    let state = updateManager.getStatus();
+    if (state.status === 'checking') return state;
+    const behind = !state.version || compareVersions(state.version, verifiedForcedRelease.version) < 0;
+    const sameButNotForced = state.version
+        && compareVersions(state.version, verifiedForcedRelease.version) === 0
+        && !state.isForced;
+    if (behind || sameButNotForced) {
+        state = await updateManager.acceptVerifiedUpdate(verifiedForcedRelease.updateInfo, {
+            verifiedArtifactUrl: verifiedForcedRelease.artifactUrl,
+        });
+    }
+    return state;
+}
+
 function safeUpdateStatus() {
+    if (latestUpdateState) return latestUpdateState;
     return updateManager?.getStatus?.() || {
         status: 'disabled',
         currentVersion: app.getVersion(),
@@ -562,6 +721,9 @@ function waitForServer(timeoutMs = 90000) {
 // ============================================================================
 
 function createWindow() {
+    // Keep the gate at the shared constructor too: activate/relaunch events
+    // must never create a renderer while the startup network check is pending.
+    if (!startupReleaseVerified || !startupUpdateComplete || isQuitting || isForcedUpdateRequired()) return null;
     if (mainWindow && !mainWindow.isDestroyed()) {
         requestMainWindowActivation();
         return mainWindow;
@@ -656,6 +818,13 @@ function createWindow() {
     win.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
         if (!isMainFrame) return;
         rendererLifecycleEpoch += 1;
+        if (app.isPackaged) {
+            protectedRendererReady = false;
+            // A required-update page must remain visible if the user reloads
+            // it; business IPC stays blocked, but the protected loader still
+            // needs to restore the update controls.
+            if (!isSmokeTest && !isForcedUpdateRequired()) win.hide();
+        }
         closeWorkflowStreamsForSender(win.webContents.id, 'renderer-reload');
     });
     win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
@@ -689,6 +858,15 @@ function createWindow() {
 }
 
 function requestMainWindowActivation() {
+    if (isQuitting || isForcedUpdateRequired()) return false;
+    if (!startupReleaseVerified || !startupUpdateComplete) {
+        pendingMainWindowActivation = true;
+        return false;
+    }
+    if (!protectedRendererReady) {
+        pendingMainWindowActivation = true;
+        return false;
+    }
     if (!mainWindow || mainWindow.isDestroyed()) {
         pendingMainWindowActivation = true;
         return false;
@@ -804,12 +982,15 @@ function isAllowedFilePath(filePath) {
     }
 }
 
-function isTrustedRendererEvent(event) {
+function isTrustedRendererEvent(event, { allowRequiredUpdateActions = false } = {}) {
+    if (!startupReleaseVerified || !startupUpdateComplete || isQuitting || serviceFailureShutdown) return false;
     if (!mainWindow || mainWindow.isDestroyed()) return false;
     if (!event?.sender || !event?.senderFrame) return false;
     if (event.sender !== mainWindow.webContents) return false;
     if (event.senderFrame !== mainWindow.webContents.mainFrame) return false;
-    return event.senderFrame.url === RENDERER_ENTRY_URL;
+    if (event.senderFrame.url !== RENDERER_ENTRY_URL) return false;
+    if (!allowRequiredUpdateActions && isForcedUpdateRequired()) return false;
+    return true;
 }
 
 function closeWorkflowSourceFile(state) {
@@ -932,27 +1113,68 @@ function registerIpcHandlers() {
     // 平台专用客户端完成：Windows 启动自绘 Setup.exe，macOS 使用
     // electron-updater；GitHub Release 元数据和文件路径不会暴露给页面脚本。
     ipcMain.handle('update-status', async (event) => {
-        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) return safeUpdateStatus();
         return safeUpdateStatus();
     });
 
     ipcMain.handle('update-check', async (event) => {
-        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
-        return updateManager?.check?.() || safeUpdateStatus();
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) return safeUpdateStatus();
+        const checked = await updateManager?.check?.();
+        return latestUpdateState || checked || safeUpdateStatus();
     });
 
     ipcMain.handle('update-download', async (event) => {
-        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
-        return updateManager?.download?.() || safeUpdateStatus();
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) return safeUpdateStatus();
+        const requiredState = await reconcileVerifiedForcedUpdate();
+        if (verifiedForcedRelease && requiredState?.status === 'checking') return safeUpdateStatus();
+        await updateManager?.download?.();
+        return safeUpdateStatus();
     });
 
     ipcMain.handle('update-install', async (event) => {
-        if (!isTrustedRendererEvent(event)) return safeUpdateStatus();
-        return updateManager?.install?.() || safeUpdateStatus();
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) return safeUpdateStatus();
+        const requiredState = await reconcileVerifiedForcedUpdate();
+        if (verifiedForcedRelease && requiredState?.status === 'checking') return safeUpdateStatus();
+        await updateManager?.install?.();
+        return safeUpdateStatus();
+    });
+
+    ipcMain.handle('load-protected-client-asset', async (event, relativePath) => {
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) {
+            throw new Error('untrusted protected asset sender');
+        }
+        if (typeof relativePath !== 'string' || !/\.(?:js|css|html)\.enc$/i.test(relativePath)
+            || relativePath.split('/').some(part => !part || part === '.' || part === '..')) {
+            throw new Error('invalid protected asset path');
+        }
+        const source = protectedClientAssets.get(relativePath);
+        if (typeof source !== 'string') throw new Error(`protected asset is unavailable: ${relativePath}`);
+        return source;
+    });
+
+    ipcMain.handle('protected-client-assets-ready', async (event) => {
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) {
+            throw new Error('untrusted protected asset readiness sender');
+        }
+        if (app.isPackaged && protectedClientAssets.size === 0) {
+            throw new Error('protected client assets were not decrypted');
+        }
+        protectedRendererReady = true;
+        requestMainWindowActivation();
+        return true;
+    });
+
+    ipcMain.handle('protected-client-assets-failed', async (event, detail) => {
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) {
+            throw new Error('untrusted protected asset failure sender');
+        }
+        const reason = typeof detail === 'string' ? detail.slice(0, 500) : '客户端界面脚本加载失败';
+        await stopForServiceError(new Error(`客户端界面加载失败：${reason}`));
+        return true;
     });
 
     ipcMain.handle('open-update-release', async (event) => {
-        if (!isTrustedRendererEvent(event)) return { success: false, reason: 'untrusted-sender' };
+        if (!isTrustedRendererEvent(event, { allowRequiredUpdateActions: true })) return { success: false, reason: 'untrusted-sender' };
         try {
             await shell.openExternal(RELEASES_URL);
             return { success: true };
@@ -1042,6 +1264,7 @@ function registerIpcHandlers() {
                 pathname: input.pathname,
                 body: input.body,
                 headers: input.headers || {},
+                timeoutMs: input.timeoutMs,
             });
         } catch (error) {
             if (isSmokeTest && smokeExitRequested && ['ECONNRESET', 'ECONNREFUSED', 'EPIPE'].includes(error?.code)) {
@@ -1792,6 +2015,7 @@ if (hasSingleInstanceLock) {
         // still waiting for its backend and has not created the renderer yet.
         // Keep the wake-up request until createWindow() completes instead of
         // silently dropping it.
+        if (isQuitting) return;
         pendingMainWindowActivation = true;
         requestMainWindowActivation();
     });
@@ -1814,6 +2038,42 @@ app.whenReady().then(async () => {
     }
     console.log('[main] Electron app ready');
     smokeLog('app ready');
+    try {
+        const release = await verifyOnlineRelease();
+        if (isQuitting) return;
+        startupReleaseVerified = true;
+        if (release.required) console.log(`[main] 线上安装包检查通过: ${release.version}`);
+        initializeUpdateManager();
+        const mayEnter = await runStartupUpdate({
+            app,
+            dialog,
+            manager: updateManager,
+            release,
+            isQuitting: () => isQuitting,
+            createProgressWindow: () => {
+                startupUpdateProgress = createStartupUpdateWindow({
+                    app,
+                    BrowserWindow,
+                    canCreate: () => startupReleaseVerified && !isQuitting,
+                });
+                return startupUpdateProgress;
+            },
+        });
+        startupUpdateProgress = null;
+        if (!mayEnter || isQuitting) return;
+        if (app.isPackaged) {
+            protectedClientAssets = await loadProtectedClientAssets(path.join(__dirname, 'renderer'));
+        }
+        startupUpdateComplete = true;
+    } catch (error) {
+        startupReleaseVerified = false;
+        desktopServicesReady = false;
+        isQuitting = true;
+        console.error(`[main] 启动服务检查失败: ${error.detail || error.message}`);
+        dialog.showErrorBox(`${PRODUCT_NAME} 服务错误`, error.message);
+        app.exit(1);
+        return;
+    }
     backendReady = false;
     if (isSmokeTest) {
         // CI 中若渲染器或 Electron 子进程完全不响应，也必须在有限时间内
@@ -1831,7 +2091,6 @@ app.whenReady().then(async () => {
     serverInstance = crypto.createHash('sha256').update(serverToken).digest('hex').slice(0, 16);
     console.log(`[main] 已分配独立后端地址: ${serverUrl}`);
 
-    initializeUpdateManager();
     registerIpcHandlers();
     desktopServicesReady = true;
     startPythonServer();
@@ -1848,6 +2107,11 @@ app.whenReady().then(async () => {
                 await verifyRendererSmokeTest(smokeWindow, SMOKE_RENDERER_TIMEOUT_MS);
                 console.log('[main] 桌面界面端到端冒烟测试通过');
                 smokeLog('renderer smoke passed');
+                if (process.argv.includes('--smoke-keep-open')) {
+                    if (smokeWatchdog) clearTimeout(smokeWatchdog);
+                    smokeWatchdog = null;
+                    return;
+                }
                 exitSmokeTest(0, smokeWindow);
             } catch (error) {
                 console.error('[main] 桌面界面端到端冒烟测试失败:', error.message);
@@ -1873,7 +2137,7 @@ app.whenReady().then(async () => {
             tone: 'danger',
         });
         createWindow();
-        updateManager?.start?.();
+        startReleaseMonitor();
         return;
     }
 
@@ -1882,7 +2146,7 @@ app.whenReady().then(async () => {
     // received during bootstrap is represented by pendingMainWindowActivation
     // and is consumed by the renderer load handler as well.
     if (pendingMainWindowActivation) requestMainWindowActivation();
-    updateManager?.start?.();
+    startReleaseMonitor();
 }).catch(error => {
     // Failures before waitForServer's recovery path (for example, inability
     // to allocate a local port or initialize the update manager) must not
@@ -1905,12 +2169,16 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+    // A completed optional-update dialog may close before backend bootstrap.
+    // Closing the progress window manually still quits via its own handler.
+    if (serviceFailureShutdown || (!startupUpdateComplete && !isQuitting)) return;
     app.quit();
 });
 
 // 在应用退出前确保 Python 进程被终止，防止僵尸进程
 app.on('will-quit', (event) => {
     isQuitting = true;
+    releaseMonitor?.dispose();
     updateManager?.dispose?.();
     workflowSseStreams.forEach(({ stream }) => stream.close());
     workflowSseStreams.clear();
@@ -1918,6 +2186,7 @@ app.on('will-quit', (event) => {
     workflowArtifactStreams.clear();
     workflowArtifactDownloads.forEach(({ controller }) => controller.abort());
     workflowArtifactDownloads.clear();
+    protectedClientAssets.clear();
     cancelWorkflowSourceUploads();
     closeWorkflowSourceFiles();
     void sourceUploadStaging?.disposeAll('app-quit');
@@ -1933,7 +2202,7 @@ app.on('will-quit', (event) => {
 
 app.on('activate', () => {
     // macOS 可能在端口分配和 IPC 注册完成前发出 activate；此时由启动流程稍后建窗。
-    if (!desktopServicesReady) return;
+    if (!startupReleaseVerified || !startupUpdateComplete || !desktopServicesReady || isQuitting || isForcedUpdateRequired()) return;
     if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
     } else {

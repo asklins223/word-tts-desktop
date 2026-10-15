@@ -454,7 +454,7 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
             if recording_source.get(key) is True:
                 recording[key] = True
         block_kind = _text(recording_source.get("block_kind"), limit=32)
-        if block_kind in {"table", "drawing_group"}:
+        if block_kind in {"table", "drawing_group", "embedded_image"}:
             recording["block_kind"] = block_kind
         block_index = recording_source.get("block_index")
         if isinstance(block_index, int) and not isinstance(block_index, bool) and block_index >= 0:
@@ -569,7 +569,7 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
         if recording_source.get("block_image_required") is True:
             recording["block_image_required"] = True
         block_kind = _text(recording_source.get("block_kind"), limit=32)
-        if block_kind in {"table", "drawing_group"}:
+        if block_kind in {"table", "drawing_group", "embedded_image"}:
             recording["block_kind"] = block_kind
         block_index = recording_source.get("block_index")
         if isinstance(block_index, int) and not isinstance(block_index, bool) and block_index >= 0:
@@ -1463,7 +1463,7 @@ def _record_builder(
         selector.get("block_kind") if isinstance(selector, Mapping) else "",
         limit=32,
     )
-    if block_kind in {"table", "drawing_group"}:
+    if block_kind in {"table", "drawing_group", "embedded_image"}:
         value["recording"]["block_kind"] = block_kind
     block_index = selector.get("block_index") if isinstance(selector, Mapping) else None
     if isinstance(block_index, int) and not isinstance(block_index, bool) and block_index >= 0:

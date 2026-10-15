@@ -20,7 +20,7 @@ from workflow.source_imports import SourceImportService
 
 
 class ApplicationServiceTests(unittest.TestCase):
-    def test_block_image_contract_accepts_positioned_drawing_groups(self) -> None:
+    def test_block_image_contract_accepts_drawing_and_inline_images(self) -> None:
         parsed = ParsedDocument(
             schema_version="1",
             parser_version="1",
@@ -42,20 +42,41 @@ class ApplicationServiceTests(unittest.TestCase):
                         },
                     },
                 },
-            ),),
+            ), ParsedItem(
+                identity_key="inline-image:1",
+                item_type="信息转述录音稿",
+                sequence=1,
+                normalized_content="Inline image source.",
+                metadata={
+                    "page_input": {
+                        "recording": {
+                            "block_image_required": True,
+                            "block_kind": "embedded_image",
+                            "block_index": 0,
+                        },
+                    },
+                },
+            )),
         )
 
         self.assertEqual(
             WorkflowApplicationService._block_image_requests(parsed),
-            [("drawing_group", 0)],
+            [("drawing_group", 0), ("embedded_image", 0)],
         )
         updated = WorkflowApplicationService._with_block_image_artifacts(
             parsed,
-            {("drawing_group", 0): "artifact-drawing"},
+            {
+                ("drawing_group", 0): "artifact-drawing",
+                ("embedded_image", 0): "artifact-inline-image",
+            },
         )
         self.assertEqual(
             updated.items[0].metadata["page_input"]["recording"]["image_artifact_id"],
             "artifact-drawing",
+        )
+        self.assertEqual(
+            updated.items[1].metadata["page_input"]["recording"]["image_artifact_id"],
+            "artifact-inline-image",
         )
 
     def test_parse_reuses_a_versioned_table_image_artifact(self) -> None:

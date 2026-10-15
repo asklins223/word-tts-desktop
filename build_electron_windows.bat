@@ -121,10 +121,17 @@ if !errorlevel! neq 0 (
 
 REM ---- electron-builder ----
 if not exist "%ELECTRON_DIR%\node_modules\electron-builder" (
-    call :warn "electron-builder 未安装，正在安装..."
+    call :warn "Electron 构建依赖未安装完整，正在安装..."
     pushd "%ELECTRON_DIR%"
     call npm install
     popd
+) else (
+    if not exist "%ELECTRON_DIR%\node_modules\javascript-obfuscator" (
+        call :warn "Electron 构建依赖未安装完整，正在安装..."
+        pushd "%ELECTRON_DIR%"
+        call npm install
+        popd
+    )
 )
 
 REM 此命令幂等，只会补齐 Playwright 1.56.0 所要求的准确 Chromium revision。
@@ -206,6 +213,7 @@ if not exist "%ELECTRON_DIR%\server_backend_build\server_backend\server_backend.
 REM 清理旧的 release 目录（仅清理 win 相关）
 call :log "清理旧构建产物..."
 if exist "%ELECTRON_DIR%\release\win-unpacked" rmdir /s /q "%ELECTRON_DIR%\release\win-unpacked"
+if exist "%ELECTRON_DIR%\release-smoke" rmdir /s /q "%ELECTRON_DIR%\release-smoke"
 del /q "%ELECTRON_DIR%\release\!PRODUCT_NAME!-Setup-*.exe" >nul 2>&1
 
 set "PACKAGE_VERSION="
@@ -216,7 +224,7 @@ if not defined PACKAGE_VERSION (
 )
 
 pushd "%ELECTRON_DIR%"
-call npx electron-builder --win dir --publish never
+call node ..\scripts\build_protected_electron.js --win dir --publish never
 set "BUILD_EXIT=!errorlevel!"
 popd
 
@@ -253,19 +261,38 @@ if !errorlevel! neq 0 (
 )
 call :log "打包后端 Playwright/Chromium 冒烟测试通过"
 
-REM 验证最终 Electron 壳、主进程、Preload、Renderer 和后端启动协议。
-REM --smoke-test 强制离线，不登录讯飞、不产生第三方副作用。
-set "PACKAGED_ELECTRON=%ELECTRON_DIR%\release\win-unpacked\!PRODUCT_NAME!.exe"
+REM 单独构建不分发的 CI smoke 包；发布包本身始终执行线上启动门禁。
+pushd "%ELECTRON_DIR%"
+call node ..\scripts\build_protected_electron.js --ci-smoke-build --win dir --publish never
+set "BUILD_EXIT=!errorlevel!"
+popd
+if !BUILD_EXIT! neq 0 (
+    call :err "electron-builder CI smoke 包打包失败 (exit code: !BUILD_EXIT!)"
+    exit /b 1
+)
+REM --smoke-test 只在 release-smoke 构建标记中有效，不会写入发布包。
+set "PACKAGED_ELECTRON=%ELECTRON_DIR%\release-smoke\win-unpacked\!PRODUCT_NAME!.exe"
 if not exist "!PACKAGED_ELECTRON!" (
     call :err "未找到最终 Electron 可执行文件，无法执行桌面冒烟"
     exit /b 1
 )
 call :log "验证打包 Electron 桌面端..."
+set "WORDTTS_BUILD_PREV_GITHUB_ACTIONS=%GITHUB_ACTIONS%"
+set "WORDTTS_BUILD_PREV_CI=%CI%"
+set "GITHUB_ACTIONS=true"
+set "CI=true"
 start "" /wait "!PACKAGED_ELECTRON!" --smoke-test
-if !errorlevel! neq 0 (
+set "SMOKE_EXIT=!errorlevel!"
+set "GITHUB_ACTIONS=%WORDTTS_BUILD_PREV_GITHUB_ACTIONS%"
+set "CI=%WORDTTS_BUILD_PREV_CI%"
+set "WORDTTS_BUILD_PREV_GITHUB_ACTIONS="
+set "WORDTTS_BUILD_PREV_CI="
+if !SMOKE_EXIT! neq 0 (
+    set "SMOKE_EXIT="
     call :err "打包 Electron 桌面冒烟失败"
     exit /b 1
 )
+set "SMOKE_EXIT="
 call :log "打包 Electron 桌面冒烟测试通过"
 
 REM 只接受当前 version.json 对应的自绘 Setup.exe；win-unpacked 目录

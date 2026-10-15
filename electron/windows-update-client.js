@@ -13,12 +13,17 @@ const {
     computeOperations,
     OperationKind,
 } = require('./node_modules/electron-updater/out/differentialDownloader/downloadPlanBuilder');
+const { fetchTrustedReleaseUrl, isTrustedReleaseUrl } = require('./release-network');
 
 const DEFAULT_METADATA_NAME = 'latest-win.json';
 const DEFAULT_BLOCKMAP_SUFFIX = '.blockmap';
 const UPDATE_ERROR_LIMIT = 500;
 const UPDATE_METADATA_TIMEOUT_MS = 15_000;
 const BLOCKMAP_MAX_BYTES = 8 * 1024 * 1024;
+const UPDATE_METADATA_MAX_BYTES = 1024 * 1024;
+const MAX_UPDATE_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_VERSION_LENGTH = 128;
+const MAX_BLOCK_MAP_CHUNKS = 100_000;
 const DIFFERENTIAL_FALLBACK_THRESHOLD = 0.95;
 const NUMERIC_IDENTIFIER = '(?:0|[1-9]\\d*)';
 const NON_NUMERIC_IDENTIFIER = '(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)';
@@ -32,6 +37,12 @@ const VERSION_PATTERN = new RegExp(
 
 function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isValidSha512(value) {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9+/]{86}==$/.test(value)) return false;
+    const decoded = Buffer.from(value, 'base64');
+    return decoded.length === 64 && decoded.toString('base64') === value;
 }
 
 function normalizeError(error, fallback = 'Windows 更新服务暂时不可用') {
@@ -82,22 +93,35 @@ function buildWindowsMetadataUrl(releaseUrl, metadataName = DEFAULT_METADATA_NAM
 function buildWindowsArtifactUrl(releaseUrl, tag, artifactName) {
     const rawName = String(artifactName || '').trim();
     if (!rawName) return null;
-    if (/^https?:\/\//i.test(rawName)) return rawName;
-    if (/[\\/]/.test(rawName.split(/[?#]/, 1)[0])) return null;
     try {
         const releasesUrl = new URL(String(releaseUrl || ''));
         const releaseIndex = releasesUrl.pathname.indexOf('/releases');
-        if (releaseIndex < 0) return null;
+        if (releasesUrl.protocol !== 'https:' || releaseIndex < 0) return null;
         const repositoryPath = releasesUrl.pathname.slice(0, releaseIndex);
+        const releaseTag = String(tag || '').trim();
+        if (!repositoryPath || !VERSION_PATTERN.test(releaseTag.replace(/^v/i, ''))) return null;
+        if (/^https?:\/\//i.test(rawName)) {
+            const artifactUrl = new URL(rawName);
+            if (artifactUrl.protocol !== 'https:'
+                || artifactUrl.origin !== releasesUrl.origin
+                || !artifactUrl.pathname.startsWith(`${repositoryPath}/releases/download/`)
+                || artifactUrl.username
+                || artifactUrl.password) return null;
+            const artifactFileName = decodeURIComponent(artifactUrl.pathname.split('/').pop() || '');
+            const expectedPath = `${repositoryPath}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(artifactFileName)}`;
+            if (artifactUrl.pathname !== expectedPath) return null;
+            return artifactUrl.toString();
+        }
+        if (/[\\/]/.test(rawName.split(/[?#]/, 1)[0])) return null;
         const filePath = rawName
             .split(/[?#]/, 1)[0]
             .split('/')
             .filter(Boolean)
             .map(segment => encodeURIComponent(decodeURIComponent(segment)))
             .join('/');
-        const releaseTag = encodeURIComponent(String(tag || '').trim());
-        if (!repositoryPath || !releaseTag || !filePath) return null;
-        return `${releasesUrl.origin}${repositoryPath}/releases/download/${releaseTag}/${filePath}`;
+        const encodedTag = encodeURIComponent(releaseTag);
+        if (!filePath) return null;
+        return `${releasesUrl.origin}${repositoryPath}/releases/download/${encodedTag}/${filePath}`;
     } catch (_) {
         return null;
     }
@@ -193,7 +217,8 @@ function normalizeWindowsMetadata(payload) {
     const version = String(payload.version || '').trim().replace(/^v/i, '');
     const tag = String(payload.tag || `v${version}`).trim();
     const normalizedTag = tag.replace(/^v/i, '');
-    const expectedArtifactName = VERSION_PATTERN.test(version)
+    const validVersion = version.length <= MAX_VERSION_LENGTH && VERSION_PATTERN.test(version);
+    const expectedArtifactName = validVersion
         ? new RegExp(
             '^(?:wordTTS|小猪wordTTS)-Setup-' + escapeRegExp(version) + '-x64\\.exe$',
             'i',
@@ -221,14 +246,16 @@ function normalizeWindowsMetadata(payload) {
                 && expectedArtifactName.test(artifactName)
                 && isSafeArtifactReference(file.url)
                 && file.url.toLowerCase().split(/[?#]/, 1)[0].endsWith('.exe')
-                && file.sha512
+                && isValidSha512(file.sha512)
                 && Number.isSafeInteger(file.size)
-                && file.size > 0,
+                && file.size > 0
+                && file.size <= MAX_UPDATE_ARTIFACT_BYTES,
             );
         });
-    if (!VERSION_PATTERN.test(version)
+    if (!validVersion || tag.length > MAX_VERSION_LENGTH + 1
         || (payload.platform !== undefined && payload.platform !== 'win32')
         || !artifact
+        || normalizedTag.length > MAX_VERSION_LENGTH
         || !VERSION_PATTERN.test(normalizedTag)
         || normalizedTag !== version
     ) {
@@ -268,18 +295,37 @@ async function fetchJson(url, fetchImpl = globalThis.fetch, timeoutMs = UPDATE_M
     );
     timeout.unref?.();
     try {
-        const response = await fetchImpl(url, {
+        const response = await fetchTrustedReleaseUrl(url, {
             method: 'GET',
-            redirect: 'follow',
             cache: 'no-store',
             ...(controller ? { signal: controller.signal } : {}),
-        });
+        }, fetchImpl);
         if (!response || !response.ok) {
+            try { await response?.body?.cancel?.(); } catch (_) { /* best effort */ }
             const error = new Error(`更新元数据请求失败（HTTP ${Number(response?.status) || 0}）。`);
             error.code = 'UPDATE_METADATA_HTTP_ERROR';
             throw error;
         }
-        return normalizeWindowsMetadata(await response.json());
+        if (response.url && !isTrustedReleaseUrl(url, response.url)) {
+            try { await response.body?.cancel?.(); } catch (_) { /* best effort */ }
+            throw Object.assign(new Error('更新元数据来自未经授权的地址。'), { code: 'UNTRUSTED_RELEASE_REDIRECT' });
+        }
+        const declaredSize = Number(response.headers?.get?.('content-length'));
+        if (Number.isFinite(declaredSize) && declaredSize > UPDATE_METADATA_MAX_BYTES) {
+            try { await response.body?.cancel?.(); } catch (_) { /* best effort */ }
+            throw Object.assign(new Error('更新元数据超过允许大小。'), { code: 'UPDATE_METADATA_TOO_LARGE' });
+        }
+        const bytes = await responseToBuffer(response, UPDATE_METADATA_MAX_BYTES);
+        let payload;
+        try {
+            payload = JSON.parse(bytes.toString('utf8'));
+        } catch (error) {
+            throw Object.assign(new Error('更新元数据格式不正确。'), {
+                code: 'INVALID_UPDATE_METADATA',
+                cause: error,
+            });
+        }
+        return normalizeWindowsMetadata(payload);
     } finally {
         clearTimeout(timeout);
     }
@@ -328,7 +374,16 @@ async function verifyFileIntegrity(filePath, expected, fsImpl = fs, fsPromisesIm
 }
 
 async function downloadResponseToFile(response, destination, expectedSize, onProgress, fsImpl = fs) {
-    const file = fsImpl.createWriteStream(destination);
+    const requiredSize = Number(expectedSize);
+    const declaredSize = Number(response?.headers?.get?.('content-length'));
+    if (requiredSize > 0 && Number.isFinite(declaredSize) && declaredSize > 0
+        && declaredSize !== requiredSize) {
+        try { await response.body?.cancel?.(); } catch (_) { /* best effort */ }
+        throw Object.assign(new Error('更新安装包大小校验失败。'), { code: 'UPDATE_SIZE_MISMATCH' });
+    }
+    // Exclusive creation prevents a pre-planted symlink in the shared temp
+    // directory from redirecting the download into another file.
+    const file = fsImpl.createWriteStream(destination, { flags: 'wx', mode: 0o600 });
     // Start watching the writable stream before the first chunk is written.
     // A disk-full/permission error can otherwise happen between two network
     // chunks and become an unhandled `error` event while the downloader is
@@ -342,6 +397,7 @@ async function downloadResponseToFile(response, destination, expectedSize, onPro
     const hash = crypto.createHash('sha512');
     const startedAt = Date.now();
     let transferred = 0;
+    let cancelRead = () => response?.body?.cancel?.();
     const totalFromHeaders = Number(response?.headers?.get?.('content-length')) || 0;
     const total = expectedSize > 0 ? expectedSize : totalFromHeaders;
     const emitProgress = () => {
@@ -362,10 +418,14 @@ async function downloadResponseToFile(response, destination, expectedSize, onPro
     try {
         if (response?.body?.getReader) {
             const reader = response.body.getReader();
+            cancelRead = () => reader.cancel();
             while (true) {
                 const part = await Promise.race([reader.read(), streamFailure]);
                 if (part.done) break;
                 const chunk = Buffer.from(part.value);
+                if (requiredSize > 0 && transferred + chunk.length > requiredSize) {
+                    throw Object.assign(new Error('更新安装包大小校验失败。'), { code: 'UPDATE_SIZE_MISMATCH' });
+                }
                 hash.update(chunk);
                 transferred += chunk.length;
                 await writeChunk(file, chunk, streamFailure);
@@ -373,10 +433,14 @@ async function downloadResponseToFile(response, destination, expectedSize, onPro
             }
         } else if (response?.body && Symbol.asyncIterator in Object(response.body)) {
             const reader = response.body[Symbol.asyncIterator]();
+            cancelRead = () => reader.return?.();
             while (true) {
                 const part = await Promise.race([reader.next(), streamFailure]);
                 if (part.done) break;
                 const chunk = Buffer.from(part);
+                if (requiredSize > 0 && transferred + chunk.length > requiredSize) {
+                    throw Object.assign(new Error('更新安装包大小校验失败。'), { code: 'UPDATE_SIZE_MISMATCH' });
+                }
                 hash.update(chunk);
                 transferred += chunk.length;
                 await writeChunk(file, chunk, streamFailure);
@@ -384,6 +448,9 @@ async function downloadResponseToFile(response, destination, expectedSize, onPro
             }
         } else if (typeof response?.arrayBuffer === 'function') {
             const chunk = Buffer.from(await response.arrayBuffer());
+            if (requiredSize > 0 && chunk.length > requiredSize) {
+                throw Object.assign(new Error('更新安装包大小校验失败。'), { code: 'UPDATE_SIZE_MISMATCH' });
+            }
             hash.update(chunk);
             transferred = chunk.length;
             await writeChunk(file, chunk, streamFailure);
@@ -393,6 +460,7 @@ async function downloadResponseToFile(response, destination, expectedSize, onPro
         }
         await closeWriteStream(file, fileFinished);
     } catch (error) {
+        try { await cancelRead?.(); } catch (_) { /* best effort */ }
         file.destroy();
         await fileFinished.catch(() => {});
         throw error;
@@ -405,6 +473,11 @@ async function downloadResponseToFile(response, destination, expectedSize, onPro
 }
 
 async function responseToBuffer(response, maxBytes = BLOCKMAP_MAX_BYTES) {
+    const declaredSize = Number(response?.headers?.get?.('content-length'));
+    if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+        try { await response.body?.cancel?.(); } catch (_) { /* best effort */ }
+        throw Object.assign(new Error('更新响应超过允许大小。'), { code: 'UPDATE_RESPONSE_TOO_LARGE' });
+    }
     const chunks = [];
     let total = 0;
     const append = value => {
@@ -417,17 +490,29 @@ async function responseToBuffer(response, maxBytes = BLOCKMAP_MAX_BYTES) {
     };
     if (response?.body?.getReader) {
         const reader = response.body.getReader();
-        while (true) {
-            const part = await reader.read();
-            if (part.done) break;
-            append(part.value);
+        try {
+            while (true) {
+                const part = await reader.read();
+                if (part.done) break;
+                append(part.value);
+            }
+        } catch (error) {
+            try { await reader.cancel(); } catch (_) { /* best effort */ }
+            throw error;
+        } finally {
+            reader.releaseLock?.();
         }
     } else if (response?.body && Symbol.asyncIterator in Object(response.body)) {
         const reader = response.body[Symbol.asyncIterator]();
-        while (true) {
-            const part = await reader.next();
-            if (part.done) break;
-            append(part.value);
+        try {
+            while (true) {
+                const part = await reader.next();
+                if (part.done) break;
+                append(part.value);
+            }
+        } catch (error) {
+            try { await reader.return?.(); } catch (_) { /* best effort */ }
+            throw error;
         }
     } else if (typeof response?.arrayBuffer === 'function') {
         append(await response.arrayBuffer());
@@ -445,6 +530,9 @@ function validateBlockMap(blockMap, expectedSize, label) {
     if (!file || !Array.isArray(file.sizes) || !Array.isArray(file.checksums)
         || file.sizes.length === 0 || file.sizes.length !== file.checksums.length) {
         throw Object.assign(new Error(`${label}缺少有效分块信息。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
+    }
+    if (file.sizes.length > MAX_BLOCK_MAP_CHUNKS) {
+        throw Object.assign(new Error(`${label}包含过多分块。`), { code: 'UPDATE_BLOCKMAP_INVALID' });
     }
     const offset = Number(file.offset || 0);
     if (!Number.isSafeInteger(offset) || offset < 0) {
@@ -467,20 +555,24 @@ function validateBlockMap(blockMap, expectedSize, label) {
 }
 
 async function fetchBlockMap(url, fetchImpl, signal = null) {
-    const response = await fetchImpl(url, {
+    const response = await fetchTrustedReleaseUrl(url, {
         method: 'GET',
-        redirect: 'follow',
         cache: 'no-store',
         ...(signal ? { signal } : {}),
-    });
+    }, fetchImpl);
+    if (response?.url && !isTrustedReleaseUrl(url, response.url)) {
+        try { await response.body?.cancel?.(); } catch (_) { /* best effort */ }
+        throw Object.assign(new Error('更新差分索引来自未经授权的地址。'), { code: 'UNTRUSTED_RELEASE_REDIRECT' });
+    }
     if (!response || !response.ok) {
+        try { await response?.body?.cancel?.(); } catch (_) { /* best effort */ }
         throw Object.assign(new Error(`更新差分索引请求失败（HTTP ${Number(response?.status) || 0}）。`), {
             code: 'UPDATE_BLOCKMAP_HTTP_ERROR',
         });
     }
     let bytes = await responseToBuffer(response);
     try {
-        bytes = zlib.gunzipSync(bytes);
+        bytes = zlib.gunzipSync(bytes, { maxOutputLength: BLOCKMAP_MAX_BYTES });
     } catch (error) {
         // A few self-hosted mirrors serve the JSON sidecar uncompressed. Keep
         // accepting that form, but reject arbitrary binary data below.
@@ -503,13 +595,17 @@ async function fetchBlockMap(url, fetchImpl, signal = null) {
 
 async function fetchRange(url, start, end, fetchImpl, signal = null) {
     if (end <= start) return Buffer.alloc(0);
-    const response = await fetchImpl(url, {
+    const response = await fetchTrustedReleaseUrl(url, {
         method: 'GET',
-        redirect: 'follow',
         headers: { Range: `bytes=${start}-${end - 1}` },
         ...(signal ? { signal } : {}),
-    });
+    }, fetchImpl);
+    if (response?.url && !isTrustedReleaseUrl(url, response.url)) {
+        try { await response.body?.cancel?.(); } catch (_) { /* best effort */ }
+        throw Object.assign(new Error('更新分块来自未经授权的地址。'), { code: 'UNTRUSTED_RELEASE_REDIRECT' });
+    }
     if (!response || Number(response.status) !== 206) {
+        try { await response?.body?.cancel?.(); } catch (_) { /* best effort */ }
         throw Object.assign(new Error('更新服务器不支持分块下载。'), { code: 'UPDATE_RANGE_UNSUPPORTED' });
     }
     const bytes = await responseToBuffer(response, end - start);
@@ -548,7 +644,7 @@ async function writeDifferentialFile({
     signal,
 }) {
     const oldHandle = await fsPromisesImpl.open(oldPath, 'r');
-    const file = fsImpl.createWriteStream(destination);
+    const file = fsImpl.createWriteStream(destination, { flags: 'wx', mode: 0o600 });
     const fileFinished = finished(file, { cleanup: true });
     const streamFailure = fileFinished.then(
         () => new Promise(() => {}),
@@ -736,7 +832,7 @@ function createWindowsUpdateClient(options = {}) {
         const url = buildWindowsArtifactUrl(releaseUrl, normalized.tag, artifact.url);
         if (!url) throw Object.assign(new Error('无法生成 Windows 更新下载地址。'), { code: 'UPDATE_ARTIFACT_URL_INVALID' });
         await fspImpl.mkdir(tempDirectory, { recursive: true });
-        const destination = path.join(tempDirectory, `wordtts-update-${normalized.version}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.exe`);
+        const destination = path.join(tempDirectory, `wordtts-update-${normalized.version}-${Date.now()}-${crypto.randomBytes(16).toString('hex')}.exe`);
         const downloadController = typeof AbortController === 'function' ? new AbortController() : null;
         activeDownloadController = downloadController;
         let committed = false;
@@ -765,12 +861,16 @@ function createWindowsUpdateClient(options = {}) {
                 }
                 return differentialPath;
             }
-            const response = await fetchImpl(url, {
+            const response = await fetchTrustedReleaseUrl(url, {
                 method: 'GET',
-                redirect: 'follow',
                 ...(downloadController ? { signal: downloadController.signal } : {}),
-            });
+            }, fetchImpl);
+            if (response?.url && !isTrustedReleaseUrl(url, response.url)) {
+                try { await response.body?.cancel?.(); } catch (_) { /* best effort */ }
+                throw Object.assign(new Error('更新安装包来自未经授权的地址。'), { code: 'UNTRUSTED_RELEASE_REDIRECT' });
+            }
             if (!response || !response.ok) {
+                try { await response?.body?.cancel?.(); } catch (_) { /* best effort */ }
                 throw Object.assign(new Error(`更新安装包下载失败（HTTP ${Number(response?.status) || 0}）。`), { code: 'UPDATE_DOWNLOAD_HTTP_ERROR' });
             }
             const result = await downloadResponseToFile(response, destination, Number(artifact.size) || 0, onProgress, fsImpl);

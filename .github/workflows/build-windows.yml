@@ -241,7 +241,7 @@ jobs:
 
       - name: Package Electron app directory
         working-directory: electron
-        run: npx electron-builder --win dir --publish never
+        run: node ../scripts/build_protected_electron.js --win dir --publish never
         env:
           # 未配置密钥时生成未签名测试包；配置后自动生成 Authenticode 签名包。
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
@@ -279,17 +279,31 @@ jobs:
             --version $env:UPDATE_VERSION
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Package separate Electron CI smoke app
+        working-directory: electron
+        run: node ../scripts/build_protected_electron.js --ci-smoke-build --win dir --publish never
+        env:
+          # The smoke-only package is written to release-smoke and is never
+          # included in the uploaded release artifact.
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+
+      - name: Build disposable CI smoke installer
+        run: node scripts/build_windows_installer.js --payload electron/release-smoke/win-unpacked --output-dir electron/release-smoke
+
       - name: Verify unpacked desktop artifact (local-only)
         shell: pwsh
         env:
+          CI: 'true'
           # Keep the Electron smoke log in the uploadable runner temp folder.
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: |
-          # 这里只验证打包文件存在；不启动页面，不登录讯飞，
-          # 不访问第三方页面，不执行真实 Provider smoke。
-          $exe = Resolve-Path "electron/release/win-unpacked/小猪wordTTS.exe"
-          $backend = Resolve-Path "electron/release/win-unpacked/resources/server_backend/server_backend.exe"
+          # 使用独立的 CI smoke 包验证 Electron 页面和本地后端启动；
+          # 不登录讯飞、不访问第三方页面，也不执行真实 Provider smoke。
+          $exe = Resolve-Path "electron/release-smoke/win-unpacked/小猪wordTTS.exe"
+          $backend = Resolve-Path "electron/release-smoke/win-unpacked/resources/server_backend/server_backend.exe"
           if (-not (Test-Path $exe)) { Write-Error "未找到 Electron 可执行文件"; exit 1 }
           if (-not (Test-Path $backend)) { Write-Error "未找到打包后端可执行文件"; exit 1 }
           Write-Host "Electron 与后端打包文件校验通过"
@@ -382,6 +396,7 @@ jobs:
         shell: pwsh
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.version }}
+          CI: 'true'
           PYTHONUTF8: '1'
           PYTHONIOENCODING: 'utf-8'
           # Keep deferred-uninstall diagnostics in the same runner temp
@@ -391,7 +406,7 @@ jobs:
           TMP: ${{ runner.temp }}
         run: |
           $installerName = "小猪wordTTS-Setup-$env:UPDATE_VERSION-x64.exe"
-          $installer = Get-Item -LiteralPath (Join-Path "electron/release" $installerName) -ErrorAction SilentlyContinue
+          $installer = Get-Item -LiteralPath (Join-Path "electron/release-smoke" $installerName) -ErrorAction SilentlyContinue
           if (-not $installer) {
             Write-Error "未找到本次版本的自绘安装包: $installerName"
             exit 1
@@ -497,7 +512,7 @@ jobs:
               public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
           }
           '@
-            $foregroundProcess = Start-Process -FilePath $appExe -WorkingDirectory $installDir -WindowStyle Normal -PassThru
+            $foregroundProcess = Start-Process -FilePath $appExe -ArgumentList "--smoke-test --smoke-keep-open" -WorkingDirectory $installDir -WindowStyle Normal -PassThru
             $foregroundValidated = $false
             $foregroundDeadline = (Get-Date).AddSeconds(90)
             try {

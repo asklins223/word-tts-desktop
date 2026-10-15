@@ -7,7 +7,10 @@ let activeAudioImport = null;
 let audioImportQuestionPicker = null;
 let activeAudioImportPreview = null;
 let audioImportPreviewToken = 0;
+let audioImportAnalysisProgressToken = 0;
+let audioImportAnalysisProgressTimer = null;
 const AUDIO_IMPORT_PREVIEW_MAX_BYTES = 64 * 1024 * 1024;
+const AUDIO_IMPORT_PROGRESS_POLL_MS = 450;
 const AUDIO_IMPORT_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.zip']);
 const AUDIO_IMPORT_FILENAME_COLLATOR = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
 
@@ -86,6 +89,60 @@ function safeAudioImportFileSize(bytes) {
     const value = Number(bytes) || 0;
     if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateAudioImportModeUI() {
+    const state = activeAudioImport;
+    if (!state) return;
+    const mode = state.mode === 'continuous' ? 'continuous' : 'files';
+    const continuous = mode === 'continuous';
+    document.querySelectorAll('[data-audio-import-mode]').forEach(button => {
+        const selected = button.dataset.audioImportMode === mode;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+        button.disabled = Boolean(state.busy || state.commitSucceeded);
+    });
+    const title = $('audio-import-drop-title');
+    const hint = $('audio-import-drop-hint');
+    const zone = $('audio-import-dropzone');
+    const folderButton = $('audio-import-folder-btn');
+    if (title) title.textContent = continuous ? '拖入一整段音频' : '拖入分音频、文件夹或 ZIP';
+    if (hint) hint.textContent = continuous
+        ? '只选一个完整录音；系统会跳过中文提示，识别并切出与题目匹配的英文片段。'
+        : '支持 MP3、WAV、M4A、AAC、OGG、OPUS、FLAC；也可以选择整个文件夹或 ZIP。';
+    if (zone) zone.setAttribute('aria-label', continuous ? '拖入一整段音频' : '拖入分音频、文件夹或 ZIP');
+    if (folderButton) folderButton.hidden = continuous;
+    const selectButton = $('audio-import-select-btn');
+    if (selectButton) selectButton.textContent = state.files.length
+        ? (continuous ? '替换整段音频' : '替换音频组')
+        : (continuous ? '选择整段音频' : '选择音频或 ZIP');
+}
+
+async function setAudioImportMode(mode) {
+    const state = activeAudioImport;
+    const next = mode === 'continuous' ? 'continuous' : 'files';
+    if (!state || state.busy || state.commitSucceeded || state.mode === next) return;
+    state.busy = true;
+    updateAudioImportActions();
+    try {
+        await cleanupAudioImportBatch(state);
+        state.mode = next;
+        state.batchId = null;
+        state.files = [];
+        state.analysis = null;
+        state.commitIdempotencyKey = null;
+        state.commitResponse = null;
+        state.commitSucceeded = false;
+        state.filter = 'all';
+        if ($('audio-import-search')) $('audio-import-search').value = '';
+    } finally {
+        state.busy = false;
+    }
+    updateAudioImportModeUI();
+    renderAudioImportFiles();
+    setAudioImportStatus(next === 'continuous'
+        ? '请选择一整段录音；系统只保留能与题目匹配的英文内容。'
+        : '请选择与待处理题目一一对应的分音频，ZIP 和文件夹仍可使用。', 'info');
 }
 
 function audioImportPreviewMime(file, reportedMime = '') {
@@ -295,6 +352,104 @@ function setAudioImportStatus(message, tone = 'info') {
     if (card) card.dataset.tone = tone;
 }
 
+function renderAudioImportAnalysisProgress(progress = {}) {
+    const title = $('audio-import-analysis-title');
+    const stage = $('audio-import-analysis-stage');
+    const detail = $('audio-import-analysis-detail');
+    const count = $('audio-import-analysis-count');
+    const bar = $('audio-import-analysis-bar');
+    const fill = $('audio-import-analysis-fill');
+    const total = Math.max(0, Number(progress.total) || 0);
+    const completed = Math.max(0, Math.min(total, Number(progress.completed) || 0));
+    const stageLabels = {
+        connecting: '正在启动',
+        loading_model: '准备识别',
+        detecting_pauses: '检测停顿',
+        opening_recognition: '识别音频',
+        full_review: '复核长音频',
+        continuous_recognition: '识别片段',
+        matching: '匹配题目',
+        cutting_audio: '生成片段',
+        complete: '已完成',
+        failed: '识别失败',
+    };
+    const stageUnits = {
+        opening_recognition: '条音频',
+        full_review: '条长音频',
+        continuous_recognition: '个英文片段',
+        matching: '项内容',
+        cutting_audio: '个题目音频',
+    };
+    if (title) title.textContent = String(progress.label || '正在启动本机识别…');
+    if (stage) stage.textContent = stageLabels[String(progress.stage || '')] || '本机识别';
+    if (detail) detail.textContent = total
+        ? `当前步骤已完成 ${completed} / ${total} ${stageUnits[String(progress.stage || '')] || '项'}`
+        : '当前步骤正在本机处理，完成后会自动进入下一步。';
+    if (count) count.textContent = total ? `${completed} / ${total}` : '处理中';
+    if (bar) {
+        if (total) {
+            const fraction = completed / total;
+            bar.dataset.state = 'determinate';
+            bar.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
+            bar.setAttribute('aria-valuetext', `${completed} / ${total}`);
+            if (fill) fill.style.transform = `scaleX(${fraction})`;
+        } else {
+            bar.dataset.state = 'indeterminate';
+            bar.removeAttribute('aria-valuenow');
+            bar.setAttribute('aria-valuetext', '正在处理');
+            if (fill) fill.style.removeProperty('transform');
+        }
+    }
+}
+
+function startAudioImportAnalysisProgress(workflowId, batchId) {
+    if (audioImportAnalysisProgressTimer) window.clearTimeout(audioImportAnalysisProgressTimer);
+    const token = ++audioImportAnalysisProgressToken;
+    const progressCard = $('audio-import-analysis-card');
+    const statusCard = $('audio-import-status-card');
+    if (progressCard) {
+        progressCard.hidden = false;
+        progressCard.setAttribute('aria-busy', 'true');
+    }
+    if (statusCard) statusCard.hidden = true;
+    renderAudioImportAnalysisProgress({
+        stage: 'connecting',
+        label: '正在启动本机识别…',
+    });
+
+    const poll = async () => {
+        if (token !== audioImportAnalysisProgressToken || activeAudioImport?.phase !== 'analyzing') return;
+        try {
+            const progress = await workflowApi.getAudioImportAnalysisProgress(workflowId, batchId);
+            if (token === audioImportAnalysisProgressToken
+                && (progress?.active || ['complete', 'failed'].includes(String(progress?.stage || '')))) {
+                renderAudioImportAnalysisProgress(progress);
+            }
+        } catch (_) {
+            // Keep the indeterminate card visible while the analysis request continues.
+        }
+        if (token === audioImportAnalysisProgressToken && activeAudioImport?.phase === 'analyzing') {
+            audioImportAnalysisProgressTimer = window.setTimeout(poll, AUDIO_IMPORT_PROGRESS_POLL_MS);
+        }
+    };
+    void poll();
+    return token;
+}
+
+function stopAudioImportAnalysisProgress(token) {
+    if (token !== audioImportAnalysisProgressToken) return;
+    if (audioImportAnalysisProgressTimer) window.clearTimeout(audioImportAnalysisProgressTimer);
+    audioImportAnalysisProgressTimer = null;
+    audioImportAnalysisProgressToken += 1;
+    const progressCard = $('audio-import-analysis-card');
+    const statusCard = $('audio-import-status-card');
+    if (progressCard) {
+        progressCard.hidden = true;
+        progressCard.setAttribute('aria-busy', 'false');
+    }
+    if (statusCard) statusCard.hidden = false;
+}
+
 function questionOptionLabel(item) {
     const sequence = String(Number(item.sequence) + 1).padStart(2, '0');
     const content = String(item.text || '').replace(/\s+/g, ' ').trim();
@@ -374,13 +529,17 @@ function applyAudioImportFileFilters() {
         else footer.textContent = `还有 ${Math.max(0, stats.total - stats.matched)} 道题待确认`;
     }
     const sourceSummary = $('audio-import-source-summary');
+    const continuous = state?.mode === 'continuous';
     if (sourceSummary) sourceSummary.textContent = stats.files
-        ? `已选择 ${stats.files} 个音频文件 · 重新选择会替换当前组`
-        : '还没有选择音频';
+        ? (continuous ? `整段音频已选择 · 重新选择会替换当前录音` : `已选择 ${stats.files} 个音频文件 · 重新选择会替换当前组`)
+        : (continuous ? '还没有选择整段音频' : '还没有选择音频');
     const selectButton = $('audio-import-select-btn');
-    if (selectButton) selectButton.textContent = stats.files ? '替换音频组' : '选择音频或 ZIP';
+    if (selectButton) selectButton.textContent = stats.files
+        ? (continuous ? '替换整段音频' : '替换音频组')
+        : (continuous ? '选择整段音频' : '选择音频或 ZIP');
     const folderButton = $('audio-import-folder-btn');
     if (folderButton) folderButton.textContent = stats.files ? '替换文件夹' : '选择文件夹';
+    if (folderButton) folderButton.hidden = continuous;
     $('audio-import-workspace')?.classList.toggle('has-files', stats.files > 0);
     document.querySelectorAll('[data-audio-import-filter]').forEach(button => {
         const active = button.dataset.audioImportFilter === filter;
@@ -389,8 +548,11 @@ function applyAudioImportFileFilters() {
     });
     const caption = $('audio-import-list-caption');
     if (caption) caption.textContent = stats.files
-        ? `按文件名数字顺序排列 · 共 ${stats.files} 个 · 已匹配 ${stats.matched} 个 · 待确认 ${Math.max(0, stats.files - stats.matched)} 个`
-        : '文件上传后会自动识别；无法确认的项目可手动选择。';
+        ? (continuous
+            ? `从整段录音切出 ${stats.files} 个候选片段 · 已匹配 ${stats.matched} 个 · 待确认 ${Math.max(0, stats.files - stats.matched)} 个`
+            : `按文件名数字顺序排列 · 共 ${stats.files} 个 · 已匹配 ${stats.matched} 个 · 待确认 ${Math.max(0, stats.files - stats.matched)} 个`)
+        : (continuous ? '选择整段录音后，系统会切出英文内容并匹配题目。' : '文件上传后会自动识别；无法确认的项目可手动选择。');
+    updateAudioImportModeUI();
 }
 
 function closeAudioImportQuestionPicker({ restoreFocus = false } = {}) {
@@ -615,7 +777,8 @@ function openAudioImportQuestionPicker(trigger, input, fileIndex) {
 
 function audioImportHasCompleteBinding() {
     const state = activeAudioImport;
-    if (!state?.batchId || state.files.length !== state.items.length || state.files.some(file => !file.uploaded)) return false;
+    if (!state?.batchId || state.analysis?.status === 'no_matches'
+        || state.files.length !== state.items.length || state.files.some(file => !file.uploaded)) return false;
     const { values } = audioImportBindingStats();
     if (values.length !== state.files.length) return false;
     const selected = values.filter(Boolean);
@@ -629,7 +792,8 @@ function updateAudioImportActions() {
     const state = activeAudioImport;
     const analyze = $('audio-import-analyze-btn');
     const commit = $('audio-import-commit-btn');
-    const countMatches = Boolean(state && state.files.length === state.items.length && state.items.length > 0);
+    const continuous = state?.mode === 'continuous';
+    const countMatches = Boolean(state && state.items.length > 0 && (continuous ? state.files.length === 1 : state.files.length === state.items.length));
     const uploaded = Boolean(state?.files?.length) && state.files.every(file => file.uploaded);
     if (analyze) {
         analyze.hidden = !state?.files?.length || Boolean(state.analysis);
@@ -637,14 +801,14 @@ function updateAudioImportActions() {
         analyze.textContent = state?.phase === 'analyzing' ? '正在识别…' : '重试识别';
     }
     if (commit) {
-        commit.disabled = !state || state.busy || (!state.commitSucceeded && (!state.analysis || !audioImportHasCompleteBinding()));
+        commit.disabled = !state || state.busy || (!state.commitSucceeded && (!state.analysis || state.analysis.status === 'no_matches' || !audioImportHasCompleteBinding()));
         commit.textContent = state?.commitSucceeded ? '重试打开交付页' : (state?.phase === 'committing' ? '正在导入…' : '导入并进入交付');
     }
     document.querySelectorAll('input[data-audio-import-file-index]').forEach(select => {
-        select.disabled = Boolean(state?.busy || state?.commitSucceeded);
+        select.disabled = Boolean(state?.busy || state?.commitSucceeded || state?.analysis?.status === 'no_matches');
     });
     document.querySelectorAll('[data-audio-import-question-trigger]').forEach(button => {
-        button.disabled = Boolean(state?.busy || state?.commitSucceeded);
+        button.disabled = Boolean(state?.busy || state?.commitSucceeded || state?.analysis?.status === 'no_matches');
     });
     document.querySelectorAll('[data-audio-import-preview-index]').forEach(button => {
         const file = state?.files?.[Number(button.dataset.audioImportPreviewIndex)];
@@ -652,6 +816,14 @@ function updateAudioImportActions() {
     });
     applyAudioImportFileFilters();
     if (!state || state.busy || !state.analysis) return;
+    if (state.analysis.status === 'no_matches') {
+        setAudioImportStatus('没有找到可与题目对应的英文片段。请确认录音内容，或切换到“分音频识别”。', 'warning');
+        return;
+    }
+    if (state.mode === 'continuous' && Array.isArray(state.analysis.missing_item_ids) && state.analysis.missing_item_ids.length) {
+        setAudioImportStatus(`整段音频只切出 ${state.files.length} / ${state.items.length} 个题目片段，缺少 ${state.analysis.missing_item_ids.length} 道题的音频，不能导入。`, 'warning');
+        return;
+    }
     const stats = audioImportBindingStats();
     if (stats.duplicateCount) {
         setAudioImportStatus(`有 ${stats.duplicateCount} 道题被重复绑定，请在“待确认”中调整。`, 'warning');
@@ -672,7 +844,17 @@ function renderAudioImportFiles() {
     if (!state?.files?.length) {
         const empty = document.createElement('div');
         empty.className = 'audio-import-empty';
-        empty.innerHTML = '<strong>匹配清单会显示在这里</strong><span>拖入音频文件、文件夹或 ZIP，系统会自动上传、识别并匹配题目。</span>';
+        const noMatches = state?.analysis?.status === 'no_matches';
+        const continuous = state?.mode === 'continuous';
+        const title = document.createElement('strong');
+        title.textContent = noMatches ? '没有找到可切割的匹配片段' : '匹配清单会显示在这里';
+        const hint = document.createElement('span');
+        hint.textContent = noMatches
+            ? '请检查题目文本与整段录音，或切换到“分音频识别”重新导入。'
+            : continuous
+                ? '选择一段完整录音后，系统会识别并切出与题目匹配的英文片段。'
+                : '拖入分音频、文件夹或 ZIP，系统会自动上传、识别并匹配题目。';
+        empty.append(title, hint);
         list.appendChild(empty);
         updateAudioImportActions();
         return;
@@ -701,7 +883,7 @@ function renderAudioImportFiles() {
         updateAudioImportPreviewButton(previewButton, false);
         previewButton.addEventListener('click', () => void toggleAudioImportPreview(index, previewButton));
         const meta = document.createElement('small');
-        meta.textContent = `${safeAudioImportFileSize(file.sizeBytes)}${file.uploaded ? ' · 已上传' : ' · 等待上传'}`;
+        meta.textContent = `${safeAudioImportFileSize(file.sizeBytes)}${file.segment_count > 1 ? ` · 合并 ${file.segment_count} 次朗读` : file.recognition_scope === 'segment' ? ' · 已切割' : ''}${file.uploaded ? ' · 已上传' : ' · 等待上传'}`;
         title.append(previewButton, name);
         heading.append(title, meta);
         const recognition = document.createElement('div');
@@ -869,6 +1051,10 @@ async function filesFromAudioDrop(dataTransfer) {
 async function selectAudioImportFiles({ source = 'files', droppedFiles = null } = {}) {
     const state = activeAudioImport;
     if (!state || state.busy) return;
+    if (state.mode === 'continuous' && source === 'folder') {
+        showToast('整段音频模式只接受一个完整录音文件', 'warning');
+        return;
+    }
     const selected = source === 'folder'
         ? await window.electronAPI?.selectAudioFolder?.()
         : source === 'drop'
@@ -882,6 +1068,11 @@ async function selectAudioImportFiles({ source = 'files', droppedFiles = null } 
     }
     const files = Array.isArray(selected.files) ? selected.files : [];
     const zipFiles = files.filter(file => audioFileExtension(file) === '.zip');
+    if (state.mode === 'continuous' && (files.length !== 1 || zipFiles.length)) {
+        await releaseSelectedAudioFiles(files);
+        showToast('整段音频模式请选择一个音频文件；多个已切好的音频请切换到“分音频识别”。', 'warning');
+        return;
+    }
     if (zipFiles.length && (zipFiles.length !== 1 || files.length !== 1)) {
         await releaseSelectedAudioFiles(files);
         showToast('ZIP 压缩包请单独导入，不能和普通音频混选', 'warning');
@@ -902,7 +1093,7 @@ async function selectAudioImportFiles({ source = 'files', droppedFiles = null } 
         renderAudioImportFiles();
         const batch = await workflowApi.createAudioImportBatch(state.workflowId, isArchive
             ? { archive: { file_name: files[0].fileName, size_bytes: files[0].sizeBytes } }
-            : { files: audioImportFileSpecs(files) });
+            : { files: audioImportFileSpecs(files), mode: state.mode });
         state.batchId = String(batch.batch_id || '');
         state.items = Array.isArray(batch.items) ? batch.items : [];
         state.files = isArchive ? [] : files.map((file, index) => {
@@ -965,7 +1156,7 @@ async function selectAudioImportFiles({ source = 'files', droppedFiles = null } 
         }
         renderAudioImportFiles();
         const fileCountMatches = state.files.length === state.items.length;
-        if (!isArchive && !fileCountMatches) {
+        if (!isArchive && state.mode === 'files' && !fileCountMatches) {
             await releaseSelectedAudioFiles(state.files);
             state.busy = false;
             state.phase = '';
@@ -1000,12 +1191,15 @@ async function selectAudioImportFiles({ source = 'files', droppedFiles = null } 
         state.busy = false;
         state.phase = '';
         renderAudioImportFiles();
-        setAudioImportStatus(state.files.length === state.items.length
-            ? '音频已上传，正在识别开头并匹配题目…'
-            : `音频数量与待处理题目数量不一致（${state.files.length} / ${state.items.length}），请重新选择完整的一组。`,
-        state.files.length === state.items.length ? 'info' : 'warning');
+        const shouldAnalyze = state.mode === 'continuous' || state.files.length === state.items.length;
+        setAudioImportStatus(state.mode === 'continuous'
+            ? '整段录音已上传，正在识别英文内容并按题目切割…'
+            : shouldAnalyze
+                ? '音频已上传，正在识别开头并匹配题目…'
+                : `音频数量与待处理题目数量不一致（${state.files.length} / ${state.items.length}），请重新选择完整的一组。`,
+        shouldAnalyze ? 'info' : 'warning');
         updateAudioImportActions();
-        if (state.files.length === state.items.length) void analyzeAudioImport();
+        if (shouldAnalyze) void analyzeAudioImport();
     } catch (error) {
         await releaseSelectedAudioFiles(files);
         state.busy = false;
@@ -1018,27 +1212,53 @@ async function selectAudioImportFiles({ source = 'files', droppedFiles = null } 
 
 async function analyzeAudioImport() {
     const state = activeAudioImport;
-    if (!state?.batchId || state.busy || state.files.length !== state.items.length) return;
+    const continuous = state?.mode === 'continuous';
+    if (!state?.batchId || state.busy || (continuous ? state.files.length !== 1 : state.files.length !== state.items.length)) return;
     state.busy = true;
     state.phase = 'analyzing';
-    setAudioImportStatus('正在本机识别音频开头；只有重复开头会扩展到整段复核。', 'info');
+    const progressToken = startAudioImportAnalysisProgress(state.workflowId, state.batchId);
     updateAudioImportActions();
     try {
         const analysis = await workflowApi.analyzeAudioImportBatch(state.workflowId, state.batchId);
         state.analysis = analysis;
         const byIndex = new Map((analysis.files || []).map(file => [Number(file.file_index), file]));
-        state.files = state.files.map((file, index) => {
-            const recognized = byIndex.get(index) || {};
-            const suggestedId = recognized.suggested_item_id || file.filename_suggested_item_id || null;
-            return {
-                ...file,
+        if (continuous) {
+            state.files = (analysis.files || []).map((recognized, index) => ({
+                fileName: String(recognized.file_name || `片段-${index + 1}.mp3`),
+                sizeBytes: Number(recognized.size_bytes) || 0,
+                index,
+                uploaded: true,
+                consumed: true,
                 ...recognized,
-                suggested_item_id: suggestedId ? String(suggestedId) : null,
-                match_source: recognized.suggested_item_id ? 'speech' : (file.filename_suggested_item_id ? 'filename' : ''),
-            };
-        });
+                suggested_item_id: recognized.suggested_item_id ? String(recognized.suggested_item_id) : null,
+                filename_suggested_item_id: null,
+                match_source: recognized.suggested_item_id ? 'speech' : '',
+                selected_item_id: '',
+                binding_was_edited: false,
+            }));
+        } else {
+            state.files = state.files.map((file, index) => {
+                const recognized = byIndex.get(index) || {};
+                const suggestedId = recognized.suggested_item_id || file.filename_suggested_item_id || null;
+                return {
+                    ...file,
+                    ...recognized,
+                    suggested_item_id: suggestedId ? String(suggestedId) : null,
+                    match_source: recognized.suggested_item_id ? 'speech' : (file.filename_suggested_item_id ? 'filename' : ''),
+                };
+            });
+        }
         if (analysis.status === 'file_count_mismatch') {
             setAudioImportStatus(`音频数量与待处理题目数量不一致（${analysis.selected_file_count} / ${analysis.required_item_count}），不能导入。`, 'warning');
+        } else if (analysis.status === 'no_matches') {
+            setAudioImportStatus('没有找到可与题目对应的英文片段。请检查题目文本或录音，也可以切换到“分音频识别”。', 'warning');
+        } else if (continuous) {
+            const matched = state.files.filter(file => file.suggested_item_id).length;
+            const missing = Number(analysis.missing_item_ids?.length) || Math.max(0, state.items.length - state.files.length);
+            setAudioImportStatus(
+                `整段音频切割完成：找到 ${state.files.length} 个题目片段，自动匹配 ${matched} / ${state.items.length} 道题${missing ? `，缺少 ${missing} 道题的音频` : ''}。请核对后再导入。`,
+                missing || matched < state.items.length ? 'warning' : 'success',
+            );
         } else {
             const matched = state.files.filter(file => file.suggested_item_id).length;
             const expanded = state.files.filter(file => file.recognition_scope === 'full').length;
@@ -1052,6 +1272,7 @@ async function analyzeAudioImport() {
         setAudioImportStatus(`识别失败：${error.message}`, 'error');
         showToast(error.message || '本机音频识别失败', 'error');
     } finally {
+        stopAudioImportAnalysisProgress(progressToken);
         state.busy = false;
         state.phase = '';
         updateAudioImportActions();
@@ -1233,10 +1454,11 @@ async function openAudioImportWorkspace(workspace = currentWorkspace) {
             item_type: String(item.item_type || ''),
             text: String(item.normalized_content || item.text_preview || ''),
         }));
-        activeAudioImport = { workflowId, batchId: null, files: [], items, analysis: null, busy: false, phase: '', filter: 'all' };
+        activeAudioImport = { workflowId, batchId: null, mode: 'files', files: [], items, analysis: null, busy: false, phase: '', filter: 'all' };
         setAudioImportStatus(`当前有 ${items.length} 道待处理题目。请导入覆盖全部题目的音频。`, 'info');
     }
     setAudioImportWorkspaceVisible(true);
+    updateAudioImportModeUI();
     renderAudioImportFiles();
     return true;
 }
@@ -1281,6 +1503,9 @@ function initAudioImportModule() {
     if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
 
     $('audio-asr-install-btn')?.addEventListener('click', () => { void installAudioAsrExtension(); });
+    document.querySelectorAll('[data-audio-import-mode]').forEach(button => {
+        button.addEventListener('click', () => { void setAudioImportMode(button.dataset.audioImportMode); });
+    });
     $('audio-import-select-btn')?.addEventListener('click', () => { void selectAudioImportFiles(); });
     $('audio-import-folder-btn')?.addEventListener('click', () => { void selectAudioImportFiles({ source: 'folder' }); });
     $('audio-import-analyze-btn')?.addEventListener('click', () => { void analyzeAudioImport(); });

@@ -4,7 +4,7 @@
 
 小猪wordTTS 是一款本地桌面文档配音工作台：解析教学 `.docx` 与 `.xlsx`，按文档结构核对条目，为不同角色配置声音，批量生成或导入可试听、可单独保存或打包下载的 MP3，并可选地把已验证的音频继续录入外部教学系统。全部任务状态、产物和恢复事实保存在当前电脑，应用离线重启后可以接着做。
 
-版本以 `version.json` 为唯一来源（当前 3.2.16），构建前由 `scripts/project_version.js --sync` 同步到 Electron 的 `package.json`、`package-lock.json` 与 `CHANGELOG.md`。
+版本以 `version.json` 为唯一来源（当前 3.3.0），构建前由 `scripts/project_version.js --sync` 同步到 Electron 的 `package.json`、`package-lock.json` 与 `CHANGELOG.md`。
 
 > 仓库目录名 `edge-tts-webui-main` 与包名 `wordtts/` 是历史遗留。自 v3.x 起 Edge TTS、TTSMaker 及其回退代码已全部移除，新生成音频由讯飞配音提供，也支持直接导入外部音频；`edge-tts` 不再出现在依赖清单中。
 
@@ -21,7 +21,7 @@
 - 本机历史中心最多 20 个任务，可重新查看、试听、下载或归档；归档保留审计事实和 Artifact，不等于物理删除。
 - macOS 与 Windows 安装包均由 GitHub Actions 构建；桌面端内置设置中心的版本板块，自动检查 GitHub Releases，支持可选/强制更新、下载与重启安装。
 - Windows 使用自绘 HTML Setup.exe（`installer-prototype/`），安装、更新、卸载共用同一套界面，支持选择安装目录与数据保留策略，更新优先走 `.blockmap` 差分下载，条件不满足回退全量；macOS 保持打开即用或拖入 Applications。
-- 正式桌面 App 默认开启真实讯飞调用，双击安装包即用。Electron 的 `--smoke-test` 始终只走逻辑离线流程，不打开真实页面；后端独立诊断时可用 `--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 显式离线。
+- 正式桌面 App 默认开启真实讯飞调用，双击安装包即用。打包脚本只在受控 CI 烟测环境启用 Electron 的 `--smoke-test` 逻辑离线路径，不打开真实页面；普通启动仅添加该参数不会绕过线上启动门禁。后端独立诊断时可用 `--disable-real-provider` 或 `WORDTTS_ENABLE_REAL_PROVIDER=0` 显式离线。
 
 ## 架构总览
 

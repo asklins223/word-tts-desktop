@@ -48,6 +48,7 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
             pathname,
             body,
             headers,
+            timeoutMs: options?.timeoutMs,
             signal: options?.signal || null,
         });
         return unwrapResponse(response, 'workflow request');
@@ -189,7 +190,16 @@ function createWorkflowApi({ request, openEvents, upload, uploadSourceFile, canc
             return call('PUT', pathname, bytes, headers, options);
         },
         async analyzeAudioImportBatch(workflowId, batchId) {
-            return mutate('POST', `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/analyze`, {});
+            return mutate(
+                'POST',
+                `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/analyze`,
+                {},
+                null,
+                { timeoutMs: 3 * 60 * 60 * 1000 },
+            );
+        },
+        async getAudioImportAnalysisProgress(workflowId, batchId) {
+            return call('GET', `/api/v1/workflows/${encode(workflowId)}/audio-import-batches/${encode(batchId)}/analysis-progress`);
         },
         async commitAudioImportBatch(workflowId, batchId, input, options = {}) {
             return mutate(

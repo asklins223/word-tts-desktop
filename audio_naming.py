@@ -20,10 +20,11 @@ EXAM_PAPER_MARKERS = (
 EXAM_PAPER_LEGACY_MARKERS = (
     "信息获取",
     "信息转述及询问",
+    "短文复述及提问",
 )
 EXAM_PAPER_SCORE_MARKER = re.compile(
     r"(?:共\s*[：:]?\s*[0-9０-９零〇一二两三四五六七八九十百]+\s*"
-    r"(?:小\s*题|道\s*题|题)|"
+    r"(?:小\s*题|道\s*题|题|分)|"
     r"满分\s*[：:]?\s*[0-9０-９零〇一二两三四五六七八九十百]+\s*分)"
 )
 

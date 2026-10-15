@@ -181,6 +181,7 @@ class AudioImportFileSpecBody(BaseModel):
 class AudioImportBatchBody(BaseModel):
     files: list[AudioImportFileSpecBody] = Field(default_factory=list, max_length=2000)
     archive: AudioImportFileSpecBody | None = None
+    mode: Literal["files", "continuous"] = "files"
 
     class Config:
         extra = "forbid"
@@ -2452,6 +2453,8 @@ def install_workflow_api(
         _idempotency_key(idempotency_key)
         assert runtime.audio_imports is not None
         if body.archive is not None:
+            if body.mode != "files":
+                raise DomainError("VALIDATION_ERROR", "整段音频模式不支持 ZIP 压缩包")
             if body.files:
                 raise DomainError("VALIDATION_ERROR", "一次只能导入普通音频列表或一个 ZIP 文件")
             return runtime.audio_imports.create_archive_batch(
@@ -2464,6 +2467,7 @@ def install_workflow_api(
         return runtime.audio_imports.create_batch(
             workflow_id,
             [entry.model_dump() for entry in body.files],
+            mode=body.mode,
         )
 
     @router.put("/workflows/{workflow_id}/audio-import-batches/{batch_id}/files/{file_index}", status_code=201)
@@ -2549,6 +2553,12 @@ def install_workflow_api(
         _idempotency_key(idempotency_key)
         assert runtime.audio_asr is not None and runtime.audio_imports is not None
         return await asyncio.to_thread(runtime.audio_imports.analyze, workflow_id, batch_id, runtime.audio_asr)
+
+    @router.get("/workflows/{workflow_id}/audio-import-batches/{batch_id}/analysis-progress")
+    async def get_audio_import_analysis_progress(workflow_id: str, batch_id: str):
+        runtime.ensure_initialized()
+        assert runtime.audio_imports is not None
+        return runtime.audio_imports.analysis_progress(workflow_id, batch_id)
 
     @router.post("/workflows/{workflow_id}/audio-import-batches/{batch_id}/commit", status_code=201)
     async def commit_audio_import_batch(

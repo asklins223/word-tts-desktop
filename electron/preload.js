@@ -24,6 +24,10 @@ const workflow = createWorkflowApi({
 });
 
 contextBridge.exposeInMainWorld('electronAPI', {
+    // 已加密的客户端资源只通过主进程内存读取，renderer 无法直接读取密钥或密文文件。
+    loadProtectedClientAsset: (relativePath) => ipcRenderer.invoke('load-protected-client-asset', relativePath),
+    protectedClientAssetsReady: () => ipcRenderer.invoke('protected-client-assets-ready'),
+    protectedClientAssetsFailed: (detail) => ipcRenderer.invoke('protected-client-assets-failed', detail),
     // 文件操作
     // Native selection uses an opaque streaming handle; the byte-returning
     // method remains as a compatibility fallback for older renderer callers.

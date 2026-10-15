@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -37,6 +38,7 @@ ASR_OPENING_SECONDS = 12
 ASR_MAX_FILES = 2000
 ASR_MAX_FILE_BYTES = 512 * 1024 * 1024
 ASR_MAX_BATCH_BYTES = 4 * 1024 * 1024 * 1024
+ASR_MAX_CONTINUOUS_DURATION_SECONDS = 60 * 60
 ASR_MODEL_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 ASR_TOKENS_MAX_DOWNLOAD_BYTES = 4 * 1024 * 1024
 ASR_SUPPORTED_EXTENSIONS = frozenset({".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"})
@@ -385,12 +387,23 @@ class AudioAsrExtension:
         *,
         full_indices: set[int] | None = None,
         recognizer: Any = None,
+        progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
+        progress_label: str = "正在识别音频",
+        progress_stage: str = "recognition",
     ) -> list[dict[str, str]]:
         recognizer = recognizer or self.create_recognizer()
         ffmpeg = _ffmpeg_executable()
         expanded = full_indices or set()
         output: list[dict[str, str]] = []
         for index, path in enumerate(paths):
+            total = len(paths)
+            if callable(progress_callback):
+                progress_callback({
+                    "stage": progress_stage,
+                    "label": f"{progress_label} {index + 1} / {total}",
+                    "completed": index,
+                    "total": total,
+                })
             scope = "full" if index in expanded else "opening"
             try:
                 stream = recognizer.create_stream()
@@ -424,6 +437,59 @@ class AudioAsrExtension:
                 output.append({"text": str(text or ""), "scope": scope, "error": ""})
             except Exception as exc:
                 output.append({"text": "", "scope": scope, "error": str(exc)[:200]})
+            if callable(progress_callback):
+                progress_callback({
+                    "stage": progress_stage,
+                    "label": progress_label,
+                    "completed": index + 1,
+                    "total": total,
+                })
+        return output
+
+    def recognize_spans(
+        self,
+        path: str | os.PathLike[str],
+        spans: Sequence[tuple[float, float]],
+        *,
+        recognizer: Any = None,
+        progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
+        progress_label: str = "正在识别英文片段",
+        progress_stage: str = "continuous_recognition",
+    ) -> list[dict[str, str]]:
+        """Recognize pause-delimited spans from one long recording."""
+        recognizer = recognizer or self.create_recognizer()
+        ffmpeg = _ffmpeg_executable()
+        output: list[dict[str, str]] = []
+        total = len(spans)
+        for index, (start, end) in enumerate(spans):
+            if callable(progress_callback):
+                progress_callback({
+                    "stage": progress_stage,
+                    "label": f"{progress_label} {index + 1} / {total}",
+                    "completed": index,
+                    "total": total,
+                })
+            try:
+                waveform = _decode_audio_window(ffmpeg, path, start, end - start)
+                if waveform.size < 2400:
+                    raise ValueError("音频片段太短，没有可识别的语音内容")
+                stream = recognizer.create_stream()
+                stream.accept_waveform(16000, waveform)
+                recognizer.decode_stream(stream)
+                result = stream.result
+                text = getattr(result, "text", "")
+                if not text and isinstance(result, Mapping):
+                    text = result.get("text", "")
+                output.append({"text": str(text or ""), "scope": "segment", "error": ""})
+            except Exception as exc:
+                output.append({"text": "", "scope": "segment", "error": str(exc)[:200]})
+            if callable(progress_callback):
+                progress_callback({
+                    "stage": progress_stage,
+                    "label": progress_label,
+                    "completed": index + 1,
+                    "total": total,
+                })
         return output
 
 
@@ -442,12 +508,12 @@ def _ffmpeg_executable() -> str:
 def _decode_audio_window(
     ffmpeg: str,
     path: str | os.PathLike[str],
-    start_seconds: int,
-    duration_seconds: int,
+    start_seconds: float,
+    duration_seconds: float,
 ) -> np.ndarray:
     completed = subprocess.run(
-        [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", str(start_seconds),
-         "-i", str(path), "-t", str(duration_seconds), "-vn", "-ac", "1", "-ar", "16000",
+        [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", f"{start_seconds:.3f}",
+         "-i", str(path), "-t", f"{duration_seconds:.3f}", "-vn", "-ac", "1", "-ar", "16000",
          "-acodec", "pcm_s16le", "-f", "s16le", "pipe:1"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -460,6 +526,233 @@ def _decode_audio_window(
         raise ValueError("音频解码失败" + (f"：{details}" if details else ""))
     samples = np.frombuffer(completed.stdout, dtype="<i2")
     return samples.astype(np.float32) / 32768.0
+
+
+def _audio_duration_and_speech_spans(path: str | os.PathLike[str]) -> tuple[float, list[tuple[float, float]]]:
+    """Find speech ranges using FFmpeg silence detection, retaining short pauses."""
+    ffmpeg = _ffmpeg_executable()
+    probe = subprocess.run(
+        [ffmpeg, "-nostdin", "-hide_banner", "-i", str(path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=60,
+    )
+    probe_text = probe.stderr.decode("utf-8", errors="replace")
+    duration_match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", probe_text)
+    if not duration_match:
+        raise DomainError("AUDIO_IMPORT_INVALID", "无法读取整段音频的时长")
+    hours, minutes, seconds = duration_match.groups()
+    duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    if duration <= 0 or duration > ASR_MAX_CONTINUOUS_DURATION_SECONDS:
+        raise DomainError("RESOURCE_EXHAUSTED", "整段音频时长必须在 1 小时以内")
+
+    detected = subprocess.run(
+        [ffmpeg, "-nostdin", "-hide_banner", "-nostats", "-loglevel", "info", "-i", str(path),
+        "-vn", "-af", "silencedetect=noise=-38dB:d=0.32", "-f", "null", os.devnull],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=60 * 60,
+    )
+    if detected.returncode != 0:
+        details = detected.stderr.decode("utf-8", errors="replace")[-200:]
+        raise DomainError("AUDIO_IMPORT_INVALID", "无法分析整段音频" + (f"：{details}" if details else ""))
+    log = detected.stderr.decode("utf-8", errors="replace")
+    events = []
+    for match in re.finditer(r"silence_(start|end):\s*(-?\d+(?:\.\d+)?)", log):
+        events.append((float(match.group(2)), match.group(1)))
+    silences: list[tuple[float, float]] = []
+    silence_start: float | None = None
+    for timestamp, kind in events:
+        if kind == "start":
+            silence_start = timestamp
+        elif silence_start is not None:
+            if timestamp - silence_start >= 0.30:
+                silences.append((max(0.0, silence_start), min(duration, timestamp)))
+            silence_start = None
+    if silence_start is not None and duration - silence_start >= 0.30:
+        silences.append((max(0.0, silence_start), duration))
+
+    spans: list[tuple[float, float]] = []
+    cursor = 0.0
+    for silence_start, silence_end in silences:
+        start = cursor + (0.03 if cursor > 0 else 0.0)
+        end = silence_start - 0.03
+        if end - start >= 0.32:
+            spans.append((start, end))
+        cursor = max(cursor, silence_end)
+    start = cursor + (0.03 if cursor > 0 else 0.0)
+    if duration - start >= 0.32:
+        spans.append((start, duration))
+    if not spans:
+        raise DomainError("AUDIO_IMPORT_INVALID", "整段音频中没有检测到可识别的语音片段")
+    if len(spans) > 4000:
+        raise DomainError("RESOURCE_EXHAUSTED", "整段音频停顿过多，无法安全切分")
+    return duration, spans
+
+
+def _is_english_transcript(value: str) -> bool:
+    compact = normalize_recognition_text(value)
+    latin = sum(char.isascii() and char.isalpha() for char in compact)
+    letters = sum(char.isalpha() for char in compact)
+    return latin >= 4 and latin / max(1, letters) >= 0.60
+
+
+def _continuous_audio_matches(
+    recognized: Sequence[Mapping[str, Any]],
+    spans: Sequence[tuple[float, float]],
+    items: Sequence[Mapping[str, Any]],
+    *,
+    progress_callback: Callable[[int, int], Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Align English speech windows to questions, preserving distinct repeats."""
+    english = []
+    for row, span in zip(recognized, spans):
+        text = str(row.get("text") or "").strip()
+        normalized = normalize_recognition_text(text)
+        if row.get("error") or not normalized or not _is_english_transcript(text):
+            continue
+        english.append({"start": span[0], "end": span[1], "text": text, "normalized": normalized})
+
+    runs: list[list[dict[str, Any]]] = []
+    for segment in english:
+        if not runs or segment["start"] - runs[-1][-1]["end"] > 3.2:
+            runs.append([segment])
+        else:
+            runs[-1].append(segment)
+
+    occurrences: list[dict[str, Any]] = []
+    total_windows = sum(len(run) for run in runs)
+    completed_windows = 0
+    for run in runs:
+        for start_index in range(len(run)):
+            text_parts: list[str] = []
+            transcript_parts: list[str] = []
+            for end_index in range(start_index, min(len(run), start_index + 36)):
+                segment = run[end_index]
+                if segment["end"] - run[start_index]["start"] > 60:
+                    break
+                text_parts.append(segment["normalized"])
+                transcript_parts.append(segment["text"])
+                normalized = "".join(text_parts)
+                if len(normalized) < 6:
+                    continue
+                candidates = _item_candidates(normalized, items)
+                if not candidates:
+                    continue
+                top = candidates[0]
+                item = next((entry for entry in items if str(entry.get("item_id")) == top["item_id"]), None)
+                target = normalize_recognition_text(item.get("normalized_content") if item else "")
+                if not target:
+                    continue
+                coverage = min(1.0, len(normalized) / max(1, len(target)))
+                minimum_coverage = 0.62 if len(target) >= 50 else 0.68
+                threshold = 0.62 if len(target) >= 36 else 0.72
+                if coverage < minimum_coverage or top["score"] < threshold:
+                    continue
+                second_score = candidates[1]["score"] if len(candidates) > 1 else 0.0
+                margin = top["score"] - second_score
+                occurrences.append({
+                    "start": run[start_index]["start"],
+                    "end": segment["end"],
+                    "transcript": " ".join(transcript_parts),
+                    "candidates": candidates,
+                    "top_item_id": top["item_id"],
+                    "score": top["score"],
+                    "adjusted_score": round(top["score"] * (0.55 + 0.45 * coverage), 4),
+                    "margin": margin,
+                    "coverage": coverage,
+                })
+            completed_windows += 1
+            if callable(progress_callback):
+                progress_callback(completed_windows, total_windows)
+
+    # Prefer the closest, shortest complete match. Nearby windows around the
+    # same spoken occurrence overlap heavily; keep only one of them. Separate
+    # re-readings remain separate and are later concatenated into one item clip.
+    occurrences.sort(key=lambda row: (-row["adjusted_score"], -row["score"], -row["coverage"], row["end"] - row["start"], row["start"]))
+    selected: list[dict[str, Any]] = []
+    for occurrence in occurrences:
+        duplicate = False
+        for current in selected:
+            if occurrence["top_item_id"] != current["top_item_id"]:
+                continue
+            overlap = max(0.0, min(occurrence["end"], current["end"]) - max(occurrence["start"], current["start"]))
+            shorter = min(occurrence["end"] - occurrence["start"], current["end"] - current["start"])
+            # Window search can produce a lower-scoring shifted occurrence
+            # that overlaps both sides of one clean match (especially when a
+            # speaker reads a question followed by its choices). Suppress
+            # those partial duplicates while retaining truly repeated reads,
+            # which occupy separate spans in time.
+            if overlap / max(0.01, shorter) >= 0.40:
+                duplicate = True
+                break
+        if not duplicate:
+            selected.append(occurrence)
+    selected.sort(key=lambda row: (row["start"], row["end"]))
+    return selected
+
+
+def _stage_audio_segments(
+    source_path: str | os.PathLike[str],
+    spans: Sequence[tuple[float, float]],
+    artifacts: ArtifactStore,
+) -> StagedFile:
+    """Cut one or more English spans and stage a single MP3 clip."""
+    if not spans:
+        raise ValueError("音频片段不能为空")
+    ffmpeg = _ffmpeg_executable()
+    with tempfile.TemporaryDirectory(prefix="wordtts-audio-segment-") as temporary:
+        directory = Path(temporary)
+        wave_paths: list[Path] = []
+        for index, (start, end) in enumerate(spans):
+            if end <= start:
+                continue
+            wave_path = directory / f"part-{index:04d}.wav"
+            try:
+                completed = subprocess.run(
+                    [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}",
+                     "-i", str(source_path), "-t", f"{end - start:.3f}", "-vn", "-ac", "1", "-ar", "44100",
+                     "-c:a", "pcm_s16le", str(wave_path)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=15 * 60,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise DomainError("AUDIO_IMPORT_INVALID", "切割音频片段失败，请检查源文件") from exc
+            if completed.returncode != 0 or not wave_path.is_file() or wave_path.stat().st_size < 256:
+                details = completed.stderr.decode("utf-8", errors="replace")[-200:]
+                raise DomainError("AUDIO_IMPORT_INVALID", "切割音频片段失败" + (f"：{details}" if details else ""))
+            wave_paths.append(wave_path)
+        if not wave_paths:
+            raise DomainError("AUDIO_IMPORT_INVALID", "没有可保存的英文语音片段")
+        list_path = directory / "segments.txt"
+        list_path.write_text("".join(f"file '{path.as_posix()}'\n" for path in wave_paths), encoding="utf-8")
+        destination = directory / "segment.mp3"
+        try:
+            completed = subprocess.run(
+                [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
+                 "-i", str(list_path), "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k", "-f", "mp3",
+                 "-fs", str(artifacts.max_bytes), str(destination)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30 * 60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise DomainError("AUDIO_IMPORT_INVALID", "合并音频片段失败") from exc
+        output_size = destination.stat().st_size if destination.is_file() else 0
+        if completed.returncode != 0 or output_size < 128 or output_size >= artifacts.max_bytes:
+            raise DomainError("RESOURCE_EXHAUSTED" if output_size >= artifacts.max_bytes else "AUDIO_IMPORT_INVALID",
+                              "切割后的音频超出本地存储限制" if output_size >= artifacts.max_bytes else "无法生成切割后的 MP3")
+        with destination.open("rb") as source:
+            return artifacts.stage_stream(source, expected_size=output_size)
 
 
 def transcode_audio_to_mp3(path: str | os.PathLike[str], artifacts: ArtifactStore) -> Any:
@@ -498,15 +791,49 @@ def transcode_audio_to_mp3(path: str | os.PathLike[str], artifacts: ArtifactStor
             raise
 
 
+def _invoke_with_optional_progress(
+    method: Callable[..., Any],
+    *args: Any,
+    progress_callback: Callable[[Mapping[str, Any]], Any],
+    progress_label: str,
+    progress_stage: str,
+    **kwargs: Any,
+) -> Any:
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_extra = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    for name, value in (
+        ("progress_callback", progress_callback),
+        ("progress_label", progress_label),
+        ("progress_stage", progress_stage),
+    ):
+        if name in parameters or accepts_extra:
+            kwargs[name] = value
+    return method(*args, **kwargs)
+
+
 @dataclass
 class _ImportBatch:
     batch_id: str
     workflow_id: str
     files: list[dict[str, Any]]
     items: list[dict[str, Any]]
+    mode: str = "files"
     created_at: float = field(default_factory=time.time)
     staged: dict[int, StagedFile] = field(default_factory=dict)
     analysis: dict[str, Any] | None = None
+    progress: dict[str, Any] = field(default_factory=lambda: {
+        "active": False,
+        "stage": "ready",
+        "label": "等待识别",
+        "completed": 0,
+        "total": 0,
+    })
     analyzing: bool = False
     committing: bool = False
     committed: dict[str, Any] | None = None
@@ -538,6 +865,11 @@ class AudioImportCoordinator:
             raise NotFoundError("音频导入批次已过期，请重新选择文件")
         return batch
 
+    def analysis_progress(self, workflow_id: str, batch_id: str) -> dict[str, Any]:
+        with self._lock:
+            batch = self._batch(workflow_id, batch_id)
+            return {"batch_id": batch.batch_id, **batch.progress}
+
     def _required_items(self, workflow_id: str) -> list[dict[str, Any]]:
         snapshot = self.repository.get_workflow(workflow_id)
         if snapshot.status != "ACTIVE" or snapshot.execution_state != "PREPARING" or snapshot.result_status != "IN_PROGRESS":
@@ -561,10 +893,20 @@ class AudioImportCoordinator:
             for item in required
         ]
 
-    def create_batch(self, workflow_id: str, file_specs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    def create_batch(
+        self,
+        workflow_id: str,
+        file_specs: Sequence[Mapping[str, Any]],
+        *,
+        mode: str = "files",
+    ) -> dict[str, Any]:
         required = self._required_items(workflow_id)
+        if mode not in {"files", "continuous"}:
+            raise DomainError("VALIDATION_ERROR", "不支持的音频导入方式")
         if not file_specs or len(file_specs) > ASR_MAX_FILES:
             raise DomainError("VALIDATION_ERROR", "音频文件数量不符合要求")
+        if mode == "continuous" and len(file_specs) != 1:
+            raise DomainError("VALIDATION_ERROR", "整段音频模式只能选择一个音频文件")
         clean_specs: list[dict[str, Any]] = []
         for spec in file_specs:
             filename = self._clean_filename(spec.get("file_name"))
@@ -577,13 +919,14 @@ class AudioImportCoordinator:
             clean_specs.append({"file_name": filename, "extension": extension, "size_bytes": size_bytes})
         if sum(int(spec["size_bytes"]) for spec in clean_specs) > ASR_MAX_BATCH_BYTES:
             raise DomainError("RESOURCE_EXHAUSTED", "本次音频总大小不能超过 4 GB")
-        batch = _ImportBatch(new_id("audioimport"), workflow_id, clean_specs, required)
+        batch = _ImportBatch(new_id("audioimport"), workflow_id, clean_specs, required, mode=mode)
         with self._lock:
             self._expire_old_batches()
             self._batches[batch.batch_id] = batch
         return {
             "batch_id": batch.batch_id,
             "workflow_id": workflow_id,
+            "mode": mode,
             "required_item_count": len(required),
             "selected_file_count": len(clean_specs),
             "file_count_matches": len(required) == len(clean_specs),
@@ -608,6 +951,7 @@ class AudioImportCoordinator:
         return {
             "batch_id": batch.batch_id,
             "workflow_id": workflow_id,
+            "mode": "files",
             "required_item_count": len(required),
             "selected_file_count": None,
             "file_count_matches": None,
@@ -762,7 +1106,7 @@ class AudioImportCoordinator:
                 return batch.analysis
             if batch.committing or batch.analyzing:
                 raise ConflictError("音频正在识别或提交", code="IDEMPOTENCY_IN_PROGRESS")
-            if len(batch.files) != len(batch.items):
+            if batch.mode == "files" and len(batch.files) != len(batch.items):
                 result = {
                     "batch_id": batch_id,
                     "status": "file_count_mismatch",
@@ -778,11 +1122,72 @@ class AudioImportCoordinator:
                 raise ConflictError("仍有音频文件没有上传完成", code="AUDIO_IMPORT_FILES_MISSING",
                                     details={"missing_file_indexes": missing})
             batch.analyzing = True
+            batch.analysis = None
+            batch.progress = {
+                "active": True,
+                "stage": "loading_model",
+                "label": "正在准备本地语音识别模型",
+                "completed": 0,
+                "total": 0,
+            }
             paths = [str(batch.staged[index].path) for index in range(len(batch.files))]
             items = list(batch.items)
+
+        def report_progress(stage: str, label: str, completed: int = 0, total: int = 0) -> None:
+            normalized_total = max(0, int(total or 0))
+            normalized_completed = max(0, min(normalized_total, int(completed or 0)))
+            update: dict[str, Any] = {
+                "active": True,
+                "stage": str(stage or "processing"),
+                "label": str(label or "正在处理音频"),
+                "completed": normalized_completed,
+                "total": normalized_total,
+            }
+            if normalized_total:
+                update["percent"] = round(normalized_completed / normalized_total * 100)
+            with self._lock:
+                if self._batches.get(str(batch_id)) is batch:
+                    batch.progress = update
+
+        def report_extension_progress(update: Mapping[str, Any]) -> None:
+            report_progress(
+                str(update.get("stage") or "recognition"),
+                str(update.get("label") or "正在识别音频"),
+                int(update.get("completed") or 0),
+                int(update.get("total") or 0),
+            )
+
         try:
+            if batch.mode == "continuous":
+                result, replacement_files, replacement_staged = self._analyze_continuous(
+                    batch, paths[0], extension, items, report_progress=report_progress,
+                )
+                previous_staged: list[StagedFile] = []
+                with self._lock:
+                    current = self._batches.get(str(batch_id))
+                    if current is not batch:
+                        for staged in replacement_staged.values():
+                            self.artifacts.delete_staging(staged.key)
+                        raise NotFoundError("音频导入批次不存在或已过期")
+                    if result["status"] == "analyzed":
+                        previous_staged = list(batch.staged.values())
+                        batch.files = replacement_files
+                        batch.staged = replacement_staged
+                    batch.analysis = result
+                for staged in previous_staged:
+                    self.artifacts.delete_staging(staged.key)
+                return result
+            report_progress("loading_model", "正在加载本地语音识别模型")
             recognizer = extension.create_recognizer()
-            opening = extension.recognize(paths, recognizer=recognizer)
+            report_progress("opening_recognition", "正在识别音频开头", 0, len(paths))
+            opening = _invoke_with_optional_progress(
+                extension.recognize,
+                paths,
+                recognizer=recognizer,
+                progress_callback=report_extension_progress,
+                progress_label="正在识别音频开头",
+                progress_stage="opening_recognition",
+            )
             full_indices: set[int] = set()
             normalized = [normalize_recognition_text(row.get("text")) for row in opening]
             for left in range(len(normalized)):
@@ -792,15 +1197,22 @@ class AudioImportCoordinator:
             recognized = list(opening)
             if full_indices:
                 expanded_indices = sorted(full_indices)
-                expanded_rows = extension.recognize(
+                report_progress("full_review", "正在复核重复开头的完整音频", 0, len(expanded_indices))
+                expanded_rows = _invoke_with_optional_progress(
+                    extension.recognize,
                     [paths[index] for index in expanded_indices],
                     full_indices=set(range(len(expanded_indices))),
                     recognizer=recognizer,
+                    progress_callback=report_extension_progress,
+                    progress_label="正在复核长音频",
+                    progress_stage="full_review",
                 )
                 for index, row in zip(expanded_indices, expanded_rows):
                     recognized[index] = row
+            report_progress("matching", "正在将识别内容与题目匹配")
             results: list[dict[str, Any]] = []
             candidate_item_claims: dict[str, list[int]] = {}
+            report_progress("matching", "正在把识别内容与题目匹配", 0, len(recognized))
             for index, row in enumerate(recognized):
                 candidates = _item_candidates(row.get("text", ""), items)
                 top = candidates[0] if candidates else None
@@ -818,6 +1230,7 @@ class AudioImportCoordinator:
                     "match_status": "matched" if matched else ("recognition_failed" if row.get("error") else "needs_review"),
                     "candidates": candidates,
                 })
+                report_progress("matching", "正在把识别内容与题目匹配", index + 1, len(recognized))
             for item_id, indices in candidate_item_claims.items():
                 if len(indices) > 1:
                     for index in indices:
@@ -842,6 +1255,187 @@ class AudioImportCoordinator:
             with self._lock:
                 if self._batches.get(str(batch_id)) is batch:
                     batch.analyzing = False
+                    if batch.analysis is not None:
+                        batch.progress = {
+                            "active": False,
+                            "stage": "complete",
+                            "label": "识别完成",
+                            "completed": 1,
+                            "total": 1,
+                            "percent": 100,
+                        }
+                    else:
+                        batch.progress = {
+                            **batch.progress,
+                            "active": False,
+                            "stage": "failed",
+                            "label": "识别失败",
+                        }
+
+    def _analyze_continuous(
+        self,
+        batch: _ImportBatch,
+        path: str,
+        extension: AudioAsrExtension,
+        items: Sequence[Mapping[str, Any]],
+        *,
+        report_progress: Callable[[str, str, int, int], Any] | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[int, StagedFile]]:
+        if len(batch.files) != 1 or 0 not in batch.staged:
+            raise ConflictError("整段音频尚未上传完成", code="AUDIO_IMPORT_FILES_MISSING")
+        if callable(report_progress):
+            report_progress("detecting_pauses", "正在分析整段录音并检测停顿", 0, 0)
+        _, detected_spans = _audio_duration_and_speech_spans(path)
+        spans: list[tuple[float, float]] = []
+        for start, end in detected_spans:
+            cursor = start
+            while end - cursor > 22:
+                split_end = cursor + 20
+                spans.append((cursor, split_end))
+                cursor = split_end - 0.15
+            spans.append((cursor, end))
+        if len(spans) > 4000:
+            raise DomainError("RESOURCE_EXHAUSTED", "整段音频片段过多，无法安全识别")
+        if callable(report_progress):
+            report_progress("loading_model", "已切出候选片段，正在加载本地识别模型", 0, 0)
+        recognizer = extension.create_recognizer()
+        if callable(report_progress):
+            report_progress("continuous_recognition", f"识别到 {len(spans)} 个候选片段", 0, len(spans))
+        recognized = _invoke_with_optional_progress(
+            extension.recognize_spans,
+            path,
+            spans,
+            recognizer=recognizer,
+            progress_callback=lambda update: report_progress(
+                str(update.get("stage") or "continuous_recognition"),
+                str(update.get("label") or "正在识别英文片段"),
+                int(update.get("completed") or 0),
+                int(update.get("total") or 0),
+            ) if callable(report_progress) else None,
+            progress_label="正在识别英文片段",
+            progress_stage="continuous_recognition",
+        )
+        if callable(report_progress):
+            report_progress("matching", "正在把英文内容与题目匹配", 0, 0)
+        occurrences = _continuous_audio_matches(
+            recognized,
+            spans,
+            items,
+            progress_callback=(
+                lambda completed, total: report_progress(
+                    "matching",
+                    "正在把英文内容与题目匹配",
+                    completed,
+                    total,
+                )
+            ) if callable(report_progress) else None,
+        )
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for occurrence in occurrences:
+            grouped.setdefault(str(occurrence["top_item_id"]), []).append(occurrence)
+        if not grouped:
+            return ({
+                "batch_id": batch.batch_id,
+                "mode": "continuous",
+                "status": "no_matches",
+                "required_item_count": len(items),
+                "selected_file_count": 0,
+                "matched_item_count": 0,
+                "missing_item_ids": [str(item["item_id"]) for item in items],
+                "can_commit": False,
+                "files": [{
+                    "file_index": 0,
+                    "file_name": batch.files[0]["file_name"],
+                    "size_bytes": int(batch.files[0]["size_bytes"]),
+                    "transcript": "",
+                    "recognition_scope": "source",
+                    "recognition_error": "未找到可与题目对应的英文片段",
+                    "suggested_item_id": None,
+                    "match_status": "needs_review",
+                    "candidates": [],
+                }],
+            }, [], {})
+
+        source_name = Path(batch.files[0]["file_name"]).stem or "audio"
+        item_by_id = {str(item["item_id"]): item for item in items}
+        matched_files: list[dict[str, Any]] = []
+        staged_files: dict[int, StagedFile] = {}
+        ordered_groups = sorted(
+            grouped.items(),
+            key=lambda entry: int(item_by_id.get(entry[0], {}).get("sequence") or 0),
+        )
+        if callable(report_progress):
+            report_progress("cutting_audio", "正在生成匹配的题目音频", 0, len(ordered_groups))
+        try:
+            results: list[dict[str, Any]] = []
+            for item_id, group in ordered_groups:
+                item = item_by_id[item_id]
+                sequence = int(item.get("sequence") or 0)
+                file_index = len(matched_files)
+                suffix = f"-{sequence + 1:03d}.mp3"
+                filename = f"{source_name[:256 - len(suffix)]}{suffix}"
+                clip_spans = [(float(row["start"]), float(row["end"])) for row in group]
+                staged = _stage_audio_segments(path, clip_spans, self.artifacts)
+                staged_files[file_index] = staged
+                spec = {
+                    "file_name": filename,
+                    "extension": ".mp3",
+                    "size_bytes": int(staged.size_bytes),
+                }
+                matched_files.append(spec)
+                if callable(report_progress):
+                    report_progress("cutting_audio", "正在生成匹配的题目音频", file_index + 1, len(ordered_groups))
+                candidate_map: dict[str, dict[str, Any]] = {}
+                for occurrence in group:
+                    for candidate in occurrence["candidates"]:
+                        previous = candidate_map.get(str(candidate["item_id"]))
+                        if previous is None or candidate["score"] > previous["score"]:
+                            candidate_map[str(candidate["item_id"])] = dict(candidate)
+                candidates = sorted(candidate_map.values(), key=lambda row: (-row["score"], row["sequence"]))[:5]
+                top_score = max((row["score"] for row in candidates if row["item_id"] == item_id), default=0.0)
+                other_score = max((row["score"] for row in candidates if row["item_id"] != item_id), default=0.0)
+                confident = top_score >= (0.62 if len(normalize_recognition_text(item.get("normalized_content"))) >= 36 else 0.72)
+                confident = confident and top_score - other_score >= 0.075
+                results.append({
+                    "file_index": file_index,
+                    "file_name": filename,
+                    "size_bytes": spec["size_bytes"],
+                    "transcript": " … ".join(str(row["transcript"]) for row in group)[:600],
+                    "recognition_scope": "segment",
+                    "recognition_error": "",
+                    "suggested_item_id": item_id if confident else None,
+                    "match_status": "matched" if confident else "needs_review",
+                    "candidates": candidates,
+                    "segment_count": len(group),
+                })
+            missing_ids = sorted(
+                {str(item["item_id"]) for item in items} - {item_id for item_id, _group in ordered_groups},
+                key=lambda item_id: int(item_by_id[item_id].get("sequence") or 0),
+            )
+            suggested = [row["suggested_item_id"] for row in results if row["suggested_item_id"]]
+            can_commit = (
+                not missing_ids
+                and len(matched_files) == len(items)
+                and len(suggested) == len(items)
+                and len(set(suggested)) == len(items)
+            )
+            result = {
+                "batch_id": batch.batch_id,
+                "mode": "continuous",
+                "status": "analyzed",
+                "required_item_count": len(items),
+                "selected_file_count": len(matched_files),
+                "matched_item_count": len(grouped),
+                "missing_item_ids": missing_ids,
+                "can_commit": can_commit,
+                "files": results,
+            }
+            return result, matched_files, staged_files
+        except Exception:
+            for staged in staged_files.values():
+                self.artifacts.delete_staging(staged.key)
+            raise
 
     def validate_bindings(self, workflow_id: str, batch_id: str, bindings: Sequence[Mapping[str, Any]]) -> tuple[_ImportBatch, list[dict[str, Any]]]:
         with self._lock:

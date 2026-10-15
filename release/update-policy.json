@@ -1,6 +1,6 @@
 {
   "$schema": "./update-policy.schema.json",
-  "mode": "optional",
+  "mode": "force",
   "minimumSupportedVersion": null,
-  "message": "这是一个可选更新。你可以在方便时下载并重启安装。"
+  "message": "本版本为强制更新，请下载并安装后继续使用。"
 }

@@ -8,6 +8,7 @@ const {
     compareVersions,
     createUpdateManager,
     deriveUpdatePolicy,
+    isValidUpdatePolicyMetadata,
     parseVersion,
     probeUpdateArtifact,
     updateArtifactForPlatform,
@@ -37,7 +38,7 @@ function createTestManager(options = {}) {
 function windowsArtifact(version) {
     return {
         url: `wordTTS-Setup-${version}-x64.exe`,
-        sha512: 'synthetic-sha512',
+        sha512: Buffer.alloc(64, 3).toString('base64'),
         size: 123,
     };
 }
@@ -54,6 +55,42 @@ test('更新版本比较遵循 SemVer 的预发布优先级', () => {
     assert.equal(compareVersions('1.2.3-9007199254740992', '1.2.3-9007199254740993'), -1);
     assert.equal(parseVersion('01.2.3'), null);
     assert.equal(parseVersion('1.2.3-alpha..1'), null);
+    assert.equal(parseVersion(`${'9'.repeat(129)}.0.0`), null);
+});
+
+test('Apple Silicon 启动探测选择与 electron-updater 相同的 arm64 ZIP', () => {
+    const info = {
+        version: '2.0.0',
+        files: [
+            { url: 'wordTTS-2.0.0-universal.zip', sha512: Buffer.alloc(64, 1).toString('base64'), size: 20 },
+            { url: 'wordTTS-2.0.0-arm64.zip', sha512: Buffer.alloc(64, 2).toString('base64'), size: 30 },
+        ],
+    };
+    assert.equal(updateArtifactForPlatform(info, 'darwin', 'arm64').name, 'wordTTS-2.0.0-arm64.zip');
+});
+
+test('无效或自相矛盾的最低支持版本策略会关闭更新门禁', async () => {
+    assert.equal(isValidUpdatePolicyMetadata({ version: '2.0.0', updateMode: 'force' }), true);
+    assert.equal(isValidUpdatePolicyMetadata({ version: '2.0.0', updateMode: 'force', mode: 'optional' }), false);
+    assert.equal(isValidUpdatePolicyMetadata({ version: '2.0.0', updateMode: 'unknown' }), false);
+    assert.equal(isValidUpdatePolicyMetadata({ version: '2.0.0', minimumSupportedVersion: '3.0.0' }), false);
+    assert.equal(isValidUpdatePolicyMetadata({ version: '2.0.0', minimumSupportedVersion: 'invalid' }), false);
+
+    const updater = new FakeUpdater();
+    updater.checkForUpdates = () => Promise.resolve({
+        isUpdateAvailable: true,
+        updateInfo: { version: '2.0.0', files: [windowsArtifact('2.0.0')], minimumSupportedVersion: '3.0.0' },
+    });
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        autoUpdater: updater,
+    });
+    const state = await manager.check();
+    assert.equal(state.status, 'error');
+    assert.equal(state.error.code, 'INVALID_UPDATE_POLICY');
+    manager.dispose();
 });
 
 test('更新策略能同时识别显式强更和最低支持版本', () => {
@@ -75,9 +112,9 @@ test('更新资产只选择当前平台且与版本匹配的文件', () => {
     const info = {
         version: '2.0.0',
         files: [
-            { url: 'wordTTS-1.9.9-arm64.zip', sha512: 'old', size: 10 },
-            { url: 'wordTTS-2.0.0-arm64.zip', sha512: 'mac', size: 20 },
-            { url: 'wordTTS-Setup-2.0.0-x64.exe', sha512: 'win', size: 30 },
+            { url: 'wordTTS-1.9.9-arm64.zip', sha512: Buffer.alloc(64, 1).toString('base64'), size: 10 },
+            { url: 'wordTTS-2.0.0-arm64.zip', sha512: Buffer.alloc(64, 2).toString('base64'), size: 20 },
+            { url: 'wordTTS-Setup-2.0.0-x64.exe', sha512: Buffer.alloc(64, 3).toString('base64'), size: 30 },
         ],
     };
     assert.equal(updateArtifactForPlatform(info, 'win32').name, 'wordTTS-Setup-2.0.0-x64.exe');
@@ -108,19 +145,45 @@ test('更新资产 URL 会固定到 Release 下载路径，并支持中文名编
     );
 });
 
-test('更新资产探测在 HEAD 不可用时使用单字节范围请求', async () => {
+test('更新资产探测读取包头范围 GET 确认包地址可下载', async () => {
     const requests = [];
     const result = await probeUpdateArtifact('https://example.test/release.exe', {
         timeoutMs: 1000,
         fetchImpl: async (_url, request) => {
             requests.push(request);
-            if (request.method === 'HEAD') return { status: 405, body: null };
-            return { status: 206, body: null };
+            return {
+                status: 206,
+                headers: { get: name => String(name).toLowerCase() === 'content-range' ? 'bytes 0-3/4'
+                    : String(name).toLowerCase() === 'content-length' ? '4' : null },
+                body: new ReadableStream({ start(controller) { controller.enqueue(Buffer.from([0x4d, 0x5a, 0x90, 0x00])); controller.close(); } }),
+            };
         },
     });
     assert.equal(result.available, true);
-    assert.deepEqual(requests.map(request => request.method), ['HEAD', 'GET']);
-    assert.equal(requests[1].headers.Range, 'bytes=0-0');
+    assert.deepEqual(requests.map(request => request.method), ['GET']);
+    assert.equal(requests[0].headers.get('range'), 'bytes=0-3');
+});
+
+test('安装包探测拒绝伪造范围头、错误文件头和缺失正文', async () => {
+    for (const response of [
+        { status: 206, headers: { get: () => null }, body: null },
+        {
+            status: 206,
+            headers: { get: name => String(name).toLowerCase() === 'content-range' ? 'bytes 0-3/*' : '4' },
+            body: new ReadableStream({ start(controller) { controller.enqueue(Buffer.from([0x4d, 0x5a, 0x90, 0])); controller.close(); } }),
+        },
+        {
+            status: 206,
+            headers: { get: name => String(name).toLowerCase() === 'content-range' ? 'bytes 0-3/4' : '4' },
+            body: new ReadableStream({ start(controller) { controller.enqueue(Buffer.from([0x3c, 0x68, 0x74, 0x6d])); controller.close(); } }),
+        },
+    ]) {
+        const result = await probeUpdateArtifact('https://example.test/release.exe', {
+            timeoutMs: 1000,
+            fetchImpl: async () => response,
+        });
+        assert.equal(result.available, false);
+    }
 });
 
 test('更新管理器按检查、下载、安装阶段发布可序列化状态', async () => {
@@ -483,6 +546,30 @@ test('开发或 smoke 模式不会加载或触发原生更新器', async () => {
     });
     assert.equal(manager.getStatus().status, 'disabled');
     assert.equal((await manager.check()).status, 'disabled');
+    manager.dispose();
+});
+
+test('关闭后台自动更新不能关闭正式包的启动更新检查', async () => {
+    const updater = new FakeUpdater();
+    let checks = 0;
+    updater.checkForUpdates = async () => {
+        checks += 1;
+        return { updateInfo: { version: '2.0.0', updateMode: 'force', files: [windowsArtifact('2.0.0')] } };
+    };
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'win32',
+        autoUpdater: updater,
+        enforceStartupUpdates: true,
+        env: { WORDTTS_DISABLE_AUTO_UPDATE: '1' },
+    });
+    const status = await manager.check();
+    assert.equal(status.isForced, true);
+    assert.equal(status.canDownload, true);
+    manager.start({ delayMs: 0 });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(checks, 1);
     manager.dispose();
 });
 

@@ -1,5 +1,8 @@
 from pathlib import Path
 
+from docx import Document
+from PIL import Image
+
 from question_types.info_retelling import InfoRetellingParser
 from question_types.segmenter import parse_document_once
 from question_types.text_utils import load_paragraphs
@@ -42,3 +45,20 @@ def test_retelling_sections_keep_distinct_group_indexes_before_deduplication():
     parser = InfoRetellingParser(FIXTURE, preloaded_paras=loaded)
 
     assert parser._recording_drawing_group_indices() == (0, 1)
+
+
+def test_retelling_selector_prefers_inline_image_in_its_subsection(tmp_path):
+    source = tmp_path / "inline-retelling.docx"
+    image_source = tmp_path / "mind-map.png"
+    Image.new("RGB", (32, 24), "#2f7e69").save(image_source, format="PNG")
+    document = Document()
+    document.add_paragraph("第一节 信息转述")
+    document.add_paragraph("请根据思维导图复述。")
+    document.add_picture(str(image_source))
+    document.add_paragraph("第二节 询问信息")
+    document.save(source)
+
+    loaded = load_paragraphs(source, include_metadata=True, include_blocks=True)
+    parser = InfoRetellingParser(str(source), preloaded_paras=loaded)
+
+    assert parser._recording_block_image_selector() == ("embedded_image", (0,))

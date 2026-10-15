@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from docx import Document
 from PIL import Image
 
 from workflow.docx_table_image import (
@@ -66,6 +67,29 @@ def test_table_paths_ignore_non_renderable_bookmark_nodes():
     root, _theme = _read_document_xml(source)
 
     assert _table_paths(root) == ("body/109", "body/124", "body/129")
+
+
+def test_inline_embedded_image_is_extracted_and_normalized_to_png(tmp_path: Path):
+    source = tmp_path / "inline-image.docx"
+    source_image = tmp_path / "mind-map.jpg"
+    Image.new("RGB", (64, 36), "#4b79d8").save(source_image, format="JPEG")
+    document = Document()
+    document.add_paragraph("第一节 短文复述")
+    document.add_picture(str(source_image))
+    document.save(source)
+
+    output = tmp_path / "inline-image.png"
+    result = render_docx_block_image(
+        source,
+        output,
+        block_kind="embedded_image",
+        block_index=0,
+    )
+
+    assert result["block_kind"] == "embedded_image"
+    assert result["width"] == 64
+    assert result["height"] == 36
+    assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_drawing_group_uses_document_grid_and_anchor_positions():

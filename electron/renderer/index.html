@@ -731,17 +731,46 @@
     <section class="audio-import-workspace" id="audio-import-workspace" hidden aria-labelledby="audio-import-title">
         <div class="audio-import-shell">
             <header class="audio-import-heading">
-                <div><span class="panel-kicker">IMPORT EXISTING AUDIO</span><h2 id="audio-import-title">导入已有音频</h2><p>音频会自动识别并匹配题目；核对待确认项后即可一次性导入。</p></div>
+                <div><span class="panel-kicker">IMPORT EXISTING AUDIO</span><h2 id="audio-import-title">导入已有音频</h2><p>按音频准备方式选择识别流程；确认每道题都有对应音频后即可导入。</p></div>
                 <button type="button" class="btn-text" id="audio-import-back-btn">切换交付方式</button>
             </header>
+            <div class="audio-import-modes" role="group" aria-label="选择音频导入方式">
+                <button type="button" class="audio-import-mode-card active" data-audio-import-mode="files" aria-pressed="true">
+                    <span class="audio-import-mode-icon" aria-hidden="true">▤</span>
+                    <span><strong>分音频识别</strong><small>已按题目切好的音频；支持多文件、文件夹或 ZIP，沿用现有匹配方式。</small></span>
+                    <span class="audio-import-mode-check" aria-hidden="true">✓</span>
+                </button>
+                <button type="button" class="audio-import-mode-card" data-audio-import-mode="continuous" aria-pressed="false">
+                    <span class="audio-import-mode-icon" aria-hidden="true">◖))</span>
+                    <span><strong>整段音频自动切割</strong><small>上传一个完整录音；忽略中文提示，按英文内容切片并匹配题目。</small></span>
+                    <span class="audio-import-mode-check" aria-hidden="true">✓</span>
+                </button>
+            </div>
             <div class="audio-import-dropzone" id="audio-import-dropzone" role="region" aria-label="拖入音频文件、文件夹或 ZIP">
                 <span class="audio-import-drop-mark" aria-hidden="true">⇧</span>
-                <div class="audio-import-drop-copy"><strong>拖入音频文件、文件夹或 ZIP</strong><small>支持 MP3、WAV、M4A、AAC、OGG、OPUS、FLAC；也可选择整个文件夹。</small></div>
+                <div class="audio-import-drop-copy"><strong id="audio-import-drop-title">拖入分音频、文件夹或 ZIP</strong><small id="audio-import-drop-hint">支持 MP3、WAV、M4A、AAC、OGG、OPUS、FLAC；也可选择整个文件夹。</small></div>
                 <div class="audio-import-drop-actions"><button type="button" class="btn-secondary btn-sm" id="audio-import-select-btn">选择音频或 ZIP</button><button type="button" class="btn-text btn-sm" id="audio-import-folder-btn">选择文件夹</button></div>
                 <span class="audio-import-source-summary" id="audio-import-source-summary">还没有选择音频</span>
             </div>
             <div class="audio-import-progress" id="audio-import-progress" hidden><div><span id="audio-import-progress-label">正在上传</span><strong id="audio-import-progress-value">0 / 0</strong></div><progress id="audio-import-progress-bar" max="100" value="0" aria-label="音频上传进度"></progress></div>
             <div class="audio-import-overview">
+                <section class="audio-import-analysis-card" id="audio-import-analysis-card" hidden role="region" aria-label="本机音频识别进度" aria-busy="true">
+                    <div class="audio-import-analysis-heading">
+                        <span class="audio-import-analysis-mark" aria-hidden="true">识</span>
+                        <div class="audio-import-analysis-copy">
+                            <strong id="audio-import-analysis-title">正在连接本机识别服务…</strong>
+                            <small>音频在本机处理；识别、匹配和切割进度会实时更新。</small>
+                        </div>
+                        <span class="audio-import-analysis-stage" id="audio-import-analysis-stage">准备中</span>
+                    </div>
+                    <div class="audio-import-analysis-track" id="audio-import-analysis-bar" role="progressbar" aria-label="音频识别进度" aria-valuemin="0" aria-valuemax="100" aria-valuetext="正在处理" data-state="indeterminate">
+                        <span class="audio-import-analysis-fill" id="audio-import-analysis-fill" aria-hidden="true"></span>
+                    </div>
+                    <div class="audio-import-analysis-meta">
+                        <span id="audio-import-analysis-detail">正在准备识别任务</span>
+                        <strong id="audio-import-analysis-count">处理中</strong>
+                    </div>
+                </section>
                 <div class="audio-import-status-card" id="audio-import-status-card" data-tone="info"><span class="audio-import-status-dot" aria-hidden="true"></span><p id="audio-import-status" role="status" aria-live="polite">请选择覆盖全部待处理题目的音频。</p></div>
             </div>
             <div class="audio-import-list-tools">
@@ -803,5 +832,6 @@
     <script src="modules/workflow/store-renderer.js"></script>
     <script src="modules/extensions/audio-import.js"></script>
     <script src="app.js"></script>
+    <script src="modules/app/client-code-loader.js"></script>
 </body>
 </html>

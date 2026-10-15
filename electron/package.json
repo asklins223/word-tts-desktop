@@ -1,6 +1,6 @@
 {
   "name": "word-tts-desktop",
-  "version": "3.2.19",
+  "version": "3.3.0",
   "description": "小猪wordTTS 文档配音桌面工具",
   "main": "main.js",
   "author": "asklins223",
@@ -25,9 +25,9 @@
     "build:icons": "cd .. && node scripts/run_python.js scripts/build_app_icons.py",
     "build:python": "cd .. && node scripts/run_pyinstaller.js server_pyinstaller.spec --noconfirm --distpath electron/server_backend_build --workpath electron/server_backend_build_tmp && node scripts/stage_playwright_browser.js electron/server_backend_build/server_backend",
     "version:sync": "node ../scripts/project_version.js --sync",
-    "build": "npm run version:sync && npm run build:icons && npm run build:python && electron-builder --publish never",
-    "build:mac": "npm run version:sync && npm run build:icons && npm run build:python && electron-builder --mac --publish never",
-    "build:win": "npm run version:sync && npm run build:icons && npm run build:python && electron-builder --win dir --publish never && node ../scripts/build_windows_installer.js --payload release/win-unpacked --output-dir release"
+    "build": "npm run version:sync && npm run build:icons && npm run build:python && node ../scripts/build_protected_electron.js --publish never",
+    "build:mac": "npm run version:sync && npm run build:icons && npm run build:python && node ../scripts/build_protected_electron.js --mac --publish never",
+    "build:win": "npm run version:sync && npm run build:icons && npm run build:python && node ../scripts/build_protected_electron.js --win dir --publish never && node ../scripts/build_windows_installer.js --payload release/win-unpacked --output-dir release"
   },
   "build": {
     "appId": "com.wordtts.desktop",
@@ -37,6 +37,7 @@
       "buildResources": "build"
     },
     "afterSign": "notarize.js",
+    "beforePack": "./assert-client-code-protected.js",
     "electronLanguages": [
       "en",
       "en-US",
@@ -49,6 +50,12 @@
       "main.js",
       "file-dialogs.js",
       "update-manager.js",
+      "startup-release-check.js",
+      "release-network.js",
+      "startup-update.js",
+      "startup-update.html",
+      "client-code-protection.js",
+      "client-code-key.json",
       "windows-update-client.js",
       "workflow-api.js",
       "workflow-proxy.js",
@@ -124,6 +131,7 @@
     "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "htmlparser2": "12.0.0",
+    "javascript-obfuscator": "5.9.0",
     "js-yaml": "4.3.2",
     "jsdom": "26.1.0",
     "jszip": "3.10.1",

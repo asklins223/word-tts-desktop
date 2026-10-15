@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "algorithm": "AES-256-GCM",
+  "keyId": "1fcfc4a1dc02da73",
+  "keyHex": "7c95e8235c37f701ee008392af9d47bf6f7aae720f3e1ae660ac1abab4c245a8"
+}

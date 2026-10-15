@@ -871,7 +871,7 @@ class WorkflowApplicationService:
                 block_index = recording.get("table_index")
             else:
                 continue
-            if block_kind not in {"table", "drawing_group"}:
+            if block_kind not in {"table", "drawing_group", "embedded_image"}:
                 raise WorkflowApplicationError(
                     "PARSER_ERROR",
                     "文档块图片缺少有效的块类型，不能开始录入",

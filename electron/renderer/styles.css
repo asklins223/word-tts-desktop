@@ -404,6 +404,17 @@ body.platform-darwin .window-drag-region {
 .audio-import-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .audio-import-heading h2 { margin: 4px 0 5px; color: var(--ink-strong); font-size: 19px; }
 .audio-import-heading p { margin: 0; color: var(--ink-muted); font-size: 11px; line-height: 1.55; }
+.audio-import-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.audio-import-mode-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) 18px; align-items: center; gap: 10px; min-height: 70px; padding: 11px 13px; color: var(--ink-muted); text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out); }
+.audio-import-mode-card:hover:not(:disabled) { background: var(--surface-soft); border-color: var(--line-strong); }
+.audio-import-mode-card.active { color: var(--ink-strong); background: var(--surface-blue); border-color: rgba(var(--primary-rgb), .55); box-shadow: 0 0 0 2px rgba(var(--primary-rgb), .08); }
+.audio-import-mode-card:disabled { cursor: not-allowed; opacity: .68; }
+.audio-import-mode-icon { display: grid; width: 34px; height: 34px; place-items: center; color: var(--primary-hover); background: var(--primary-soft); border-radius: 9px; font-size: 17px; font-weight: 800; }
+.audio-import-mode-card > span:nth-child(2) { display: grid; gap: 4px; min-width: 0; }
+.audio-import-mode-card strong { color: var(--ink-strong); font-size: 11px; }
+.audio-import-mode-card small { color: var(--ink-faint); font-size: 9px; line-height: 1.45; }
+.audio-import-mode-check { display: grid; width: 17px; height: 17px; place-items: center; color: transparent; border: 1px solid var(--line-strong); border-radius: 50%; font-size: 10px; }
+.audio-import-mode-card.active .audio-import-mode-check { color: white; background: var(--primary); border-color: var(--primary); }
 .audio-import-dropzone { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 92px; padding: 13px 16px; color: var(--ink-muted); background: var(--surface-soft); border: 1px dashed var(--line-strong); border-radius: 11px; text-align: left; transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out); }
 .audio-import-dropzone.dragover { background: var(--surface-blue); border-color: var(--primary); box-shadow: 0 0 0 4px rgba(var(--primary-rgb), .12); }
 .audio-import-drop-mark { display: grid; width: 42px; height: 42px; place-items: center; color: var(--primary-hover); background: var(--primary-soft); border: 1px solid rgba(var(--primary-rgb), .2); border-radius: 12px; font-size: 25px; line-height: 1; }
@@ -411,6 +422,7 @@ body.platform-darwin .window-drag-region {
 .audio-import-drop-copy strong { color: var(--ink-strong); font-size: 12px; }
 .audio-import-drop-copy small { color: var(--ink-faint); font-size: 10px; line-height: 1.5; }
 .audio-import-drop-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.audio-import-drop-actions button[hidden] { display: none; }
 .audio-import-source-summary { display: none; }
 .audio-import-workspace.has-files .audio-import-dropzone { grid-template-columns: minmax(0, 1fr) auto; min-height: 52px; padding: 7px 10px 7px 13px; background: var(--surface); border-style: solid; }
 .audio-import-workspace.has-files .audio-import-drop-mark, .audio-import-workspace.has-files .audio-import-drop-copy { display: none; }
@@ -437,6 +449,32 @@ body.platform-darwin .window-drag-region {
 .audio-import-status-card[data-tone="warning"] p { color: var(--attention-strong); }
 .audio-import-status-card[data-tone="error"] p { color: var(--danger-strong); }
 .audio-import-status-card[data-tone="success"] p { color: var(--success, #25815f); }
+.audio-import-analysis-card {
+    display: grid;
+    gap: 10px;
+    padding: 14px 16px;
+    background: linear-gradient(110deg, rgba(var(--primary-rgb), .2), var(--surface-blue));
+    border: 1px solid rgba(var(--primary-rgb), .58);
+    border-radius: 12px;
+    box-shadow: inset 3px 0 0 var(--primary), 0 5px 16px rgba(var(--primary-rgb), .1);
+}
+.audio-import-analysis-card[hidden] { display: none; }
+.audio-import-analysis-heading { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.audio-import-analysis-mark { display: grid; width: 36px; height: 36px; place-items: center; color: var(--primary-hover); background: var(--primary-soft); border: 1px solid rgba(var(--primary-rgb), .25); border-radius: 10px; font-size: 15px; font-weight: 800; }
+.audio-import-analysis-copy { display: grid; gap: 4px; min-width: 0; }
+.audio-import-analysis-copy strong { color: var(--ink-strong); font-size: 14px; line-height: 1.4; }
+.audio-import-analysis-copy small { color: var(--ink-muted); font-size: 10px; line-height: 1.5; }
+.audio-import-analysis-stage { padding: 5px 9px; color: var(--primary-hover); background: var(--primary-soft); border: 1px solid rgba(var(--primary-rgb), .25); border-radius: 999px; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.audio-import-analysis-track { position: relative; display: block; width: 100%; height: 10px; overflow: hidden; background: rgba(var(--primary-rgb), .12); border: 1px solid rgba(var(--primary-rgb), .3); border-radius: 999px; box-shadow: inset 0 1px 2px rgba(0, 0, 0, .14); }
+.audio-import-analysis-fill { position: absolute; inset: 0 auto 0 0; width: 100%; transform: scaleX(0); transform-origin: left center; background: linear-gradient(90deg, var(--primary), var(--primary-hover)); border-radius: inherit; box-shadow: 0 0 10px rgba(var(--primary-rgb), .32); transition: transform 180ms linear; }
+.audio-import-analysis-track[data-state="indeterminate"] .audio-import-analysis-fill { width: 36%; transform: translateX(-120%); background: linear-gradient(90deg, transparent, var(--primary), var(--primary-hover), transparent); box-shadow: none; animation: audio-import-progress-sweep 1.4s linear infinite; }
+@keyframes audio-import-progress-sweep { from { transform: translateX(-120%); } to { transform: translateX(280%); } }
+.audio-import-analysis-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ink-muted); font-size: 11px; line-height: 1.45; }
+.audio-import-analysis-meta strong { color: var(--primary-hover); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+    .audio-import-analysis-fill { transition: none; }
+    .audio-import-analysis-track[data-state="indeterminate"] .audio-import-analysis-fill { left: 31%; width: 38%; transform: none; background: linear-gradient(90deg, var(--primary), var(--primary-hover)); opacity: .85; animation: none; }
+}
 .audio-import-list-tools { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-top: 2px; }
 .audio-import-list-tools > div { display: grid; gap: 3px; min-width: 0; }
 .audio-import-list-tools > div > strong { color: var(--ink-strong); font-size: 13px; }
@@ -528,6 +566,15 @@ body.platform-darwin .window-drag-region {
     .extension-facts { grid-template-columns: 1fr; gap: 10px; }
     .audio-import-shell { padding: 14px; }
     .audio-import-heading { align-items: flex-start; }
+    .audio-import-modes { grid-template-columns: minmax(0, 1fr); gap: 7px; }
+    .audio-import-mode-card { min-height: 64px; padding: 9px 11px; }
+    .audio-import-analysis-card { gap: 9px; padding: 12px; }
+    .audio-import-analysis-heading { grid-template-columns: 32px minmax(0, 1fr); gap: 9px; }
+    .audio-import-analysis-mark { width: 32px; height: 32px; }
+    .audio-import-analysis-stage { grid-column: 2; justify-self: start; }
+    .audio-import-analysis-copy strong { font-size: 12px; }
+    .audio-import-analysis-copy small { font-size: 9px; }
+    .audio-import-analysis-meta { font-size: 10px; }
     .audio-import-dropzone { grid-template-columns: 38px minmax(0, 1fr); gap: 9px; min-height: 86px; padding: 12px; }
     .audio-import-drop-mark { width: 36px; height: 36px; font-size: 21px; }
     .audio-import-drop-actions { grid-column: 1 / -1; justify-content: flex-start; }

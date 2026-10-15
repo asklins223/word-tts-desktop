@@ -484,6 +484,7 @@ def _build_document_blocks(document):
     block_index = 0
     body = document.element.body
     table_index = 0
+    embedded_image_index = 0
     drawing_group_index = -1
     drawing_group_open = False
     for child in body.iterchildren():
@@ -517,6 +518,27 @@ def _build_document_blocks(document):
                         'drawing_group_index': drawing_group_index,
                     },
                 ))
+                block_index += 1
+
+            # Keep inline/anchored bitmap relationships in source order.
+            # Retelling mind maps may be inline images rather than floating
+            # DrawingML groups, so text-box group indexes cannot resolve them.
+            for blip in child.xpath('.//a:blip'):
+                relationship_id = blip.get(qn('r:embed'))
+                if not relationship_id:
+                    continue
+                blocks.append(DocumentBlock(
+                    kind='embedded_image',
+                    index=block_index,
+                    text='',
+                    fragments=(),
+                    metadata={
+                        'paragraph_index': paragraph_index,
+                        'embedded_image_index': embedded_image_index,
+                        'relationship_id': relationship_id,
+                    },
+                ))
+                embedded_image_index += 1
                 block_index += 1
             # Empty paragraphs between anchored shapes are layout rows in the
             # same visual group. Normal text is the semantic group boundary.

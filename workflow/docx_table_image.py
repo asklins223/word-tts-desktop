@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from io import BytesIO
 import math
 import os
+import posixpath
 from pathlib import Path
 import queue
 import sys
@@ -45,7 +46,9 @@ _WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 _A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _WPG = "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
 _WPS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
-_NS = {"w": _W, "wp": _WP, "a": _A, "wpg": _WPG, "wps": _WPS}
+_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+_NS = {"w": _W, "wp": _WP, "a": _A, "wpg": _WPG, "wps": _WPS, "r": _R}
 _EMU_PER_POINT = 12_700.0
 _TWIPS_PER_POINT = 20.0
 _RENDERABLE_BODY_TAGS = {f"{{{_W}}}p", f"{{{_W}}}tbl"}
@@ -1079,6 +1082,75 @@ def _save_fragments(
     return width, height, size_bytes
 
 
+def _render_embedded_image(source: Path, output: Path, image_index: int) -> tuple[int, int, int]:
+    """Extract one body image relationship and normalize it to a PNG."""
+
+    try:
+        with ZipFile(source) as package:
+            root = ET.fromstring(package.read("word/document.xml"))
+            relationships = ET.fromstring(package.read("word/_rels/document.xml.rels"))
+            blips = [
+                blip
+                for blip in root.findall(".//a:blip", _NS)
+                if blip.get(f"{{{_R}}}embed")
+            ]
+            if image_index >= len(blips):
+                raise DocxTableImageError("解析出的嵌入图片序号超出源文档范围")
+            relationship_id = blips[image_index].get(f"{{{_R}}}embed")
+            if not relationship_id:
+                raise DocxTableImageError("源文档图片缺少有效的嵌入关系")
+
+            target = None
+            for relationship in relationships.findall(f"{{{_PKG_REL}}}Relationship"):
+                if relationship.get("Id") != relationship_id:
+                    continue
+                if not str(relationship.get("Type") or "").endswith("/image"):
+                    break
+                if relationship.get("TargetMode") == "External":
+                    break
+                target = relationship.get("Target")
+                break
+            if not target:
+                raise DocxTableImageError("源文档图片关系不存在或不受支持")
+
+            member = posixpath.normpath(posixpath.join("word", target.replace("\\", "/")))
+            if member.startswith("../") or member.startswith("/") or not member.startswith("word/"):
+                raise DocxTableImageError("源文档图片路径无效")
+            info = package.getinfo(member)
+            if info.file_size <= 0 or info.file_size > TABLE_IMAGE_MAX_BYTES:
+                raise DocxTableImageError("源文档图片超过安全大小上限")
+            image_bytes = package.read(member)
+    except DocxTableImageError:
+        raise
+    except (BadZipFile, KeyError, ET.ParseError, OSError) as exc:
+        raise DocxTableImageError("无法读取源文档中的嵌入图片") from exc
+
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as image:
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > 60_000_000:
+                raise DocxTableImageError("源文档图片尺寸超过安全范围")
+            image.load()
+            normalized = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            normalized.save(output, format="PNG")
+    except DocxTableImageError:
+        raise
+    except Exception as exc:
+        raise DocxTableImageError("源文档嵌入图片无法转换为 PNG") from exc
+
+    if output.is_symlink() or not output.is_file():
+        raise DocxTableImageError("文档块 PNG 未成功写入")
+    try:
+        size_bytes = output.stat().st_size
+    except OSError as exc:
+        raise DocxTableImageError("无法确认文档块 PNG 大小") from exc
+    if size_bytes <= 0 or size_bytes > TABLE_IMAGE_MAX_BYTES:
+        raise DocxTableImageError("文档块 PNG 超过安全大小上限")
+    return width, height, size_bytes
+
+
 def render_docx_block_image(
     source_path: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
@@ -1089,17 +1161,30 @@ def render_docx_block_image(
     timeout_seconds: int = TABLE_IMAGE_RENDER_TIMEOUT_SECONDS,
     padding_points: float = TABLE_IMAGE_DEFAULT_PADDING_POINTS,
 ) -> dict[str, Any]:
-    """Render one zero-based DOCX table or adjacent floating-drawing group."""
+    """Render or extract one zero-based DOCX table, drawing group, or image."""
 
     padding = _validate_options(
         block_index=block_index,
         dpi=dpi,
         padding_points=padding_points,
     )
-    if block_kind not in {"table", "drawing_group"}:
+    if block_kind not in {"table", "drawing_group", "embedded_image"}:
         raise DocxTableImageError("不支持的 DOCX 文档块类型")
     source = _regular_path(source_path, suffix=".docx")
     output = _validate_output_path(output_path)
+    if block_kind == "embedded_image":
+        width, height, size_bytes = _render_embedded_image(source, output, block_index)
+        return {
+            "block_kind": block_kind,
+            "block_index": block_index,
+            "fragment_count": 1,
+            "pages": [],
+            "width": width,
+            "height": height,
+            "size_bytes": size_bytes,
+            "padding_points": padding,
+            "path": str(output),
+        }
     root, theme = _read_document_xml(source)
     block_path: str | None = None
     drawing_value: Mapping[str, Any] | None = None
