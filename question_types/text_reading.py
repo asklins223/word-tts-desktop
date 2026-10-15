@@ -211,8 +211,11 @@ class TextReadingParser(BaseParser):
     # Numbered section labels can introduce a new passage inside the final
     # discourse-reading block. Require Word's formatting evidence at the call
     # site so ordinary mentions of a section number remain spoken text.
+    # 教材在编号后可带单个板块名（如 “Section 1 Reading”），同样需要
+    # 格式证据与整段匹配才算章节边界。
     RE_NUMBERED_SECTION_HEADING = re.compile(
-        r'^Section\s*\d+\s*[.：:]?\s*$', re.I
+        r"^Section\s*\d+\s*(?:[A-Za-z][A-Za-z'\-]{0,30})?\s*[.：:]?\s*$",
+        re.I,
     )
 
     def __init__(self, filepath, **kwargs):
@@ -1727,7 +1730,10 @@ class TextReadingParser(BaseParser):
             ):
                 flush_all()
                 current_section = sanitize(text)
-                current_sub = None
+                # 编号 Section 只是章节边界，不改跟读子题型：它后面的
+                # 正文继续归属上面最近的跟读子题型（语篇跟读大标题下的
+                # Section 是语篇、段落跟读下的是段落），不能因为标题出现
+                # 在区块之间就把后续内容丢掉。
                 continue
 
             # 已知章节名优先保持为大章节边界；段落中的粗体小标题继续

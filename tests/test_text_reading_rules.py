@@ -481,6 +481,80 @@ class TextReadingRuleTests(unittest.TestCase):
             {None, "Section 4"},
         )
 
+    def test_shanghai_unit4_example_keeps_section4_as_paragraph_reading(self):
+        path = ROOT / "examples" / "documents" / "沪教版七上Unit4 The Earth课文跟读.docx"
+        result = TextReadingParser(path).parse()
+        sentences = [
+            item for item in result["items"]
+            if item["category"] == "句子跟读"
+        ]
+        paragraphs = [
+            item for item in result["items"]
+            if item["category"] == "段落跟读"
+        ]
+
+        self.assertEqual(len(sentences), 10)
+        self.assertEqual(
+            {item["section"] for item in sentences},
+            {"Section 1 Reading"},
+        )
+        self.assertEqual(sentences[0]["translation"], "地球是一颗神奇的星球！")
+        # Section 1 Reading 之后的编号 Section 直接跟正文：按段落跟读
+        # 收，Saihanba 的文章段一条都不能丢。
+        paragraph_groups = {}
+        for item in paragraphs:
+            paragraph_groups.setdefault(item["paragraph_scope"], []).append(item)
+        self.assertEqual(
+            sorted(len(group) for group in paragraph_groups.values()),
+            [17, 18],
+        )
+        section4 = [
+            item for item in paragraphs if item["section"] == "Section 4"
+        ]
+        self.assertEqual(section4[0]["text"], "Saihanba is a forest park in the north of Hebei.")
+        self.assertTrue(
+            any(
+                item["text"] == "In 1962, the first tree planters arrived in Saihanba."
+                for item in section4
+            )
+        )
+        self.assertFalse(
+            any(item["category"] == "语篇跟读" for item in result["items"])
+        )
+        self.assertFalse(
+            any(
+                item["text"] in {"Unit 4 The Earth", "Section 1 Reading", "Section 4"}
+                for item in result["items"]
+            )
+        )
+
+    def test_numbered_section_keeps_the_nearest_reading_subtype(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "沪教版课文跟读-编号章节跟随子题型.docx")
+            document = Document()
+            for text in ["Section 1", "段落跟读"]:
+                heading = document.add_paragraph(text)
+                heading.runs[0].bold = True
+            document.add_paragraph("First paragraph sentence.")
+            follow = document.add_paragraph("Section 2")
+            follow.runs[0].bold = True
+            document.add_paragraph("Second paragraph sentence.")
+            document.save(path)
+            result = TextReadingParser(path).parse()
+
+        paragraphs = [
+            item for item in result["items"]
+            if item["category"] == "段落跟读"
+        ]
+        self.assertEqual(
+            [item["text"] for item in paragraphs],
+            ["First paragraph sentence.", "Second paragraph sentence."],
+        )
+        self.assertEqual(
+            [item["section"] for item in paragraphs],
+            ["Section 1", "Section 2"],
+        )
+
     def test_new_structure_wins_when_old_and_new_sections_are_both_present(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir, "课文跟读混合结构.docx")
