@@ -312,9 +312,12 @@ test('build.files 引用的关键文件都真实存在', () => {
             );
             continue;
         }
+        const sourcePath = pattern === 'client-code-key.json'
+            ? path.join(APP_DIR, '..', pattern)
+            : path.join(APP_DIR, pattern);
         assert.ok(
-            fs.existsSync(path.join(APP_DIR, pattern)),
-            `build.files entry ${pattern} does not exist`,
+            fs.existsSync(sourcePath),
+            `build.files entry ${pattern} does not exist at its packaging source`,
         );
     }
 });
