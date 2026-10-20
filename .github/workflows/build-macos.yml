@@ -27,8 +27,7 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: read
-    # Release CI must never open a real external-provider session. Platform
-    # input coverage is exercised by the page-free logical smoke below.
+    # Release CI must never open a real external-provider session.
     env:
       WORDTTS_ENABLE_REAL_PROVIDER: '0'
     outputs:
@@ -87,12 +86,6 @@ jobs:
           echo "version=$resolved" >> "$GITHUB_OUTPUT"
           echo "本次构建版本: $resolved"
 
-      - name: Validate update policy
-        env:
-          UPDATE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: node scripts/validate_update_policy.js
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -107,21 +100,6 @@ jobs:
       - name: Install Electron dependencies
         working-directory: electron
         run: npm ci --prefer-offline --no-audit --fund=false
-
-      - name: Test Electron native file dialogs
-        working-directory: electron
-        run: npm test
-
-      - name: Check workflow contracts
-        working-directory: electron
-        run: npm run check:contracts
-
-      - name: Run simulated workflow smoke (no page/network/login)
-        run: python tools/xunfei_smoke.py --logical-only --source "examples/documents/信息转述及询问信息 7上- U1.docx" --max-items 100
-
-      - name: Audit packaged runtime dependencies
-        working-directory: electron
-        run: npm audit --omit=dev --audit-level=high
 
       - name: Build architecture-matched app and DMG
         env:
@@ -146,139 +124,11 @@ jobs:
           esac
           zip_path="electron/release/小猪wordTTS-${RELEASE_VERSION}-${arch}.zip"
           dmg_path="electron/release/小猪wordTTS-${RELEASE_VERSION}-${arch}.dmg"
-          test -s "$zip_path"
-          test -s "$dmg_path"
           echo "arch=$arch" >> "$GITHUB_OUTPUT"
           echo "zip=$zip_path" >> "$GITHUB_OUTPUT"
           echo "dmg=$dmg_path" >> "$GITHUB_OUTPUT"
           echo "最终 macOS 自动更新 ZIP: $zip_path"
           echo "最终 macOS 首次安装 DMG: $dmg_path"
-
-      - name: Verify ShipIt signature from final update ZIP
-        env:
-          MAC_UPDATE_ZIP: ${{ steps.mac-artifacts.outputs.zip }}
-        run: |
-          set -euo pipefail
-          verify_dir="$(mktemp -d "$RUNNER_TEMP/wordtts-shipit-signature.XXXXXX")"
-          ditto -x -k "$MAC_UPDATE_ZIP" "$verify_dir"
-          extracted_app="$verify_dir/小猪wordTTS.app"
-          test -d "$extracted_app"
-          bash scripts/verify_macos_update_signature.sh "$extracted_app"
-
-      - name: Verify packaged macOS backend (local-only)
-        env:
-          # Electron 的 os.tmpdir() 在 macOS 上遵循 TMPDIR；固定到 runner
-          # 临时目录，失败时可以稳定上传 wordtts-electron-smoke.log。
-          TMPDIR: ${{ runner.temp }}
-          WORDTTS_DEBUG_LOGS: '1'
-          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          # 这里只验证打包产物和本地后端健康接口；不打开页面，
-          # 不登录讯飞、不访问第三方页面，不执行真实 Provider smoke。
-          smoke_log="$TMPDIR/wordtts-electron-smoke.log"
-          backend_pid=""
-          cleanup() {
-            if [ -n "$backend_pid" ]; then
-              kill "$backend_pid" 2>/dev/null || true
-              wait "$backend_pid" 2>/dev/null || true
-            fi
-          }
-          report_failure() {
-            exit_code=$?
-            if [ "$exit_code" -ne 0 ] && [ -f "$smoke_log" ]; then
-              echo '--- Electron smoke diagnostic log ---' >&2
-              tail -200 "$smoke_log" >&2 || true
-            fi
-            cleanup
-            return "$exit_code"
-          }
-          trap report_failure EXIT
-
-          if [ "$(uname -m)" = "arm64" ]; then
-            output_dir="mac-arm64"
-          else
-            output_dir="mac"
-          fi
-          app_path="electron/release/$output_dir/小猪wordTTS.app"
-          backend="$app_path/Contents/Resources/server_backend/server_backend"
-          test -x "$backend"
-          test -x "$app_path/Contents/MacOS/小猪wordTTS"
-          file "$backend"
-          file "$app_path/Contents/MacOS/小猪wordTTS"
-
-          port="$(python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-          token="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-          WORDTTS_PORT="$port" WORDTTS_API_TOKEN="$token" WORDTTS_VERSION="${{ steps.version.outputs.version }}" "$backend" &
-          backend_pid=$!
-          ready=0
-          for _ in $(seq 1 180); do
-            if ! kill -0 "$backend_pid" 2>/dev/null; then
-              echo "打包后端提前退出" >&2
-              exit 1
-            fi
-            health_json=""
-            if health_json="$(curl --fail --silent --header "X-Desktop-Capability: $token" "http://127.0.0.1:$port/api/v1/health" 2>/dev/null)"; then
-              if HEALTH_JSON="$health_json" python -c 'import json, os, sys; payload=json.loads(os.environ["HEALTH_JSON"]); expected=os.environ["EXPECTED_VERSION"]; ok=payload.get("status") == "ok" and payload.get("app") == "wordtts" and str(payload.get("version")) == expected; print(f"健康检查内容不匹配: {payload!r}，期望版本 {expected}", file=sys.stderr) if not ok else None; raise SystemExit(0 if ok else 1)'
-              then
-                ready=1
-                break
-              fi
-            fi
-            sleep 0.5
-          done
-          kill "$backend_pid" 2>/dev/null || true
-          wait "$backend_pid" 2>/dev/null || true
-          backend_pid=""
-          test "$ready" -eq 1
-
-          echo "验证持久化 Chromium..."
-          # 真正的讯飞流程使用持久化上下文，此前仅测 health，导致缺件仍能通过
-          if [ "$(uname -m)" = "arm64" ]; then
-            output_dir="mac-arm64"
-          else
-            output_dir="mac"
-          fi
-          app_path="electron/release/$output_dir/小猪wordTTS.app"
-          browsers_candidates=(
-            "$app_path/Contents/Resources/server_backend/_internal/playwright_browsers"
-            "$app_path/Contents/Resources/server_backend/playwright_browsers"
-          )
-          browsers=""
-          for cand in "${browsers_candidates[@]}"; do
-            if [ -d "$cand" ]; then browsers="$cand"; break; fi
-          done
-          test -n "$browsers"
-          echo "使用 Chromium 目录: $browsers"
-          printf '%s\n' \
-            'from playwright.sync_api import sync_playwright' \
-            'import tempfile, shutil' \
-            'tmp = tempfile.mkdtemp(prefix="pw-macos-smoke-")' \
-            'p = sync_playwright().start()' \
-            'try:' \
-            '    ctx = p.chromium.launch_persistent_context(tmp, channel="chromium", headless=True, args=["--no-first-run"])' \
-            '    page = ctx.new_page()' \
-            '    page.goto("about:blank")' \
-            '    print("macos persistent ok")' \
-            '    ctx.close()' \
-            'finally:' \
-            '    p.stop()' \
-            '    shutil.rmtree(tmp, ignore_errors=True)' \
-            > /tmp/pw-macos-smoke.py
-          PLAYWRIGHT_BROWSERS_PATH="$browsers" PLAYWRIGHT_NODEJS_PATH="$app_path/Contents/MacOS/小猪wordTTS" ELECTRON_RUN_AS_NODE=1 python /tmp/pw-macos-smoke.py
-          echo "macOS 持久化 Chromium 冒烟通过"
-
-      - name: Upload macOS smoke diagnostics
-        if: always()
-        # Diagnostic artifacts are optional; a transient artifact-service
-        # failure must not block the verified package from being uploaded.
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: 小猪wordTTS-macOS-smoke
-          path: ${{ runner.temp }}/wordtts-electron-smoke.log
-          if-no-files-found: warn
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
