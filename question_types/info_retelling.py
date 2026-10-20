@@ -41,14 +41,14 @@ class InfoRetellingParser(BaseParser):
 
     RE_SECTION_START = re.compile(
         r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
-        r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*信息转述"
+        r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*(?:信息转述|短文复述)"
     )
     RE_ASKING_SECTION = re.compile(
         r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
-        r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*询问信息"
+        r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*(?:询问信息|提问)"
     )
     RE_SUB_SECTION = re.compile(
-        r"第([一二12１２])节\s*[：:]?\s*(信息转述|询问信息)"
+        r"第([一二12１２])节\s*[：:]?\s*(信息转述|短文复述|询问信息|提问)"
     )
     RE_ANY_SECTION = re.compile(
         r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
@@ -71,7 +71,7 @@ class InfoRetellingParser(BaseParser):
         r"[（(【]\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分\s*[）)】]"
     )
     RE_RETELLING_TOTAL = re.compile(
-        r"信息转述[^\d]{0,18}(?:共\s*(?P<count>[0-9０-９]+)\s*题)?"
+        r"(?:信息转述|短文复述)[^\d]{0,18}(?:共\s*(?P<count>[0-9０-９]+)\s*题)?"
         r"[^\d]{0,18}满分\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分"
     )
 
@@ -401,13 +401,13 @@ class InfoRetellingParser(BaseParser):
                 continue
 
             sub = self.RE_SUB_SECTION.search(value)
-            if sub and sub.group(2) == "信息转述":
+            if sub and sub.group(2) in {"信息转述", "短文复述"}:
                 start_retelling()
                 item_score, full_score = self._section_scores(value)
                 current_group["score"] = full_score or item_score
                 retelling_score = full_score or retelling_score
                 continue
-            if sub and sub.group(2) == "询问信息":
+            if sub and sub.group(2) in {"询问信息", "提问"}:
                 start_asking()
                 item_score, full_score = self._section_scores(value)
                 asking_score = item_score or (
@@ -417,7 +417,10 @@ class InfoRetellingParser(BaseParser):
 
             # The full paper uses a major title followed by the two numbered
             # sections.  It is a scope marker, not an extra audio section.
-            if "信息转述及询问" in value and not self.RE_ANY_SECTION.search(value):
+            if (
+                re.search(r"(?:信息转述及询问|短文复述及提问)", value)
+                and not self.RE_ANY_SECTION.search(value)
+            ):
                 flush_script()
                 mode = None
                 continue

@@ -78,9 +78,10 @@ _RECORD_SECTION_RE = re.compile(
 )
 _RECORD_TITLE_RE = re.compile(r"听后记录并转述信息")
 _RETELLING_SECTION_RE = re.compile(
-    r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*信息转述"
+    r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*(?:信息转述|短文复述)"
 )
-_ASKING_SECTION_RE = re.compile(r"第[二2２]节\s*[：:]?\s*询问信息")
+_RETELLING_PAPER_TITLE_RE = re.compile(r"(?:信息转述及询问|短文复述及提问)")
+_ASKING_SECTION_RE = re.compile(r"第[二2２]节\s*[：:]?\s*(?:询问信息|提问)")
 _INFO_ACQUISITION_HEADING_RE = re.compile(
     r"信息获取|听选信息|回答问题"
 )
@@ -866,11 +867,14 @@ def _detect_info_retelling(corpus: _Corpus, family):
     for position, (_, text, style) in enumerate(corpus.paragraphs):
         if not _is_heading_like(text, style):
             continue
-        if not (_RETELLING_SECTION_RE.search(text) or "信息转述及询问" in text):
+        if not (
+            _RETELLING_SECTION_RE.search(text)
+            or _RETELLING_PAPER_TITLE_RE.search(text)
+        ):
             continue
-        # “第二节：信息转述” belongs to the new record/retelling family,
-        # while “第一节 信息转述” and the top-level old title belong to the
-        # legacy information-retelling family.
+        # “第二节：信息转述/短文复述” belongs to the new record/retelling
+        # family, while the first subsection and the top-level retelling title
+        # belong to the legacy information-retelling family.
         if (
             _RETELLING_SECTION_RE.search(text)
             and re.search(r"第二节", text)

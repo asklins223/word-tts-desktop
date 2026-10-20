@@ -326,6 +326,49 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
             ["W: It is a book.", "M: The next answer."],
         )
 
+    def test_reading_time_prompt_does_not_consume_the_first_question_number(self):
+        """范围提示给出题号后，紧随的阅读时间说明不得占用该题号。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "信息获取.docx")
+            document = Document()
+            for text in [
+                "第一节 听选信息",
+                "听第一段对话，回答第1—2两个问题。",
+                "1. What is Amy doing?",
+                "2. Where is Tom?",
+                "第二节 回答问题",
+                "听下面一段短文，播放两遍。请根据所听内容回答第7—10四个问题。",
+                "现在你有15秒钟的时间阅读这四个问题。",
+                "7. What was the dream about?",
+                "8. Who cooks breakfast for the speaker?",
+                "听力原文：",
+                "W: The dream was about work.",
+            ]:
+                document.add_paragraph(text)
+            document.save(path)
+            result = InfoAcquisitionParser(path).parse()
+
+        questions = [
+            item for item in result["items"]
+            if item["category"].endswith("题目")
+        ]
+        self.assertEqual([item["number"] for item in questions], [1, 2, 7, 8])
+        self.assertEqual(
+            [item["text"] for item in questions[2:]],
+            [
+                "What was the dream about?",
+                "Who cooks breakfast for the speaker?",
+            ],
+        )
+        self.assertNotIn(
+            "阅读", "".join(item["text"] for item in questions)
+        )
+        script = next(
+            item for item in result["items"]
+            if item["category"] == "回答问题录音稿"
+        )
+        self.assertEqual(script["question_numbers"], [7, 8])
+
     def test_question_audio_files_use_question_numbers(self):
         parse_results = [{
             "doc_type": "信息获取",

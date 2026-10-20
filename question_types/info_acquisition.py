@@ -33,6 +33,10 @@ class InfoAcquisitionParser(BaseParser):
     RE_SECTION2_START = re.compile(r'第[二2２]节\s*[：:]?\s*回答问题')
     RE_ANY_SECTION = re.compile(r'第[一二三四五六七八九十百\d０-９]+节')
     RE_RECORDING_PROMPT = re.compile(r'(?:听下面|听第.+段|录音播放|各段播放|每段播放)')
+    RE_QUESTION_READING_PROMPT = re.compile(
+        r'[\d０-９零〇一二两三四五六七八九十百]+\s*秒(?:钟)?(?:的)?'
+        r'(?:\s*时间)?\s*阅读.+(?:问题|小题)'
+    )
     RE_ANSWER_RANGE = re.compile(r'第\s*(\d+)\s*[-—~～至到]\s*(\d+)')
     RE_SCRIPT = SCRIPT_MARKER_RE
     RE_QUESTION = re.compile(r'^(\d+)\s*[.．、）)]\s*(.+)')
@@ -351,6 +355,16 @@ class InfoAcquisitionParser(BaseParser):
             question_match = self.RE_QUESTION.match(value)
             if question_match:
                 add_question(question_match.group(2), int(question_match.group(1)))
+                continue
+
+            if (
+                current_section_name == "回答问题"
+                and self.RE_QUESTION_READING_PROMPT.search(value)
+            ):
+                # Reading-time instructions precede the numbered questions in
+                # some exam papers. They are not an unnumbered question; if
+                # emitted here they consume next_qnum and collide with the
+                # first real question's filename_stem (for example, 问题7).
                 continue
 
             # The 回答问题 section commonly numbers the range in its
