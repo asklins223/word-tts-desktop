@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from api.workflow_routes import _dispatch_input_runs_once
+from platform_entry.paper_input import normalize_spec
 from workflow.artifact_store import ArtifactStore
 from workflow.database import WorkflowDatabase
 from workflow.external import ExternalRecordService
@@ -2763,7 +2764,7 @@ class SystemInputServiceTests(unittest.TestCase):
         )
         self.assertEqual(raw["question_groups"][0]["questions"][0]["score"], 7)
 
-    def test_info_retelling_special_materializes_both_instruction_audio_channels(self) -> None:
+    def test_info_retelling_special_materializes_three_guides_and_legacy_asking_audio(self) -> None:
         configuration = {
             "paperName": "信息转述专项",
             "paperCategory": "题型专项",
@@ -2796,6 +2797,7 @@ class SystemInputServiceTests(unittest.TestCase):
             "retelling-instruction",
             "retelling-prompt",
             "asking-instruction",
+            "retelling-reading",
         ):
             add_audio(artifact_id)
 
@@ -2809,6 +2811,9 @@ class SystemInputServiceTests(unittest.TestCase):
                 "instruction_text": "Please retell the introduction.",
                 "instruction_occurrence": 0,
                 "instruction_audio_filename_stem": "信息转述题目指导文字-1",
+                "reading_instruction_text": "现在，你有15秒钟的时间阅读思维导图。",
+                "reading_instruction_occurrence": 1,
+                "reading_instruction_audio_filename_stem": "信息转述阅图指导文字-1",
                 "asking_instruction_text": "Ask Emma two questions.",
                 "asking_instruction_occurrence": 0,
                 "asking_instruction_audio_filename_stem": "询问信息题干-1",
@@ -2866,6 +2871,15 @@ class SystemInputServiceTests(unittest.TestCase):
                     "category": "询问信息题干",
                     "audio_only_auxiliary": True,
                 },
+                {
+                    "segment_id": "segment-retelling-reading",
+                    "item_id": self.item_ids[0],
+                    "tts_text": "现在，你有15秒钟的时间阅读思维导图。",
+                    "audio_artifact_id": "retelling-reading",
+                    "audio_filename_stem": "信息转述阅图指导文字-1",
+                    "category": "信息转述阅图指导文字",
+                    "audio_only_auxiliary": True,
+                },
             ],
         }
         executor = PlatformInputWorkflowPageExecutor(
@@ -2881,12 +2895,21 @@ class SystemInputServiceTests(unittest.TestCase):
                 {"workflow_id": self.workflow.workflow_id, "unit": unit},
                 Path(directory),
             )
+            normalized = normalize_spec(raw)
 
         group = raw["question_groups"][0]
         self.assertEqual(group["type"], "信息转述及询问")
         self.assertTrue(group["recording"]["asking_instruction_audio_path"].endswith("segment-4.mp3"))
         self.assertTrue(group["recording"]["instruction_audio_path"].endswith("segment-2.mp3"))
         self.assertTrue(group["retelling"]["prompt_audio_path"].endswith("segment-3.mp3"))
+        self.assertTrue(group["recording"]["reading_instruction_audio_path"].endswith("segment-5.mp3"))
+        normalized_recording = normalized.groups[0]["recording"]
+        self.assertEqual(normalized_recording["reading_instruction_text"], "现在，你有15秒钟的时间阅读思维导图。")
+        self.assertEqual(normalized_recording["reading_instruction_occurrence"], 1)
+        self.assertEqual(
+            normalized_recording["reading_instruction_audio_path"],
+            str(Path(group["recording"]["reading_instruction_audio_path"]).resolve()),
+        )
 
     def test_page_executor_keeps_materialized_table_image_complete(self) -> None:
         staged = self.artifacts.stage_stream(io.BytesIO(b"fake-png"))

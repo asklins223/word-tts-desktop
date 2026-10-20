@@ -37,7 +37,7 @@ def test_workflow_page_facts_keep_the_drawing_selector():
     recording = parsed.items[0].metadata["page_input"]["recording"]
     assert recording["asking_instruction_text"].startswith("你希望了解更多")
     assert recording["asking_instruction_occurrence"] == 0
-    assert recording["asking_instruction_audio_filename_stem"] == "询问信息题干-1"
+    assert "asking_instruction_audio_filename_stem" not in recording
 
 
 def test_retelling_sections_keep_distinct_group_indexes_before_deduplication():
@@ -62,3 +62,28 @@ def test_retelling_selector_prefers_inline_image_in_its_subsection(tmp_path):
     parser = InfoRetellingParser(str(source), preloaded_paras=loaded)
 
     assert parser._recording_block_image_selector() == ("embedded_image", (0,))
+
+
+def test_workflow_preserves_three_guide_audio_items_and_entry_facts(tmp_path):
+    source = tmp_path / "three-guides.docx"
+    document = Document()
+    intro = "你将听到一篇 Peter 讲述去阳朔旅行的短文，录音播放两遍。"
+    reading = "现在，你有15秒钟的时间阅读思维导图。"
+    preparation = "下面你有60秒钟的时间准备，你的复述可以这样开始：Peter visited Yangshuo ..."
+    for text in (
+        "第一节 短文复述（共8分）", intro, reading, preparation,
+        "听力原文：", "I'm Peter. I visited Yangshuo last August.",
+        "参考答案：", "Peter visited Yangshuo last August.",
+    ):
+        document.add_paragraph(text)
+    document.save(source)
+
+    parsed = DocumentParser().parse(source, include_auxiliary_audio=True)
+    guides = [item for item in parsed.items if item.metadata.get("audio_only_auxiliary")]
+    assert [item.normalized_content for item in guides] == [intro, reading, preparation]
+    assert len(parsed.items) == 4
+    recording = parsed.items[0].metadata["page_input"]["recording"]
+    assert recording["reading_instruction_text"] == reading
+    assert recording["reading_instruction_audio_filename_stem"] == "信息转述阅图指导文字-1"
+    assert recording["reading_instruction_occurrence"] == 1
+    assert all(item.role == "题干音色" for item in guides)

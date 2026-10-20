@@ -1,0 +1,1105 @@
+{
+  "description": "2025 Shenzhen listening exam: contextual SenseVoice transcripts and checked source ranges. No model or audio required for regression.",
+  "items": [
+    {
+      "item_id": "0",
+      "sequence": 0,
+      "normalized_content": "Do you know our city is famous for fashion? The past month saw a big fashion show in Shenzhen. People from over forty countries came to attend it. They enjoyed the colourful show and bought a lot of Chinese products. They all said that the show was amazing. It is a great chance for Chinese fashion trade to communicate with the world."
+    },
+    {
+      "item_id": "1",
+      "sequence": 1,
+      "normalized_content": "What activity does the man enjoy doing? (Hiking / Fishing / Cooking.)"
+    },
+    {
+      "item_id": "2",
+      "sequence": 2,
+      "normalized_content": "How often does the man do the activity? (Once a month / Twice a month / Three times a month.)"
+    },
+    {
+      "item_id": "3",
+      "sequence": 3,
+      "normalized_content": "W: What do you enjoy doing in your free time?\nM: I like going hiking.\nW: How often do you do it?\nM: Usually three times a month."
+    },
+    {
+      "item_id": "4",
+      "sequence": 4,
+      "normalized_content": "Who is Mr White? (The woman's boss. / The woman's doctor / The woman's teacher.)"
+    },
+    {
+      "item_id": "5",
+      "sequence": 5,
+      "normalized_content": "Where is Mr White from? (Britain. / Canada. / Australia.)"
+    },
+    {
+      "item_id": "6",
+      "sequence": 6,
+      "normalized_content": "M: Who is the man over there?\nW: He is my new English teacher, Mr. White.\nM: Where is he from?\nW: He is from Canada. He just moved here last week.\nM: Oh, I see."
+    },
+    {
+      "item_id": "7",
+      "sequence": 7,
+      "normalized_content": "How does the man feel? (Worried. / Shocked. / Disappointed.)"
+    },
+    {
+      "item_id": "8",
+      "sequence": 8,
+      "normalized_content": "Why does the man feel so? (Because he broke a cup. / Because he lost his watch. / Because he failed an exam.)"
+    },
+    {
+      "item_id": "9",
+      "sequence": 9,
+      "normalized_content": "W: You don't look well today.\nM: I'm quite worried.\nW: Oh, why?\nM: I have lost my watch. It is a birthday gift from my mother.\nW: Take it easy. Let me help you look for it.\nM: Thank you so much."
+    },
+    {
+      "item_id": "10",
+      "sequence": 10,
+      "normalized_content": "What was the dream about?"
+    },
+    {
+      "item_id": "11",
+      "sequence": 11,
+      "normalized_content": "Who cooks breakfast for the speaker?"
+    },
+    {
+      "item_id": "12",
+      "sequence": 12,
+      "normalized_content": "Can the car drive by itself?"
+    },
+    {
+      "item_id": "13",
+      "sequence": 13,
+      "normalized_content": "Why can the managers communicate well?"
+    },
+    {
+      "item_id": "14",
+      "sequence": 14,
+      "normalized_content": "One night, I had a dream. It was about a future working day. In the dream, I become a manager. At 7:00 a.m. A robot cooks breakfast for me. Then I go to work by car. The car drives by itself. In the afternoon, I have an online meeting with managers from foreign countries. We communicate well because AI translates different languages. After work, I put on my VR glasses to travel in space."
+    },
+    {
+      "item_id": "15",
+      "sequence": 15,
+      "normalized_content": "I'm Peter. I visited Yangshuo last August. I went there to enjoy its great views. There were many exciting activities to choose from. First, I took a boat down the river. The water was green and clear. Next, I rode a bike in the countryside. The Blue Mountains looked cool. At the end of the day, I had fish for dinner. What an unforgettable trip!"
+    }
+  ],
+  "speech": [
+    {
+      "start": 0.428938,
+      "end": 1.069,
+      "text": "一、"
+    },
+    {
+      "start": 1.297563,
+      "end": 2.721,
+      "text": "模仿朗读"
+    },
+    {
+      "start": 3.364,
+      "end": 4.805437,
+      "text": "听下面短文，"
+    },
+    {
+      "start": 5.043688,
+      "end": 6.949875,
+      "text": "短文播放一遍，"
+    },
+    {
+      "start": 7.424813,
+      "end": 10.122375,
+      "text": "你有50秒钟的时间准备，"
+    },
+    {
+      "start": 10.455687,
+      "end": 12.431188,
+      "text": "然后模仿朗读。"
+    },
+    {
+      "start": 12.996687,
+      "end": 16.357063,
+      "text": "当听到开始录音的信号后。"
+    },
+    {
+      "start": 16.893375,
+      "end": 20.891,
+      "text": "立即在50秒钟内模仿朗读短文。"
+    },
+    {
+      "start": 21.875625,
+      "end": 25.672437,
+      "text": "当听到要求停止录音的信号时，"
+    },
+    {
+      "start": 25.922188,
+      "end": 27.68975,
+      "text": "停止模仿朗读。"
+    },
+    {
+      "start": 28.837875,
+      "end": 32.347438,
+      "text": "do you know our city is famous for fashion."
+    },
+    {
+      "start": 33.246313,
+      "end": 37.279188,
+      "text": "The past month saw a big fashion show in Shenzhen."
+    },
+    {
+      "start": 38.078812,
+      "end": 42.248062,
+      "text": "People from over 40 countries came to attend it."
+    },
+    {
+      "start": 43.102,
+      "end": 48.362188,
+      "text": "They enjoyed the colorful show and bought a lot of Chinese products."
+    },
+    {
+      "start": 49.245625,
+      "end": 52.430875,
+      "text": "They all said that the show was amazing."
+    },
+    {
+      "start": 53.130688,
+      "end": 56.548,
+      "text": "It is a great chance for Chinese fashion trade"
+    },
+    {
+      "start": 56.692188,
+      "end": 58.827563,
+      "text": "to communicate with the world."
+    },
+    {
+      "start": 59.998937,
+      "end": 60.59925,
+      "text": "2"
+    },
+    {
+      "start": 60.931,
+      "end": 62.296125,
+      "text": "信息获取"
+    },
+    {
+      "start": 63.290313,
+      "end": 64.209625,
+      "text": "第一节"
+    },
+    {
+      "start": 64.635687,
+      "end": 66.01575,
+      "text": "听选信息."
+    },
+    {
+      "start": 67.26075,
+      "end": 68.875,
+      "text": "经三段对话，"
+    },
+    {
+      "start": 69.439375,
+      "end": 71.530438,
+      "text": "每段播放两遍，"
+    },
+    {
+      "start": 72.723563,
+      "end": 76.901188,
+      "text": "各段播放前你有10秒钟的乐题时间，"
+    },
+    {
+      "start": 77.491938,
+      "end": 80.502625,
+      "text": "各段播放后有两个问题，"
+    },
+    {
+      "start": 81.32525,
+      "end": 83.994437,
+      "text": "请根据所听到的问题。"
+    },
+    {
+      "start": 84.250875,
+      "end": 89.200938,
+      "text": "选择正确的答案，在8秒钟内口头回答。"
+    },
+    {
+      "start": 90.250188,
+      "end": 92.1485,
+      "text": "听第一段对话，"
+    },
+    {
+      "start": 92.549375,
+      "end": 95.69475,
+      "text": "回答第一至2两个问题。"
+    },
+    {
+      "start": 96.0835,
+      "end": 99.822813,
+      "text": "现在你有10秒钟的阅题时间。"
+    },
+    {
+      "start": 100.736813,
+      "end": 103.857125,
+      "text": "What do you enjoy doing in your free time,"
+    },
+    {
+      "start": 104.3255,
+      "end": 106.010938,
+      "text": "I like going hiking."
+    },
+    {
+      "start": 106.554813,
+      "end": 108.652875,
+      "text": "How often do you do it,"
+    },
+    {
+      "start": 109.130312,
+      "end": 111.275,
+      "text": "usually three times a month."
+    },
+    {
+      "start": 113.127563,
+      "end": 116.247875,
+      "text": "What do you enjoy doing in your free time,"
+    },
+    {
+      "start": 116.716063,
+      "end": 118.401563,
+      "text": "I like going hiking."
+    },
+    {
+      "start": 118.946688,
+      "end": 121.044312,
+      "text": "How often do you do it,"
+    },
+    {
+      "start": 121.52125,
+      "end": 123.665687,
+      "text": "usually three times a month."
+    },
+    {
+      "start": 125.8465,
+      "end": 126.430688,
+      "text": "1,"
+    },
+    {
+      "start": 126.990125,
+      "end": 130.294188,
+      "text": "what activity does the man enjoy doing."
+    },
+    {
+      "start": 132.066,
+      "end": 132.678312,
+      "text": "two,"
+    },
+    {
+      "start": 133.207688,
+      "end": 136.4535,
+      "text": "how often does the man do the activity?"
+    },
+    {
+      "start": 138.030188,
+      "end": 139.823375,
+      "text": "听第二段对话，"
+    },
+    {
+      "start": 140.798562,
+      "end": 143.982562,
+      "text": "回答第3至4两个问题，"
+    },
+    {
+      "start": 144.760563,
+      "end": 148.182625,
+      "text": "现在你有10秒钟的阅题时间。"
+    },
+    {
+      "start": 149.245562,
+      "end": 151.307187,
+      "text": "Who is the man over there."
+    },
+    {
+      "start": 151.767063,
+      "end": 154.385875,
+      "text": "Here is my new English teacher,"
+    },
+    {
+      "start": 154.526563,
+      "end": 155.579625,
+      "text": "Mr. White,"
+    },
+    {
+      "start": 155.9745,
+      "end": 157.575938,
+      "text": "Where is he from,"
+    },
+    {
+      "start": 158.033125,
+      "end": 159.822063,
+      "text": "Here is from Canada."
+    },
+    {
+      "start": 160.312438,
+      "end": 162.512375,
+      "text": "He just moved here last week."
+    },
+    {
+      "start": 163.660938,
+      "end": 165.0455,
+      "text": "Oh, I see."
+    },
+    {
+      "start": 166.999813,
+      "end": 169.078438,
+      "text": "Who is the man over there."
+    },
+    {
+      "start": 169.53775,
+      "end": 172.141625,
+      "text": "Here' is my new English teacher,"
+    },
+    {
+      "start": 172.297188,
+      "end": 173.350312,
+      "text": "Mr. White,"
+    },
+    {
+      "start": 173.74525,
+      "end": 175.346562,
+      "text": "where is he from,"
+    },
+    {
+      "start": 175.801625,
+      "end": 177.595875,
+      "text": "Here is from Canada."
+    },
+    {
+      "start": 178.083,
+      "end": 180.283125,
+      "text": "He just moved here last week."
+    },
+    {
+      "start": 181.43,
+      "end": 182.816188,
+      "text": "Oh, I see."
+    },
+    {
+      "start": 185.141187,
+      "end": 185.764563,
+      "text": "3,"
+    },
+    {
+      "start": 186.4725,
+      "end": 188.160312,
+      "text": "who is Mr. White."
+    },
+    {
+      "start": 190.300937,
+      "end": 190.841875,
+      "text": ""
+    },
+    {
+      "start": 191.467937,
+      "end": 193.611688,
+      "text": "Where is Mr. White from?"
+    },
+    {
+      "start": 194.94125,
+      "end": 197.013625,
+      "text": "听第三段对话，"
+    },
+    {
+      "start": 197.277438,
+      "end": 200.634313,
+      "text": "回答第5至6两个问题，"
+    },
+    {
+      "start": 201.183563,
+      "end": 204.897688,
+      "text": "现在你有10秒钟的阅题时间，"
+    },
+    {
+      "start": 205.996375,
+      "end": 207.938,
+      "text": "you don't look well today."
+    },
+    {
+      "start": 208.72675,
+      "end": 210.310938,
+      "text": "I'm quite worried."
+    },
+    {
+      "start": 210.824875,
+      "end": 212.002,
+      "text": "Oh, why?"
+    },
+    {
+      "start": 212.551438,
+      "end": 214.436438,
+      "text": "I have lost my watch."
+    },
+    {
+      "start": 214.817438,
+      "end": 217.380938,
+      "text": "It is a birthday gift from my mother."
+    },
+    {
+      "start": 217.939187,
+      "end": 219.121438,
+      "text": "Take it easy."
+    },
+    {
+      "start": 219.61725,
+      "end": 221.573625,
+      "text": "Let me help you look for it."
+    },
+    {
+      "start": 221.927187,
+      "end": 223.403,
+      "text": "Thank you so much."
+    },
+    {
+      "start": 225.268313,
+      "end": 227.211125,
+      "text": "You don't look well today."
+    },
+    {
+      "start": 227.999875,
+      "end": 229.581688,
+      "text": "I'm quite worried."
+    },
+    {
+      "start": 230.1075,
+      "end": 231.274875,
+      "text": "Oh, why?"
+    },
+    {
+      "start": 231.821375,
+      "end": 233.7185,
+      "text": "I have lost my watch."
+    },
+    {
+      "start": 234.09125,
+      "end": 236.653688,
+      "text": "It is a birthday gift from my mother."
+    },
+    {
+      "start": 237.208875,
+      "end": 238.394625,
+      "text": "Take it easy."
+    },
+    {
+      "start": 238.890438,
+      "end": 240.846625,
+      "text": "Let me help you look for it."
+    },
+    {
+      "start": 241.200313,
+      "end": 242.684938,
+      "text": "Thank you so much."
+    },
+    {
+      "start": 244.709687,
+      "end": 245.316438,
+      "text": "5,"
+    },
+    {
+      "start": 245.994188,
+      "end": 247.70025,
+      "text": "how does the man feel."
+    },
+    {
+      "start": 249.674375,
+      "end": 250.42675,
+      "text": "6,"
+    },
+    {
+      "start": 250.963063,
+      "end": 252.921437,
+      "text": "why does the man feel so."
+    },
+    {
+      "start": 254.671375,
+      "end": 255.74975,
+      "text": "第二节"
+    },
+    {
+      "start": 256.3785,
+      "end": 257.61475,
+      "text": "回答问题，"
+    },
+    {
+      "start": 258.569625,
+      "end": 260.501563,
+      "text": "听下面一段短文"
+    },
+    {
+      "start": 261.174938,
+      "end": 262.642375,
+      "text": "播放两遍，"
+    },
+    {
+      "start": 263.2315,
+      "end": 269.26175,
+      "text": "请根据所听内容回答第7到14个问题。"
+    },
+    {
+      "start": 270.173563,
+      "end": 273.31375,
+      "text": "当听到开始录音的信号后，"
+    },
+    {
+      "start": 273.65875,
+      "end": 276.881687,
+      "text": "请在8秒钟内口头回答。"
+    },
+    {
+      "start": 278.134188,
+      "end": 278.995438,
+      "text": "One night I"
+    },
+    {
+      "start": 279.183813,
+      "end": 280.395125,
+      "text": "had a dream."
+    },
+    {
+      "start": 281.017313,
+      "end": 283.873125,
+      "text": "It was about a future working day."
+    },
+    {
+      "start": 284.9985,
+      "end": 285.904812,
+      "text": "In the dream,"
+    },
+    {
+      "start": 286.441688,
+      "end": 288.069313,
+      "text": "I become a manager."
+    },
+    {
+      "start": 289.068563,
+      "end": 290.667687,
+      "text": "At 7 AM,"
+    },
+    {
+      "start": 291.254938,
+      "end": 293.896375,
+      "text": "a robot cooks breakfast for me."
+    },
+    {
+      "start": 294.772625,
+      "end": 295.344438,
+      "text": "Then"
+    },
+    {
+      "start": 295.676625,
+      "end": 297.379875,
+      "text": "I go to work by car."
+    },
+    {
+      "start": 298.389125,
+      "end": 300.607375,
+      "text": "The car drives by itself"
+    },
+    {
+      "start": 301.76425,
+      "end": 302.972188,
+      "text": "in the afternoon."
+    },
+    {
+      "start": 303.531062,
+      "end": 308.421688,
+      "text": "I have an online meeting with managers from foreign countries."
+    },
+    {
+      "start": 309.492875,
+      "end": 311.005312,
+      "text": "We communicate well"
+    },
+    {
+      "start": 311.545125,
+      "end": 315.19675,
+      "text": "because AI translates different languages."
+    },
+    {
+      "start": 316.33325,
+      "end": 317.342062,
+      "text": "After work,"
+    },
+    {
+      "start": 317.820687,
+      "end": 320.122938,
+      "text": "I put on my V R glasses."
+    },
+    {
+      "start": 320.303875,
+      "end": 321.905937,
+      "text": "To travel in space."
+    },
+    {
+      "start": 323.988313,
+      "end": 324.848125,
+      "text": "One night,"
+    },
+    {
+      "start": 325.037938,
+      "end": 326.249188,
+      "text": "I had a dream."
+    },
+    {
+      "start": 326.871375,
+      "end": 329.722188,
+      "text": "It was about a future working day"
+    },
+    {
+      "start": 330.852625,
+      "end": 331.757,
+      "text": "In the dream,"
+    },
+    {
+      "start": 332.295813,
+      "end": 333.923438,
+      "text": "I become a manager"
+    },
+    {
+      "start": 334.922625,
+      "end": 336.521938,
+      "text": "at 7 AM."
+    },
+    {
+      "start": 337.109063,
+      "end": 339.75075,
+      "text": "A robot cooks breakfast for me"
+    },
+    {
+      "start": 340.62675,
+      "end": 341.200375,
+      "text": "then."
+    },
+    {
+      "start": 341.530688,
+      "end": 343.230313,
+      "text": "I go to work by car."
+    },
+    {
+      "start": 344.243187,
+      "end": 346.45775,
+      "text": "The car drives by itself."
+    },
+    {
+      "start": 347.618375,
+      "end": 348.826187,
+      "text": "In the afternoon,"
+    },
+    {
+      "start": 349.385187,
+      "end": 354.275813,
+      "text": "I have an online meeting with managers from foreign countries."
+    },
+    {
+      "start": 355.346875,
+      "end": 356.859375,
+      "text": "We communicate well."
+    },
+    {
+      "start": 357.39925,
+      "end": 361.058188,
+      "text": "Because AI translates different languages."
+    },
+    {
+      "start": 362.187375,
+      "end": 363.195812,
+      "text": "After work,"
+    },
+    {
+      "start": 363.674875,
+      "end": 365.980063,
+      "text": "I put on my V R glasses"
+    },
+    {
+      "start": 366.157875,
+      "end": 367.759813,
+      "text": "to travel in space."
+    },
+    {
+      "start": 370.439375,
+      "end": 371.207812,
+      "text": "7,"
+    },
+    {
+      "start": 372.014,
+      "end": 374.07775,
+      "text": "what was the dream about."
+    },
+    {
+      "start": 375.849875,
+      "end": 376.538813,
+      "text": "8,"
+    },
+    {
+      "start": 377.228688,
+      "end": 380.078188,
+      "text": "who cooks breakfast for the speaker."
+    },
+    {
+      "start": 382.078438,
+      "end": 382.762812,
+      "text": "9,"
+    },
+    {
+      "start": 383.247188,
+      "end": 385.604,
+      "text": "can the car drive by itself."
+    },
+    {
+      "start": 387.652875,
+      "end": 388.2275,
+      "text": "10,"
+    },
+    {
+      "start": 388.96125,
+      "end": 391.772125,
+      "text": "why can the managers communicate well."
+    },
+    {
+      "start": 393.487,
+      "end": 394.061563,
+      "text": "3、"
+    },
+    {
+      "start": 394.25775,
+      "end": 396.289438,
+      "text": "短文复述及提问"
+    },
+    {
+      "start": 396.733375,
+      "end": 397.740563,
+      "text": "第一节"
+    },
+    {
+      "start": 397.91325,
+      "end": 399.1165,
+      "text": "短文复述，"
+    },
+    {
+      "start": 400.6325,
+      "end": 405.907188,
+      "text": "你将听到一篇peter讲述去阳朔旅行的短文，"
+    },
+    {
+      "start": 406.09375,
+      "end": 407.859688,
+      "text": "录音播放两遍，"
+    },
+    {
+      "start": 408.074438,
+      "end": 410.702562,
+      "text": "请根据所听到的内容。"
+    },
+    {
+      "start": 410.85975,
+      "end": 413.2205,
+      "text": "依据思维导图的提示，"
+    },
+    {
+      "start": 413.355562,
+      "end": 414.9065,
+      "text": "在60秒内"
+    },
+    {
+      "start": 415.006812,
+      "end": 416.150062,
+      "text": "复述短文，"
+    },
+    {
+      "start": 416.873313,
+      "end": 421.60875,
+      "text": "现在你有15秒钟的时间阅读思维导图，"
+    },
+    {
+      "start": 421.784125,
+      "end": 424.321563,
+      "text": "你的复述可以这样开始。"
+    },
+    {
+      "start": 424.42325,
+      "end": 426.726313,
+      "text": "peter visited杨ang朔。"
+    },
+    {
+      "start": 428.85225,
+      "end": 430.074625,
+      "text": "I'm Peter."
+    },
+    {
+      "start": 430.553313,
+      "end": 433.84775,
+      "text": "I visited Yang Shuo last August."
+    },
+    {
+      "start": 434.777,
+      "end": 438.513125,
+      "text": "I went there to enjoy its great views."
+    },
+    {
+      "start": 439.366563,
+      "end": 443.940125,
+      "text": "There were many exciting activities to choose from"
+    },
+    {
+      "start": 444.566063,
+      "end": 445.368938,
+      "text": "first."
+    },
+    {
+      "start": 445.672375,
+      "end": 448.122125,
+      "text": "I took a boat down the river."
+    },
+    {
+      "start": 448.779813,
+      "end": 451.541688,
+      "text": "The water was green and clear."
+    },
+    {
+      "start": 452.433187,
+      "end": 453.225625,
+      "text": "Next,"
+    },
+    {
+      "start": 453.600125,
+      "end": 456.430625,
+      "text": "I rode a bike in the countryside."
+    },
+    {
+      "start": 457.27975,
+      "end": 459.8235,
+      "text": "The blue Mountains looked cool"
+    },
+    {
+      "start": 460.971062,
+      "end": 462.616312,
+      "text": "at the end of the day."
+    },
+    {
+      "start": 463.034,
+      "end": 465.12175,
+      "text": "I had fish for dinner."
+    },
+    {
+      "start": 466.484375,
+      "end": 468.56775,
+      "text": "What an unforgettable trip."
+    },
+    {
+      "start": 470.478375,
+      "end": 471.700125,
+      "text": "I'm Peter."
+    },
+    {
+      "start": 472.179438,
+      "end": 475.467062,
+      "text": "I visited Yang Shuo last August."
+    },
+    {
+      "start": 476.402625,
+      "end": 480.140438,
+      "text": "I went there to enjoy its great views."
+    },
+    {
+      "start": 481.008812,
+      "end": 485.562313,
+      "text": "There were many exciting activities to choose from"
+    },
+    {
+      "start": 486.18275,
+      "end": 486.987125,
+      "text": "first."
+    },
+    {
+      "start": 487.297438,
+      "end": 489.748125,
+      "text": "I took a boat down the river."
+    },
+    {
+      "start": 490.405938,
+      "end": 493.167063,
+      "text": "The water was green and clear."
+    },
+    {
+      "start": 494.05925,
+      "end": 494.851375,
+      "text": "Next, I"
+    },
+    {
+      "start": 495.226375,
+      "end": 498.057313,
+      "text": "rode a bike in the countryside."
+    },
+    {
+      "start": 498.905812,
+      "end": 501.453375,
+      "text": "The blue Mountains looked cool"
+    },
+    {
+      "start": 502.597375,
+      "end": 504.242375,
+      "text": "at the end of the day."
+    },
+    {
+      "start": 504.660125,
+      "end": 506.756063,
+      "text": "I had fish for dinner."
+    },
+    {
+      "start": 508.110625,
+      "end": 510.193875,
+      "text": "What an unforgettable trip."
+    },
+    {
+      "start": 511.92575,
+      "end": 513.087688,
+      "text": "第二节"
+    },
+    {
+      "start": 513.290938,
+      "end": 514.2265,
+      "text": "提问，"
+    },
+    {
+      "start": 515.125625,
+      "end": 518.83925,
+      "text": "你希望了解和短文相关的信息，"
+    },
+    {
+      "start": 519.439188,
+      "end": 521.953375,
+      "text": "请根据以下提示提问"
+    },
+    {
+      "start": 522.39075,
+      "end": 525.8075,
+      "text": "每个问题有15秒钟的准备时间和"
+    },
+    {
+      "start": 526.017188,
+      "end": 528.613125,
+      "text": "8秒钟的提问时间。"
+    }
+  ],
+  "expected_spans": [
+    [
+      [
+        28.84,
+        58.83
+      ]
+    ],
+    [
+      [
+        126.99,
+        130.29
+      ]
+    ],
+    [
+      [
+        133.21,
+        136.45
+      ]
+    ],
+    [
+      [
+        100.74,
+        111.28
+      ],
+      [
+        113.13,
+        123.67
+      ]
+    ],
+    [
+      [
+        186.47,
+        188.16
+      ]
+    ],
+    [
+      [
+        191.47,
+        193.61
+      ]
+    ],
+    [
+      [
+        149.25,
+        165.05
+      ],
+      [
+        167.0,
+        182.82
+      ]
+    ],
+    [
+      [
+        245.99,
+        247.7
+      ]
+    ],
+    [
+      [
+        250.96,
+        252.92
+      ]
+    ],
+    [
+      [
+        206.0,
+        223.4
+      ],
+      [
+        225.27,
+        242.68
+      ]
+    ],
+    [
+      [
+        372.01,
+        374.08
+      ]
+    ],
+    [
+      [
+        377.23,
+        380.08
+      ]
+    ],
+    [
+      [
+        383.25,
+        385.6
+      ]
+    ],
+    [
+      [
+        388.96,
+        391.77
+      ]
+    ],
+    [
+      [
+        278.13,
+        321.91
+      ],
+      [
+        323.99,
+        367.76
+      ]
+    ],
+    [
+      [
+        428.85,
+        468.57
+      ],
+      [
+        470.48,
+        510.19
+      ]
+    ]
+  ]
+}

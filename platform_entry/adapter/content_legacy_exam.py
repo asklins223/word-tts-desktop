@@ -107,7 +107,119 @@ class PlatformInputLegacyExamContentMixin:
         )
         if rule is None:
             return fallback
-        return rule.outline_subsection_target(group_type, subsection) or fallback
+        target = rule.outline_subsection_target(group_type, subsection) or fallback
+        # The same 14-card bundle is also used by the Shenzhen paper, whose
+        # visible outline numbers run from 1 to 14. Only use global numbers
+        # after the complete DOM outline confirms that layout; older Foshan
+        # pages repeat local numbers and must keep their registered targets.
+        page = getattr(self, "page", None)
+        if page is None:
+            return target
+        nodes = page.get_by_text(
+            re.compile(r"^\s*第\s*\d+\s*题\s*[（(]\s*录音题\s*[）)]\s*$")
+        )
+        numbers: list[int] = []
+        global_targets: dict[int, tuple[str, int]] = {}
+        for index in range(nodes.count()):
+            node = nodes.nth(index)
+            if node.is_visible():
+                text = _fast_inner_text(node).strip()
+                match = re.search(r"第\s*(\d+)", text)
+                if match:
+                    number = int(match.group(1))
+                    numbers.append(number)
+                    global_targets[number] = (text, 0)
+        if numbers != list(range(1, self.spec.question_count + 1)):
+            return target
+        first_number = self._group_first_question_number(group_type)
+        if first_number is None:
+            return target
+        if group_type == "信息获取":
+            for group in self.spec.groups:
+                if group.get("type") != group_type:
+                    continue
+                for material in group.get("materials", ()):
+                    if material.get("section") == subsection:
+                        return global_targets.get(first_number, target)
+                    first_number += len(material.get("questions", ()))
+        elif group_type == "信息转述及询问":
+            if subsection == "信息转述":
+                return global_targets.get(first_number, target)
+            if subsection == "询问信息":
+                first_number += sum(
+                    bool(group.get("retelling"))
+                    for group in self.spec.groups
+                    if group.get("type") == group_type
+                )
+                return global_targets.get(first_number, target)
+        return target
+
+    def _retelling_page_instruction_scopes(self) -> tuple[Any, Any] | None:
+        """Find the introduction and reading guidance in their own pages.
+
+        Page 1 has the introduction. Page 2 has reading guidance before the
+        listening material. The starter belongs to the recording card, not
+        the separate preparation field after the material. Each page guide
+        keeps text and audio in the same textAudioContent scope.
+        """
+
+        page = getattr(self, "page", None)
+        if page is None:
+            return None
+        pages = page.locator(".rightMiddleContent:visible")
+        page_scopes = []
+        for number in (1, 2):
+            candidates = pages.filter(
+                has=page.get_by_text(re.compile(rf"^页面\s*{number}$"))
+            )
+            if candidates.count() == 0:
+                return None
+            if candidates.count() != 1:
+                raise PlatformInputUiError(f"信息转述有多个“页面{number}”，无法确定指导语位置")
+            page_scopes.append(candidates.first)
+        label = page.get_by_text(re.compile(r"^题目指导文字\s*[*＊]?$"))
+        first = page_scopes[0].locator(".textAudioContent:visible").filter(has=label)
+        second_page = page_scopes[1].locator(".textAudioContent:visible").filter(has=label)
+        before_listening = []
+        for index in range(second_page.count()):
+            scope = second_page.nth(index)
+            position = scope.evaluate("""(el) => {
+                const page = el.closest('.rightMiddleContent');
+                const nodes = [...page.querySelectorAll('.textAudioContent, .textWord')];
+                const labels = nodes.filter(node => node.textContent.trim() === '听力原文');
+                return labels.length === 1 ? Math.sign(nodes.indexOf(el) - nodes.indexOf(labels[0])) : 0;
+            }""")
+            if position == -1:
+                before_listening.append(scope)
+        if not before_listening or first.count() == 0:
+            return None
+        if first.count() != 1 or len(before_listening) != 1:
+            raise PlatformInputUiError("信息转述的中文指导语位置不唯一，拒绝按整页序号录入")
+        scopes = (first.first, before_listening[0])
+        for number, scope in enumerate(scopes, start=1):
+            if (
+                scope.locator('.editor-content[contenteditable="true"]:visible').count() != 1
+                or self._audio_region_in_scope(scope, "题目指导文字音频") is None
+            ):
+                raise PlatformInputUiError(f"信息转述第{number}条指导文字与音频字段不完整")
+        return scopes
+
+    def _fill_retelling_page_instruction(
+        self,
+        scope: Any,
+        text: str,
+        audio_path: str | None,
+        description: str,
+    ) -> None:
+        editor = scope.locator('.editor-content[contenteditable="true"]:visible')
+        self._replace_rich_text(editor, text, field=description)
+        if audio_path:
+            self._upload_audio_in_scope(
+                scope,
+                audio_path,
+                label="题目指导文字音频",
+                description=description,
+            )
 
     def _fill_split_info_retelling_groups(
         self,
@@ -133,6 +245,19 @@ class PlatformInputLegacyExamContentMixin:
             len(groups),
             outline_target=retelling_target,
         )
+        instruction_scopes = self._retelling_page_instruction_scopes()
+        if instruction_scopes is not None and len(groups) != 1:
+            raise PlatformInputUiError("当前指导语页面只能录入一组信息转述材料")
+        has_reading_instruction = any(group["recording"].get("reading_instruction_text") for group in groups)
+        if has_reading_instruction:
+            if instruction_scopes is None or len(instruction_scopes) != 2:
+                raise PlatformInputUiError("当前文档有独立阅图指导语，页面没有对应的指导文字与音频位置")
+            for card in cards:
+                if (
+                    self._labeled_text_editor_in_scope(card, "题干") is None
+                    or self._audio_region_in_scope(card, "题干音频") is None
+                ):
+                    raise PlatformInputUiError("信息转述小题没有完整的题干与题干音频位置")
 
         card_cursor = 0
         listening_cursor = 0
@@ -153,32 +278,47 @@ class PlatformInputLegacyExamContentMixin:
                 self._upload_image(recording["image_path"], image_cursor)
                 image_cursor += 1
 
-            # 只替换第一节的第一组指导文字和指导音频；后续指导内容
-            # 继续保留模板原值。
             if group_index == 0 and recording.get("instruction_text") is not None:
-                self._fill_instruction_editor(
-                    recording["instruction_text"],
-                    recording.get("instruction_occurrence"),
-                    "信息转述题目指导文字",
-                )
                 instruction_audio = recording.get("instruction_audio_path")
-                if instruction_audio:
-                    self._fill_instruction_audio(
+                if instruction_scopes is not None:
+                    self._fill_retelling_page_instruction(
+                        instruction_scopes[0],
+                        recording["instruction_text"],
                         instruction_audio,
+                        "信息转述页面1指导文字",
+                    )
+                else:
+                    self._fill_instruction_editor(
+                        recording["instruction_text"],
                         recording.get("instruction_occurrence"),
                         "信息转述题目指导文字",
                     )
+                    if instruction_audio:
+                        self._fill_instruction_audio(
+                            instruction_audio,
+                            recording.get("instruction_occurrence"),
+                            "信息转述题目指导文字",
+                        )
+
+            if recording.get("reading_instruction_text"):
+                self._fill_retelling_page_instruction(
+                    instruction_scopes[1],
+                    recording["reading_instruction_text"],
+                    recording.get("reading_instruction_audio_path"),
+                    "信息转述页面2阅图指导文字",
+                )
 
             retelling = group.get("retelling")
             if isinstance(retelling, Mapping):
                 if card_cursor >= len(cards):
                     raise PlatformInputUiError("信息转述题数量超过页面录音题卡片数量")
+                prompt_audio = retelling.get("prompt_audio_path")
                 self._fill_recording_card(
                     cards[card_cursor],
                     retelling,
                     description="信息转述",
                     prompt=retelling["prompt"],
-                    prompt_audio_path=retelling.get("prompt_audio_path"),
+                    prompt_audio_path=prompt_audio,
                     fill_answer_time=False,
                 )
                 card_cursor += 1
@@ -255,14 +395,20 @@ class PlatformInputLegacyExamContentMixin:
             and rule.outline_subsection_target("信息转述及询问", "信息转述")
             and rule.outline_subsection_target("信息转述及询问", "询问信息")
         )
-        if split_legacy_sections and any(
-            group.get("asking") for group in groups
+        has_reading_instruction = any(
+            group["recording"].get("reading_instruction_text") for group in groups
+        )
+        if split_legacy_sections and (
+            has_reading_instruction or any(group.get("asking") for group in groups)
         ):
             return self._fill_split_info_retelling_groups(
                 groups,
                 retelling_target=retelling_target,
                 asking_target=asking_target,
             )
+
+        if has_reading_instruction:
+            raise PlatformInputUiError("当前模板尚未配置三条中文指导语的对应位置")
 
         retelling_count = sum(
             (1 if group.get("retelling") else 0) + len(group.get("asking", ()))

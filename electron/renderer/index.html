@@ -742,7 +742,7 @@
                 </button>
                 <button type="button" class="audio-import-mode-card" data-audio-import-mode="continuous" aria-pressed="false">
                     <span class="audio-import-mode-icon" aria-hidden="true">◖))</span>
-                    <span><strong>整段音频自动切割</strong><small>上传一个完整录音；忽略中文提示，按英文内容切片并匹配题目。</small></span>
+                    <span><strong>整段音频自动切割</strong><small>上传一个完整录音；按题目原文切片，包含需要朗读的中文引导语。</small></span>
                     <span class="audio-import-mode-check" aria-hidden="true">✓</span>
                 </button>
             </div>
@@ -787,7 +787,7 @@
             <footer class="audio-import-actions">
                 <div class="audio-import-footer-summary" aria-live="polite">
                     <div class="audio-import-footer-coverage"><strong id="audio-import-coverage-count">0 / 0</strong><span>题目已匹配</span></div>
-                    <div class="audio-import-footer-note"><strong id="audio-import-footer-count">等待音频文件</strong><small>音频缺失、题目重复或未匹配时不能导入</small></div>
+                    <div class="audio-import-footer-note"><strong id="audio-import-footer-count">等待音频文件</strong><small id="audio-import-footer-detail">音频缺失、题目重复或未匹配时不能导入</small></div>
                 </div>
                 <button type="button" class="btn-secondary" id="audio-import-analyze-btn" disabled>重新识别</button>
                 <button type="button" class="btn-primary" id="audio-import-commit-btn" disabled>导入并进入交付</button>

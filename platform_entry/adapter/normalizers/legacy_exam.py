@@ -227,6 +227,22 @@ def normalise_info_retelling_group(
             f"{group_name}.recording.instruction_audio_path",
             base_dir,
         )
+    reading_instruction = recording.get("reading_instruction_text")
+    if reading_instruction is not None:
+        normalized_recording["reading_instruction_text"] = _require_nonempty_text(
+            reading_instruction, f"{group_name}.recording.reading_instruction_text"
+        )
+        occurrence = recording.get("reading_instruction_occurrence")
+        if isinstance(occurrence, bool) or not isinstance(occurrence, int) or occurrence < 0:
+            raise PlatformInputError(
+                f"{group_name}.recording.reading_instruction_occurrence 必须是非负整数"
+            )
+        normalized_recording["reading_instruction_occurrence"] = occurrence
+    reading_audio = recording.get("reading_instruction_audio_path")
+    if reading_audio is not None:
+        normalized_recording["reading_instruction_audio_path"] = _resolve_audio_path(
+            reading_audio, f"{group_name}.recording.reading_instruction_audio_path", base_dir
+        )
     asking_instruction = recording.get("asking_instruction_text")
     if asking_instruction is not None:
         normalized_recording["asking_instruction_text"] = _require_nonempty_text(

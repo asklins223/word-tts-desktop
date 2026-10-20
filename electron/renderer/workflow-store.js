@@ -548,12 +548,10 @@ function projectSystemInput(systemInput) {
                     'audio_filename_stem',
                     'instruction_text',
                     'instruction_audio_filename_stem',
-                    // The asking-information section has its own guidance
-                    // audio channel. Keep its page fact in the renderer
-                    // projection; otherwise workspaceItemsToParseResults()
-                    // replaces the parser metadata with a page_input object
-                    // that silently loses this field before the document
-                    // view renders it.
+                    'reading_instruction_text',
+                    'reading_instruction_audio_filename_stem',
+                    // Keep optional guidance facts when projecting a saved
+                    // task, including legacy asking audio identifiers.
                     'asking_instruction_text',
                     'asking_instruction_audio_filename_stem',
                 ].forEach((field) => {
@@ -573,6 +571,10 @@ function projectSystemInput(systemInput) {
                 if (tableIndex !== null) projectedRecording.table_index = tableIndex;
                 const instructionOccurrence = nonNegativeInteger(recording.instruction_occurrence);
                 if (instructionOccurrence !== null) projectedRecording.instruction_occurrence = instructionOccurrence;
+                const readingInstructionOccurrence = nonNegativeInteger(recording.reading_instruction_occurrence);
+                if (readingInstructionOccurrence !== null) {
+                    projectedRecording.reading_instruction_occurrence = readingInstructionOccurrence;
+                }
                 const askingInstructionOccurrence = nonNegativeInteger(recording.asking_instruction_occurrence);
                 if (askingInstructionOccurrence !== null) {
                     projectedRecording.asking_instruction_occurrence = askingInstructionOccurrence;

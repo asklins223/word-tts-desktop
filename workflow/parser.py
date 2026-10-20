@@ -280,7 +280,7 @@ class DocumentParser(ParserPort):
         self,
         *,
         parse_callable: Callable[[str], tuple[list[Mapping[str, Any]], str]] | None = None,
-        parser_version: str = "19",
+        parser_version: str = "21",
     ) -> None:
         self.parse_callable = parse_callable
         self.parser_version = str(parser_version)

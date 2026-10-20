@@ -54,7 +54,7 @@ BACKEND_CONTRACT_VERSION = 5
 
 # 解析器版本。解析逻辑变更（如音色分配、文件命名规则、音频边界等）时递增，
 # 避免断点续传复用旧解析结果（旧结果可能缺少 voice/filename_stem 等字段）。
-PARSER_VERSION = 19
+PARSER_VERSION = 21
 
 # 讯飞平台三项声音参数：均为整数 0-100，50 为平台默认值。
 # 女声 Amanda 默认 50/50/50，男声 George 默认 35/50/50（语速 35）。
@@ -74,10 +74,11 @@ QUESTION_STEM_ROLE_KEY = "题干音色"
 QUESTION_STEM_ROLE_CONFIG_KEY = f"{ROLE_CONFIG_PREFIX}{QUESTION_STEM_ROLE_KEY.casefold()}"
 QUESTION_STEM_VOICE = "common:10000023"  # 晓燕
 QUESTION_STEM_VOICE_PARAMS = {"rate": 40, "volume": 50, "pitch": 50}
-# 信息转述及询问的“题干”包含三条辅助音频。它们共享同一可编辑角色；
-# 信息转述录音稿和询问信息小题本身不在这个集合内。
+# 信息转述的三条辅助音频共享同一可编辑角色；保留旧任务的询问指导语
+# 类型兼容。信息转述录音稿和询问信息小题本身不在这个集合内。
 QUESTION_STEM_ITEM_TYPES = frozenset({
     "信息转述题目指导文字",
+    "信息转述阅图指导文字",
     "信息转述题干",
     "询问信息题干",
 })

@@ -24,19 +24,19 @@ def test_info_retelling_prompt_is_an_editable_question_stem_role():
     }
     prompt = audio_items["信息转述题干"]
     instruction = audio_items["信息转述题目指导文字"]
-    asking_instruction = audio_items["询问信息题干"]
 
     assert instruction["role"] == "题干音色"
     assert prompt["role"] == "题干音色"
-    assert asking_instruction["role"] == "题干音色"
-    assert "提两个问题" in asking_instruction["text"]
-    assert "15 秒钟的准备时间" in asking_instruction["text"]
-    assert "8 秒钟的提问时间" in asking_instruction["text"]
+    assert "询问信息题干" not in audio_items
+    asking_text = results[0]["recording"]["asking_instruction_text"]
+    assert "提两个问题" in asking_text
+    assert "15 秒钟的准备时间" in asking_text
+    assert "8 秒钟的提问时间" in asking_text
+    assert "asking_instruction_audio_filename_stem" not in results[0]["recording"]
     # Do not pin voice_key on either parser item: the workflow role mapping is
     # the user's later manual override point.
     assert "voice_key" not in instruction
     assert "voice_key" not in prompt
-    assert "voice_key" not in asking_instruction
 
     parsed = DocumentParser().parse(FIXTURE, include_auxiliary_audio=True)
     assert [
@@ -46,14 +46,10 @@ def test_info_retelling_prompt_is_an_editable_question_stem_role():
         ("信息转述录音稿", None),
         ("信息转述题目指导文字", "题干音色"),
         ("信息转述题干", "题干音色"),
-        ("询问信息题干", "题干音色"),
     ]
     prompt_item = next(item for item in parsed.items if item.item_type == "信息转述题干")
     assert prompt_item.role == "题干音色"
     assert prompt_item.voice_key is None
-    asking_item = next(item for item in parsed.items if item.item_type == "询问信息题干")
-    assert asking_item.role == "题干音色"
-    assert asking_item.voice_key is None
 
 
 def test_question_stem_item_type_is_recovered_for_older_work_items():
@@ -75,6 +71,19 @@ def test_question_stem_item_type_is_recovered_for_older_work_items():
             "item_id": "asking-instruction-1",
             "item_type": "询问信息题干",
             "content": "请根据以下提示向 Li Ling 提两个问题。",
+            "role": None,
+            "voice_key": None,
+        },
+        {
+            "default_female_voice": "amanda",
+            "default_male_voice": "george",
+        },
+    )
+    reading_instruction_plan = WorkflowEngine._effective_plan_item(
+        {
+            "item_id": "reading-instruction-1",
+            "item_type": "信息转述阅图指导文字",
+            "content": "现在，你有15秒钟的时间阅读思维导图。",
             "role": None,
             "voice_key": None,
         },
@@ -110,6 +119,11 @@ def test_question_stem_item_type_is_recovered_for_older_work_items():
         asking_instruction_plan["pitch"],
         asking_instruction_plan["volume"],
     ) == ("题干音色", QUESTION_STEM_VOICE, 40, 50, 50)
+    assert (
+        reading_instruction_plan["role"],
+        reading_instruction_plan["voice_key"],
+        reading_instruction_plan["speed"],
+    ) == ("题干音色", QUESTION_STEM_VOICE, 40)
     assert (
         ordinary_plan["role"],
         ordinary_plan["voice_key"],

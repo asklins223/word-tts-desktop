@@ -26,6 +26,7 @@ import numpy as np
 
 from app_paths import ensure_data_dir
 from .artifact_store import ArtifactStore, StagedFile
+from .audio_text_matching import compare_transcript, text_profile
 from .domain import DomainError, new_id
 from .repositories import ConflictError, NotFoundError, RepositoryError, WorkflowRepository
 
@@ -35,6 +36,8 @@ from .repositories import ConflictError, NotFoundError, RepositoryError, Workflo
 # this on-disk schema.
 ASR_EXTENSION_VERSION = "1"
 ASR_OPENING_SECONDS = 12
+ASR_CONTEXT_SECONDS = 18
+ASR_CONTEXT_GAP_SECONDS = 1.6
 ASR_MAX_FILES = 2000
 ASR_MAX_FILE_BYTES = 512 * 1024 * 1024
 ASR_MAX_BATCH_BYTES = 4 * 1024 * 1024 * 1024
@@ -81,29 +84,6 @@ def normalize_recognition_text(value: Any) -> str:
     )
 
 
-def _similarity(left: str, right: str) -> float:
-    if not left or not right:
-        return 0.0
-    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
-    best = 0.0
-    # ASR commonly returns only part of the first sentence. Compare the result
-    # with the beginning of the question at nearby lengths, not its full body.
-    for length in {
-        max(1, len(shorter) - 8), max(1, len(shorter) - 3), len(shorter),
-        min(len(longer), len(shorter) + 4), min(len(longer), len(shorter) + 12),
-    }:
-        candidate = longer[:length]
-        ratio = difflib.SequenceMatcher(None, shorter, candidate, autojunk=False).ratio()
-        best = max(best, ratio)
-    prefix = 0
-    for a, b in zip(left, right):
-        if a != b:
-            break
-        prefix += 1
-    prefix_score = prefix / max(1, min(len(left), len(right)))
-    return max(best, prefix_score * 0.92)
-
-
 def _duplicate_opening(left: str, right: str) -> bool:
     left = left[:32]
     right = right[:32]
@@ -126,22 +106,45 @@ def _duplicate_opening(left: str, right: str) -> bool:
     return difflib.SequenceMatcher(None, left, right, autojunk=False).ratio() >= 0.84
 
 
-def _item_candidates(text: str, items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    normalized = normalize_recognition_text(text)
+def _item_candidates(text: str, items: Sequence[Mapping[str, Any]], *, full: bool = False) -> list[dict[str, Any]]:
+    observed = text_profile(text)
     ranked: list[dict[str, Any]] = []
     for item in items:
-        content = normalize_recognition_text(item.get("normalized_content"))
-        if not content:
+        variants = _spoken_text_variants(item.get("normalized_content"))
+        if not variants:
             continue
-        score = _similarity(normalized, content)
+        match = max(
+            (compare_transcript(text_profile(content), observed, opening=not full) for content in variants),
+            key=lambda result: (result.compatible, result.score),
+        )
         ranked.append({
             "item_id": str(item.get("item_id") or ""),
             "sequence": int(item.get("sequence") or 0),
-            "score": round(score, 4),
+            "score": round(match.score, 4),
+            "compatible": match.compatible,
+            "complete": match.complete,
+            "match_method": match.method,
             "text": str(item.get("normalized_content") or "")[:180],
         })
-    ranked.sort(key=lambda row: (-row["score"], row["sequence"], row["item_id"]))
+    ranked.sort(key=lambda row: (not row["compatible"], -row["score"], row["sequence"], row["item_id"]))
     return ranked[:5]
+
+
+def _spoken_text_variants(value: Any) -> list[str]:
+    """Match what is spoken, including questions whose choices stay on paper."""
+    text = re.sub(
+        r"(?im)^\s*(?:[WMF]|man|woman|boy|girl|male|female|speaker\s*\d+)\s*[:：]\s*",
+        "", str(value or ""),
+    ).strip()
+    variants = [text]
+    choices = re.search(r"\s*[（(]([^()（）]+)[)）]\s*$", text)
+    if choices and "/" in choices.group(1) and text[:choices.start()].rstrip().endswith(("?", "？")):
+        variants.append(text[:choices.start()])
+    return list(dict.fromkeys(variant for variant in variants if variant))
+
+
+def _spoken_content_variants(value: Any) -> list[str]:
+    return [normalize_recognition_text(text) for text in _spoken_text_variants(value)]
 
 
 class AudioAsrExtension:
@@ -428,6 +431,11 @@ class AudioAsrExtension:
                     waveform = _decode_audio_window(ffmpeg, path, 0, ASR_OPENING_SECONDS)
                     if waveform.size == 0:
                         raise ValueError("音频没有可识别的语音内容")
+                    if waveform.size < ASR_OPENING_SECONDS * 16000:
+                        # A short question has already been read in full.
+                        # It must not bypass missing-number/negation checks
+                        # under the more permissive prefix-only policy.
+                        scope = "full"
                     stream.accept_waveform(16000, waveform)
                 recognizer.decode_stream(stream)
                 result = stream.result
@@ -453,20 +461,31 @@ class AudioAsrExtension:
         *,
         recognizer: Any = None,
         progress_callback: Callable[[Mapping[str, Any]], Any] | None = None,
-        progress_label: str = "正在识别英文片段",
+        progress_label: str = "正在识别中英文片段",
         progress_stage: str = "continuous_recognition",
     ) -> list[dict[str, str]]:
-        """Recognize pause-delimited spans from one long recording."""
+        """Decode with sentence context, then map timed tokens back to pauses."""
         recognizer = recognizer or self.create_recognizer()
         ffmpeg = _ffmpeg_executable()
-        output: list[dict[str, str]] = []
+        output = [{"text": "", "scope": "segment", "error": ""} for _ in spans]
         total = len(spans)
+        groups: list[list[int]] = []
         for index, (start, end) in enumerate(spans):
+            if (
+                not groups
+                or start - spans[groups[-1][-1]][1] > ASR_CONTEXT_GAP_SECONDS
+                or end - spans[groups[-1][0]][0] > ASR_CONTEXT_SECONDS
+            ):
+                groups.append([index])
+            else:
+                groups[-1].append(index)
+        for indices in groups:
+            start, end = spans[indices[0]][0], spans[indices[-1]][1]
             if callable(progress_callback):
                 progress_callback({
                     "stage": progress_stage,
-                    "label": f"{progress_label} {index + 1} / {total}",
-                    "completed": index,
+                    "label": f"{progress_label} {indices[0] + 1} / {total}",
+                    "completed": indices[0],
                     "total": total,
                 })
             try:
@@ -477,17 +496,48 @@ class AudioAsrExtension:
                 stream.accept_waveform(16000, waveform)
                 recognizer.decode_stream(stream)
                 result = stream.result
-                text = getattr(result, "text", "")
-                if not text and isinstance(result, Mapping):
-                    text = result.get("text", "")
-                output.append({"text": str(text or ""), "scope": "segment", "error": ""})
+
+                def result_value(name: str, default: Any) -> Any:
+                    return result.get(name, default) if isinstance(result, Mapping) else getattr(result, name, default)
+
+                tokens = result_value("tokens", [])
+                timestamps = result_value("timestamps", [])
+                if len(indices) == 1:
+                    output[indices[0]]["text"] = str(result_value("text", "") or "")
+                elif tokens and len(tokens) == len(timestamps):
+                    target = 0
+                    for token, timestamp in zip(tokens, timestamps):
+                        absolute = start + float(timestamp)
+                        while target < len(indices) - 1 and absolute > (
+                            spans[indices[target]][1] + spans[indices[target + 1]][0]
+                        ) / 2:
+                            target += 1
+                        output[indices[target]]["text"] += str(token)
+                    for index in indices:
+                        output[index]["text"] = output[index]["text"].strip()
+                else:
+                    # Older runtimes may omit token times. Decode each span
+                    # separately instead of inventing boundaries from text.
+                    for index in indices:
+                        span_start, span_end = spans[index]
+                        single = recognizer.create_stream()
+                        single.accept_waveform(
+                            16000, _decode_audio_window(ffmpeg, path, span_start, span_end - span_start),
+                        )
+                        recognizer.decode_stream(single)
+                        single_result = single.result
+                        output[index]["text"] = str(
+                            single_result.get("text", "") if isinstance(single_result, Mapping)
+                            else getattr(single_result, "text", "")
+                        )
             except Exception as exc:
-                output.append({"text": "", "scope": "segment", "error": str(exc)[:200]})
+                for index in indices:
+                    output[index] = {"text": "", "scope": "segment", "error": str(exc)[:200]}
             if callable(progress_callback):
                 progress_callback({
                     "stage": progress_stage,
                     "label": progress_label,
-                    "completed": index + 1,
+                    "completed": indices[-1] + 1,
                     "total": total,
                 })
         return output
@@ -579,14 +629,11 @@ def _audio_duration_and_speech_spans(path: str | os.PathLike[str]) -> tuple[floa
     spans: list[tuple[float, float]] = []
     cursor = 0.0
     for silence_start, silence_end in silences:
-        start = cursor + (0.03 if cursor > 0 else 0.0)
-        end = silence_start - 0.03
-        if end - start >= 0.32:
-            spans.append((start, end))
+        if silence_start - cursor >= 0.32:
+            spans.append((max(0.0, cursor - 0.10), min(duration, silence_start + 0.12)))
         cursor = max(cursor, silence_end)
-    start = cursor + (0.03 if cursor > 0 else 0.0)
-    if duration - start >= 0.32:
-        spans.append((start, duration))
+    if duration - cursor >= 0.32:
+        spans.append((max(0.0, cursor - 0.10), duration))
     if not spans:
         raise DomainError("AUDIO_IMPORT_INVALID", "整段音频中没有检测到可识别的语音片段")
     if len(spans) > 4000:
@@ -598,7 +645,9 @@ def _is_english_transcript(value: str) -> bool:
     compact = normalize_recognition_text(value)
     latin = sum(char.isascii() and char.isalpha() for char in compact)
     letters = sum(char.isalpha() for char in compact)
-    return latin >= 4 and latin / max(1, letters) >= 0.60
+    # Context decoding can assign a short word such as "I" or "One" its
+    # own pause-delimited range. Keep it so the exported clip starts there.
+    return latin >= 1 and latin / max(1, letters) >= 0.60
 
 
 def _continuous_audio_matches(
@@ -608,21 +657,44 @@ def _continuous_audio_matches(
     *,
     progress_callback: Callable[[int, int], Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Align English speech windows to questions, preserving distinct repeats."""
-    english = []
-    for row, span in zip(recognized, spans):
+    """Find complete spoken items and assign each speech range only once."""
+    includes_chinese = any(
+        re.search(r"[\u4e00-\u9fff]", str(item.get("normalized_content") or ""))
+        for item in items
+    )
+    runs: list[list[dict[str, Any]]] = []
+    interrupted = True
+    for row_index, (row, span) in enumerate(zip(recognized, spans)):
         text = str(row.get("text") or "").strip()
         normalized = normalize_recognition_text(text)
-        if row.get("error") or not normalized or not _is_english_transcript(text):
+        has_chinese = bool(re.search(r"[\u4e00-\u9fff]", text))
+        short_mixed_name = has_chinese and len(re.findall(r"[\u4e00-\u9fff]", text)) <= 3 and any(
+            0 <= neighbour < len(recognized)
+            and _is_english_transcript(str(recognized[neighbour].get("text") or ""))
+            and max(0, span[0] - spans[neighbour][1], spans[neighbour][0] - span[1]) <= ASR_CONTEXT_GAP_SECONDS
+            for neighbour in (row_index - 1, row_index + 1)
+        )
+        if row.get("error") or not normalized or not (
+            _is_english_transcript(text) or (includes_chinese and has_chinese) or short_mixed_name
+        ):
+            # Announcements divide sections, even when the pauses around
+            # them are short. A spoken question number does not divide a run.
+            if sum("\u4e00" <= char <= "\u9fff" for char in text) >= 4 or row.get("error"):
+                interrupted = True
             continue
-        english.append({"start": span[0], "end": span[1], "text": text, "normalized": normalized})
-
-    runs: list[list[dict[str, Any]]] = []
-    for segment in english:
-        if not runs or segment["start"] - runs[-1][-1]["end"] > 3.2:
+        segment = {"start": span[0], "end": span[1], "text": text, "normalized": normalized}
+        if interrupted or not runs or span[0] - runs[-1][-1]["end"] > 3.2:
             runs.append([segment])
         else:
             runs[-1].append(segment)
+        interrupted = False
+
+    targets = [
+        (item, text_profile(variant))
+        for item in items
+        for variant in _spoken_text_variants(item.get("normalized_content"))
+    ]
+    max_length = max((max(len(target.text), len(target.phonetic)) for _item, target in targets), default=0)
 
     occurrences: list[dict[str, Any]] = []
     total_windows = sum(len(run) for run in runs)
@@ -631,27 +703,43 @@ def _continuous_audio_matches(
         for start_index in range(len(run)):
             text_parts: list[str] = []
             transcript_parts: list[str] = []
-            for end_index in range(start_index, min(len(run), start_index + 36)):
+            for end_index in range(start_index, min(len(run), start_index + 120)):
                 segment = run[end_index]
-                if segment["end"] - run[start_index]["start"] > 60:
+                if segment["end"] - run[start_index]["start"] > 180:
                     break
                 text_parts.append(segment["normalized"])
                 transcript_parts.append(segment["text"])
                 normalized = "".join(text_parts)
-                if len(normalized) < 6:
+                if len(normalized) > max_length * 1.35:
+                    break
+                observed = text_profile(" ".join(transcript_parts))
+                if max(len(observed.text), len(observed.phonetic)) < 6:
                     continue
-                candidates = _item_candidates(normalized, items)
-                if not candidates:
+                ranked: dict[str, dict[str, Any]] = {}
+                for item, target in targets:
+                    match = compare_transcript(target, observed)
+                    score = match.score
+                    if not score or not match.compatible:
+                        continue
+                    item_id = str(item.get("item_id") or "")
+                    previous = ranked.get(item_id)
+                    if previous is None or score > previous["score"]:
+                        ranked[item_id] = {
+                            "item_id": item_id,
+                            "sequence": int(item.get("sequence") or 0),
+                            "score": round(score, 4),
+                            "text": str(item.get("normalized_content") or "")[:180],
+                            "coverage": match.coverage,
+                            "complete": match.complete,
+                            "match_method": match.method,
+                            "target_length": len(target.text),
+                        }
+                candidates = sorted(ranked.values(), key=lambda entry: (-entry["score"], entry["sequence"]))
+                if not candidates or not candidates[0]["complete"]:
                     continue
                 top = candidates[0]
-                item = next((entry for entry in items if str(entry.get("item_id")) == top["item_id"]), None)
-                target = normalize_recognition_text(item.get("normalized_content") if item else "")
-                if not target:
-                    continue
-                coverage = min(1.0, len(normalized) / max(1, len(target)))
-                minimum_coverage = 0.62 if len(target) >= 50 else 0.68
-                threshold = 0.62 if len(target) >= 36 else 0.72
-                if coverage < minimum_coverage or top["score"] < threshold:
+                threshold = 0.76 if top["target_length"] >= 36 else 0.80
+                if top["score"] < threshold:
                     continue
                 second_score = candidates[1]["score"] if len(candidates) > 1 else 0.0
                 margin = top["score"] - second_score
@@ -659,35 +747,31 @@ def _continuous_audio_matches(
                     "start": run[start_index]["start"],
                     "end": segment["end"],
                     "transcript": " ".join(transcript_parts),
-                    "candidates": candidates,
+                    "candidates": [
+                        {key: candidate[key] for key in ("item_id", "sequence", "score", "text")}
+                        for candidate in candidates[:5]
+                    ],
                     "top_item_id": top["item_id"],
                     "score": top["score"],
-                    "adjusted_score": round(top["score"] * (0.55 + 0.45 * coverage), 4),
+                    "adjusted_score": top["score"] * top["target_length"] ** 0.5,
                     "margin": margin,
-                    "coverage": coverage,
+                    "coverage": top["coverage"],
+                    "match_method": top["match_method"],
                 })
             completed_windows += 1
             if callable(progress_callback):
                 progress_callback(completed_windows, total_windows)
 
-    # Prefer the closest, shortest complete match. Nearby windows around the
-    # same spoken occurrence overlap heavily; keep only one of them. Separate
-    # re-readings remain separate and are later concatenated into one item clip.
+    # Longer complete material owns its speech before a short question can
+    # claim a similar sentence inside it. Whole-content scores distinguish a
+    # complete reading from a window that spills into the next repetition.
     occurrences.sort(key=lambda row: (-row["adjusted_score"], -row["score"], -row["coverage"], row["end"] - row["start"], row["start"]))
     selected: list[dict[str, Any]] = []
     for occurrence in occurrences:
         duplicate = False
         for current in selected:
-            if occurrence["top_item_id"] != current["top_item_id"]:
-                continue
             overlap = max(0.0, min(occurrence["end"], current["end"]) - max(occurrence["start"], current["start"]))
-            shorter = min(occurrence["end"] - occurrence["start"], current["end"] - current["start"])
-            # Window search can produce a lower-scoring shifted occurrence
-            # that overlaps both sides of one clean match (especially when a
-            # speaker reads a question followed by its choices). Suppress
-            # those partial duplicates while retaining truly repeated reads,
-            # which occupy separate spans in time.
-            if overlap / max(0.01, shorter) >= 0.40:
+            if overlap > 0.01:
                 duplicate = True
                 break
         if not duplicate:
@@ -730,7 +814,7 @@ def _stage_audio_segments(
                 raise DomainError("AUDIO_IMPORT_INVALID", "切割音频片段失败" + (f"：{details}" if details else ""))
             wave_paths.append(wave_path)
         if not wave_paths:
-            raise DomainError("AUDIO_IMPORT_INVALID", "没有可保存的英文语音片段")
+            raise DomainError("AUDIO_IMPORT_INVALID", "没有可保存的语音片段")
         list_path = directory / "segments.txt"
         list_path.write_text("".join(f"file '{path.as_posix()}'\n" for path in wave_paths), encoding="utf-8")
         destination = directory / "segment.mp3"
@@ -1214,10 +1298,15 @@ class AudioImportCoordinator:
             candidate_item_claims: dict[str, list[int]] = {}
             report_progress("matching", "正在把识别内容与题目匹配", 0, len(recognized))
             for index, row in enumerate(recognized):
-                candidates = _item_candidates(row.get("text", ""), items)
+                full_recognition = row.get("scope") == "full"
+                candidates = _item_candidates(row.get("text", ""), items, full=full_recognition)
                 top = candidates[0] if candidates else None
-                margin = (top["score"] - candidates[1]["score"]) if top and len(candidates) > 1 else (top["score"] if top else 0)
-                matched = bool(top and not row.get("error") and top["score"] >= 0.62 and margin >= 0.075)
+                alternatives = [candidate for candidate in candidates[1:] if candidate["compatible"]]
+                margin = (top["score"] - alternatives[0]["score"]) if top and alternatives else (top["score"] if top else 0)
+                matched = bool(
+                    top and top["compatible"] and (not full_recognition or top["complete"])
+                    and not row.get("error") and top["score"] >= 0.62 and margin >= 0.075
+                )
                 if matched:
                     candidate_item_claims.setdefault(str(top["item_id"]), []).append(index)
                 results.append({
@@ -1308,15 +1397,15 @@ class AudioImportCoordinator:
             recognizer=recognizer,
             progress_callback=lambda update: report_progress(
                 str(update.get("stage") or "continuous_recognition"),
-                str(update.get("label") or "正在识别英文片段"),
+                str(update.get("label") or "正在识别中英文片段"),
                 int(update.get("completed") or 0),
                 int(update.get("total") or 0),
             ) if callable(report_progress) else None,
-            progress_label="正在识别英文片段",
+            progress_label="正在识别中英文片段",
             progress_stage="continuous_recognition",
         )
         if callable(report_progress):
-            report_progress("matching", "正在把英文内容与题目匹配", 0, 0)
+            report_progress("matching", "正在把录音内容与题目匹配", 0, 0)
         occurrences = _continuous_audio_matches(
             recognized,
             spans,
@@ -1324,7 +1413,7 @@ class AudioImportCoordinator:
             progress_callback=(
                 lambda completed, total: report_progress(
                     "matching",
-                    "正在把英文内容与题目匹配",
+                    "正在把录音内容与题目匹配",
                     completed,
                     total,
                 )
@@ -1350,7 +1439,7 @@ class AudioImportCoordinator:
                     "size_bytes": int(batch.files[0]["size_bytes"]),
                     "transcript": "",
                     "recognition_scope": "source",
-                    "recognition_error": "未找到可与题目对应的英文片段",
+                    "recognition_error": "未找到可与题目对应的语音片段",
                     "suggested_item_id": None,
                     "match_status": "needs_review",
                     "candidates": [],
@@ -1393,10 +1482,7 @@ class AudioImportCoordinator:
                         if previous is None or candidate["score"] > previous["score"]:
                             candidate_map[str(candidate["item_id"])] = dict(candidate)
                 candidates = sorted(candidate_map.values(), key=lambda row: (-row["score"], row["sequence"]))[:5]
-                top_score = max((row["score"] for row in candidates if row["item_id"] == item_id), default=0.0)
-                other_score = max((row["score"] for row in candidates if row["item_id"] != item_id), default=0.0)
-                confident = top_score >= (0.62 if len(normalize_recognition_text(item.get("normalized_content"))) >= 36 else 0.72)
-                confident = confident and top_score - other_score >= 0.075
+                confident = all(row["score"] >= 0.82 and row["margin"] >= 0.075 for row in group)
                 results.append({
                     "file_index": file_index,
                     "file_name": filename,
@@ -1408,6 +1494,10 @@ class AudioImportCoordinator:
                     "match_status": "matched" if confident else "needs_review",
                     "candidates": candidates,
                     "segment_count": len(group),
+                    "source_spans": [
+                        {"start_seconds": round(start, 3), "end_seconds": round(end, 3)}
+                        for start, end in clip_spans
+                    ],
                 })
             missing_ids = sorted(
                 {str(item["item_id"]) for item in items} - {item_id for item_id, _group in ordered_groups},

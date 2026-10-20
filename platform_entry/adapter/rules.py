@@ -68,6 +68,22 @@ PAPER_BUNDLE_RULES: tuple[PaperBundleRule, ...] = (
         ),
     ),
     PaperBundleRule(
+        key="platform_input-shenzhen-listening-exam-v1",
+        template_name_tokens=("深圳中考听说真题",),
+        expected_card_counts=(("录音题", 14),),
+        outline_targets=(
+            ("模仿朗读", "第1题(录音题)", 0),
+            ("信息获取", "第2题(录音题)", 0),
+            ("信息转述及询问", "第12题(录音题)", 0),
+        ),
+        outline_subsection_targets=(
+            ("信息获取", "听选信息", "第2题(录音题)", 0),
+            ("信息获取", "回答问题", "第8题(录音题)", 0),
+            ("信息转述及询问", "信息转述", "第12题(录音题)", 0),
+            ("信息转述及询问", "询问信息", "第13题(录音题)", 0),
+        ),
+    ),
+    PaperBundleRule(
         key="platform_input-listening-exam-v1",
         template_name_tokens=("听说测试题模板", "听说测试模版"),
         expected_card_counts=(

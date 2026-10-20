@@ -68,12 +68,17 @@ class PlatformInputContentMixin:
                 timeout_seconds=60,
                 interval_ms=200,
             )
-        except PlatformInputUiError:
+        except PlatformInputUiError as exc:
             _debug_dom_snapshot(
                 self,
                 f"mount-timeout:{group_type}:expected-{question_kind}-{expected_cards}",
             )
-            raise
+            actual_cards = len(self._question_cards(question_kind))
+            target_label = f"，导航“{outline_target[0]}”" if outline_target else ""
+            raise PlatformInputUiError(
+                f"切换到“{group_type}”后题卡没有完整挂载："
+                f"期望 {expected_cards} 个{question_kind}，实际 {actual_cards} 个{target_label}"
+            ) from exc
         cards = self._question_cards(question_kind)
         if len(cards) != expected_cards:
             raise PlatformInputUiError(

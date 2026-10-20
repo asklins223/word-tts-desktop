@@ -652,7 +652,7 @@ class PlatformInputNavigationMixin:
         # global number would point at a different recording card.
         first_number = (
             self._group_first_question_number(group_type)
-            if rule is None or rule.outline_numbering != "local"
+            if outline_target is None and (rule is None or rule.outline_numbering != "local")
             else None
         )
         dynamic_locator = None
@@ -706,6 +706,20 @@ class PlatformInputNavigationMixin:
             ) is not None
 
         def visible_target() -> Any | None:
+            # A subsection target is already resolved by its content handler.
+            # Replacing e.g. 回答问题/第8题 with the group's first number
+            # would reopen 听选信息/第2题 and wait forever for four cards
+            # while that panel correctly exposes six.
+            if outline_target is not None and question_kind_match is not None:
+                number_match = re.search(r"第\s*(\d+)", target_text)
+                if number_match:
+                    candidates = [
+                        node for node in question_outline_nodes(question_kind_match.group(1))
+                        if matches_number(node, int(number_match.group(1)), question_kind_match.group(1))
+                    ]
+                    if 0 <= wanted_occurrence < len(candidates):
+                        return candidates[wanted_occurrence]
+
             if dynamic_locator is not None:
                 dynamic_target = self._first_visible(dynamic_locator)
                 if dynamic_target is not None:

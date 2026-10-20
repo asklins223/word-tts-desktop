@@ -231,9 +231,7 @@ def test_legacy_page_facts_separate_tts_markers_from_visible_text_and_split_answ
     assert retelling_page["recording"]["asking_instruction_text"].startswith(
         "你希望了解更多关于Li Ling的信息"
     )
-    assert retelling_page["recording"]["asking_instruction_audio_filename_stem"] == (
-        "询问信息题干-1"
-    )
+    assert "asking_instruction_audio_filename_stem" not in retelling_page["recording"]
 
     info_recording_items = [
         item for item in parsed.items

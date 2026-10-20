@@ -134,12 +134,14 @@ hiddenimports = [
     'sherpa_onnx',
     'sherpa_onnx_core',
     'sherpa_onnx_bin',
+    'pypinyin',
+    'rapidfuzz.distance.Levenshtein',
 ]
 
 # Local audio recognition runtime only. SenseVoice model weights are never
 # collected here: the extension center downloads them under userData at run
 # time so normal application updates cannot replace or remove them.
-for _recognition_package in ('sherpa_onnx', 'sherpa_onnx_core', 'sherpa_onnx_bin'):
+for _recognition_package in ('sherpa_onnx', 'sherpa_onnx_core', 'sherpa_onnx_bin', 'rapidfuzz', 'pypinyin'):
     _recognition_datas, _recognition_binaries, _recognition_hidden = collect_all(_recognition_package)
     datas += _recognition_datas
     binaries += _recognition_binaries

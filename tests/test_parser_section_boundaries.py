@@ -168,7 +168,39 @@ def test_info_retelling_stem_selection_uses_structural_slots_not_wording():
     assert audio_items["信息转述题干"]["text"] == (
         "起始语：Let's tell Emma's story."
     )
-    assert audio_items["询问信息题干"]["text"] == "改写后的询问总题干。"
+    assert "询问信息题干" not in audio_items
+    assert result["recording"]["asking_instruction_text"] == "改写后的询问总题干。"
+
+
+def test_retelling_keeps_three_independent_chinese_guides_in_source_order():
+    intro = "你将听到一篇 Peter 讲述去阳朔旅行的短文，录音播放两遍。"
+    reading = "现在，你有15秒钟的时间阅读思维导图。"
+    preparation = "下面你有60秒钟的时间准备，你的复述可以这样开始：Peter visited Yangshuo ..."
+    result = _parse(InfoRetellingParser, [
+        "第一节 短文复述（共8分）",
+        intro,
+        reading,
+        preparation,
+        "听力原文：",
+        "I'm Peter. I visited Yangshuo last August.",
+        "参考答案：",
+        "Peter visited Yangshuo last August.",
+        "第二节 提问（共3分，每小题1.5分）",
+        "你希望了解和短文相关的信息，请根据以下提示提问。",
+        "1. 你想知道阳朔有机场吗，你问 Peter：",
+        "参考答案：",
+        "1. Is there an airport in Yangshuo?",
+    ])
+
+    assert [item["text"] for item in result["audio_items"]] == [intro, reading, preparation]
+    assert [item["audio_filename_stem"] for item in result["audio_items"]] == [
+        "信息转述题目指导文字-1", "信息转述阅图指导文字-1", "信息转述题干-1",
+    ]
+    assert result["recording"]["reading_instruction_text"] == reading
+    assert result["recording"]["reading_instruction_occurrence"] == 1
+    assert result["retelling"]["prompt"] == preparation
+    assert result["retelling"]["score"] == 8
+    assert "asking_instruction_audio_filename_stem" not in result["recording"]
 
 
 @pytest.mark.parametrize(

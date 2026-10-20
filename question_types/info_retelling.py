@@ -68,7 +68,7 @@ class InfoRetellingParser(BaseParser):
         r"满分\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分"
     )
     RE_BARE_SCORE = re.compile(
-        r"[（(【]\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分\s*[）)】]"
+        r"[（(【]\s*(?:共\s*)?(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分\s*[）)】]"
     )
     RE_RETELLING_TOTAL = re.compile(
         r"(?:信息转述|短文复述)[^\d]{0,18}(?:共\s*(?P<count>[0-9０-９]+)\s*题)?"
@@ -319,6 +319,7 @@ class InfoRetellingParser(BaseParser):
     def _new_group(self, block_index, block_kind=""):
         return {
             "instruction_text": None,
+            "reading_instruction_text": None,
             "prompt": None,
             "preamble_lines": [],
             "script_lines": [],
@@ -557,9 +558,19 @@ class InfoRetellingParser(BaseParser):
         # the confirmed Li Ling paper wording used by the shared page rule.
         for group in groups:
             if not group.get("prompt"):
-                group["prompt"] = self._prompt_from_preamble(
-                    group.get("preamble_lines", ())
-                )
+                preamble = [sanitize(line) for line in group.get("preamble_lines", ()) if sanitize(line)]
+                if preamble:
+                    # The last starter paragraph belongs to the preparation
+                    # slot. Independent paragraphs between the introduction
+                    # and that slot are the earlier reading guidance.
+                    prompt_index = next(
+                        (index for index in range(len(preamble) - 1, -1, -1)
+                         if self._is_english_payload(preamble[index]) or "_" in preamble[index]),
+                        len(preamble) - 1,
+                    )
+                    group["prompt"] = self._prompt_from_preamble_line(preamble[prompt_index])
+                    if prompt_index:
+                        group["reading_instruction_text"] = sanitize("\n".join(preamble[:prompt_index]))
             if not group.get("instruction_text"):
                 group["instruction_text"] = first_instruction or RETELLING_INSTRUCTION
             if group.get("score") is None:
@@ -617,6 +628,12 @@ class InfoRetellingParser(BaseParser):
                 "instruction_occurrence": 0,
                 "instruction_audio_filename_stem": "信息转述题目指导文字-1",
             }
+            if first.get("reading_instruction_text"):
+                recording.update({
+                    "reading_instruction_text": first["reading_instruction_text"],
+                    "reading_instruction_occurrence": 1,
+                    "reading_instruction_audio_filename_stem": "信息转述阅图指导文字-1",
+                })
             if items[0].get("block_image_required"):
                 recording.update({
                     "block_image_required": True,
@@ -635,7 +652,6 @@ class InfoRetellingParser(BaseParser):
                 recording.update({
                     "asking_instruction_text": asking_instruction,
                     "asking_instruction_occurrence": 0,
-                    "asking_instruction_audio_filename_stem": "询问信息题干-1",
                 })
 
         result = self._result(items)
@@ -671,8 +687,8 @@ class InfoRetellingParser(BaseParser):
             # keeping legacy parse/progress counts stable for callers that only
             # need the audio正文 list.
             instruction = recording.get("instruction_text") if recording else ""
+            reading_instruction = recording.get("reading_instruction_text") if recording else ""
             prompt = retelling.get("prompt") if retelling else ""
-            asking_prompt = recording.get("asking_instruction_text") if recording else ""
             audio_items = []
             if instruction:
                 audio_items.append({
@@ -687,6 +703,17 @@ class InfoRetellingParser(BaseParser):
                     "audio_filename_stem": "信息转述题目指导文字-1",
                     "type_path": ["信息转述题目指导文字"],
                 })
+            if reading_instruction:
+                audio_items.append({
+                    "category": "信息转述阅图指导文字",
+                    "index": 1,
+                    "text": reading_instruction,
+                    "role": QUESTION_STEM_ROLE,
+                    "voice": "female",
+                    "audio_only_auxiliary": True,
+                    "audio_filename_stem": "信息转述阅图指导文字-1",
+                    "type_path": ["信息转述阅图指导文字"],
+                })
             if prompt:
                 audio_items.append({
                     "category": "信息转述题干",
@@ -698,17 +725,9 @@ class InfoRetellingParser(BaseParser):
                     "audio_filename_stem": "信息转述题干-1",
                     "type_path": ["信息转述题干"],
                 })
-            if asking_prompt:
-                audio_items.append({
-                    "category": "询问信息题干",
-                    "index": 1,
-                    "text": asking_prompt,
-                    "role": QUESTION_STEM_ROLE,
-                    "voice": "female",
-                    "audio_only_auxiliary": True,
-                    "audio_filename_stem": "询问信息题干-1",
-                    "type_path": ["询问信息题干"],
-                })
+            # Asking guidance stays as page text. Retelling introduction,
+            # reading guidance (when present), and preparation/starter each
+            # retain their own audio item.
             if audio_items:
                 result["audio_items"] = audio_items
 

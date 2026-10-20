@@ -108,7 +108,7 @@ function updateAudioImportModeUI() {
     const folderButton = $('audio-import-folder-btn');
     if (title) title.textContent = continuous ? '拖入一整段音频' : '拖入分音频、文件夹或 ZIP';
     if (hint) hint.textContent = continuous
-        ? '只选一个完整录音；系统会跳过中文提示，识别并切出与题目匹配的英文片段。'
+        ? '只选一个完整录音；系统会按题目原文匹配英文内容和需要朗读的中文引导语。'
         : '支持 MP3、WAV、M4A、AAC、OGG、OPUS、FLAC；也可以选择整个文件夹或 ZIP。';
     if (zone) zone.setAttribute('aria-label', continuous ? '拖入一整段音频' : '拖入分音频、文件夹或 ZIP');
     if (folderButton) folderButton.hidden = continuous;
@@ -141,7 +141,7 @@ async function setAudioImportMode(mode) {
     updateAudioImportModeUI();
     renderAudioImportFiles();
     setAudioImportStatus(next === 'continuous'
-        ? '请选择一整段录音；系统只保留能与题目匹配的英文内容。'
+        ? '请选择一整段录音；系统会匹配题目内容，包括需要朗读的中文引导语。'
         : '请选择与待处理题目一一对应的分音频，ZIP 和文件夹仍可使用。', 'info');
 }
 
@@ -376,7 +376,7 @@ function renderAudioImportAnalysisProgress(progress = {}) {
     const stageUnits = {
         opening_recognition: '条音频',
         full_review: '条长音频',
-        continuous_recognition: '个英文片段',
+        continuous_recognition: '个语音片段',
         matching: '项内容',
         cutting_audio: '个题目音频',
     };
@@ -521,6 +521,11 @@ function applyAudioImportFileFilters() {
     if (allCount) allCount.textContent = String(stats.files);
     const coverage = $('audio-import-coverage-count');
     if (coverage) coverage.textContent = `${stats.matched} / ${stats.total}`;
+    const missingItems = state?.analysis ? state.items.filter(item => !stats.counts.has(String(item.item_id))) : [];
+    const footerDetail = $('audio-import-footer-detail');
+    if (footerDetail) footerDetail.textContent = missingItems.length
+        ? `缺少音频：${missingItems.map(questionOptionLabel).join('；')}`
+        : '音频缺失、题目重复或未匹配时不能导入';
     const footer = $('audio-import-footer-count');
     if (footer) {
         if (!stats.files) footer.textContent = '等待音频文件';
@@ -549,9 +554,9 @@ function applyAudioImportFileFilters() {
     const caption = $('audio-import-list-caption');
     if (caption) caption.textContent = stats.files
         ? (continuous
-            ? `从整段录音切出 ${stats.files} 个候选片段 · 已匹配 ${stats.matched} 个 · 待确认 ${Math.max(0, stats.files - stats.matched)} 个`
+            ? `从整段录音切出 ${stats.files} 个候选片段 · 已匹配 ${stats.matched} 个 · 待确认 ${Math.max(0, stats.files - stats.matched)} 个${missingItems.length ? ` · 缺少 ${missingItems.length} 条音频` : ''}`
             : `按文件名数字顺序排列 · 共 ${stats.files} 个 · 已匹配 ${stats.matched} 个 · 待确认 ${Math.max(0, stats.files - stats.matched)} 个`)
-        : (continuous ? '选择整段录音后，系统会切出英文内容并匹配题目。' : '文件上传后会自动识别；无法确认的项目可手动选择。');
+        : (continuous ? '选择整段录音后，系统会切出对应内容并匹配题目。' : '文件上传后会自动识别；无法确认的项目可手动选择。');
     updateAudioImportModeUI();
 }
 
@@ -817,7 +822,7 @@ function updateAudioImportActions() {
     applyAudioImportFileFilters();
     if (!state || state.busy || !state.analysis) return;
     if (state.analysis.status === 'no_matches') {
-        setAudioImportStatus('没有找到可与题目对应的英文片段。请确认录音内容，或切换到“分音频识别”。', 'warning');
+        setAudioImportStatus('没有找到可与题目对应的语音片段。请确认录音内容，或切换到“分音频识别”。', 'warning');
         return;
     }
     if (state.mode === 'continuous' && Array.isArray(state.analysis.missing_item_ids) && state.analysis.missing_item_ids.length) {
@@ -852,7 +857,7 @@ function renderAudioImportFiles() {
         hint.textContent = noMatches
             ? '请检查题目文本与整段录音，或切换到“分音频识别”重新导入。'
             : continuous
-                ? '选择一段完整录音后，系统会识别并切出与题目匹配的英文片段。'
+                ? '选择一段完整录音后，系统会识别并切出与题目匹配的语音片段。'
                 : '拖入分音频、文件夹或 ZIP，系统会自动上传、识别并匹配题目。';
         empty.append(title, hint);
         list.appendChild(empty);
@@ -1193,7 +1198,7 @@ async function selectAudioImportFiles({ source = 'files', droppedFiles = null } 
         renderAudioImportFiles();
         const shouldAnalyze = state.mode === 'continuous' || state.files.length === state.items.length;
         setAudioImportStatus(state.mode === 'continuous'
-            ? '整段录音已上传，正在识别英文内容并按题目切割…'
+            ? '整段录音已上传，正在识别录音内容并按题目切割…'
             : shouldAnalyze
                 ? '音频已上传，正在识别开头并匹配题目…'
                 : `音频数量与待处理题目数量不一致（${state.files.length} / ${state.items.length}），请重新选择完整的一组。`,
@@ -1251,7 +1256,7 @@ async function analyzeAudioImport() {
         if (analysis.status === 'file_count_mismatch') {
             setAudioImportStatus(`音频数量与待处理题目数量不一致（${analysis.selected_file_count} / ${analysis.required_item_count}），不能导入。`, 'warning');
         } else if (analysis.status === 'no_matches') {
-            setAudioImportStatus('没有找到可与题目对应的英文片段。请检查题目文本或录音，也可以切换到“分音频识别”。', 'warning');
+            setAudioImportStatus('没有找到可与题目对应的语音片段。请检查题目文本或录音，也可以切换到“分音频识别”。', 'warning');
         } else if (continuous) {
             const matched = state.files.filter(file => file.suggested_item_id).length;
             const missing = Number(analysis.missing_item_ids?.length) || Math.max(0, state.items.length - state.files.length);

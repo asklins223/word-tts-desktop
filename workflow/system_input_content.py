@@ -481,6 +481,15 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
         instruction_stem = _safe_stem(recording_source.get("instruction_audio_filename_stem"))
         if instruction_stem:
             recording["instruction_audio_filename_stem"] = instruction_stem
+        reading_text = _text(recording_source.get("reading_instruction_text"), limit=PAGE_INPUT_MAX_TEXT)
+        if reading_text:
+            recording["reading_instruction_text"] = reading_text
+        reading_occurrence = recording_source.get("reading_instruction_occurrence")
+        if isinstance(reading_occurrence, int) and not isinstance(reading_occurrence, bool) and reading_occurrence >= 0:
+            recording["reading_instruction_occurrence"] = reading_occurrence
+        reading_stem = _safe_stem(recording_source.get("reading_instruction_audio_filename_stem"))
+        if reading_stem:
+            recording["reading_instruction_audio_filename_stem"] = reading_stem
         asking_instruction_text = _text(
             recording_source.get("asking_instruction_text"),
             limit=PAGE_INPUT_MAX_TEXT,
@@ -749,8 +758,11 @@ def page_input_completeness(value: Any) -> dict[str, Any]:
             and _has_text(recording.get("audio_filename_stem"))
             and _has_text(recording.get("instruction_text"))
             and _has_text(recording.get("instruction_audio_filename_stem"))
+            and (
+                not _has_text(recording.get("reading_instruction_text"))
+                or _has_text(recording.get("reading_instruction_audio_filename_stem"))
+            )
             and _has_text(recording.get("asking_instruction_text"))
-            and _has_text(recording.get("asking_instruction_audio_filename_stem"))
         )
         retelling_complete = (
             isinstance(retelling, Mapping)
@@ -1382,6 +1394,9 @@ def _info_retelling_builder(
         "instruction_text",
         "instruction_occurrence",
         "instruction_audio_filename_stem",
+        "reading_instruction_text",
+        "reading_instruction_occurrence",
+        "reading_instruction_audio_filename_stem",
         "asking_instruction_text",
         "asking_instruction_occurrence",
         "asking_instruction_audio_filename_stem",

@@ -17,6 +17,39 @@ from workflow.system_input_executor import PlatformInputWorkflowPageExecutor
 
 
 class SystemInputContentTests(unittest.TestCase):
+    def test_retelling_page_accepts_asking_instruction_without_separate_audio(self) -> None:
+        facts = {
+            "type": "信息转述及询问",
+            "recording": {
+                "listening_text": "I visited a village.",
+                "audio_filename_stem": "信息转述-1",
+                "instruction_text": "请根据短文进行复述。",
+                "instruction_audio_filename_stem": "信息转述题目指导文字-1",
+                "asking_instruction_text": "请根据以下提示提问。",
+            },
+            "retelling": {
+                "prompt": "你的复述可以这样开始：He visited a village.",
+                "prompt_audio_filename_stem": "信息转述题干-1",
+                "score": 8,
+                "reference_answers": ["He visited a village."],
+            },
+            "asking": [{"prompt": "你想知道他何时出发。", "score": 1.5, "reference_answers": ["When did you leave?"]}],
+        }
+
+        self.assertEqual(page_input_completeness(facts)["status"], "complete")
+
+        facts["recording"].update({
+            "reading_instruction_text": "现在，你有15秒钟的时间阅读思维导图。",
+            "reading_instruction_occurrence": 1,
+            "reading_instruction_audio_filename_stem": "信息转述阅图指导文字-1",
+        })
+        sanitized = sanitize_page_input(facts)
+        for key, value in facts["recording"].items():
+            self.assertEqual(sanitized["recording"][key], value)
+        self.assertEqual(page_input_completeness(sanitized)["status"], "complete")
+        del sanitized["recording"]["reading_instruction_audio_filename_stem"]
+        self.assertNotEqual(page_input_completeness(sanitized)["status"], "complete")
+
     def test_document_entry_preflight_recognizes_supported_shapes(self) -> None:
         full_paper = document_entry_support(
             [{"type": page_type} for page_type in (

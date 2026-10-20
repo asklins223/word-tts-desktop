@@ -25,6 +25,9 @@ imageio-ffmpeg>=0.5.1
 sherpa-onnx==1.12.26
 sherpa-onnx-bin==1.12.26
 numpy>=1.26,<3
+# 容错文字匹配：编辑距离和中文读音比较，不增加识别模型。
+rapidfuzz>=3.10,<4
+pypinyin>=0.52,<1
 
 # ---- 文件上传 ----
 # FastAPI 的 UploadFile/File 路由在运行时需要此包。
