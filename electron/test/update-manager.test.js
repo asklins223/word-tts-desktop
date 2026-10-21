@@ -586,3 +586,33 @@ test('不支持自动更新的平台保持禁用', async () => {
     assert.equal((await manager.check()).status, 'disabled');
     manager.dispose();
 });
+
+test('启动门禁已验证的更新会被接受，而不是误报安装包不可用', async () => {
+    const info = {
+        version: '2.0.0',
+        tag: 'v2.0.0',
+        updateMode: 'force',
+        files: [
+            { url: 'wordTTS-2.0.0-arm64.zip', sha512: Buffer.alloc(64, 2).toString('base64'), size: 30 },
+        ],
+    };
+    const artifactUrl = buildUpdateArtifactUrl(
+        'https://github.com/asklins223/word-tts-desktop/releases',
+        'v2.0.0',
+        'wordTTS-2.0.0-arm64.zip',
+    );
+    const manager = createTestManager({
+        isPackaged: true,
+        appVersion: '1.0.0',
+        platform: 'darwin',
+        architecture: 'arm64',
+        autoUpdater: new FakeUpdater(),
+    });
+
+    const state = await manager.acceptVerifiedUpdate(info, { verifiedArtifactUrl: artifactUrl });
+    assert.equal(state.status, 'available');
+    assert.equal(state.version, '2.0.0');
+    assert.equal(state.isForced, true);
+    assert.equal(state.canDownload, true);
+    manager.dispose();
+});

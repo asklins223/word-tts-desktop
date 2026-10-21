@@ -539,6 +539,7 @@ function createUpdateManager(options = {}) {
             error: null,
             checkedAt: now(),
         });
+        return true;
     };
 
     const updateInfoKey = (info) => {
