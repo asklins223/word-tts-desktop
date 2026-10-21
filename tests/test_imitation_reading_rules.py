@@ -65,7 +65,7 @@ def test_script_marker_accepts_colon_inside_wrapping_brackets():
 def test_new_rule_voice_survives_workflow_parser_normalization():
     parsed = DocumentParser().parse(NEW_FIXTURE)
 
-    assert parsed.parser_version == "19"
+    assert parsed.parser_version == "21"
     assert [item.metadata["voice"] for item in parsed.items] == ["female", "female"]
     assert all(item.metadata["entry_profile"] == "imitation_reading_v1" for item in parsed.items)
     assert all(item.metadata["capabilities"]["external_input"] is True for item in parsed.items)

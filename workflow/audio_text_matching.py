@@ -22,6 +22,31 @@ _EN_NUMBERS = dict(zip(
 _EN_NUMBERS.update(dict(zip("twenty thirty forty fifty sixty seventy eighty ninety".split(), range(20, 100, 10))))
 _EN_NUMBER_WORD = "|".join((*_EN_NUMBERS, "hundred", "thousand"))
 _EN_NUMBER_RE = re.compile(rf"\b(?:{_EN_NUMBER_WORD})(?:[\s-]+(?:and[\s-]+)?(?:{_EN_NUMBER_WORD}))*\b")
+# ASR runs with inverse text normalization, so "nineteenth" is transcribed as
+# "19th" while papers usually spell it out. Both forms are the same spoken
+# number and must reach the number check identically; otherwise the passage
+# is rejected as a content change.
+_EN_ORDINALS = dict(zip(
+    "first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth "
+    "thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth "
+    "twentieth thirtieth fortieth fiftieth sixtieth seventieth eightieth ninetieth".split(),
+    "one two three four five six seven eight nine ten eleven twelve "
+    "thirteen fourteen fifteen sixteen seventeen eighteen nineteen "
+    "twenty thirty forty fifty sixty seventy eighty ninety".split(),
+))
+_EN_ORDINAL_TOKEN = r"\b(?:" + "|".join(_EN_ORDINALS) + r")\b"
+_EN_ORDINAL_RE = re.compile(_EN_ORDINAL_TOKEN)
+_DIGIT_ORDINAL_RE = re.compile(r"\b(\d+)(?:st|nd|rd|th)\b", re.IGNORECASE)
+# "First, I took a boat." is a sequencing word, not a quantity, and ASR often
+# splits it into its own segment ("first.") and drops the previous full stop.
+# Dropping it must stay an ordinary edit. Only this narrow set of connector
+# ordinals is exempt; any other ordinal ("the nineteenth century") remains a
+# critical number, because a changed century is a content change.
+_DISCOURSE_ORDINALS = ("first", "second", "third", "next", "then", "last", "finally")
+_DISCOURSE_ORDINAL_RE = re.compile(
+    r"\b(?:" + "|".join(_DISCOURSE_ORDINALS) + r")\b(?=[\s\"']*(?:[,，.。;；!！?？]|$))",
+    re.IGNORECASE,
+)
 _HAN_DIGITS = {char: value for value, chars in enumerate(("零〇", "一", "二两", "三", "四", "五", "六", "七", "八", "九")) for char in chars}
 _HAN_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
 _CONTRACTIONS = {
@@ -96,15 +121,26 @@ def text_profile(value: str) -> TextProfile:
     text = re.sub(r"<\|[^|]{1,64}\|>", "", text)
     text = _CONTRACTION_RE.sub(lambda match: _CONTRACTIONS[match.group()], text)
     text = re.sub(r"\b(?:mister|missus|doctor)\b", lambda match: {"mister": "mr", "missus": "mrs", "doctor": "dr"}[match.group()], text)
+    # Ordinals join the cardinal pipeline so "nineteenth" and the ASR's
+    # "19th" are the same number. A century/year-like ordinal stays in the
+    # critical-number gate; a sentence-opening discourse ordinal does not.
+    number_source = _DISCOURSE_ORDINAL_RE.sub(" ", text)
+    text = _EN_ORDINAL_RE.sub(lambda match: _EN_ORDINALS[match.group()], text)
+    text = _DIGIT_ORDINAL_RE.sub(r"\1", text)
     text = _EN_NUMBER_RE.sub(_english_number, text)
     text = re.sub(r"[零〇一二两三四五六七八九十百千万]+", _chinese_number, text)
     text = re.sub(r"\b(\d{1,2}):00\b", r"\1", text)
     text = re.sub(r"\bo'?clock\b", "", text)
     canonical = _compact(text)
     phonetic = _compact("".join(lazy_pinyin(canonical))) if re.search(r"[\u4e00-\u9fff]", canonical) else canonical
+    number_source = _EN_ORDINAL_RE.sub(lambda match: _EN_ORDINALS[match.group()], number_source)
+    number_source = _DIGIT_ORDINAL_RE.sub(r"\1", number_source)
+    number_source = _EN_NUMBER_RE.sub(_english_number, number_source)
+    number_source = re.sub(r"[零〇一二两三四五六七八九十百千万]+", _chinese_number, number_source)
+    number_source = re.sub(r"\b(\d{1,2}):00\b", r"\1", number_source)
     return TextProfile(
         canonical, phonetic,
-        tuple(re.findall(r"\d+(?:\.\d+)?", text)),
+        tuple(re.findall(r"\d+(?:\.\d+)?", number_source)),
         tuple(_NEGATION_RE.findall(text)), tuple(_QUESTION_RE.findall(text)),
     )
 

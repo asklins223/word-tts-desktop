@@ -14,6 +14,8 @@ from workflow.audio_text_matching import compare_transcript, text_profile
     ("At 7:00 a.m. a robot cooks breakfast.", "At seven AM a robot cooks breakfast."),
     ("She left at 7:30.", "She left at seven thirty."),
     ("你有六十秒钟的时间准备。", "你有60秒钟的时间准备。"),
+    ("Around the end of the nineteenth century, new technology made it possible.",
+     "Around the end of the 19th century, new technology made it possible."),
     ("I visited the countryside last August.", "I visited the country side last Augest."),
     ("Peter visited Yangshuo last August.", "Peter visited 杨朔 last August."),
     ("Peter visited Beijing last August.", "Peter visited 北京 last August."),
@@ -42,6 +44,7 @@ def test_retelling_ellipsis_does_not_require_any_spoken_or_recognized_punctuatio
     ("The car can drive by itself.", "The car cannot drive by itself."),
     ("How does the man feel?", "Why does the man feel?"),
     ("你有60秒钟的时间准备。", "你没有60秒钟的时间准备。"),
+    ("Around the end of the nineteenth century.", "Around the end of the seventeenth century."),
 ])
 def test_critical_content_changes_are_not_automatically_accepted(source, observed):
     match = compare_transcript(text_profile(source), text_profile(observed))
@@ -53,6 +56,13 @@ def test_missing_ending_is_not_a_typo_even_after_a_long_matching_prefix():
     body = "Peter visited Yangshuo last August. He took a boat down the river and rode a bike in the countryside."
     match = compare_transcript(text_profile(body + " What an unforgettable trip!"), text_profile(body))
     assert not match.complete
+
+
+def test_a_sentence_opening_ordinal_dropped_by_asr_is_not_a_content_change():
+    body = "There were many activities to choose from. First, I took a boat down the river."
+    match = compare_transcript(text_profile(body), text_profile(body.replace("First, ", "", 1)))
+    assert match.compatible
+    assert match.complete
 
 
 def test_identical_spelling_outranks_a_pronunciation_only_candidate():
