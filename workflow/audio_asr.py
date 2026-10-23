@@ -695,8 +695,34 @@ def _structural_weight(is_question: bool, number: int | None, prefix: int | None
     return _ORDINAL_BONUS if prefix == number else _ORDINAL_MISMATCH_PENALTY
 
 
+_PROMPT_PAUSE_SECONDS = 0.22
+
+
+def _prompt_rows(
+    rows: Sequence[Any],
+    spans: Sequence[tuple[float, float]],
+) -> dict[int, int]:
+    """Return ``{row_index: question_number}`` for real spoken prompts.
+
+    ASR sometimes splits the first word of a sentence into its own row
+    ("One" + "night I had a dream"), and a bare number word must not become a
+    question prompt in that case. A real prompt is isolated by a short pause
+    before the question; a mid-sentence split is not.
+    """
+
+    prompts: dict[int, int] = {}
+    for index, facts in enumerate(rows):
+        if facts.ordinal is None or index + 1 >= len(rows):
+            continue
+        if spans[index + 1][0] - spans[index][1] < _PROMPT_PAUSE_SECONDS:
+            continue
+        prompts[index] = int(facts.ordinal)
+    return prompts
+
+
 def _window_ordinal(
     rows: Sequence[Any],
+    prompts: Mapping[int, int],
     start_row_index: int,
 ) -> tuple[int, int] | None:
     """Return the question number whose prompt directly precedes a window.
@@ -709,10 +735,13 @@ def _window_ordinal(
 
     for index in range(start_row_index - 1, -1, -1):
         facts = rows[index]
-        if facts.ordinal is not None:
-            between = rows[index + 1:start_row_index]
-            if all(item.is_announcement or item.error or item.ordinal is not None for item in between):
-                return index, int(facts.ordinal)
+        if index in prompts:
+            between = range(index + 1, start_row_index)
+            if all(
+                position in prompts or rows[position].is_announcement or rows[position].error
+                for position in between
+            ):
+                return index, prompts[index]
             return None
         if not (facts.is_announcement or facts.error):
             # The window starts inside running content; the nearest prompt is
@@ -727,6 +756,8 @@ def _spans_overlap(left: tuple[float, float], right: tuple[float, float]) -> boo
 
 def _ordinal_anchor_window(
     rows: Sequence[Any],
+    prompts: Mapping[int, int],
+    content_flags: Sequence[bool],
     recognized: Sequence[Mapping[str, Any]],
     spans: Sequence[tuple[float, float]],
     ordinal_row: int,
@@ -736,9 +767,11 @@ def _ordinal_anchor_window(
     window: list[int] = []
     for index in range(ordinal_row + 1, len(rows)):
         facts = rows[index]
-        if facts.ordinal:
+        if index in prompts:
             break
-        if facts.error or facts.is_announcement:
+        if facts.error or facts.is_announcement or not content_flags[index]:
+            # Short section markers ("3、", "第一节") are not announcements by
+            # the Chinese-character rule but must never join a question clip.
             break
         text = str(recognized[index].get("text") or "").strip()
         if not normalize_recognition_text(text):
@@ -775,7 +808,10 @@ def _continuous_audio_matches(
 
     from .audio_structure import detect_rows, latest_section_hint
 
+    if len(recognized) > len(spans):
+        recognized = recognized[:len(spans)]
     rows = detect_rows(recognized)
+    prompts = _prompt_rows(rows, spans)
     item_facts = {str(item.get("item_id") or ""): _item_facts(item) for item in items}
     includes_chinese = any(
         re.search(r"[\u4e00-\u9fff]", str(item.get("normalized_content") or ""))
@@ -785,6 +821,7 @@ def _continuous_audio_matches(
     # Spoken question numbers and section announcements are markers, never
     # clip content; a number prompt must not become part of the question clip.
     runs: list[list[tuple[int, dict[str, Any]]]] = []
+    content_flags: list[bool] = [False] * len(recognized)
     interrupted = True
     for row_index, (row, span) in enumerate(zip(recognized, spans)):
         facts = rows[row_index]
@@ -799,13 +836,14 @@ def _continuous_audio_matches(
         is_content = bool(
             normalized
             and not facts.error
-            and not facts.ordinal
+            and row_index not in prompts
             and (
                 _is_english_transcript(text)
                 or (includes_chinese and facts.is_chinese)
                 or short_mixed_name
             )
         )
+        content_flags[row_index] = is_content
         if not is_content:
             if facts.error or (not includes_chinese and facts.is_chinese):
                 interrupted = True
@@ -834,7 +872,7 @@ def _continuous_audio_matches(
     for run in runs:
         for start_index in range(len(run)):
             start_row_index = run[start_index][0]
-            prefix_ordinal = _window_ordinal(rows, start_row_index)
+            prefix_ordinal = _window_ordinal(rows, prompts, start_row_index)
             prefix_number = prefix_ordinal[1] if prefix_ordinal else None
             text_parts: list[str] = []
             transcript_parts: list[str] = []
@@ -933,7 +971,7 @@ def _continuous_audio_matches(
         is_question, number, _is_script = item_facts.get(item_id, (False, None, False))
         if not is_question or number is None:
             continue
-        preview = _window_ordinal(rows, int(row.get("start_row") or 0))
+        preview = _window_ordinal(rows, prompts, int(row.get("start_row") or 0))
         if preview is not None and preview[1] == number:
             consumed_ordinals.add(preview[0])
 
@@ -952,10 +990,10 @@ def _continuous_audio_matches(
             continue
         target_length = max(max(len(profile.text), len(profile.phonetic)) for profile in variant_profiles)
         chosen: tuple[int, list[int], float, float, str, Any] | None = None
-        for facts in rows:
-            if facts.ordinal != number or facts.row_index in consumed_ordinals:
+        for prompt_row, prompt_number in prompts.items():
+            if prompt_number != number or prompt_row in consumed_ordinals:
                 continue
-            hint = latest_section_hint(rows, facts.row_index)
+            hint = latest_section_hint(rows, prompt_row)
             if (
                 hint is not None
                 and hint.section_kind in {"listening_selection", "listening_questions"}
@@ -963,7 +1001,7 @@ def _continuous_audio_matches(
                 and number not in hint.section_numbers
             ):
                 continue
-            window = _ordinal_anchor_window(rows, recognized, spans, facts.row_index)
+            window = _ordinal_anchor_window(rows, prompts, content_flags, recognized, spans, prompt_row)
             if window is None:
                 continue
             window_rows, start, end = window
@@ -974,12 +1012,20 @@ def _continuous_audio_matches(
             observed_length = max(len(observed.text), len(observed.phonetic))
             if observed_length < 6 or not 0.35 <= observed_length / max(1, target_length) <= 1.8:
                 continue
-            chosen = (facts.row_index, window_rows, start, end, transcript, observed)
+            chosen = (prompt_row, window_rows, start, end, transcript, observed)
             break
         if chosen is None:
             continue
         ordinal_row, window_rows, start, end, transcript, observed = chosen
         ranked = _item_candidates(transcript, items)
+        if (
+            ranked
+            and str(ranked[0]["item_id"]) != item_id
+            and float(ranked[0]["score"]) >= 0.82
+        ):
+            # This speech clearly belongs to another item (typically a repeat
+            # playback); do not force it onto the missing question.
+            continue
         own_index = next(
             (index for index, entry in enumerate(ranked) if str(entry["item_id"]) == item_id),
             None,
@@ -1036,13 +1082,57 @@ def _continuous_audio_matches(
             if sum(1 for row in selected if str(row["top_item_id"]) == owner) <= 1:
                 continue
             ordinal_row_index = occurrence.get("ordinal_row")
-            if ordinal_row_index is None:
+            if ordinal_row_index is None or int(ordinal_row_index) not in prompts:
                 continue
-            if rows[int(ordinal_row_index)].ordinal != number:
+            if prompts[int(ordinal_row_index)] != number:
                 continue
+            # The clip belongs to the current owner's text, so reassigning it
+            # must be justified by *this* question's text too; otherwise a
+            # never-spoken question would grab someone else's playback.
+            transcript = str(occurrence.get("transcript") or "")
+            observed = text_profile(transcript)
+            profiles = [text_profile(variant) for variant in _spoken_text_variants(item.get("normalized_content"))]
+            if not profiles:
+                continue
+            match = max(
+                (compare_transcript(profile, observed) for profile in profiles),
+                key=lambda result: result.score,
+            )
+            if not match.compatible or match.score < 0.60:
+                continue
+            target_length = max(max(len(profile.text), len(profile.phonetic)) for profile in profiles)
+            ranked = _item_candidates(transcript, items)
+            own_index = next(
+                (position for position, entry in enumerate(ranked) if str(entry["item_id"]) == item_id),
+                None,
+            )
+            if ranked and own_index == 0:
+                score = float(ranked[0]["score"])
+                second = float(ranked[1]["score"]) if len(ranked) > 1 else 0.0
+                method = str(ranked[0].get("match_method") or "edit_distance")
+            else:
+                score = match.score
+                second = float(ranked[0]["score"]) if ranked else 0.0
+                method = match.method
             replacement = dict(occurrence)
-            replacement["top_item_id"] = item_id
-            replacement["structural_anchor"] = True
+            replacement.update({
+                "top_item_id": item_id,
+                "structural_anchor": True,
+                "score": round(score, 4),
+                "adjusted_score": score * max(1, target_length) ** 0.5,
+                "margin": score - second,
+                "coverage": match.coverage,
+                "match_method": method,
+                "candidates": [
+                    {
+                        "item_id": str(entry["item_id"]),
+                        "sequence": int(entry["sequence"]),
+                        "score": float(entry["score"]),
+                        "text": str(entry["text"])[:180],
+                    }
+                    for entry in ranked[:5]
+                ],
+            })
             selected[index] = replacement
             matched_ids.add(item_id)
             break

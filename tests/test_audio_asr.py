@@ -469,6 +469,105 @@ class AudioImportContinuousTests(unittest.TestCase):
         retelling = next(row for row in result["files"] if row["suggested_item_id"] == "item-15")
         self.assertEqual(len(retelling["source_spans"]), 2)
 
+    def test_repeated_script_playback_is_not_stolen_by_a_never_spoken_question(self) -> None:
+        items = [
+            {"item_id": "q1", "sequence": 0, "normalized_content": "What is your favourite sport?",
+             "metadata": {"category": "听选信息题目", "number": 1}},
+            {"item_id": "q2", "sequence": 1, "normalized_content": "Where did you go last summer?",
+             "metadata": {"category": "听选信息题目", "number": 2}},
+            {"item_id": "script", "sequence": 2,
+             "normalized_content": "I like basketball. I went to Beijing last summer.",
+             "metadata": {"category": "听选信息录音稿", "question_numbers": [1, 2]}},
+        ]
+        spans = [(0, 2), (3, 3.4), (3.6, 5), (6, 6.4), (6.6, 9)]
+        transcripts = [
+            "I like basketball. I went to Beijing last summer.", "one",
+            "What is your favourite sport?", "two",
+            "I like basketball. I went to Beijing last summer.",
+        ]
+
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": text, "error": ""} for text in transcripts], spans, items,
+        )
+        matched = {str(row["top_item_id"]) for row in occurrences}
+
+        self.assertEqual(matched, {"q1", "script"})
+        self.assertNotIn("q2", matched)
+
+    def test_prompt_then_unrelated_repeated_passage_does_not_fill_the_question(self) -> None:
+        items = [
+            {"item_id": "q1", "sequence": 0, "normalized_content": "What is your favourite sport?",
+             "metadata": {"category": "听选信息题目", "number": 1}},
+            {"item_id": "pass", "sequence": 1,
+             "normalized_content": "Mount Huangshan is a popular place of interest. It covers an area of 160 km2.",
+             "metadata": {"category": "信息转述录音稿", "question_numbers": [1]}},
+        ]
+        spans = [(0, 1.5), (1.6, 4.0), (5.0, 7.4)]
+        transcript = (
+            "Mount Huangshan is a popular place of interest. "
+            "It covers an area of 160 square kilometers."
+        )
+
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": text, "error": ""} for text in ["one", transcript, transcript]], spans, items,
+        )
+        by_item: dict[str, int] = {}
+        for row in occurrences:
+            by_item[str(row["top_item_id"])] = by_item.get(str(row["top_item_id"]), 0) + 1
+
+        self.assertEqual(by_item, {"pass": 2})
+
+    def test_number_word_split_out_of_a_passage_stays_content(self) -> None:
+        fixture = json.loads((Path(__file__).parent / "fixtures" / "audio_asr_exam.json").read_text(encoding="utf-8"))
+        spans = [(entry["start"], entry["end"]) for entry in fixture["speech"]]
+        transcripts = [entry["text"] for entry in fixture["speech"]]
+        # ASR splitting the passage's first word into its own row must not turn
+        # it into a question prompt.
+        spans[93:94] = [(278.13, 278.55), (278.60, 279.0)]
+        transcripts[93:94] = ["One", "night I"]
+
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": text, "error": ""} for text in transcripts], spans, fixture["items"],
+        )
+        by_item: dict[str, list[tuple[float, float]]] = {}
+        for row in occurrences:
+            by_item.setdefault(str(row["top_item_id"]), []).append((row["start"], row["end"]))
+
+        self.assertIn("14", by_item)
+        self.assertEqual(len(by_item["14"]), 2)
+        self.assertAlmostEqual(by_item["14"][0][0], 278.13, places=2)
+        question_one = by_item["1"]
+        self.assertEqual(len(question_one), 1)
+        self.assertAlmostEqual(question_one[0][0], 126.99, places=2)
+        self.assertAlmostEqual(question_one[0][1], 130.29, places=2)
+
+    def test_fallback_clip_stops_before_a_short_section_marker(self) -> None:
+        fixture = json.loads((Path(__file__).parent / "fixtures" / "audio_asr_exam.json").read_text(encoding="utf-8"))
+        spans = [(entry["start"], entry["end"]) for entry in fixture["speech"]]
+        transcripts = [entry["text"] for entry in fixture["speech"]]
+        # The question's last word is missing from ASR, so the structural
+        # fallback cuts the clip; the following "3、" section marker must not
+        # join it.
+        transcripts[134] = "why can the managers communicate"
+
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": text, "error": ""} for text in transcripts], spans, fixture["items"],
+        )
+        row = next(occurrence for occurrence in occurrences if str(occurrence["top_item_id"]) == "13")
+
+        self.assertAlmostEqual(row["start"], 388.961, places=2)
+        self.assertAlmostEqual(row["end"], 391.772, places=2)
+        self.assertNotIn("3、", row["transcript"])
+
+    def test_longer_recognition_list_than_spans_is_truncated_instead_of_crashing(self) -> None:
+        items = [{"item_id": "q1", "sequence": 0, "normalized_content": "Hello world."}]
+        spans = [(0, 1)]
+        recognized = [{"text": "Hello world.", "error": ""}, {"text": "extra", "error": ""}]
+
+        occurrences = audio_asr._continuous_audio_matches(recognized, spans, items)
+
+        self.assertEqual([row["top_item_id"] for row in occurrences], ["q1"])
+
     def test_real_shenzhen_2024_set_two_recovers_the_question_and_retelling_clips(self) -> None:
         fixture = json.loads(
             (Path(__file__).parent / "fixtures" / "audio_asr_exam_shenzhen_2024_set2.json").read_text(encoding="utf-8")
