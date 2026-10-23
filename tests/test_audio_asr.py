@@ -355,6 +355,56 @@ class AudioImportContinuousTests(unittest.TestCase):
         chronological = sorted(span for clip in self.cut_spans for span in clip)
         self.assertTrue(all(left[1] <= right[0] for left, right in zip(chronological, chronological[1:])))
 
+    def test_short_question_ends_at_the_announcement_even_when_asr_mishears_the_name(self) -> None:
+        items = [{"item_id": "q10", "sequence": 0, "normalized_content": "What do people think of Amy?"}]
+        result, _batch = self._analyze(items, [(1, 3), (4, 5)], ["what do people think of f", "开始录音。"])
+
+        self.assertTrue(result["can_commit"])
+        self.assertEqual(self.cut_spans, [((1.0, 3.0),)])
+
+    def test_short_question_without_a_closing_announcement_keeps_the_strict_ending(self) -> None:
+        items = [{"item_id": "q10", "sequence": 0, "normalized_content": "What do people think of Amy?"}]
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": "what do people think of f"}], [(1, 3)], items,
+        )
+
+        self.assertEqual(occurrences, [])
+
+    def test_long_passage_missing_its_ending_is_not_completed_by_an_announcement(self) -> None:
+        body = (
+            "One night, I had a dream. A robot cooks breakfast for me. I go to work by car. "
+            "The car drives by itself. What an unforgettable trip!"
+        )
+        spoken = body.rsplit(" What", 1)[0]
+        items = [{"item_id": "passage", "sequence": 0, "normalized_content": body}]
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": spoken}, {"text": "开始录音。"}], [(1, 30), (31, 32)], items,
+        )
+
+        self.assertEqual(occurrences, [])
+
+    def test_real_shenzhen_2024_set_two_recovers_the_question_and_retelling_clips(self) -> None:
+        fixture = json.loads(
+            (Path(__file__).parent / "fixtures" / "audio_asr_exam_shenzhen_2024_set2.json").read_text(encoding="utf-8")
+        )
+        result, _batch = self._analyze(
+            fixture["items"],
+            [(entry["start"], entry["end"]) for entry in fixture["speech"]],
+            [entry["text"] for entry in fixture["speech"]],
+        )
+
+        self.assertTrue(result["can_commit"])
+        self.assertEqual(result["required_item_count"], 19)
+        self.assertEqual(result["missing_item_ids"], [])
+        spans_by_item = {
+            row["suggested_item_id"]: [
+                (span["start_seconds"], span["end_seconds"]) for span in row["source_spans"]
+            ]
+            for row in result["files"]
+        }
+        self.assertEqual(spans_by_item["item-13"], [(662.93, 665.265)])
+        self.assertEqual(spans_by_item["item-15"], [(740.631, 781.156), (782.878, 823.404)])
+
 
 class AudioRecognitionContextTests(unittest.TestCase):
     def test_a_short_file_is_full_recognition_not_a_partial_opening(self) -> None:

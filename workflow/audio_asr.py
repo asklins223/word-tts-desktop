@@ -641,6 +641,19 @@ def _audio_duration_and_speech_spans(path: str | os.PathLike[str]) -> tuple[floa
     return duration, spans
 
 
+def _is_announcement_row(row: Mapping[str, Any]) -> bool:
+    """Return whether one recognized row is a spoken section announcement.
+
+    Exam recordings announce each section and each question's recording
+    window ("开始录音" / "停止录音"); a run that ends right before such a row
+    is a complete utterance even when ASR mishears its last word.
+    """
+
+    if row.get("error"):
+        return True
+    return sum("\u4e00" <= char <= "\u9fff" for char in str(row.get("text") or "")) >= 4
+
+
 def _is_english_transcript(value: str) -> bool:
     compact = normalize_recognition_text(value)
     latin = sum(char.isascii() and char.isalpha() for char in compact)
@@ -662,7 +675,7 @@ def _continuous_audio_matches(
         re.search(r"[\u4e00-\u9fff]", str(item.get("normalized_content") or ""))
         for item in items
     )
-    runs: list[list[dict[str, Any]]] = []
+    runs: list[list[tuple[int, dict[str, Any]]]] = []
     interrupted = True
     for row_index, (row, span) in enumerate(zip(recognized, spans)):
         text = str(row.get("text") or "").strip()
@@ -679,14 +692,14 @@ def _continuous_audio_matches(
         ):
             # Announcements divide sections, even when the pauses around
             # them are short. A spoken question number does not divide a run.
-            if sum("\u4e00" <= char <= "\u9fff" for char in text) >= 4 or row.get("error"):
+            if _is_announcement_row(row):
                 interrupted = True
             continue
         segment = {"start": span[0], "end": span[1], "text": text, "normalized": normalized}
-        if interrupted or not runs or span[0] - runs[-1][-1]["end"] > 3.2:
-            runs.append([segment])
+        if interrupted or not runs or span[0] - runs[-1][-1][1]["end"] > 3.2:
+            runs.append([(row_index, segment)])
         else:
-            runs[-1].append(segment)
+            runs[-1].append((row_index, segment))
         interrupted = False
 
     targets = [
@@ -704,8 +717,8 @@ def _continuous_audio_matches(
             text_parts: list[str] = []
             transcript_parts: list[str] = []
             for end_index in range(start_index, min(len(run), start_index + 120)):
-                segment = run[end_index]
-                if segment["end"] - run[start_index]["start"] > 180:
+                _row_index, segment = run[end_index]
+                if segment["end"] - run[start_index][1]["start"] > 180:
                     break
                 text_parts.append(segment["normalized"])
                 transcript_parts.append(segment["text"])
@@ -715,9 +728,13 @@ def _continuous_audio_matches(
                 observed = text_profile(" ".join(transcript_parts))
                 if max(len(observed.text), len(observed.phonetic)) < 6:
                     continue
+                closing_boundary = (
+                    _row_index + 1 < len(recognized)
+                    and _is_announcement_row(recognized[_row_index + 1])
+                )
                 ranked: dict[str, dict[str, Any]] = {}
                 for item, target in targets:
-                    match = compare_transcript(target, observed)
+                    match = compare_transcript(target, observed, closing_boundary=closing_boundary)
                     score = match.score
                     if not score or not match.compatible:
                         continue
@@ -744,7 +761,7 @@ def _continuous_audio_matches(
                 second_score = candidates[1]["score"] if len(candidates) > 1 else 0.0
                 margin = top["score"] - second_score
                 occurrences.append({
-                    "start": run[start_index]["start"],
+                    "start": run[start_index][1]["start"],
                     "end": segment["end"],
                     "transcript": " ".join(transcript_parts),
                     "candidates": [

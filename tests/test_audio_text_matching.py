@@ -52,6 +52,41 @@ def test_critical_content_changes_are_not_automatically_accepted(source, observe
     assert not match.complete
 
 
+def test_area_unit_written_with_an_exponent_matches_the_spoken_unit():
+    source = "Mount Huangshan is a popular place of interest. It covers an area of 160 km2. It is in Anhui."
+    observed = "Mount Huangshan is a popular place of interest. It covers an area of 160 square kilometers. It is in Anhui."
+
+    match = compare_transcript(text_profile(source), text_profile(observed))
+
+    assert match.compatible
+    assert match.complete
+    assert match.score >= 0.99
+
+
+def test_short_item_tail_mishearing_is_complete_at_an_announcement_boundary():
+    source = text_profile("What do people think of Amy?")
+    observed = text_profile("what do people think of f")
+
+    strict = compare_transcript(source, observed)
+    assert not strict.complete
+
+    relaxed = compare_transcript(source, observed, closing_boundary=True)
+    assert relaxed.compatible
+    assert relaxed.complete
+
+
+def test_long_passage_tail_stays_strict_even_at_an_announcement_boundary():
+    body = (
+        "Peter visited Yangshuo last August. He took a boat down the river and rode a bike in the countryside. "
+        "What an unforgettable trip!"
+    )
+    spoken = body.rsplit(" What", 1)[0]
+
+    match = compare_transcript(text_profile(body), text_profile(spoken), closing_boundary=True)
+
+    assert not match.complete
+
+
 def test_missing_ending_is_not_a_typo_even_after_a_long_matching_prefix():
     body = "Peter visited Yangshuo last August. He took a boat down the river and rode a bike in the countryside."
     match = compare_transcript(text_profile(body + " What an unforgettable trip!"), text_profile(body))

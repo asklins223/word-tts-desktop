@@ -64,6 +64,20 @@ _CONTRACTIONS = {
 _CONTRACTION_RE = re.compile(r"\b(?:" + "|".join(map(re.escape, _CONTRACTIONS)) + r")\b")
 _QUESTION_RE = re.compile(r"\b(?:who|what|when|where|why|how|which|whose)\b")
 _NEGATION_RE = re.compile(r"\b(?:not|no|never|neither|without)\b|[不没未无]")
+# Papers write areas as "160 km2" (an exponent lost to NFKC) while the reader
+# says "160 square kilometers". The trailing 2 is part of the unit, not a
+# second quantity; keeping it in the number gate made the whole passage
+# incompatible whenever the area was read aloud in words.
+_AREA_UNIT_WORDS = {
+    "km": "square kilometers", "cm": "square centimeters", "mm": "square millimeters",
+    "dm": "square decimeters", "m": "square meters",
+}
+_AREA_UNIT_RE = re.compile(r"(?i)(?<![a-z])(km|cm|mm|dm|m)\s*2\b")
+# A short item is read as one utterance, so losing its last word is no more
+# than a tenth of its content. Longer passages may lose a whole ending
+# sentence while keeping most of the text, so they must stay strict.
+_SHORT_ITEM_MAX_CHARS = 80
+_RELAXED_TAIL_EVIDENCE = 0.30
 
 
 def _english_number(match: re.Match[str]) -> str:
@@ -121,6 +135,7 @@ def text_profile(value: str) -> TextProfile:
     text = re.sub(r"<\|[^|]{1,64}\|>", "", text)
     text = _CONTRACTION_RE.sub(lambda match: _CONTRACTIONS[match.group()], text)
     text = re.sub(r"\b(?:mister|missus|doctor)\b", lambda match: {"mister": "mr", "missus": "mrs", "doctor": "dr"}[match.group()], text)
+    text = _AREA_UNIT_RE.sub(lambda match: f" {_AREA_UNIT_WORDS[match.group(1).lower()]} ", text)
     # Ordinals join the cardinal pipeline so "nineteenth" and the ASR's
     # "19th" are the same number. A century/year-like ordinal stays in the
     # critical-number gate; a sentence-opening discourse ordinal does not.
@@ -166,7 +181,13 @@ def _compatible(source: TextProfile, observed: TextProfile, *, opening: bool) ->
     )
 
 
-def _whole_comparison(source: str, observed: str, penalty: float) -> tuple[float, float, bool]:
+def _whole_comparison(
+    source: str,
+    observed: str,
+    penalty: float,
+    *,
+    closing_boundary: bool = False,
+) -> tuple[float, float, bool]:
     if not source or not observed or not 0.72 <= len(observed) / len(source) <= 1.35:
         return 0.0, 0.0, False
     score = Levenshtein.normalized_similarity(source, observed, score_cutoff=0.72)
@@ -183,15 +204,28 @@ def _whole_comparison(source: str, observed: str, penalty: float) -> tuple[float
             evidence[position] = 0.35
     coverage = sum(evidence) / len(source)
     anchor = min(20, max(5, len(source) // 6), len(source))
-    complete = (
-        coverage >= 0.86
-        and sum(evidence[:anchor]) / anchor >= 0.60
-        and sum(evidence[-anchor:]) / anchor >= 0.60
-    )
+    head_evidence = sum(evidence[:anchor]) / anchor
+    tail_evidence = sum(evidence[-anchor:]) / anchor
+    complete = coverage >= 0.86 and head_evidence >= 0.60 and tail_evidence >= 0.60
+    if not complete and closing_boundary and len(source) <= _SHORT_ITEM_MAX_CHARS:
+        # A short item is a single spoken utterance. When the audio continues
+        # into the exam announcement, the utterance has ended even if ASR
+        # misheard its final word; the announcement marks the real end.
+        complete = (
+            coverage >= 0.86
+            and head_evidence >= 0.60
+            and tail_evidence >= _RELAXED_TAIL_EVIDENCE
+        )
     return score * penalty, coverage, complete
 
 
-def compare_transcript(source: TextProfile, observed: TextProfile, *, opening: bool = False) -> TextMatch:
+def compare_transcript(
+    source: TextProfile,
+    observed: TextProfile,
+    *,
+    opening: bool = False,
+    closing_boundary: bool = False,
+) -> TextMatch:
     compatible = _compatible(source, observed, opening=opening)
     if not source.text or not observed.text:
         return TextMatch(0.0, 0.0, False, compatible, "edit_distance")
@@ -211,7 +245,9 @@ def compare_transcript(source: TextProfile, observed: TextProfile, *, opening: b
             ), default=0.0)
             coverage, complete = 0.0, False
         else:
-            score, coverage, complete = _whole_comparison(expected, actual, penalty)
+            score, coverage, complete = _whole_comparison(
+                expected, actual, penalty, closing_boundary=closing_boundary,
+            )
         if score > best.score:
             best = TextMatch(score, coverage, complete and compatible, compatible, method)
     return best

@@ -1,0 +1,1298 @@
+{
+ "description": "2024 深圳中考听说真题第 2 套（真实 SenseVoice 识别记录）；覆盖短问题的结尾误识别与 “160 km2” 面积单位两处修复。",
+ "items": [
+  {
+   "item_id": "item-0",
+   "sequence": 0,
+   "normalized_content": "Do you enjoy listening to music? There is an activity called \"Beautiful Sunday\" at Shenzhen Concert Hall. It offers a free classical concert to the public every week. The introduction to classical music is given at each event. It helps people understand the music better. If you want to enjoy the concert, this coming Sunday might be a good start."
+  },
+  {
+   "item_id": "item-1",
+   "sequence": 1,
+   "normalized_content": "Where does the conversation probably take place?"
+  },
+  {
+   "item_id": "item-2",
+   "sequence": 2,
+   "normalized_content": "What does the woman want?"
+  },
+  {
+   "item_id": "item-3",
+   "sequence": 3,
+   "normalized_content": "M: Come in, Anne.\nW: Wow. What a lovely house!\nM: Thanks. Make yourself at home. Can I get you something to drink?\nW: A glass of juice would be fine."
+  },
+  {
+   "item_id": "item-4",
+   "sequence": 4,
+   "normalized_content": "Why did the woman go to New York?"
+  },
+  {
+   "item_id": "item-5",
+   "sequence": 5,
+   "normalized_content": "When did the woman come back last night?"
+  },
+  {
+   "item_id": "item-6",
+   "sequence": 6,
+   "normalized_content": "M: I haven't seen you for a long time. Where have you been?\nW: I went to New York to study English in a summer camp.\nM: Sounds great. When did you return?\nW: Last night, around eleven o'clock.\nM: No wonder you look tired."
+  },
+  {
+   "item_id": "item-7",
+   "sequence": 7,
+   "normalized_content": "Who gave the cap to the man?"
+  },
+  {
+   "item_id": "item-8",
+   "sequence": 8,
+   "normalized_content": "What colour is the cap?"
+  },
+  {
+   "item_id": "item-9",
+   "sequence": 9,
+   "normalized_content": "W: What are you looking for?\nM: My cap. It's a gift from my father.\nW: I see. What is it like?\nM: It's black with a star on it. Did you see it?\nW: Sorry, I didn't. Maybe you can go to the lost and found.\nM: Okay. I'll try my luck there."
+  },
+  {
+   "item_id": "item-10",
+   "sequence": 10,
+   "normalized_content": "Why does Amy think she is perfect for the job?"
+  },
+  {
+   "item_id": "item-11",
+   "sequence": 11,
+   "normalized_content": "Does she like to teach her classmates to do sports?"
+  },
+  {
+   "item_id": "item-12",
+   "sequence": 12,
+   "normalized_content": "Where did she learn the basic first aid?"
+  },
+  {
+   "item_id": "item-13",
+   "sequence": 13,
+   "normalized_content": "What do people think of Amy?"
+  },
+  {
+   "item_id": "item-14",
+   "sequence": 14,
+   "normalized_content": "Amy's PE teacher is looking for a student helper. Amy thinks she is the right person for the job because she has the necessary skills for it. She is good at sports and likes to teach her classmates to do sports. Besides, she knows how to provide basic first aid. She learned it in a summer camp. Everyone thinks she is patient and friendly. They all like playing with her."
+  },
+  {
+   "item_id": "item-15",
+   "sequence": 15,
+   "normalized_content": "Mount Huangshan is a popular place of interest. It covers an area of 160 km2. It is in Anhui. The best season to visit the mountain is summer. It is cool. Mount Huangshan is famous for its trees and rocks. The clouds are also a wonder. All the visitors are amazed by their different shapes. Every year, millions of hikers come to this great mountain."
+  },
+  {
+   "item_id": "item-16",
+   "sequence": 16,
+   "normalized_content": "你将听到一篇Mary介绍黄山的短文，录音播放两遍。请根据所听到的内容，依据思维导图的提示，在60秒内复述短文。"
+  },
+  {
+   "item_id": "item-17",
+   "sequence": 17,
+   "normalized_content": "现在你有15秒钟的时间阅读思维导图。"
+  },
+  {
+   "item_id": "item-18",
+   "sequence": 18,
+   "normalized_content": "你的复述可以这样开始：Mount Huangshan is a popular place of interest. It covers an area of ..."
+  }
+ ],
+ "speech": [
+  {
+   "start": 0.499,
+   "end": 6.55,
+   "text": "2024年，深圳市初中毕业生学业水平考试"
+  },
+  {
+   "start": 6.862,
+   "end": 9.033,
+   "text": "英语听说考试。"
+  },
+  {
+   "start": 12.232,
+   "end": 12.874,
+   "text": "一、"
+  },
+  {
+   "start": 13.101,
+   "end": 14.524,
+   "text": "模仿朗读"
+  },
+  {
+   "start": 15.167,
+   "end": 16.609,
+   "text": "听下面短文，"
+  },
+  {
+   "start": 16.847,
+   "end": 18.754,
+   "text": "短文播放一遍，"
+  },
+  {
+   "start": 19.228,
+   "end": 21.928,
+   "text": "你有50秒钟的时间准备，"
+  },
+  {
+   "start": 22.259,
+   "end": 24.235,
+   "text": "然后模仿朗读。"
+  },
+  {
+   "start": 24.8,
+   "end": 28.16,
+   "text": "当听到开始录音的信号后。"
+  },
+  {
+   "start": 28.695,
+   "end": 32.696,
+   "text": "立即在50秒钟内模仿朗读短文。"
+  },
+  {
+   "start": 33.679,
+   "end": 37.478,
+   "text": "当听到要求停止录音的信号时，"
+  },
+  {
+   "start": 37.727,
+   "end": 39.497,
+   "text": "停止模仿朗读。"
+  },
+  {
+   "start": 40.216,
+   "end": 42.816,
+   "text": "do you enjoy listening to music?"
+  },
+  {
+   "start": 43.799,
+   "end": 45.912,
+   "text": "There is an activity called。"
+  },
+  {
+   "start": 46.093,
+   "end": 49.558,
+   "text": "Beautiful Sunday at Shenzhen Con Hall."
+  },
+  {
+   "start": 50.645,
+   "end": 53.678,
+   "text": "It offers a free classical concert"
+  },
+  {
+   "start": 53.805,
+   "end": 55.899,
+   "text": "to the public every week."
+  },
+  {
+   "start": 57.075,
+   "end": 59.628,
+   "text": "Introduction to classical music"
+  },
+  {
+   "start": 59.874,
+   "end": 62.086,
+   "text": "is given at each event."
+  },
+  {
+   "start": 63.331,
+   "end": 66.778,
+   "text": "It helps people understand the music better."
+  },
+  {
+   "start": 68.078,
+   "end": 70.521,
+   "text": "If you want to enjoy the concert,"
+  },
+  {
+   "start": 70.958,
+   "end": 72.375,
+   "text": "this coming Sunday"
+  },
+  {
+   "start": 72.485,
+   "end": 74.261,
+   "text": "might be a good start."
+  },
+  {
+   "start": 126.614,
+   "end": 128.313,
+   "text": "开始录音。"
+  },
+  {
+   "start": 180.287,
+   "end": 181.967,
+   "text": "停止录音。"
+  },
+  {
+   "start": 182.769,
+   "end": 183.369,
+   "text": "2、"
+  },
+  {
+   "start": 183.694,
+   "end": 185.066,
+   "text": "信息获取"
+  },
+  {
+   "start": 186.058,
+   "end": 186.979,
+   "text": "第一节"
+  },
+  {
+   "start": 187.405,
+   "end": 188.786,
+   "text": "听选信息，"
+  },
+  {
+   "start": 190.027,
+   "end": 191.646,
+   "text": "听三段对话，"
+  },
+  {
+   "start": 192.209,
+   "end": 194.3,
+   "text": "每段播放两遍。"
+  },
+  {
+   "start": 195.493,
+   "end": 199.673,
+   "text": "各段播放前你有10秒钟的乐题时间，"
+  },
+  {
+   "start": 200.262,
+   "end": 203.277,
+   "text": "各段播放后有两个问题，"
+  },
+  {
+   "start": 204.095,
+   "end": 206.764,
+   "text": "请根据所听到的问题，"
+  },
+  {
+   "start": 207.02,
+   "end": 211.971,
+   "text": "选择正确的答案，在8秒钟内口头回答。"
+  },
+  {
+   "start": 212.926,
+   "end": 214.826,
+   "text": "听第一段对话，"
+  },
+  {
+   "start": 215.225,
+   "end": 218.371,
+   "text": "回答第1至2两个问题，"
+  },
+  {
+   "start": 218.757,
+   "end": 222.506,
+   "text": "现在你有10秒钟的阅题时间。"
+  },
+  {
+   "start": 232.665,
+   "end": 233.896,
+   "text": "Coming, El."
+  },
+  {
+   "start": 234.426,
+   "end": 235.102,
+   "text": "wow,"
+  },
+  {
+   "start": 235.257,
+   "end": 237.124,
+   "text": "what a lovely house."
+  },
+  {
+   "start": 237.64,
+   "end": 238.428,
+   "text": "Thanks,"
+  },
+  {
+   "start": 238.697,
+   "end": 240.349,
+   "text": "make yourself at home."
+  },
+  {
+   "start": 240.703,
+   "end": 242.878,
+   "text": "Can I catch you something to drink?"
+  },
+  {
+   "start": 243.183,
+   "end": 245.484,
+   "text": "A glass of juice would be fine."
+  },
+  {
+   "start": 247.289,
+   "end": 248.519,
+   "text": "Coming, El."
+  },
+  {
+   "start": 249.053,
+   "end": 249.726,
+   "text": "wow,"
+  },
+  {
+   "start": 249.881,
+   "end": 251.748,
+   "text": "what a lovely house."
+  },
+  {
+   "start": 252.264,
+   "end": 253.053,
+   "text": "Thanks,"
+  },
+  {
+   "start": 253.321,
+   "end": 254.978,
+   "text": "make yourself at home."
+  },
+  {
+   "start": 255.326,
+   "end": 257.465,
+   "text": "Can I get you something to drink?"
+  },
+  {
+   "start": 257.803,
+   "end": 260.108,
+   "text": "A glass of juice would be fine,"
+  },
+  {
+   "start": 261.495,
+   "end": 262.158,
+   "text": "1."
+  },
+  {
+   "start": 262.727,
+   "end": 266.266,
+   "text": "Where does the conversation probably take place?"
+  },
+  {
+   "start": 267.157,
+   "end": 268.842,
+   "text": "开始录音."
+  },
+  {
+   "start": 277.062,
+   "end": 278.741,
+   "text": "停止录音。"
+  },
+  {
+   "start": 280.792,
+   "end": 281.425,
+   "text": "two,"
+  },
+  {
+   "start": 282.002,
+   "end": 283.772,
+   "text": "what does the woman want"
+  },
+  {
+   "start": 284.736,
+   "end": 286.42,
+   "text": "开始录音。"
+  },
+  {
+   "start": 295.071,
+   "end": 296.751,
+   "text": "停止录音，"
+  },
+  {
+   "start": 298.142,
+   "end": 299.935,
+   "text": "听第二段对话，"
+  },
+  {
+   "start": 300.91,
+   "end": 304.097,
+   "text": "回答第3至4两个问题，"
+  },
+  {
+   "start": 304.866,
+   "end": 308.294,
+   "text": "现在你有10秒钟的阅提时间。"
+  },
+  {
+   "start": 318.958,
+   "end": 321.333,
+   "text": "I haven't seen you for a long time."
+  },
+  {
+   "start": 321.553,
+   "end": 323.034,
+   "text": "Where have you been,"
+  },
+  {
+   "start": 323.379,
+   "end": 327.249,
+   "text": "I went to New York to study English in a summer camp."
+  },
+  {
+   "start": 327.688,
+   "end": 328.94,
+   "text": "Sounds great."
+  },
+  {
+   "start": 329.193,
+   "end": 330.763,
+   "text": "When did you return"
+  },
+  {
+   "start": 330.917,
+   "end": 332.047,
+   "text": "last night"
+  },
+  {
+   "start": 332.296,
+   "end": 333.94,
+   "text": "around 11 o'clock."
+  },
+  {
+   "start": 334.325,
+   "end": 336.631,
+   "text": "No wonder you look tired."
+  },
+  {
+   "start": 338.471,
+   "end": 340.846,
+   "text": "I haven't seen you for a long time."
+  },
+  {
+   "start": 341.066,
+   "end": 342.547,
+   "text": "Where have you been,"
+  },
+  {
+   "start": 342.892,
+   "end": 346.762,
+   "text": "I went to New York to study English in a summer camp."
+  },
+  {
+   "start": 347.2,
+   "end": 348.453,
+   "text": "Sounds great."
+  },
+  {
+   "start": 348.706,
+   "end": 350.276,
+   "text": "When did you return"
+  },
+  {
+   "start": 350.43,
+   "end": 351.561,
+   "text": "Last night"
+  },
+  {
+   "start": 351.808,
+   "end": 353.453,
+   "text": "around 11 o'clock."
+  },
+  {
+   "start": 353.838,
+   "end": 356.144,
+   "text": "No wonder you look tired."
+  },
+  {
+   "start": 357.652,
+   "end": 358.34,
+   "text": "thre,"
+  },
+  {
+   "start": 358.967,
+   "end": 361.46,
+   "text": "why did the woman go to New Yorkrk"
+  },
+  {
+   "start": 362.45,
+   "end": 364.133,
+   "text": "开始录音。"
+  },
+  {
+   "start": 372.309,
+   "end": 373.988,
+   "text": "停止录音。"
+  },
+  {
+   "start": 375.921,
+   "end": 376.471,
+   "text": "4,"
+  },
+  {
+   "start": 377.164,
+   "end": 379.878,
+   "text": "when did the woman come back last night?"
+  },
+  {
+   "start": 380.794,
+   "end": 382.476,
+   "text": "开始录音."
+  },
+  {
+   "start": 390.539,
+   "end": 392.218,
+   "text": "停止录音。"
+  },
+  {
+   "start": 394.184,
+   "end": 396.253,
+   "text": "听第三段对话，"
+  },
+  {
+   "start": 396.516,
+   "end": 399.872,
+   "text": "回答第5至6两个问题。"
+  },
+  {
+   "start": 400.417,
+   "end": 404.137,
+   "text": "现在你有10秒钟的阅题时间。"
+  },
+  {
+   "start": 414.469,
+   "end": 415.884,
+   "text": "What are you looking for,"
+  },
+  {
+   "start": 416.448,
+   "end": 417.494,
+   "text": "My cap,"
+  },
+  {
+   "start": 417.797,
+   "end": 420.823,
+   "text": "It's a gift for my father. I see."
+  },
+  {
+   "start": 421.251,
+   "end": 422.417,
+   "text": "What is it like,"
+  },
+  {
+   "start": 423.009,
+   "end": 425.482,
+   "text": "It's black with a star on it."
+  },
+  {
+   "start": 425.778,
+   "end": 426.88,
+   "text": "Did you see it,"
+  },
+  {
+   "start": 427.152,
+   "end": 428.801,
+   "text": "Sorry, I didn't."
+  },
+  {
+   "start": 429.28,
+   "end": 431.684,
+   "text": "Maybe you can go to the lost and found."
+  },
+  {
+   "start": 432.043,
+   "end": 432.76,
+   "text": "Okay, our"
+  },
+  {
+   "start": 432.92,
+   "end": 434.547,
+   "text": "ll trauma lock there."
+  },
+  {
+   "start": 436.326,
+   "end": 437.741,
+   "text": "What are you looking for,"
+  },
+  {
+   "start": 438.306,
+   "end": 439.352,
+   "text": "My cap,"
+  },
+  {
+   "start": 439.657,
+   "end": 442.695,
+   "text": "It's a gift for my father. I see."
+  },
+  {
+   "start": 443.109,
+   "end": 444.275,
+   "text": "What is it like,"
+  },
+  {
+   "start": 444.867,
+   "end": 447.339,
+   "text": "It's black with a star on it."
+  },
+  {
+   "start": 447.635,
+   "end": 448.734,
+   "text": "Did you see it,"
+  },
+  {
+   "start": 448.997,
+   "end": 450.659,
+   "text": "Sorry, I didn't."
+  },
+  {
+   "start": 451.139,
+   "end": 453.542,
+   "text": "Maybe you can go to the lost and found."
+  },
+  {
+   "start": 453.901,
+   "end": 454.618,
+   "text": "Okay, I"
+  },
+  {
+   "start": 454.777,
+   "end": 456.405,
+   "text": "ll try lock there."
+  },
+  {
+   "start": 458.269,
+   "end": 458.909,
+   "text": "5,"
+  },
+  {
+   "start": 459.593,
+   "end": 461.5,
+   "text": "who gave the cap to the man"
+  },
+  {
+   "start": 462.486,
+   "end": 464.171,
+   "text": "开始录音."
+  },
+  {
+   "start": 472.151,
+   "end": 473.83,
+   "text": "停止录音。"
+  },
+  {
+   "start": 475.438,
+   "end": 476.215,
+   "text": "six,"
+  },
+  {
+   "start": 476.767,
+   "end": 478.554,
+   "text": "what color is the cap"
+  },
+  {
+   "start": 479.573,
+   "end": 481.258,
+   "text": "开始录音."
+  },
+  {
+   "start": 489.309,
+   "end": 490.988,
+   "text": "停止录音。"
+  },
+  {
+   "start": 492.832,
+   "end": 493.911,
+   "text": "第二节"
+  },
+  {
+   "start": 494.511,
+   "end": 495.776,
+   "text": "回答问题，"
+  },
+  {
+   "start": 496.73,
+   "end": 498.663,
+   "text": "听下面一段短文"
+  },
+  {
+   "start": 499.336,
+   "end": 500.803,
+   "text": "播放两遍，"
+  },
+  {
+   "start": 501.391,
+   "end": 507.425,
+   "text": "请根据所听内容回答第7到14个问题。"
+  },
+  {
+   "start": 508.334,
+   "end": 511.476,
+   "text": "当听到开始录音的信号后，"
+  },
+  {
+   "start": 511.82,
+   "end": 515.044,
+   "text": "请在8秒钟内口头回答。"
+  },
+  {
+   "start": 530.544,
+   "end": 532.595,
+   "text": "Amy's P E teacher"
+  },
+  {
+   "start": 532.755,
+   "end": 535.389,
+   "text": "is looking for a student helper."
+  },
+  {
+   "start": 536.392,
+   "end": 539.814,
+   "text": "Amy thinks she's the right person for the job"
+  },
+  {
+   "start": 540.185,
+   "end": 543.574,
+   "text": "because she has the necessary skills for it."
+  },
+  {
+   "start": 544.422,
+   "end": 546.278,
+   "text": "She's good at sports."
+  },
+  {
+   "start": 546.501,
+   "end": 549.908,
+   "text": "And likes to teach her classmates to do sports."
+  },
+  {
+   "start": 550.535,
+   "end": 551.434,
+   "text": "Besides,"
+  },
+  {
+   "start": 551.689,
+   "end": 555.038,
+   "text": "she knows how to provide basic first aid."
+  },
+  {
+   "start": 555.5,
+   "end": 557.913,
+   "text": "She learned it in a summer camp."
+  },
+  {
+   "start": 558.748,
+   "end": 562.596,
+   "text": "Everyone thinks she's patient and friendly."
+  },
+  {
+   "start": 563.364,
+   "end": 565.547,
+   "text": "They all like playing with her."
+  },
+  {
+   "start": 567.308,
+   "end": 569.363,
+   "text": "Amy's P E teacher"
+  },
+  {
+   "start": 569.519,
+   "end": 572.152,
+   "text": "is looking for a student helper."
+  },
+  {
+   "start": 573.156,
+   "end": 576.577,
+   "text": "Amy thinks she's the right person for the job"
+  },
+  {
+   "start": 576.949,
+   "end": 580.341,
+   "text": "because she has the necessary skills for it."
+  },
+  {
+   "start": 581.186,
+   "end": 583.041,
+   "text": "She's good at sports."
+  },
+  {
+   "start": 583.264,
+   "end": 586.669,
+   "text": "And likes to teach her classmates to do sports."
+  },
+  {
+   "start": 587.299,
+   "end": 588.197,
+   "text": "Besides,"
+  },
+  {
+   "start": 588.452,
+   "end": 591.802,
+   "text": "she knows how to provide basic first aid."
+  },
+  {
+   "start": 592.264,
+   "end": 594.676,
+   "text": "She learned it in a summer camp."
+  },
+  {
+   "start": 595.511,
+   "end": 599.366,
+   "text": "Everyone thinks she's patient and friendly."
+  },
+  {
+   "start": 600.128,
+   "end": 602.311,
+   "text": "They all like playing with her."
+  },
+  {
+   "start": 604.295,
+   "end": 605.155,
+   "text": "7,"
+  },
+  {
+   "start": 605.585,
+   "end": 609.505,
+   "text": "why does Amy think she's perfect for the job,"
+  },
+  {
+   "start": 610.5,
+   "end": 612.184,
+   "text": "开始录音."
+  },
+  {
+   "start": 620.281,
+   "end": 621.961,
+   "text": "停止录音。"
+  },
+  {
+   "start": 623.905,
+   "end": 624.596,
+   "text": "8,"
+  },
+  {
+   "start": 625.108,
+   "end": 628.816,
+   "text": "does she like to teach her classmates to do sports,"
+  },
+  {
+   "start": 629.791,
+   "end": 631.478,
+   "text": "开始录音."
+  },
+  {
+   "start": 639.565,
+   "end": 641.245,
+   "text": "停止录音。"
+  },
+  {
+   "start": 642.905,
+   "end": 643.803,
+   "text": "nine,"
+  },
+  {
+   "start": 644.564,
+   "end": 647.886,
+   "text": "where did she learn the basic first date"
+  },
+  {
+   "start": 648.901,
+   "end": 650.586,
+   "text": "开始录音。"
+  },
+  {
+   "start": 658.59,
+   "end": 660.269,
+   "text": "停止录音。"
+  },
+  {
+   "start": 661.873,
+   "end": 662.507,
+   "text": "ten0,"
+  },
+  {
+   "start": 662.93,
+   "end": 665.265,
+   "text": "what do people think of f"
+  },
+  {
+   "start": 666.271,
+   "end": 667.957,
+   "text": "开始录音。"
+  },
+  {
+   "start": 676.053,
+   "end": 677.732,
+   "text": "停止录音。"
+  },
+  {
+   "start": 679.838,
+   "end": 680.597,
+   "text": "3、"
+  },
+  {
+   "start": 680.986,
+   "end": 683.412,
+   "text": "短文复述及提问"
+  },
+  {
+   "start": 684.463,
+   "end": 685.42,
+   "text": "第一节"
+  },
+  {
+   "start": 685.967,
+   "end": 687.308,
+   "text": "短文复述，"
+  },
+  {
+   "start": 688.714,
+   "end": 693.396,
+   "text": "你将听到一篇mary介绍黄山的短文，"
+  },
+  {
+   "start": 694.319,
+   "end": 696.24,
+   "text": "录音播放两遍。"
+  },
+  {
+   "start": 697.356,
+   "end": 699.875,
+   "text": "请根据所听到的内容，"
+  },
+  {
+   "start": 700.394,
+   "end": 702.765,
+   "text": "依据思维导图的提示，"
+  },
+  {
+   "start": 703.166,
+   "end": 706.148,
+   "text": "在60秒内复述短文。"
+  },
+  {
+   "start": 707.015,
+   "end": 707.818,
+   "text": "现在"
+  },
+  {
+   "start": 708.094,
+   "end": 710.405,
+   "text": "你有15秒钟的时间"
+  },
+  {
+   "start": 710.544,
+   "end": 712.457,
+   "text": "阅读思维导图。"
+  },
+  {
+   "start": 713.327,
+   "end": 716.308,
+   "text": "你的复述可以这样开始。"
+  },
+  {
+   "start": 717.959,
+   "end": 722.203,
+   "text": "Mount Huangshan is a popular place of interest."
+  },
+  {
+   "start": 722.686,
+   "end": 724.736,
+   "text": "It covers an area of."
+  },
+  {
+   "start": 740.631,
+   "end": 744.856,
+   "text": "Mount Huangshan is a popular place of interest."
+  },
+  {
+   "start": 745.673,
+   "end": 751.028,
+   "text": "It covers an area of 160 square kilometersm."
+  },
+  {
+   "start": 752.046,
+   "end": 753.863,
+   "text": "It is in Anhui."
+  },
+  {
+   "start": 754.848,
+   "end": 758.576,
+   "text": "The best season to visit the mountain is summer."
+  },
+  {
+   "start": 759.42,
+   "end": 760.552,
+   "text": "It is cool."
+  },
+  {
+   "start": 761.699,
+   "end": 766.238,
+   "text": "Mount Huangshan is famous for its trees and rocks."
+  },
+  {
+   "start": 766.921,
+   "end": 769.93,
+   "text": "The clouds are also a wonder."
+  },
+  {
+   "start": 770.766,
+   "end": 775.073,
+   "text": "All the visitors are amazed by their different shapes"
+  },
+  {
+   "start": 775.779,
+   "end": 776.912,
+   "text": "every year."
+  },
+  {
+   "start": 777.244,
+   "end": 781.156,
+   "text": "Millions of hikers come to this great mountain."
+  },
+  {
+   "start": 782.878,
+   "end": 787.104,
+   "text": "Mount Huangshan is a popular place of interest."
+  },
+  {
+   "start": 787.921,
+   "end": 793.276,
+   "text": "It covers an area of 160 square kilometers."
+  },
+  {
+   "start": 794.294,
+   "end": 796.104,
+   "text": "It is in Anhui."
+  },
+  {
+   "start": 797.091,
+   "end": 800.824,
+   "text": "The best season to visit the mountain is summer."
+  },
+  {
+   "start": 801.665,
+   "end": 802.799,
+   "text": "It is cool."
+  },
+  {
+   "start": 803.949,
+   "end": 808.51,
+   "text": "Mount Huangshan is famous for its trees and rocks."
+  },
+  {
+   "start": 809.168,
+   "end": 812.178,
+   "text": "The clouds are also a wonder."
+  },
+  {
+   "start": 813.014,
+   "end": 817.32,
+   "text": "All the visitors are amazed by their different shapes"
+  },
+  {
+   "start": 818.027,
+   "end": 819.16,
+   "text": "every year."
+  },
+  {
+   "start": 819.492,
+   "end": 823.404,
+   "text": "Millions of hikers come to this great mountain."
+  },
+  {
+   "start": 883.888,
+   "end": 885.573,
+   "text": "开始录音。"
+  },
+  {
+   "start": 945.995,
+   "end": 947.675,
+   "text": "停止录音。"
+  },
+  {
+   "start": 949.517,
+   "end": 950.679,
+   "text": "第二节"
+  },
+  {
+   "start": 950.882,
+   "end": 951.818,
+   "text": "提问，"
+  },
+  {
+   "start": 952.361,
+   "end": 956.075,
+   "text": "你希望了解和短文相关的信息，"
+  },
+  {
+   "start": 956.675,
+   "end": 959.189,
+   "text": "请根据以下提示提问"
+  },
+  {
+   "start": 959.625,
+   "end": 963.044,
+   "text": "每个问题有15秒钟的准备时间和"
+  },
+  {
+   "start": 963.253,
+   "end": 965.854,
+   "text": "8秒钟的提问时间。"
+  },
+  {
+   "start": 980.876,
+   "end": 982.561,
+   "text": "开始录音。"
+  },
+  {
+   "start": 990.719,
+   "end": 992.398,
+   "text": "停止录音。"
+  },
+  {
+   "start": 1008.396,
+   "end": 1010.081,
+   "text": "开始录音。"
+  },
+  {
+   "start": 1018.199,
+   "end": 1019.878,
+   "text": "停止录音，"
+  },
+  {
+   "start": 1021.224,
+   "end": 1023.179,
+   "text": "考试到此结束，"
+  },
+  {
+   "start": 1023.331,
+   "end": 1025.658,
+   "text": "请等待答案上传。"
+  }
+ ],
+ "expected_spans": [
+  [
+   [
+    40.216,
+    74.261
+   ]
+  ],
+  [
+   [
+    262.727,
+    266.266
+   ]
+  ],
+  [
+   [
+    282.002,
+    283.772
+   ]
+  ],
+  [
+   [
+    232.665,
+    245.484
+   ],
+   [
+    247.289,
+    260.108
+   ]
+  ],
+  [
+   [
+    358.967,
+    361.46
+   ]
+  ],
+  [
+   [
+    377.164,
+    379.878
+   ]
+  ],
+  [
+   [
+    318.958,
+    336.631
+   ],
+   [
+    338.471,
+    356.144
+   ]
+  ],
+  [
+   [
+    459.593,
+    461.5
+   ]
+  ],
+  [
+   [
+    476.767,
+    478.554
+   ]
+  ],
+  [
+   [
+    414.469,
+    434.547
+   ],
+   [
+    436.326,
+    456.405
+   ]
+  ],
+  [
+   [
+    605.585,
+    609.505
+   ]
+  ],
+  [
+   [
+    625.108,
+    628.816
+   ]
+  ],
+  [
+   [
+    644.564,
+    647.886
+   ]
+  ],
+  [
+   [
+    662.93,
+    665.265
+   ]
+  ],
+  [
+   [
+    530.544,
+    565.547
+   ],
+   [
+    567.308,
+    602.311
+   ]
+  ],
+  [
+   [
+    740.631,
+    781.156
+   ],
+   [
+    782.878,
+    823.404
+   ]
+  ],
+  [
+   [
+    688.714,
+    706.148
+   ]
+  ],
+  [
+   [
+    707.015,
+    712.457
+   ]
+  ],
+  [
+   [
+    713.327,
+    724.736
+   ]
+  ]
+ ]
+}
