@@ -4,82 +4,162 @@
     {
       "item_id": "0",
       "sequence": 0,
-      "normalized_content": "Do you know our city is famous for fashion? The past month saw a big fashion show in Shenzhen. People from over forty countries came to attend it. They enjoyed the colourful show and bought a lot of Chinese products. They all said that the show was amazing. It is a great chance for Chinese fashion trade to communicate with the world."
+      "normalized_content": "Do you know our city is famous for fashion? The past month saw a big fashion show in Shenzhen. People from over forty countries came to attend it. They enjoyed the colourful show and bought a lot of Chinese products. They all said that the show was amazing. It is a great chance for Chinese fashion trade to communicate with the world.",
+      "metadata": {
+        "category": "模仿朗读-试卷正文",
+        "number": 1,
+        "question_numbers": [
+          1
+        ]
+      }
     },
     {
       "item_id": "1",
       "sequence": 1,
-      "normalized_content": "What activity does the man enjoy doing? (Hiking / Fishing / Cooking.)"
+      "normalized_content": "What activity does the man enjoy doing? (Hiking / Fishing / Cooking.)",
+      "metadata": {
+        "category": "听选信息题目",
+        "number": 1
+      }
     },
     {
       "item_id": "2",
       "sequence": 2,
-      "normalized_content": "How often does the man do the activity? (Once a month / Twice a month / Three times a month.)"
+      "normalized_content": "How often does the man do the activity? (Once a month / Twice a month / Three times a month.)",
+      "metadata": {
+        "category": "听选信息题目",
+        "number": 2
+      }
     },
     {
       "item_id": "3",
       "sequence": 3,
-      "normalized_content": "W: What do you enjoy doing in your free time?\nM: I like going hiking.\nW: How often do you do it?\nM: Usually three times a month."
+      "normalized_content": "W: What do you enjoy doing in your free time?\nM: I like going hiking.\nW: How often do you do it?\nM: Usually three times a month.",
+      "metadata": {
+        "category": "听选信息录音稿",
+        "question_numbers": [
+          1,
+          2
+        ]
+      }
     },
     {
       "item_id": "4",
       "sequence": 4,
-      "normalized_content": "Who is Mr White? (The woman's boss. / The woman's doctor / The woman's teacher.)"
+      "normalized_content": "Who is Mr White? (The woman's boss. / The woman's doctor / The woman's teacher.)",
+      "metadata": {
+        "category": "听选信息题目",
+        "number": 3
+      }
     },
     {
       "item_id": "5",
       "sequence": 5,
-      "normalized_content": "Where is Mr White from? (Britain. / Canada. / Australia.)"
+      "normalized_content": "Where is Mr White from? (Britain. / Canada. / Australia.)",
+      "metadata": {
+        "category": "听选信息题目",
+        "number": 4
+      }
     },
     {
       "item_id": "6",
       "sequence": 6,
-      "normalized_content": "M: Who is the man over there?\nW: He is my new English teacher, Mr. White.\nM: Where is he from?\nW: He is from Canada. He just moved here last week.\nM: Oh, I see."
+      "normalized_content": "M: Who is the man over there?\nW: He is my new English teacher, Mr. White.\nM: Where is he from?\nW: He is from Canada. He just moved here last week.\nM: Oh, I see.",
+      "metadata": {
+        "category": "听选信息录音稿",
+        "question_numbers": [
+          3,
+          4
+        ]
+      }
     },
     {
       "item_id": "7",
       "sequence": 7,
-      "normalized_content": "How does the man feel? (Worried. / Shocked. / Disappointed.)"
+      "normalized_content": "How does the man feel? (Worried. / Shocked. / Disappointed.)",
+      "metadata": {
+        "category": "听选信息题目",
+        "number": 5
+      }
     },
     {
       "item_id": "8",
       "sequence": 8,
-      "normalized_content": "Why does the man feel so? (Because he broke a cup. / Because he lost his watch. / Because he failed an exam.)"
+      "normalized_content": "Why does the man feel so? (Because he broke a cup. / Because he lost his watch. / Because he failed an exam.)",
+      "metadata": {
+        "category": "听选信息题目",
+        "number": 6
+      }
     },
     {
       "item_id": "9",
       "sequence": 9,
-      "normalized_content": "W: You don't look well today.\nM: I'm quite worried.\nW: Oh, why?\nM: I have lost my watch. It is a birthday gift from my mother.\nW: Take it easy. Let me help you look for it.\nM: Thank you so much."
+      "normalized_content": "W: You don't look well today.\nM: I'm quite worried.\nW: Oh, why?\nM: I have lost my watch. It is a birthday gift from my mother.\nW: Take it easy. Let me help you look for it.\nM: Thank you so much.",
+      "metadata": {
+        "category": "听选信息录音稿",
+        "question_numbers": [
+          5,
+          6
+        ]
+      }
     },
     {
       "item_id": "10",
       "sequence": 10,
-      "normalized_content": "What was the dream about?"
+      "normalized_content": "What was the dream about?",
+      "metadata": {
+        "category": "回答问题题目",
+        "number": 7
+      }
     },
     {
       "item_id": "11",
       "sequence": 11,
-      "normalized_content": "Who cooks breakfast for the speaker?"
+      "normalized_content": "Who cooks breakfast for the speaker?",
+      "metadata": {
+        "category": "回答问题题目",
+        "number": 8
+      }
     },
     {
       "item_id": "12",
       "sequence": 12,
-      "normalized_content": "Can the car drive by itself?"
+      "normalized_content": "Can the car drive by itself?",
+      "metadata": {
+        "category": "回答问题题目",
+        "number": 9
+      }
     },
     {
       "item_id": "13",
       "sequence": 13,
-      "normalized_content": "Why can the managers communicate well?"
+      "normalized_content": "Why can the managers communicate well?",
+      "metadata": {
+        "category": "回答问题题目",
+        "number": 10
+      }
     },
     {
       "item_id": "14",
       "sequence": 14,
-      "normalized_content": "One night, I had a dream. It was about a future working day. In the dream, I become a manager. At 7:00 a.m. A robot cooks breakfast for me. Then I go to work by car. The car drives by itself. In the afternoon, I have an online meeting with managers from foreign countries. We communicate well because AI translates different languages. After work, I put on my VR glasses to travel in space."
+      "normalized_content": "One night, I had a dream. It was about a future working day. In the dream, I become a manager. At 7:00 a.m. A robot cooks breakfast for me. Then I go to work by car. The car drives by itself. In the afternoon, I have an online meeting with managers from foreign countries. We communicate well because AI translates different languages. After work, I put on my VR glasses to travel in space.",
+      "metadata": {
+        "category": "回答问题录音稿",
+        "question_numbers": [
+          7,
+          8,
+          9,
+          10
+        ]
+      }
     },
     {
       "item_id": "15",
       "sequence": 15,
-      "normalized_content": "I'm Peter. I visited Yangshuo last August. I went there to enjoy its great views. There were many exciting activities to choose from. First, I took a boat down the river. The water was green and clear. Next, I rode a bike in the countryside. The Blue Mountains looked cool. At the end of the day, I had fish for dinner. What an unforgettable trip!"
+      "normalized_content": "I'm Peter. I visited Yangshuo last August. I went there to enjoy its great views. There were many exciting activities to choose from. First, I took a boat down the river. The water was green and clear. Next, I rode a bike in the countryside. The Blue Mountains looked cool. At the end of the day, I had fish for dinner. What an unforgettable trip!",
+      "metadata": {
+        "category": "信息转述录音稿"
+      }
     }
   ],
   "speech": [

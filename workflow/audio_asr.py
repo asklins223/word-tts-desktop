@@ -641,19 +641,6 @@ def _audio_duration_and_speech_spans(path: str | os.PathLike[str]) -> tuple[floa
     return duration, spans
 
 
-def _is_announcement_row(row: Mapping[str, Any]) -> bool:
-    """Return whether one recognized row is a spoken section announcement.
-
-    Exam recordings announce each section and each question's recording
-    window ("开始录音" / "停止录音"); a run that ends right before such a row
-    is a complete utterance even when ASR mishears its last word.
-    """
-
-    if row.get("error"):
-        return True
-    return sum("\u4e00" <= char <= "\u9fff" for char in str(row.get("text") or "")) >= 4
-
-
 def _is_english_transcript(value: str) -> bool:
     compact = normalize_recognition_text(value)
     latin = sum(char.isascii() and char.isalpha() for char in compact)
@@ -663,6 +650,112 @@ def _is_english_transcript(value: str) -> bool:
     return latin >= 1 and latin / max(1, letters) >= 0.60
 
 
+_ORDINAL_BONUS = 1.15
+_ORDINAL_MISMATCH_PENALTY = 0.72
+
+
+def _item_facts(item: Mapping[str, Any]) -> tuple[bool, int | None, bool]:
+    """Return ``(is_question, question_number, is_script)`` for one item."""
+
+    metadata: Mapping[str, Any] = {}
+    raw_metadata = item.get("metadata_json")
+    if isinstance(raw_metadata, str) and raw_metadata.strip():
+        try:
+            parsed = json.loads(raw_metadata)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, Mapping):
+            metadata = parsed
+    elif isinstance(item.get("metadata"), Mapping):
+        metadata = item["metadata"]
+    category = str(metadata.get("category") or item.get("item_type") or "")
+    raw_number = metadata.get("number")
+    if raw_number is None:
+        raw_number = item.get("number")
+    try:
+        number = int(raw_number)
+    except (TypeError, ValueError):
+        number = None
+    is_question = (
+        number is not None
+        and "题目" in category
+        and "指导" not in category
+        and "录音稿" not in category
+    )
+    raw_numbers = metadata.get("question_numbers")
+    is_script = isinstance(raw_numbers, (list, tuple, set)) and bool(raw_numbers)
+    return is_question, (number if is_question else None), is_script
+
+
+def _structural_weight(is_question: bool, number: int | None, prefix: int | None) -> float:
+    """Prefer speech that follows the question's own spoken number."""
+
+    if not is_question or number is None or prefix is None:
+        return 1.0
+    return _ORDINAL_BONUS if prefix == number else _ORDINAL_MISMATCH_PENALTY
+
+
+def _window_ordinal(
+    rows: Sequence[Any],
+    start_row_index: int,
+) -> tuple[int, int] | None:
+    """Return the question number whose prompt directly precedes a window.
+
+    Only a prompt with nothing but markers (announcements/errors/other
+    prompts) between it and the window start associates the window with that
+    number. A window deep inside a later passage must not inherit the last
+    question number from minutes earlier: it is not that question's speech.
+    """
+
+    for index in range(start_row_index - 1, -1, -1):
+        facts = rows[index]
+        if facts.ordinal is not None:
+            between = rows[index + 1:start_row_index]
+            if all(item.is_announcement or item.error or item.ordinal is not None for item in between):
+                return index, int(facts.ordinal)
+            return None
+        if not (facts.is_announcement or facts.error):
+            # The window starts inside running content; the nearest prompt is
+            # not adjacent to it, so it cannot prove the window's number.
+            return None
+    return None
+
+
+def _spans_overlap(left: tuple[float, float], right: tuple[float, float]) -> bool:
+    return min(left[1], right[1]) - max(left[0], right[0]) > 0.01
+
+
+def _ordinal_anchor_window(
+    rows: Sequence[Any],
+    recognized: Sequence[Mapping[str, Any]],
+    spans: Sequence[tuple[float, float]],
+    ordinal_row: int,
+) -> tuple[list[int], float, float] | None:
+    """Return the speech rows that directly follow one spoken question number."""
+
+    window: list[int] = []
+    for index in range(ordinal_row + 1, len(rows)):
+        facts = rows[index]
+        if facts.ordinal:
+            break
+        if facts.error or facts.is_announcement:
+            break
+        text = str(recognized[index].get("text") or "").strip()
+        if not normalize_recognition_text(text):
+            break
+        if window:
+            if spans[index][0] - spans[window[-1]][1] > 3.2:
+                break
+            if spans[index][1] - spans[window[0]][0] > 120:
+                break
+        window.append(index)
+        if len(window) >= 60:
+            break
+    if not window:
+        return None
+    return window, spans[window[0]][0], spans[window[-1]][1]
+
+
 def _continuous_audio_matches(
     recognized: Sequence[Mapping[str, Any]],
     spans: Sequence[tuple[float, float]],
@@ -670,29 +763,51 @@ def _continuous_audio_matches(
     *,
     progress_callback: Callable[[int, int], Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Find complete spoken items and assign each speech range only once."""
+    """Align one continuous exam recording with the document's items.
+
+    Text similarity is evidence, not the only judge:
+
+    1. every spoken question number ("ten") anchors the speech after it to the
+       question with that number, even when ASR mangles the question text;
+    2. announcements and instruction rows delimit sections and clip ends;
+    3. text matching fills the remaining items (passages, dialogues, guides).
+    """
+
+    from .audio_structure import detect_rows, latest_section_hint
+
+    rows = detect_rows(recognized)
+    item_facts = {str(item.get("item_id") or ""): _item_facts(item) for item in items}
     includes_chinese = any(
         re.search(r"[\u4e00-\u9fff]", str(item.get("normalized_content") or ""))
         for item in items
     )
+
+    # Spoken question numbers and section announcements are markers, never
+    # clip content; a number prompt must not become part of the question clip.
     runs: list[list[tuple[int, dict[str, Any]]]] = []
     interrupted = True
     for row_index, (row, span) in enumerate(zip(recognized, spans)):
+        facts = rows[row_index]
         text = str(row.get("text") or "").strip()
         normalized = normalize_recognition_text(text)
-        has_chinese = bool(re.search(r"[\u4e00-\u9fff]", text))
-        short_mixed_name = has_chinese and len(re.findall(r"[\u4e00-\u9fff]", text)) <= 3 and any(
+        short_mixed_name = facts.is_chinese and len(re.findall(r"[\u4e00-\u9fff]", text)) <= 3 and any(
             0 <= neighbour < len(recognized)
             and _is_english_transcript(str(recognized[neighbour].get("text") or ""))
             and max(0, span[0] - spans[neighbour][1], spans[neighbour][0] - span[1]) <= ASR_CONTEXT_GAP_SECONDS
             for neighbour in (row_index - 1, row_index + 1)
         )
-        if row.get("error") or not normalized or not (
-            _is_english_transcript(text) or (includes_chinese and has_chinese) or short_mixed_name
-        ):
-            # Announcements divide sections, even when the pauses around
-            # them are short. A spoken question number does not divide a run.
-            if _is_announcement_row(row):
+        is_content = bool(
+            normalized
+            and not facts.error
+            and not facts.ordinal
+            and (
+                _is_english_transcript(text)
+                or (includes_chinese and facts.is_chinese)
+                or short_mixed_name
+            )
+        )
+        if not is_content:
+            if facts.error or (not includes_chinese and facts.is_chinese):
                 interrupted = True
             continue
         segment = {"start": span[0], "end": span[1], "text": text, "normalized": normalized}
@@ -702,22 +817,29 @@ def _continuous_audio_matches(
             runs[-1].append((row_index, segment))
         interrupted = False
 
-    targets = [
-        (item, text_profile(variant))
-        for item in items
-        for variant in _spoken_text_variants(item.get("normalized_content"))
-    ]
-    max_length = max((max(len(target.text), len(target.phonetic)) for _item, target in targets), default=0)
+    targets: list[tuple[Mapping[str, Any], Any, bool, int | None]] = []
+    for item in items:
+        item_id = str(item.get("item_id") or "")
+        is_question, number, _is_script = item_facts[item_id]
+        for variant in _spoken_text_variants(item.get("normalized_content")):
+            targets.append((item, text_profile(variant), is_question, number))
+    max_length = max(
+        (max(len(target.text), len(target.phonetic)) for _item, target, _question, _number in targets),
+        default=0,
+    )
 
     occurrences: list[dict[str, Any]] = []
     total_windows = sum(len(run) for run in runs)
     completed_windows = 0
     for run in runs:
         for start_index in range(len(run)):
+            start_row_index = run[start_index][0]
+            prefix_ordinal = _window_ordinal(rows, start_row_index)
+            prefix_number = prefix_ordinal[1] if prefix_ordinal else None
             text_parts: list[str] = []
             transcript_parts: list[str] = []
             for end_index in range(start_index, min(len(run), start_index + 120)):
-                _row_index, segment = run[end_index]
+                row_index, segment = run[end_index]
                 if segment["end"] - run[start_index][1]["start"] > 180:
                     break
                 text_parts.append(segment["normalized"])
@@ -729,30 +851,37 @@ def _continuous_audio_matches(
                 if max(len(observed.text), len(observed.phonetic)) < 6:
                     continue
                 closing_boundary = (
-                    _row_index + 1 < len(recognized)
-                    and not recognized[_row_index + 1].get("error")
-                    and _is_announcement_row(recognized[_row_index + 1])
+                    row_index + 1 < len(recognized)
+                    and not recognized[row_index + 1].get("error")
+                    and rows[row_index + 1].is_announcement
                 )
                 ranked: dict[str, dict[str, Any]] = {}
-                for item, target in targets:
+                for item, target, is_question, number in targets:
                     match = compare_transcript(target, observed, closing_boundary=closing_boundary)
                     score = match.score
                     if not score or not match.compatible:
                         continue
+                    weight = _structural_weight(is_question, number, prefix_number)
+                    effective = score * weight
                     item_id = str(item.get("item_id") or "")
                     previous = ranked.get(item_id)
-                    if previous is None or score > previous["score"]:
+                    if previous is None or effective > previous["effective_score"]:
                         ranked[item_id] = {
                             "item_id": item_id,
                             "sequence": int(item.get("sequence") or 0),
                             "score": round(score, 4),
+                            "effective_score": effective,
+                            "weight": weight,
                             "text": str(item.get("normalized_content") or "")[:180],
                             "coverage": match.coverage,
                             "complete": match.complete,
                             "match_method": match.method,
                             "target_length": len(target.text),
                         }
-                candidates = sorted(ranked.values(), key=lambda entry: (-entry["score"], entry["sequence"]))
+                candidates = sorted(
+                    ranked.values(),
+                    key=lambda entry: (-entry["effective_score"], entry["sequence"]),
+                )
                 if not candidates or not candidates[0]["complete"]:
                     continue
                 top = candidates[0]
@@ -764,6 +893,8 @@ def _continuous_audio_matches(
                 occurrences.append({
                     "start": run[start_index][1]["start"],
                     "end": segment["end"],
+                    "start_row": start_row_index,
+                    "ordinal_row": prefix_ordinal[0] if prefix_ordinal else None,
                     "transcript": " ".join(transcript_parts),
                     "candidates": [
                         {key: candidate[key] for key in ("item_id", "sequence", "score", "text")}
@@ -771,7 +902,7 @@ def _continuous_audio_matches(
                     ],
                     "top_item_id": top["item_id"],
                     "score": top["score"],
-                    "adjusted_score": top["score"] * top["target_length"] ** 0.5,
+                    "adjusted_score": top["effective_score"] * top["target_length"] ** 0.5,
                     "margin": margin,
                     "coverage": top["coverage"],
                     "match_method": top["match_method"],
@@ -780,20 +911,142 @@ def _continuous_audio_matches(
             if callable(progress_callback):
                 progress_callback(completed_windows, total_windows)
 
-    # Longer complete material owns its speech before a short question can
-    # claim a similar sentence inside it. Whole-content scores distinguish a
-    # complete reading from a window that spills into the next repetition.
+    # Long, complete material owns its speech first. A question that only
+    # partially matches must not steal a sentence from a longer item.
     occurrences.sort(key=lambda row: (-row["adjusted_score"], -row["score"], -row["coverage"], row["end"] - row["start"], row["start"]))
     selected: list[dict[str, Any]] = []
     for occurrence in occurrences:
-        duplicate = False
-        for current in selected:
-            overlap = max(0.0, min(occurrence["end"], current["end"]) - max(occurrence["start"], current["start"]))
-            if overlap > 0.01:
-                duplicate = True
-                break
-        if not duplicate:
-            selected.append(occurrence)
+        if any(
+            _spans_overlap(
+                (occurrence["start"], occurrence["end"]),
+                (current["start"], current["end"]),
+            )
+            for current in selected
+        ):
+            continue
+        selected.append(occurrence)
+
+    matched_ids = {str(row["top_item_id"]) for row in selected}
+    consumed_ordinals: set[int] = set()
+    for row in selected:
+        item_id = str(row["top_item_id"])
+        is_question, number, _is_script = item_facts.get(item_id, (False, None, False))
+        if not is_question or number is None:
+            continue
+        preview = _window_ordinal(rows, int(row.get("start_row") or 0))
+        if preview is not None and preview[1] == number:
+            consumed_ordinals.add(preview[0])
+
+    # Structure fallback: a numbered question is read right after its spoken
+    # number. If text matching missed it, the position after that number is
+    # the authoritative evidence, even when ASR mangled the final word.
+    for item in items:
+        item_id = str(item.get("item_id") or "")
+        if item_id in matched_ids:
+            continue
+        is_question, number, _is_script = item_facts[item_id]
+        if not is_question or number is None:
+            continue
+        variant_profiles = [text_profile(variant) for variant in _spoken_text_variants(item.get("normalized_content"))]
+        if not variant_profiles:
+            continue
+        target_length = max(max(len(profile.text), len(profile.phonetic)) for profile in variant_profiles)
+        chosen: tuple[int, list[int], float, float, str, Any] | None = None
+        for facts in rows:
+            if facts.ordinal != number or facts.row_index in consumed_ordinals:
+                continue
+            hint = latest_section_hint(rows, facts.row_index)
+            if (
+                hint is not None
+                and hint.section_kind in {"listening_selection", "listening_questions"}
+                and hint.section_numbers
+                and number not in hint.section_numbers
+            ):
+                continue
+            window = _ordinal_anchor_window(rows, recognized, spans, facts.row_index)
+            if window is None:
+                continue
+            window_rows, start, end = window
+            if any(_spans_overlap((start, end), (row["start"], row["end"])) for row in selected):
+                continue
+            transcript = " ".join(str(recognized[index].get("text") or "") for index in window_rows)
+            observed = text_profile(transcript)
+            observed_length = max(len(observed.text), len(observed.phonetic))
+            if observed_length < 6 or not 0.35 <= observed_length / max(1, target_length) <= 1.8:
+                continue
+            chosen = (facts.row_index, window_rows, start, end, transcript, observed)
+            break
+        if chosen is None:
+            continue
+        ordinal_row, window_rows, start, end, transcript, observed = chosen
+        ranked = _item_candidates(transcript, items)
+        own_index = next(
+            (index for index, entry in enumerate(ranked) if str(entry["item_id"]) == item_id),
+            None,
+        )
+        match = compare_transcript(text_profile(max(_spoken_text_variants(item.get("normalized_content")), key=len)), observed)
+        if ranked and own_index == 0:
+            score = float(ranked[0]["score"])
+            second = float(ranked[1]["score"]) if len(ranked) > 1 else 0.0
+            method = str(ranked[0].get("match_method") or "edit_distance")
+        else:
+            score = match.score
+            second = float(ranked[0]["score"]) if ranked else 0.0
+            method = match.method
+        selected.append({
+            "start": start,
+            "end": end,
+            "start_row": window_rows[0],
+            "ordinal_row": ordinal_row,
+            "structural_anchor": True,
+            "transcript": transcript,
+            "candidates": [
+                {
+                    "item_id": str(entry["item_id"]),
+                    "sequence": int(entry["sequence"]),
+                    "score": float(entry["score"]),
+                    "text": str(entry["text"])[:180],
+                }
+                for entry in ranked[:5]
+            ],
+            "top_item_id": item_id,
+            "score": round(score, 4),
+            "adjusted_score": score * max(1, target_length) ** 0.5,
+            "margin": score - second,
+            "coverage": match.coverage,
+            "match_method": method,
+        })
+        matched_ids.add(item_id)
+        consumed_ordinals.add(ordinal_row)
+
+    # A clip that is a repeat playback can be wrongly shared with a neighbour.
+    # If it sits under a still-missing question number, give it to that
+    # question; the current owner keeps its other playback.
+    for item in items:
+        item_id = str(item.get("item_id") or "")
+        if item_id in matched_ids:
+            continue
+        is_question, number, _is_script = item_facts[item_id]
+        if not is_question or number is None:
+            continue
+        for index, occurrence in enumerate(list(selected)):
+            owner = str(occurrence["top_item_id"])
+            if owner == item_id:
+                continue
+            if sum(1 for row in selected if str(row["top_item_id"]) == owner) <= 1:
+                continue
+            ordinal_row_index = occurrence.get("ordinal_row")
+            if ordinal_row_index is None:
+                continue
+            if rows[int(ordinal_row_index)].ordinal != number:
+                continue
+            replacement = dict(occurrence)
+            replacement["top_item_id"] = item_id
+            replacement["structural_anchor"] = True
+            selected[index] = replacement
+            matched_ids.add(item_id)
+            break
+
     selected.sort(key=lambda row: (row["start"], row["end"]))
     return selected
 
@@ -1500,7 +1753,18 @@ class AudioImportCoordinator:
                         if previous is None or candidate["score"] > previous["score"]:
                             candidate_map[str(candidate["item_id"])] = dict(candidate)
                 candidates = sorted(candidate_map.values(), key=lambda row: (-row["score"], row["sequence"]))[:5]
-                confident = all(row["score"] >= 0.82 and row["margin"] >= 0.075 for row in group)
+                # A structural anchor (the question's own spoken number) is
+                # authoritative even when ASR mangles the text; accept a lower
+                # text score, but a missing/garbage transcript still goes to
+                # manual review because its score stays far below.
+                confident = all(
+                    (
+                        row["score"] >= 0.82
+                        or (row.get("structural_anchor") and row["score"] >= 0.60)
+                    )
+                    and row["margin"] >= 0.075
+                    for row in group
+                )
                 results.append({
                     "file_index": file_index,
                     "file_name": filename,

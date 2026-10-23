@@ -4,97 +4,186 @@
   {
    "item_id": "item-0",
    "sequence": 0,
-   "normalized_content": "Do you enjoy listening to music? There is an activity called \"Beautiful Sunday\" at Shenzhen Concert Hall. It offers a free classical concert to the public every week. The introduction to classical music is given at each event. It helps people understand the music better. If you want to enjoy the concert, this coming Sunday might be a good start."
+   "normalized_content": "Do you enjoy listening to music? There is an activity called \"Beautiful Sunday\" at Shenzhen Concert Hall. It offers a free classical concert to the public every week. The introduction to classical music is given at each event. It helps people understand the music better. If you want to enjoy the concert, this coming Sunday might be a good start.",
+   "metadata": {
+    "category": "模仿朗读-试卷正文",
+    "number": 1,
+    "question_numbers": [
+     1
+    ]
+   }
   },
   {
    "item_id": "item-1",
    "sequence": 1,
-   "normalized_content": "Where does the conversation probably take place?"
+   "normalized_content": "Where does the conversation probably take place?",
+   "metadata": {
+    "category": "听选信息题目",
+    "number": 1
+   }
   },
   {
    "item_id": "item-2",
    "sequence": 2,
-   "normalized_content": "What does the woman want?"
+   "normalized_content": "What does the woman want?",
+   "metadata": {
+    "category": "听选信息题目",
+    "number": 2
+   }
   },
   {
    "item_id": "item-3",
    "sequence": 3,
-   "normalized_content": "M: Come in, Anne.\nW: Wow. What a lovely house!\nM: Thanks. Make yourself at home. Can I get you something to drink?\nW: A glass of juice would be fine."
+   "normalized_content": "M: Come in, Anne.\nW: Wow. What a lovely house!\nM: Thanks. Make yourself at home. Can I get you something to drink?\nW: A glass of juice would be fine.",
+   "metadata": {
+    "category": "听选信息录音稿",
+    "question_numbers": [
+     1,
+     2
+    ]
+   }
   },
   {
    "item_id": "item-4",
    "sequence": 4,
-   "normalized_content": "Why did the woman go to New York?"
+   "normalized_content": "Why did the woman go to New York?",
+   "metadata": {
+    "category": "听选信息题目",
+    "number": 3
+   }
   },
   {
    "item_id": "item-5",
    "sequence": 5,
-   "normalized_content": "When did the woman come back last night?"
+   "normalized_content": "When did the woman come back last night?",
+   "metadata": {
+    "category": "听选信息题目",
+    "number": 4
+   }
   },
   {
    "item_id": "item-6",
    "sequence": 6,
-   "normalized_content": "M: I haven't seen you for a long time. Where have you been?\nW: I went to New York to study English in a summer camp.\nM: Sounds great. When did you return?\nW: Last night, around eleven o'clock.\nM: No wonder you look tired."
+   "normalized_content": "M: I haven't seen you for a long time. Where have you been?\nW: I went to New York to study English in a summer camp.\nM: Sounds great. When did you return?\nW: Last night, around eleven o'clock.\nM: No wonder you look tired.",
+   "metadata": {
+    "category": "听选信息录音稿",
+    "question_numbers": [
+     3,
+     4
+    ]
+   }
   },
   {
    "item_id": "item-7",
    "sequence": 7,
-   "normalized_content": "Who gave the cap to the man?"
+   "normalized_content": "Who gave the cap to the man?",
+   "metadata": {
+    "category": "听选信息题目",
+    "number": 5
+   }
   },
   {
    "item_id": "item-8",
    "sequence": 8,
-   "normalized_content": "What colour is the cap?"
+   "normalized_content": "What colour is the cap?",
+   "metadata": {
+    "category": "听选信息题目",
+    "number": 6
+   }
   },
   {
    "item_id": "item-9",
    "sequence": 9,
-   "normalized_content": "W: What are you looking for?\nM: My cap. It's a gift from my father.\nW: I see. What is it like?\nM: It's black with a star on it. Did you see it?\nW: Sorry, I didn't. Maybe you can go to the lost and found.\nM: Okay. I'll try my luck there."
+   "normalized_content": "W: What are you looking for?\nM: My cap. It's a gift from my father.\nW: I see. What is it like?\nM: It's black with a star on it. Did you see it?\nW: Sorry, I didn't. Maybe you can go to the lost and found.\nM: Okay. I'll try my luck there.",
+   "metadata": {
+    "category": "听选信息录音稿",
+    "question_numbers": [
+     5,
+     6
+    ]
+   }
   },
   {
    "item_id": "item-10",
    "sequence": 10,
-   "normalized_content": "Why does Amy think she is perfect for the job?"
+   "normalized_content": "Why does Amy think she is perfect for the job?",
+   "metadata": {
+    "category": "回答问题题目",
+    "number": 7
+   }
   },
   {
    "item_id": "item-11",
    "sequence": 11,
-   "normalized_content": "Does she like to teach her classmates to do sports?"
+   "normalized_content": "Does she like to teach her classmates to do sports?",
+   "metadata": {
+    "category": "回答问题题目",
+    "number": 8
+   }
   },
   {
    "item_id": "item-12",
    "sequence": 12,
-   "normalized_content": "Where did she learn the basic first aid?"
+   "normalized_content": "Where did she learn the basic first aid?",
+   "metadata": {
+    "category": "回答问题题目",
+    "number": 9
+   }
   },
   {
    "item_id": "item-13",
    "sequence": 13,
-   "normalized_content": "What do people think of Amy?"
+   "normalized_content": "What do people think of Amy?",
+   "metadata": {
+    "category": "回答问题题目",
+    "number": 10
+   }
   },
   {
    "item_id": "item-14",
    "sequence": 14,
-   "normalized_content": "Amy's PE teacher is looking for a student helper. Amy thinks she is the right person for the job because she has the necessary skills for it. She is good at sports and likes to teach her classmates to do sports. Besides, she knows how to provide basic first aid. She learned it in a summer camp. Everyone thinks she is patient and friendly. They all like playing with her."
+   "normalized_content": "Amy's PE teacher is looking for a student helper. Amy thinks she is the right person for the job because she has the necessary skills for it. She is good at sports and likes to teach her classmates to do sports. Besides, she knows how to provide basic first aid. She learned it in a summer camp. Everyone thinks she is patient and friendly. They all like playing with her.",
+   "metadata": {
+    "category": "回答问题录音稿",
+    "question_numbers": [
+     7,
+     8,
+     9,
+     10
+    ]
+   }
   },
   {
    "item_id": "item-15",
    "sequence": 15,
-   "normalized_content": "Mount Huangshan is a popular place of interest. It covers an area of 160 km2. It is in Anhui. The best season to visit the mountain is summer. It is cool. Mount Huangshan is famous for its trees and rocks. The clouds are also a wonder. All the visitors are amazed by their different shapes. Every year, millions of hikers come to this great mountain."
+   "normalized_content": "Mount Huangshan is a popular place of interest. It covers an area of 160 km2. It is in Anhui. The best season to visit the mountain is summer. It is cool. Mount Huangshan is famous for its trees and rocks. The clouds are also a wonder. All the visitors are amazed by their different shapes. Every year, millions of hikers come to this great mountain.",
+   "metadata": {
+    "category": "信息转述录音稿"
+   }
   },
   {
    "item_id": "item-16",
    "sequence": 16,
-   "normalized_content": "你将听到一篇Mary介绍黄山的短文，录音播放两遍。请根据所听到的内容，依据思维导图的提示，在60秒内复述短文。"
+   "normalized_content": "你将听到一篇Mary介绍黄山的短文，录音播放两遍。请根据所听到的内容，依据思维导图的提示，在60秒内复述短文。",
+   "metadata": {
+    "category": "信息转述题目指导文字"
+   }
   },
   {
    "item_id": "item-17",
    "sequence": 17,
-   "normalized_content": "现在你有15秒钟的时间阅读思维导图。"
+   "normalized_content": "现在你有15秒钟的时间阅读思维导图。",
+   "metadata": {
+    "category": "信息转述阅图指导文字"
+   }
   },
   {
    "item_id": "item-18",
    "sequence": 18,
-   "normalized_content": "你的复述可以这样开始：Mount Huangshan is a popular place of interest. It covers an area of ..."
+   "normalized_content": "你的复述可以这样开始：Mount Huangshan is a popular place of interest. It covers an area of ...",
+   "metadata": {
+    "category": "信息转述题干"
+   }
   }
  ],
  "speech": [

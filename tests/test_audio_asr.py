@@ -406,6 +406,69 @@ class AudioImportContinuousTests(unittest.TestCase):
 
         self.assertEqual(occurrences, [])
 
+    @staticmethod
+    def _set_two_fixture() -> dict:
+        return json.loads(
+            (Path(__file__).parent / "fixtures" / "audio_asr_exam_shenzhen_2024_set2.json").read_text(encoding="utf-8")
+        )
+
+    def _analyze_set_two(self, mutate) -> dict:
+        fixture = self._set_two_fixture()
+        transcripts = [entry["text"] for entry in fixture["speech"]]
+        mutate(transcripts)
+        result, _batch = self._analyze(
+            fixture["items"],
+            [(entry["start"], entry["end"]) for entry in fixture["speech"]],
+            transcripts,
+        )
+        return result
+
+    def test_spoken_number_anchor_keeps_a_question_with_a_broken_transcript(self) -> None:
+        result = self._analyze_set_two(lambda transcripts: transcripts.__setitem__(160, "the weather is very nice today"))
+
+        self.assertNotIn("item-13", result["missing_item_ids"])
+        row = next(
+            row for row in result["files"]
+            if row["source_spans"] == [{"start_seconds": 662.93, "end_seconds": 665.265}]
+        )
+        self.assertIsNone(row["suggested_item_id"])
+        self.assertEqual(row["match_status"], "needs_review")
+        self.assertFalse(result["can_commit"])
+
+    def test_without_number_metadata_a_broken_question_is_still_missing(self) -> None:
+        fixture = self._set_two_fixture()
+        transcripts = [entry["text"] for entry in fixture["speech"]]
+        transcripts[160] = "the weather is very nice today"
+        items = [
+            {"item_id": item["item_id"], "sequence": item["sequence"], "normalized_content": item["normalized_content"]}
+            for item in fixture["items"]
+        ]
+        result, _batch = self._analyze(
+            items,
+            [(entry["start"], entry["end"]) for entry in fixture["speech"]],
+            transcripts,
+        )
+
+        self.assertIn("item-13", result["missing_item_ids"])
+
+    def test_number_anchor_with_a_partial_transcript_is_auto_bound(self) -> None:
+        result = self._analyze_set_two(lambda transcripts: transcripts.__setitem__(160, "what do you think of amy"))
+
+        row = next(row for row in result["files"] if row["suggested_item_id"] == "item-13")
+        self.assertEqual(row["source_spans"], [{"start_seconds": 662.93, "end_seconds": 665.265}])
+        self.assertEqual(result["missing_item_ids"], [])
+        self.assertTrue(result["can_commit"])
+
+    def test_missing_question_audio_does_not_steal_a_repeated_passage(self) -> None:
+        # The Q10 row has no transcript at all: its audio position cannot be
+        # verified, so it must stay missing. In particular it must not take
+        # one of the retelling passage's two playbacks, which sit far later.
+        result = self._analyze_set_two(lambda transcripts: transcripts.__setitem__(160, ""))
+
+        self.assertIn("item-13", result["missing_item_ids"])
+        retelling = next(row for row in result["files"] if row["suggested_item_id"] == "item-15")
+        self.assertEqual(len(retelling["source_spans"]), 2)
+
     def test_real_shenzhen_2024_set_two_recovers_the_question_and_retelling_clips(self) -> None:
         fixture = json.loads(
             (Path(__file__).parent / "fixtures" / "audio_asr_exam_shenzhen_2024_set2.json").read_text(encoding="utf-8")
