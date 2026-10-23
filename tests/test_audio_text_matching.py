@@ -63,6 +63,17 @@ def test_area_unit_written_with_an_exponent_matches_the_spoken_unit():
     assert match.score >= 0.99
 
 
+def test_area_unit_followed_by_chinese_text_still_matches_the_spoken_unit():
+    source = text_profile("面积160 km2的原因")
+    observed = text_profile("面积160 square kilometers的原因")
+
+    match = compare_transcript(source, observed)
+
+    assert source.numbers == ("160",)
+    assert match.compatible
+    assert match.complete
+
+
 def test_short_item_tail_mishearing_is_complete_at_an_announcement_boundary():
     source = text_profile("What do people think of Amy?")
     observed = text_profile("what do people think of f")

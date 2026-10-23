@@ -72,7 +72,7 @@ _AREA_UNIT_WORDS = {
     "km": "square kilometers", "cm": "square centimeters", "mm": "square millimeters",
     "dm": "square decimeters", "m": "square meters",
 }
-_AREA_UNIT_RE = re.compile(r"(?i)(?<![a-z])(km|cm|mm|dm|m)\s*2\b")
+_AREA_UNIT_RE = re.compile(r"(?i)(?<![a-z])(km|cm|mm|dm|m)\s*2(?![\da-z])")
 # A short item is read as one utterance, so losing its last word is no more
 # than a tenth of its content. Longer passages may lose a whole ending
 # sentence while keeping most of the text, so they must stay strict.

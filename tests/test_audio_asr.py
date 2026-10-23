@@ -370,6 +370,29 @@ class AudioImportContinuousTests(unittest.TestCase):
 
         self.assertEqual(occurrences, [])
 
+    def test_recognition_error_after_a_question_is_not_a_spoken_ending(self) -> None:
+        items = [{"item_id": "q10", "sequence": 0, "normalized_content": "What do people think of Amy?"}]
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": "what do people think of"}, {"text": "", "error": "decode failed"}],
+            [(1, 3), (3.5, 5)],
+            items,
+        )
+
+        self.assertEqual(occurrences, [])
+
+    def test_item_over_the_short_threshold_keeps_the_strict_ending(self) -> None:
+        body = (
+            "The weather is sunny today and the class will visit the park after lunch. "
+            "We will go to the park and have a picnic with our teachers and friends. See you tomorrow."
+        )
+        spoken = body.rsplit(" See you", 1)[0]
+        items = [{"item_id": "item", "sequence": 0, "normalized_content": body}]
+        occurrences = audio_asr._continuous_audio_matches(
+            [{"text": spoken}, {"text": "开始录音。"}], [(1, 40), (41, 42)], items,
+        )
+
+        self.assertEqual(occurrences, [])
+
     def test_long_passage_missing_its_ending_is_not_completed_by_an_announcement(self) -> None:
         body = (
             "One night, I had a dream. A robot cooks breakfast for me. I go to work by car. "
@@ -395,7 +418,10 @@ class AudioImportContinuousTests(unittest.TestCase):
 
         self.assertTrue(result["can_commit"])
         self.assertEqual(result["required_item_count"], 19)
+        self.assertEqual(result["matched_item_count"], 19)
         self.assertEqual(result["missing_item_ids"], [])
+        chronological = sorted(span for clip in self.cut_spans for span in clip)
+        self.assertTrue(all(left[1] <= right[0] for left, right in zip(chronological, chronological[1:])))
         spans_by_item = {
             row["suggested_item_id"]: [
                 (span["start_seconds"], span["end_seconds"]) for span in row["source_spans"]

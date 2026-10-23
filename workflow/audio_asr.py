@@ -730,6 +730,7 @@ def _continuous_audio_matches(
                     continue
                 closing_boundary = (
                     _row_index + 1 < len(recognized)
+                    and not recognized[_row_index + 1].get("error")
                     and _is_announcement_row(recognized[_row_index + 1])
                 )
                 ranked: dict[str, dict[str, Any]] = {}
