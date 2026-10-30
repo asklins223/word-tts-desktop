@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from . import pacing
+from .outline import analyze_outline_rows
 from .page_shared import *  # noqa: F403,F401
 from .performance import page_perf
+
+
+# Sentinel marking "not probed yet".  ``None`` is a real answer here: it means
+# the page did not expose a readable outline, and callers must fall back to
+# the registered rule instead of probing again on every call.
+_NO_OUTLINE_CACHE = object()
 
 
 # One-shot visibility probe: instead of paying one protocol round-trip per
@@ -30,6 +37,49 @@ _FIRST_VISIBLE_INDEX_JS = """
         return index;
     }
     return -1;
+}
+"""
+
+# Read the ordered second-step outline: part headings, subsection headings and
+# numbered question entries.  Everything is derived from the container that
+# actually holds the visible question entries, so unrelated page chrome that
+# happens to use the same class names cannot be mistaken for the outline.
+_OUTLINE_ROWS_JS = """
+() => {
+    const CARD = /^第\\s*(\\d+)\\s*题?\\s*[（(]\\s*(选择题|填空题|录音题)\\s*[）)]$/;
+    const visible = (node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    };
+    const cards = Array.from(document.querySelectorAll('.qBox')).filter((node) => (
+        visible(node) && CARD.test(String(node.innerText || '').trim())
+    ));
+    if (!cards.length) {
+        return [];
+    }
+    let container = cards[0].parentElement;
+    while (container && !cards.every((card) => container.contains(card))) {
+        container = container.parentElement;
+    }
+    if (!container) {
+        return [];
+    }
+    const rows = [];
+    for (const node of container.querySelectorAll('*')) {
+        if (node.children.length) continue;
+        const text = String(node.innerText || '').trim();
+        if (!text) continue;
+        const cls = String(node.className || '');
+        const card = CARD.exec(text);
+        if (card) {
+            rows.push({ kind: 'card', number: Number(card[1]), card: card[2], text });
+        } else if (/(^|\\s)partName(\\s|$)/.test(cls)) {
+            rows.push({ kind: 'part', text });
+        } else if (/(^|\\s)oneWord(\\s|$)/.test(cls)) {
+            rows.push({ kind: 'subsection', text });
+        }
+    }
+    return rows;
 }
 """
 
@@ -315,6 +365,34 @@ class PlatformInputNavigationMixin:
             resource.click(timeout=self.action_timeout_ms)
             return True
         return False
+
+    def _read_outline_structure(self, *, refresh: bool = False) -> Any | None:
+        """Read the visible second-step outline as layout facts.
+
+        Template names are renameable data, but the rendered outline is the
+        page's own statement of what it will accept.  Reading it once here
+        lets the content flow pick a layout by structure instead of by a
+        hard-coded template-name table.  Any probe failure returns ``None``
+        so callers fall back to the registered rule; a probe must never turn
+        a transient render into a hard failure.
+        """
+
+        cached = getattr(self, "_outline_structure_cache", _NO_OUTLINE_CACHE)
+        if not refresh and cached is not _NO_OUTLINE_CACHE:
+            return cached
+        page = getattr(self, "page", None)
+        probe = getattr(page, "evaluate", None)
+        if not callable(probe):
+            self._outline_structure_cache = None
+            return None
+        try:
+            rows = probe(_OUTLINE_ROWS_JS)
+        except Exception:
+            self._outline_structure_cache = None
+            return None
+        structure = analyze_outline_rows(rows) if isinstance(rows, list) else None
+        self._outline_structure_cache = structure
+        return structure
 
     def _group_first_question_number(self, group_type: str) -> int | None:
         """Return the first global outline number for one normalized group."""

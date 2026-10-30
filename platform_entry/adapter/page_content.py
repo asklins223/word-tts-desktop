@@ -183,22 +183,36 @@ class PlatformInputContentMixin:
             groups_by_type[group_type].append(group)
 
         requested_counts = self._group_requested_card_counts(self.spec.groups)
-        rule = next(
-            (
-                candidate
-                for candidate in PAPER_BUNDLE_RULES
-                if candidate.key == self.spec.bundle_rule
-            ),
-            None,
-        )
-        rule_counts = rule.card_counts() if rule is not None else {}
-        for card_kind, requested in requested_counts.items():
-            expected = rule_counts.get(card_kind, requested)
-            if rule is not None and requested != expected:
-                raise PlatformInputUiError(
-                    f"当前套卷模板要求 {expected} 个{card_kind}，输入只提供 {requested} 个；"
-                    "请把所有小题补齐后再执行"
-                )
+        # The page's own outline outranks the template-name table: an editor
+        # can rename or re-create a template at any time, but the rendered
+        # card kinds are what the save will actually accept.  When the probe
+        # yields nothing, the registered rule still governs as before.
+        structure = self._read_outline_structure()
+        if structure is not None:
+            page_counts = structure.counts()
+            for card_kind, requested in requested_counts.items():
+                if page_counts.get(card_kind, 0) != requested:
+                    raise PlatformInputUiError(
+                        f"当前页面有 {page_counts.get(card_kind, 0)} 个{card_kind}，"
+                        f"输入提供 {requested} 个；请按页面实际题卡补齐后再执行"
+                    )
+        else:
+            rule = next(
+                (
+                    candidate
+                    for candidate in PAPER_BUNDLE_RULES
+                    if candidate.key == self.spec.bundle_rule
+                ),
+                None,
+            )
+            rule_counts = rule.card_counts() if rule is not None else {}
+            for card_kind, requested in requested_counts.items():
+                expected = rule_counts.get(card_kind, requested)
+                if rule is not None and requested != expected:
+                    raise PlatformInputUiError(
+                        f"当前套卷模板要求 {expected} 个{card_kind}，输入只提供 {requested} 个；"
+                        "请把所有小题补齐后再执行"
+                    )
 
         consumed = {"选择题": 0, "填空题": 0, "录音题": 0}
         for handler in handlers:

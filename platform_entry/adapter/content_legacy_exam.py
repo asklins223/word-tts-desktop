@@ -105,6 +105,11 @@ class PlatformInputLegacyExamContentMixin:
             ),
             None,
         )
+        structure = self._read_outline_structure() if hasattr(self, "_read_outline_structure") else None
+        if structure is not None:
+            resolved = structure.subsection_target(group_type, subsection)
+            if resolved is not None:
+                return resolved
         if rule is None:
             return fallback
         target = rule.outline_subsection_target(group_type, subsection) or fallback
@@ -395,6 +400,15 @@ class PlatformInputLegacyExamContentMixin:
             and rule.outline_subsection_target("信息转述及询问", "信息转述")
             and rule.outline_subsection_target("信息转述及询问", "询问信息")
         )
+        # The page outline decides whether retelling and asking are separate
+        # lazy panels.  Template-name rules are only the fallback for pages
+        # whose outline could not be read.
+        structure = self._read_outline_structure() if hasattr(self, "_read_outline_structure") else None
+        if structure is not None:
+            split_legacy_sections = bool(
+                structure.subsection_target("信息转述及询问", "信息转述")
+                and structure.subsection_target("信息转述及询问", "询问信息")
+            )
         has_reading_instruction = any(
             group["recording"].get("reading_instruction_text") for group in groups
         )
