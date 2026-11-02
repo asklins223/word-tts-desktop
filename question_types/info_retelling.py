@@ -61,6 +61,11 @@ class InfoRetellingParser(BaseParser):
     )
     RE_TASK_STEM = re.compile(r"^(\d+)\s*[.．、）)]\s*(.+)$")
     RE_NUMBERED_ANSWER = re.compile(r"^(\d+)\s*[.．、）)]\s*(.+)$")
+    # A standalone preparation row belongs to the guidance slot that is spoken
+    # after the listening material, not to the pre-listening guidance.
+    RE_PREPARATION_PROMPT = re.compile(
+        r"^下面你有\s*[0-9０-９]+\s*秒钟的时间准备\s*[。.]?$"
+    )
     RE_SCORE_PER_ITEM = re.compile(
         r"每(?:小题|题|道题)\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分"
     )
@@ -320,6 +325,7 @@ class InfoRetellingParser(BaseParser):
         return {
             "instruction_text": None,
             "reading_instruction_text": None,
+            "preparation_instruction_text": None,
             "prompt": None,
             "preamble_lines": [],
             "script_lines": [],
@@ -570,7 +576,24 @@ class InfoRetellingParser(BaseParser):
                     )
                     group["prompt"] = self._prompt_from_preamble_line(preamble[prompt_index])
                     if prompt_index:
-                        group["reading_instruction_text"] = sanitize("\n".join(preamble[:prompt_index]))
+                        guidance = preamble[:prompt_index]
+                        # A standalone preparation row is spoken after the
+                        # material, so it keeps its own guidance slot; the
+                        # remaining rows stay in the single pre-listening field.
+                        preparation = [
+                            line
+                            for line in guidance
+                            if self.RE_PREPARATION_PROMPT.match(line)
+                        ]
+                        reading = [
+                            line for line in guidance if line not in preparation
+                        ]
+                        if reading:
+                            group["reading_instruction_text"] = sanitize("\n".join(reading))
+                        if preparation:
+                            group["preparation_instruction_text"] = sanitize(
+                                "\n".join(preparation)
+                            )
             if not group.get("instruction_text"):
                 group["instruction_text"] = first_instruction or RETELLING_INSTRUCTION
             if group.get("score") is None:
@@ -634,6 +657,12 @@ class InfoRetellingParser(BaseParser):
                     "reading_instruction_occurrence": 1,
                     "reading_instruction_audio_filename_stem": "信息转述阅图指导文字-1",
                 })
+            if first.get("preparation_instruction_text"):
+                recording.update({
+                    "preparation_instruction_text": first["preparation_instruction_text"],
+                    "preparation_instruction_occurrence": 2,
+                    "preparation_instruction_audio_filename_stem": "信息转述准备指导文字-1",
+                })
             if items[0].get("block_image_required"):
                 recording.update({
                     "block_image_required": True,
@@ -688,6 +717,9 @@ class InfoRetellingParser(BaseParser):
             # need the audio正文 list.
             instruction = recording.get("instruction_text") if recording else ""
             reading_instruction = recording.get("reading_instruction_text") if recording else ""
+            preparation_instruction = (
+                recording.get("preparation_instruction_text") if recording else ""
+            )
             prompt = retelling.get("prompt") if retelling else ""
             audio_items = []
             if instruction:
@@ -713,6 +745,17 @@ class InfoRetellingParser(BaseParser):
                     "audio_only_auxiliary": True,
                     "audio_filename_stem": "信息转述阅图指导文字-1",
                     "type_path": ["信息转述阅图指导文字"],
+                })
+            if preparation_instruction:
+                audio_items.append({
+                    "category": "信息转述准备指导文字",
+                    "index": 1,
+                    "text": preparation_instruction,
+                    "role": QUESTION_STEM_ROLE,
+                    "voice": "female",
+                    "audio_only_auxiliary": True,
+                    "audio_filename_stem": "信息转述准备指导文字-1",
+                    "type_path": ["信息转述准备指导文字"],
                 })
             if prompt:
                 audio_items.append({

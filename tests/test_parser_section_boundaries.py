@@ -203,6 +203,51 @@ def test_retelling_keeps_three_independent_chinese_guides_in_source_order():
     assert "asking_instruction_audio_filename_stem" not in result["recording"]
 
 
+def test_retelling_splits_the_two_chinese_guides_into_their_own_positions():
+    starter = "你可以这样开始：Let me tell you about Emma's digital magazine project."
+    result = _parse(InfoRetellingParser, [
+        "第一节 信息转述（共1题，满分6分）",
+        "你将听到Emma介绍她所在班级制作电子杂志的项目，录音播放两遍。",
+        "下面请听录音两遍。",
+        "下面你有50秒钟的时间准备。",
+        starter,
+        "听力原文：",
+        "(W) I'm Emma, and our class has made a digital magazine.",
+        "参考答案：",
+        "1. Let me tell you about Emma's digital magazine project.",
+    ])
+
+    recording = result["recording"]
+    assert recording["reading_instruction_text"] == "下面请听录音两遍。"
+    assert recording["preparation_instruction_text"] == "下面你有50秒钟的时间准备。"
+    assert recording["reading_instruction_occurrence"] == 1
+    assert recording["preparation_instruction_occurrence"] == 2
+    assert result["retelling"]["prompt"] == starter
+    assert [item["audio_filename_stem"] for item in result["audio_items"]] == [
+        "信息转述题目指导文字-1", "信息转述阅图指导文字-1",
+        "信息转述准备指导文字-1", "信息转述题干-1",
+    ]
+
+
+def test_retelling_keeps_the_reading_guidance_absent_when_only_preparation_is_given():
+    result = _parse(InfoRetellingParser, [
+        "第一节 信息转述（共1题，满分6分）",
+        "你将听到一篇介绍电子杂志项目的短文，录音播放两遍。",
+        "下面你有 50 秒钟的时间准备。",
+        "你可以这样开始：Let me tell you about the project.",
+        "听力原文：",
+        "(W) Our class has made a digital magazine.",
+        "参考答案：",
+        "1. Let me tell you about the project.",
+    ])
+
+    assert "reading_instruction_text" not in result["recording"]
+    assert result["recording"]["preparation_instruction_text"] == "下面你有 50 秒钟的时间准备。"
+    assert [item["category"] for item in result["audio_items"]] == [
+        "信息转述题目指导文字", "信息转述准备指导文字", "信息转述题干",
+    ]
+
+
 @pytest.mark.parametrize(
     "parser_cls,texts",
     [

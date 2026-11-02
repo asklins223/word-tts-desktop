@@ -1723,6 +1723,7 @@ function renderInfoRetellingFacts(parent, pageInput, item, imageTasks) {
     );
     reviewDocumentTextBlock(recordingBody, '题目指导文字', recording.instruction_text);
     reviewDocumentTextBlock(recordingBody, '阅图指导文字', recording.reading_instruction_text);
+    reviewDocumentTextBlock(recordingBody, '准备指导文字', recording.preparation_instruction_text);
     reviewDocumentTextBlock(
         recordingBody,
         '听力原文',

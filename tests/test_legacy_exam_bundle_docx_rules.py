@@ -154,7 +154,8 @@ def test_legacy_exam_bundle_is_parsed_without_cross_section_leaks():
     questions = [
         item for item in info_items if item["category"].endswith("题目")
     ]
-    assert questions[0]["text"] == "How many subjects does Mary have at school? (Four. / Five. / Six.)"
+    # 选项只作为页面题干的一部分录入，题干音频仍然只朗读问题本身
+    assert questions[0]["text"] == "How many subjects does Mary have at school?"
     assert questions[0]["voice"] == "male"
     assert not questions[0]["text"].startswith(("M:", "W:"))
 
@@ -269,5 +270,11 @@ def test_legacy_page_facts_separate_tts_markers_from_visible_text_and_split_answ
 
     question_audio = next(item for item in parsed.items if item.item_type == "听选信息题目")
     assert question_audio.normalized_content == (
-        "How many subjects does Mary have at school? (Four. / Five. / Six.)"
+        "How many subjects does Mary have at school?"
     )
+    page_questions = info_recording_items[0].metadata["page_input"]["materials"][0]["questions"]
+    assert [option["text"] for option in page_questions[0]["options"]] == [
+        "Four.",
+        "Five.",
+        "Six.",
+    ]

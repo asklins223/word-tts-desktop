@@ -490,6 +490,24 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
         reading_stem = _safe_stem(recording_source.get("reading_instruction_audio_filename_stem"))
         if reading_stem:
             recording["reading_instruction_audio_filename_stem"] = reading_stem
+        preparation_text = _text(
+            recording_source.get("preparation_instruction_text"),
+            limit=PAGE_INPUT_MAX_TEXT,
+        )
+        if preparation_text:
+            recording["preparation_instruction_text"] = preparation_text
+        preparation_occurrence = recording_source.get("preparation_instruction_occurrence")
+        if (
+            isinstance(preparation_occurrence, int)
+            and not isinstance(preparation_occurrence, bool)
+            and preparation_occurrence >= 0
+        ):
+            recording["preparation_instruction_occurrence"] = preparation_occurrence
+        preparation_stem = _safe_stem(
+            recording_source.get("preparation_instruction_audio_filename_stem")
+        )
+        if preparation_stem:
+            recording["preparation_instruction_audio_filename_stem"] = preparation_stem
         asking_instruction_text = _text(
             recording_source.get("asking_instruction_text"),
             limit=PAGE_INPUT_MAX_TEXT,
@@ -761,6 +779,10 @@ def page_input_completeness(value: Any) -> dict[str, Any]:
             and (
                 not _has_text(recording.get("reading_instruction_text"))
                 or _has_text(recording.get("reading_instruction_audio_filename_stem"))
+            )
+            and (
+                not _has_text(recording.get("preparation_instruction_text"))
+                or _has_text(recording.get("preparation_instruction_audio_filename_stem"))
             )
             and _has_text(recording.get("asking_instruction_text"))
         )
@@ -1397,6 +1419,9 @@ def _info_retelling_builder(
         "reading_instruction_text",
         "reading_instruction_occurrence",
         "reading_instruction_audio_filename_stem",
+        "preparation_instruction_text",
+        "preparation_instruction_occurrence",
+        "preparation_instruction_audio_filename_stem",
         "asking_instruction_text",
         "asking_instruction_occurrence",
         "asking_instruction_audio_filename_stem",

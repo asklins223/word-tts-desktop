@@ -213,7 +213,7 @@ test('信息转述题干显示为可编辑的题干音色角色，并使用晓�
     );
 });
 
-test('系统输入投影保留阅图及询问信息的指导文字和音频标识', () => {
+test('系统输入投影保留阅图、准备及询问信息的指导文字和音频标识', () => {
     const { api } = loadRendererConfigFunctions();
     const askingInstruction = '你希望了解更多，请根据以下提示向 Emma 提两个问题。';
     const projected = api.projectSystemInput({
@@ -226,6 +226,9 @@ test('系统输入投影保留阅图及询问信息的指导文字和音频标�
                     reading_instruction_text: '现在，你有15秒钟的时间阅读思维导图。',
                     reading_instruction_occurrence: 1,
                     reading_instruction_audio_filename_stem: '信息转述阅图指导文字-1',
+                    preparation_instruction_text: '下面你有50秒钟的时间准备。',
+                    preparation_instruction_occurrence: 2,
+                    preparation_instruction_audio_filename_stem: '信息转述准备指导文字-1',
                     asking_instruction_text: askingInstruction,
                     asking_instruction_occurrence: 0,
                     asking_instruction_audio_filename_stem: '询问信息题干-1',
@@ -238,6 +241,9 @@ test('系统输入投影保留阅图及询问信息的指导文字和音频标�
     assert.equal(recording.reading_instruction_text, '现在，你有15秒钟的时间阅读思维导图。');
     assert.equal(recording.reading_instruction_occurrence, 1);
     assert.equal(recording.reading_instruction_audio_filename_stem, '信息转述阅图指导文字-1');
+    assert.equal(recording.preparation_instruction_text, '下面你有50秒钟的时间准备。');
+    assert.equal(recording.preparation_instruction_occurrence, 2);
+    assert.equal(recording.preparation_instruction_audio_filename_stem, '信息转述准备指导文字-1');
     assert.equal(recording.asking_instruction_text, askingInstruction);
     assert.equal(recording.asking_instruction_occurrence, 0);
     assert.equal(recording.asking_instruction_audio_filename_stem, '询问信息题干-1');

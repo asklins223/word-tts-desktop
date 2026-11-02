@@ -74,11 +74,12 @@ QUESTION_STEM_ROLE_KEY = "题干音色"
 QUESTION_STEM_ROLE_CONFIG_KEY = f"{ROLE_CONFIG_PREFIX}{QUESTION_STEM_ROLE_KEY.casefold()}"
 QUESTION_STEM_VOICE = "common:10000023"  # 晓燕
 QUESTION_STEM_VOICE_PARAMS = {"rate": 40, "volume": 50, "pitch": 50}
-# 信息转述的三条辅助音频共享同一可编辑角色；保留旧任务的询问指导语
+# 信息转述的辅助指导语音频共享同一可编辑角色；保留旧任务的询问指导语
 # 类型兼容。信息转述录音稿和询问信息小题本身不在这个集合内。
 QUESTION_STEM_ITEM_TYPES = frozenset({
     "信息转述题目指导文字",
     "信息转述阅图指导文字",
+    "信息转述准备指导文字",
     "信息转述题干",
     "询问信息题干",
 })

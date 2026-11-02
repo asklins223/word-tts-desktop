@@ -550,6 +550,8 @@ function projectSystemInput(systemInput) {
                     'instruction_audio_filename_stem',
                     'reading_instruction_text',
                     'reading_instruction_audio_filename_stem',
+                    'preparation_instruction_text',
+                    'preparation_instruction_audio_filename_stem',
                     // Keep optional guidance facts when projecting a saved
                     // task, including legacy asking audio identifiers.
                     'asking_instruction_text',
@@ -574,6 +576,10 @@ function projectSystemInput(systemInput) {
                 const readingInstructionOccurrence = nonNegativeInteger(recording.reading_instruction_occurrence);
                 if (readingInstructionOccurrence !== null) {
                     projectedRecording.reading_instruction_occurrence = readingInstructionOccurrence;
+                }
+                const preparationInstructionOccurrence = nonNegativeInteger(recording.preparation_instruction_occurrence);
+                if (preparationInstructionOccurrence !== null) {
+                    projectedRecording.preparation_instruction_occurrence = preparationInstructionOccurrence;
                 }
                 const askingInstructionOccurrence = nonNegativeInteger(recording.asking_instruction_occurrence);
                 if (askingInstructionOccurrence !== null) {

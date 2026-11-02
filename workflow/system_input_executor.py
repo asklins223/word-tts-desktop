@@ -926,6 +926,14 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                 reading_stem = _text(recording.get("reading_instruction_audio_filename_stem"), limit=256)
                 if reading_stem and reading_stem in audio_paths_by_stem:
                     recording["reading_instruction_audio_path"] = audio_paths_by_stem[reading_stem]
+                preparation_stem = _text(
+                    recording.get("preparation_instruction_audio_filename_stem"),
+                    limit=256,
+                )
+                if preparation_stem and preparation_stem in audio_paths_by_stem:
+                    recording["preparation_instruction_audio_path"] = audio_paths_by_stem[
+                        preparation_stem
+                    ]
                 asking_instruction_stem = _text(
                     recording.get("asking_instruction_audio_filename_stem"),
                     limit=256,

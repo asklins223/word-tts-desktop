@@ -193,13 +193,14 @@ def _retelling_group():
     }
 
 
-def _retelling_automation(scopes):
+def _retelling_automation(scopes, preparation_scope=None):
     owner = object.__new__(PlatformInputPageAutomation)
     owner._activate_group_section = Mock(side_effect=[
         (["retelling-card"], ["listening-editor"]),
         (["asking-card-1", "asking-card-2"], []),
     ])
     owner._retelling_page_instruction_scopes = Mock(return_value=scopes)
+    owner._retelling_page_preparation_scope = Mock(return_value=preparation_scope)
     owner._replace_rich_text = Mock()
     owner._upload_original_audio = Mock()
     owner._upload_audio_in_scope = Mock()
@@ -286,13 +287,61 @@ def test_three_chinese_guides_use_two_page_fields_and_the_recording_stem():
     owner._fill_instruction_audio.assert_not_called()
 
 
+def test_fourth_guide_document_fills_the_field_after_the_listening_material():
+    scopes = tuple(
+        Mock(locator=Mock(return_value=editor))
+        for editor in ("intro-editor", "reading-editor")
+    )
+    preparation = Mock(locator=Mock(return_value="preparation-editor"))
+    owner = _retelling_automation(scopes, preparation_scope=preparation)
+    group = _retelling_group()
+    group["recording"].update({
+        "reading_instruction_text": "下面请听录音两遍。",
+        "reading_instruction_audio_path": "guide-2.mp3",
+        "preparation_instruction_text": "下面你有50秒钟的时间准备。",
+        "preparation_instruction_audio_path": "guide-3.mp3",
+    })
+    group["retelling"]["prompt_audio_path"] = "guide-4.mp3"
+
+    assert _fill_split(owner, [group]) == {"录音题": 3}
+
+    assert [call.args for call in owner._replace_rich_text.call_args_list[1:]] == [
+        ("intro-editor", group["recording"]["instruction_text"]),
+        ("reading-editor", "下面请听录音两遍。"),
+        ("preparation-editor", "下面你有50秒钟的时间准备。"),
+    ]
+    assert [call.args for call in owner._upload_audio_in_scope.call_args_list] == [
+        (scopes[0], "guide-1.mp3"),
+        (scopes[1], "guide-2.mp3"),
+        (preparation, "guide-3.mp3"),
+    ]
+    assert owner._fill_recording_card.call_args_list[0].kwargs["prompt_audio_path"] == "guide-4.mp3"
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [(None, "独立中文指导语"), ((Mock(), Mock()), "准备指导语")],
+)
+def test_preparation_guide_requires_its_own_page_position_before_any_write(scopes, expected):
+    owner = _retelling_automation(scopes, preparation_scope=None)
+    group = _retelling_group()
+    group["recording"]["preparation_instruction_text"] = "下面你有50秒钟的时间准备。"
+
+    with pytest.raises(PlatformInputUiError, match=expected):
+        _fill_split(owner, [group])
+
+    owner._replace_rich_text.assert_not_called()
+    owner._upload_original_audio.assert_not_called()
+    owner._upload_audio_in_scope.assert_not_called()
+
+
 @pytest.mark.parametrize("scopes", [None, (Mock(),)])
 def test_three_guides_require_both_page_instruction_fields_before_any_write(scopes):
     owner = _retelling_automation(scopes)
     group = _retelling_group()
     group["recording"]["reading_instruction_text"] = "现在，你有15秒钟的时间阅读思维导图。"
 
-    with pytest.raises(PlatformInputUiError, match="独立阅图指导语"):
+    with pytest.raises(PlatformInputUiError, match="独立中文指导语"):
         _fill_split(owner, [group])
 
     owner._replace_rich_text.assert_not_called()
@@ -372,3 +421,25 @@ def test_page_scopes_ignore_the_template_preparation_field_after_the_listening_m
 
     assert owner._retelling_page_instruction_scopes() == (first_scope, before)
     after.locator.assert_not_called()
+
+
+def test_preparation_scope_is_the_field_after_the_listening_material():
+    owner = object.__new__(PlatformInputPageAutomation)
+    first_scope = Mock(locator=Mock(return_value=Mock(count=Mock(return_value=1))))
+    before = Mock(evaluate=Mock(return_value=-1))
+    after = Mock(
+        evaluate=Mock(return_value=1),
+        locator=Mock(return_value=Mock(count=Mock(return_value=1))),
+    )
+    first = Mock(count=Mock(return_value=1), first=first_scope)
+    second = Mock(count=Mock(return_value=2), nth=Mock(side_effect=[before, after]))
+    page1 = SimpleNamespace(locator=lambda _selector: SimpleNamespace(filter=lambda **_kwargs: first))
+    page2 = SimpleNamespace(locator=lambda _selector: SimpleNamespace(filter=lambda **_kwargs: second))
+    pages = Mock(filter=Mock(side_effect=[
+        SimpleNamespace(count=lambda: 1, first=page1),
+        SimpleNamespace(count=lambda: 1, first=page2),
+    ]))
+    owner.page = Mock(locator=Mock(return_value=pages))
+    owner._audio_region_in_scope = Mock(return_value=Mock())
+
+    assert owner._retelling_page_preparation_scope() is after

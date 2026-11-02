@@ -159,13 +159,15 @@ class PlatformInputLegacyExamContentMixin:
                 return global_targets.get(first_number, target)
         return target
 
-    def _retelling_page_instruction_scopes(self) -> tuple[Any, Any] | None:
-        """Find the introduction and reading guidance in their own pages.
+    def _locate_retelling_page_instructions(
+        self,
+    ) -> tuple[Any, list[Any], list[Any]] | None:
+        """Locate the three Chinese guidance fields of the split retelling page.
 
-        Page 1 has the introduction. Page 2 has reading guidance before the
-        listening material. The starter belongs to the recording card, not
-        the separate preparation field after the material. Each page guide
-        keeps text and audio in the same textAudioContent scope.
+        Page 1 has the introduction.  Page 2 has the guidance spoken before
+        the listening material and, separately, the one spoken after it.  The
+        starter belongs to the recording card, not to those page fields.  Each
+        page guide keeps text and audio in the same textAudioContent scope.
         """
 
         page = getattr(self, "page", None)
@@ -186,6 +188,7 @@ class PlatformInputLegacyExamContentMixin:
         first = page_scopes[0].locator(".textAudioContent:visible").filter(has=label)
         second_page = page_scopes[1].locator(".textAudioContent:visible").filter(has=label)
         before_listening = []
+        after_listening = []
         for index in range(second_page.count()):
             scope = second_page.nth(index)
             position = scope.evaluate("""(el) => {
@@ -196,6 +199,17 @@ class PlatformInputLegacyExamContentMixin:
             }""")
             if position == -1:
                 before_listening.append(scope)
+            elif position == 1:
+                after_listening.append(scope)
+        return first, before_listening, after_listening
+
+    def _retelling_page_instruction_scopes(self) -> tuple[Any, Any] | None:
+        """Find the introduction and reading guidance in their own pages."""
+
+        located = self._locate_retelling_page_instructions()
+        if located is None:
+            return None
+        first, before_listening, _ = located
         if not before_listening or first.count() == 0:
             return None
         if first.count() != 1 or len(before_listening) != 1:
@@ -208,6 +222,25 @@ class PlatformInputLegacyExamContentMixin:
             ):
                 raise PlatformInputUiError(f"信息转述第{number}条指导文字与音频字段不完整")
         return scopes
+
+    def _retelling_page_preparation_scope(self) -> Any | None:
+        """Find the guidance field the page speaks after the listening material."""
+
+        located = self._locate_retelling_page_instructions()
+        if located is None:
+            return None
+        _, _, after_listening = located
+        if not after_listening:
+            return None
+        if len(after_listening) != 1:
+            raise PlatformInputUiError("信息转述录音后的指导文字位置不唯一，拒绝按整页序号录入")
+        scope = after_listening[0]
+        if (
+            scope.locator('.editor-content[contenteditable="true"]:visible').count() != 1
+            or self._audio_region_in_scope(scope, "题目指导文字音频") is None
+        ):
+            raise PlatformInputUiError("信息转述录音后的指导文字与音频字段不完整")
+        return scope
 
     def _fill_retelling_page_instruction(
         self,
@@ -253,16 +286,30 @@ class PlatformInputLegacyExamContentMixin:
         instruction_scopes = self._retelling_page_instruction_scopes()
         if instruction_scopes is not None and len(groups) != 1:
             raise PlatformInputUiError("当前指导语页面只能录入一组信息转述材料")
-        has_reading_instruction = any(group["recording"].get("reading_instruction_text") for group in groups)
-        if has_reading_instruction:
+        has_extra_instruction = any(
+            group["recording"].get("reading_instruction_text")
+            or group["recording"].get("preparation_instruction_text")
+            for group in groups
+        )
+        if has_extra_instruction:
             if instruction_scopes is None or len(instruction_scopes) != 2:
-                raise PlatformInputUiError("当前文档有独立阅图指导语，页面没有对应的指导文字与音频位置")
+                raise PlatformInputUiError("当前文档有独立中文指导语，页面没有对应的指导文字与音频位置")
             for card in cards:
                 if (
                     self._labeled_text_editor_in_scope(card, "题干") is None
                     or self._audio_region_in_scope(card, "题干音频") is None
                 ):
                     raise PlatformInputUiError("信息转述小题没有完整的题干与题干音频位置")
+        has_preparation_instruction = any(
+            group["recording"].get("preparation_instruction_text") for group in groups
+        )
+        preparation_scope = (
+            self._retelling_page_preparation_scope() if has_preparation_instruction else None
+        )
+        if has_preparation_instruction and preparation_scope is None:
+            raise PlatformInputUiError(
+                "当前文档有录音后的准备指导语，页面没有对应的指导文字与音频位置"
+            )
 
         card_cursor = 0
         listening_cursor = 0
@@ -311,6 +358,14 @@ class PlatformInputLegacyExamContentMixin:
                     recording["reading_instruction_text"],
                     recording.get("reading_instruction_audio_path"),
                     "信息转述页面2阅图指导文字",
+                )
+
+            if recording.get("preparation_instruction_text"):
+                self._fill_retelling_page_instruction(
+                    preparation_scope,
+                    recording["preparation_instruction_text"],
+                    recording.get("preparation_instruction_audio_path"),
+                    "信息转述页面2准备指导文字",
                 )
 
             retelling = group.get("retelling")
@@ -410,7 +465,9 @@ class PlatformInputLegacyExamContentMixin:
                 and structure.subsection_target("信息转述及询问", "询问信息")
             )
         has_reading_instruction = any(
-            group["recording"].get("reading_instruction_text") for group in groups
+            group["recording"].get("reading_instruction_text")
+            or group["recording"].get("preparation_instruction_text")
+            for group in groups
         )
         if split_legacy_sections and (
             has_reading_instruction or any(group.get("asking") for group in groups)
