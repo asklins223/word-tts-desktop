@@ -51,7 +51,7 @@ _RESPONSE_PROMPT_RE = re.compile(
     r"听下面\s*(?:[0-9０-９零〇一二两三四五六七八九十百]+)?\s*个?\s*句子",
     re.IGNORECASE,
 )
-_ANSWER_PROMPT_RE = re.compile(r"请朗读应答语|朗读应答语", re.IGNORECASE)
+_ANSWER_PROMPT_RE = re.compile(r"请(?:看图并)?朗读.*?应答语|朗读应答语", re.IGNORECASE)
 _LISTENING_PROMPT_RE = re.compile(
     r"听下面|听第.+段|录音播放|各段播放|每段播放|短文听",
     re.IGNORECASE,
@@ -1047,6 +1047,7 @@ _PAPER_FAMILY_CODES = frozenset({
     "listening_response",
     "info_retelling",
     "listening_record_retelling",
+    "listening_retelling",
     "imitation_reading",
 })
 _FULL_PAPER_TITLE_RE = re.compile(r"听说(?:考试|测试题)|听说新题型", re.IGNORECASE)

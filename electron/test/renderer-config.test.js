@@ -2001,7 +2001,7 @@ test('内容核对按文稿能力切换视图，不支持时只展示音频核�
     assert.match(source, /switcher\.classList\.toggle\('is-audio-only', !canShowDocument\)/);
     assert.match(source, /switcherTitle\.textContent = canShowDocument \? '内容核对视图' : '音频核对视图'/);
     assert.match(source, /return mode;/);
-    assert.match(source, /const activeReviewViewMode = applyReviewViewMode\(entrySupport\.supported === true\);/);
+    assert.match(source, /entrySupport\.supported === true \|\| entrySupport\.review_supported === true/);
     assert.match(source, /const isAudioView = activeReviewViewMode === 'audio';/);
     assert.match(source, /const entrySupport = reviewDocumentEntrySupport\(/);
     assert.match(source, /const reviewShell = ensureReviewViewShell\(\);/);

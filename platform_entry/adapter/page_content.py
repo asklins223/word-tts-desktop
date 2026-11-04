@@ -214,6 +214,16 @@ class PlatformInputContentMixin:
                         "请把所有小题补齐后再执行"
                     )
 
+        response_questions = [
+            question
+            for group in groups_by_type.get("听后应答", ())
+            for question in group.get("questions", ())
+        ]
+        if any(question.get("section") in {"第一节", "第二节"} for question in response_questions):
+            # Discover missing controls before editing the earlier sections.
+            # A failed preflight must not leave a partially entered paper.
+            self._preflight_split_response_questions(response_questions)
+
         consumed = {"选择题": 0, "填空题": 0, "录音题": 0}
         for handler in handlers:
             groups = groups_by_type[handler.canonical_type]

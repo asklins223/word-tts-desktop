@@ -37,7 +37,7 @@ TABLE_IMAGE_MAX_DPI = 300
 TABLE_IMAGE_RENDER_TIMEOUT_SECONDS = 30
 # The application includes this value in the deterministic artifact id. The
 # direct OOXML/Chromium pipeline must never reuse a PDF-era cached image.
-TABLE_IMAGE_RENDERER_VERSION = "3-direct-docx-block"
+TABLE_IMAGE_RENDERER_VERSION = "4-rotated-drawing-block"
 TABLE_IMAGE_DEFAULT_PADDING_POINTS = 0.75
 TABLE_IMAGE_MAX_PADDING_POINTS = 12.0
 
@@ -89,6 +89,9 @@ class _DrawingShape:
     height: float
     z_order: int
     line_color: str
+    rotation: float = 0.0
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
     children: tuple[Mapping[str, Any], ...] = ()
 
     def as_browser_value(self) -> dict[str, Any]:
@@ -103,6 +106,9 @@ class _DrawingShape:
             "height": self.height,
             "zOrder": self.z_order,
             "lineColor": self.line_color,
+            "rotation": self.rotation,
+            "flipHorizontal": self.flip_horizontal,
+            "flipVertical": self.flip_vertical,
             "children": list(self.children),
         }
 
@@ -591,6 +597,14 @@ def _drawing_groups(
                 )
             except (TypeError, ValueError):
                 width = height = 0.0
+            geometry_node = anchor.find(".//a:prstGeom", _NS)
+            geometry = str(geometry_node.get("prst") or "rect") if geometry_node is not None else "rect"
+            # Straight connectors may legitimately have zero width or height
+            # in OOXML. Give the line a sub-point capture box instead of
+            # rejecting the entire drawing group.
+            if geometry == "line" and width >= 0 and height >= 0 and (width or height):
+                width = max(width, 0.5)
+                height = max(height, 0.5)
             if width <= 0 or height <= 0:
                 raise DocxTableImageError("DOCX 浮动对象尺寸无效")
             doc_pr = anchor.find("./wp:docPr", _NS)
@@ -599,7 +613,11 @@ def _drawing_groups(
             except (TypeError, ValueError):
                 z_order = 0
             group_node = anchor.find(".//wpg:wgp", _NS)
-            geometry_node = anchor.find(".//a:prstGeom", _NS)
+            transform_node = anchor.find(".//wps:spPr/a:xfrm", _NS)
+            try:
+                rotation = float(transform_node.get("rot") or 0) / 60000 if transform_node is not None else 0.0
+            except (TypeError, ValueError):
+                rotation = 0.0
             current.append(_DrawingShape(
                 path=path,
                 ordinal=ordinal,
@@ -608,9 +626,7 @@ def _drawing_groups(
                     "group"
                     if group_node is not None
                     else (
-                        str(geometry_node.get("prst") or "rect")
-                        if geometry_node is not None
-                        else "rect"
+                        geometry
                     )
                 ),
                 x=_axis_position(
@@ -629,6 +645,9 @@ def _drawing_groups(
                 height=height,
                 z_order=z_order,
                 line_color=_shape_line_color(anchor, theme),
+                rotation=rotation,
+                flip_horizontal=transform_node is not None and transform_node.get("flipH") in {"1", "true"},
+                flip_vertical=transform_node is not None and transform_node.get("flipV") in {"1", "true"},
                 children=_group_children(
                     anchor,
                     width=width,
@@ -667,10 +686,18 @@ def _drawing_group_browser_value(
     *,
     padding_points: float,
 ) -> dict[str, Any]:
-    min_x = min(shape.x for shape in group.shapes) - padding_points
-    min_y = min(shape.y for shape in group.shapes) - padding_points
-    max_x = max(shape.x + shape.width for shape in group.shapes) + padding_points
-    max_y = max(shape.y + shape.height for shape in group.shapes) + padding_points
+    def bounds(shape: _DrawingShape) -> tuple[float, float, float, float]:
+        radians = math.radians(shape.rotation)
+        width = abs(shape.width * math.cos(radians)) + abs(shape.height * math.sin(radians))
+        height = abs(shape.width * math.sin(radians)) + abs(shape.height * math.cos(radians))
+        center_x, center_y = shape.x + shape.width / 2, shape.y + shape.height / 2
+        return center_x - width / 2, center_y - height / 2, center_x + width / 2, center_y + height / 2
+
+    all_bounds = [bounds(shape) for shape in group.shapes]
+    min_x = min(value[0] for value in all_bounds) - padding_points
+    min_y = min(value[1] for value in all_bounds) - padding_points
+    max_x = max(value[2] for value in all_bounds) + padding_points
+    max_y = max(value[3] for value in all_bounds) + padding_points
     return {
         "index": group.index,
         "minX": min_x,
@@ -690,6 +717,8 @@ html,body{margin:0;background:#fff}#docx-style{display:none}
 #docx-stage{position:relative;display:inline-block;background:#fff}
 #docx-capture{position:relative;display:inline-block;background:#fff;overflow:hidden}
 #docx-capture p{margin:0}
+#docx-fragment-0 .docx-textbox p,
+#docx-fragment-0 .docx-textbox p span{line-height:1.1 !important}
 </style><div id="docx-style"></div><div id="docx-source"></div>
 <div id="docx-stage"><div id="docx-capture" class="docx"></div></div>"""
 
@@ -824,7 +853,17 @@ _RENDER_SCRIPT = r"""async ({sourceBase64, blockKind, blockPath, drawingGroup, t
         width: `${shape.width * point}px`,
         height: `${shape.height * point}px`,
         margin: '0',
+        transform: `rotate(${shape.rotation || 0}deg)`,
       });
+      if (shape.geometry === 'line') {
+        const path = Boolean(shape.flipHorizontal) !== Boolean(shape.flipVertical)
+          ? 'M100 0 L0 100' : 'M0 0 L100 100';
+        clone.innerHTML = `<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;overflow:visible"><path d="${path}" fill="none" stroke="${shape.lineColor}" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>`;
+      }
+      if (shape.geometry === 'rightBracket' || shape.geometry === 'leftBracket') {
+        const path = shape.geometry === 'rightBracket' ? 'M0 0 H100 V100 H0' : 'M100 0 H0 V100 H100';
+        clone.innerHTML = `<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;overflow:visible"><path d="${path}" fill="none" stroke="${shape.lineColor}" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>`;
+      }
       if (shape.geometry === 'leftBrace' || shape.geometry === 'rightBrace') {
         const right = shape.geometry === 'leftBrace';
         const path = right
@@ -1089,9 +1128,16 @@ def _render_embedded_image(source: Path, output: Path, image_index: int) -> tupl
         with ZipFile(source) as package:
             root = ET.fromstring(package.read("word/document.xml"))
             relationships = ET.fromstring(package.read("word/_rels/document.xml.rels"))
+            body = root.find(".//w:body", _NS)
+            if body is None:
+                raise DocxTableImageError("DOCX 正文结构缺失")
+            # Match the paragraph-only ordering used by the block loader.
+            # Images in earlier tables are not paragraph image blocks and
+            # therefore must not shift the selected image's index.
             blips = [
                 blip
-                for blip in root.findall(".//a:blip", _NS)
+                for paragraph in body.findall("./w:p", _NS)
+                for blip in paragraph.findall(".//a:blip", _NS)
                 if blip.get(f"{{{_R}}}embed")
             ]
             if image_index >= len(blips):

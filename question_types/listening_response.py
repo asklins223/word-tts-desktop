@@ -7,9 +7,11 @@ from document_profiles import (
     RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE,
     RESPONSE_ENTRY_PROFILE,
     RESPONSE_UNKNOWN_PROFILE,
+    RESPONSE_TWO_SECTION_PROFILE,
+    RESPONSE_TWO_SECTION_ENTRY_PROFILE,
 )
 from question_types.base import BaseParser
-from question_types.text_utils import is_chinese, sanitize
+from question_types.text_utils import is_chinese, is_major_section_heading, sanitize
 from question_types.text_utils import has_red_text_in_range
 
 
@@ -26,6 +28,7 @@ class ListeningResponseParser(BaseParser):
     """
 
     DOC_TYPE = "听后应答"
+    _REQUIRES_DOCUMENT_BLOCKS = True
 
     @staticmethod
     def _capabilities(*, external_input: bool) -> dict[str, bool]:
@@ -43,7 +46,7 @@ class ListeningResponseParser(BaseParser):
         re.I,
     )
     RE_CONTROL = re.compile(
-        r'计算机语音提示.*?(?:请朗读应答语|朗读应答语)|'
+        r'计算机语音提示.*?朗读.*?应答语|'
         r'计算机屏幕.*?(?:倒计时|进度条)|'
         r'(?:参考答案|答案|解析)\s*[：:]?',
         re.I,
@@ -54,7 +57,11 @@ class ListeningResponseParser(BaseParser):
         r'^\s*(?P<number>\d+)\s*[.．、）)]\s*[★☆*]'
     )
     RE_ANSWER_OPTIONS = re.compile(r'^\s*[★☆*]')
-    RE_ANSWER_PROMPT = re.compile(r'请朗读应答语|朗读应答语', re.I)
+    RE_ANSWER_PROMPT = re.compile(r'朗读.*?应答语', re.I)
+    RE_SECOND_SECTION = re.compile(r'第\s*[二2２]\s*节')
+    RE_RESPONSE_SUBSECTION = re.compile(r'^\s*第\s*[一二12１２]\s*节')
+    RE_DIALOGUE_START = re.compile(r'^\s*(?:(\d+)\s*[.．、）)]\s*)?.*?听下面.*?对话')
+    RE_SCREEN_QUESTION = re.compile(r'(?:屏幕(?:文字)?显示\s*[）)]\s*)?\s*Q\s*[：:]\s*(.+)', re.I)
     RE_SCORE = re.compile(
         r'每小题\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
         re.I,
@@ -175,6 +182,112 @@ class ListeningResponseParser(BaseParser):
                     red_option_indexes.append(len(options) - 1)
         return options, red_option_indexes
 
+    def _dialogue_response_items(self, *, prior_number, score, answer_time):
+        """Parse the second response section: one dialogue and question each."""
+
+        from question_types.text_utils import is_major_section_heading, match_answer_marker, match_script_marker
+
+        section_pos = None
+        response_seen = False
+        for pos, (_, raw, _) in enumerate(self.paras):
+            value = str(raw or '').strip()
+            if self.RE_SECTION_START.search(value):
+                response_seen = True
+                continue
+            if not response_seen:
+                continue
+            if is_major_section_heading(value) and not self.RE_RESPONSE_SUBSECTION.match(value):
+                break
+            if not self.RE_SECOND_SECTION.search(value):
+                continue
+            following = ' '.join(str(row[1] or '') for row in self.paras[pos + 1:pos + 3])
+            if '对话' in following and ('回答问题' in following or '口头回答' in following or '问题作答' in following):
+                section_pos = pos + 1
+                break
+        if section_pos is None:
+            return [], []
+
+        blocks = []
+        current = None
+        mode = ''
+
+        def finish():
+            nonlocal current, mode
+            if current and current['lines']:
+                blocks.append(current)
+            current = None
+            mode = ''
+
+        for _, raw, _ in self.paras[section_pos:]:
+            value = str(raw or '').strip()
+            if not value:
+                continue
+            if is_major_section_heading(value):
+                break
+            start = self.RE_DIALOGUE_START.match(value)
+            if start:
+                finish()
+                current = {'number': int(start.group(1)) if start.group(1) else None,
+                           'lines': [], 'prompt': '', 'answers': []}
+                continue
+            if current is None:
+                continue
+            script = match_script_marker(value)
+            if script:
+                mode = 'script'
+                if script.group(1):
+                    current['lines'].append(script.group(1))
+                continue
+            answer = match_answer_marker(value)
+            if answer:
+                mode = 'answers'
+                if answer.group(1):
+                    current['answers'].append(sanitize(answer.group(1)))
+                continue
+            screen_question = self.RE_SCREEN_QUESTION.search(value)
+            if screen_question:
+                current['prompt'] = sanitize(screen_question.group(1))
+                mode = ''
+                continue
+            if '计算机' in value or '屏幕' in value:
+                mode = ''
+                continue
+            if mode == 'script':
+                current['lines'].append(value)
+            elif mode == 'answers' and re.search(r'[A-Za-z]', value):
+                current['answers'].append(sanitize(value))
+        finish()
+
+        # Only infer a missing source number when the visible numbers, and
+        # the preceding subsection if available, agree on one sequence.
+        bases = {block['number'] - index for index, block in enumerate(blocks)
+                 if block['number'] is not None}
+        numbered_blocks = sum(block['number'] is not None for block in blocks)
+        if prior_number is not None:
+            bases.add(prior_number + 1)
+        anchor_count = numbered_blocks + (prior_number is not None)
+        base = next(iter(bases)) if len(bases) == 1 and anchor_count >= 2 else None
+        items, questions = [], []
+        for index, block in enumerate(blocks):
+            number = block['number'] if block['number'] is not None else (base + index if base is not None else None)
+            text = sanitize('\n'.join(block['lines']))
+            item = {'category': '听后应答录音稿', 'text': text, 'section': '第二节'}
+            question = {'prompt': block['prompt'], 'listening_text': text,
+                        'reference_answers': block['answers'],
+                        'reference_answers_source': 'document', 'section': '第二节'}
+            if number is not None:
+                item.update(number=number, question_number=number, question_numbers=[number])
+                question['number'] = number
+                if block['number'] is None:
+                    question['number_inferred'] = True
+            if score is not None:
+                item['score'] = question['score'] = score
+            if answer_time is not None:
+                item['answer_time'] = question['answer_time'] = answer_time
+            items.append(item)
+            questions.append(question)
+        return items, questions
+
     def parse(self):
         items = []
         collecting = False
@@ -192,6 +305,8 @@ class ListeningResponseParser(BaseParser):
         declared_section_scores = []
         response_section_seen = False
         answer_time = None
+        response_prompt_positions = {}
+        current_prompt_position = None
 
         def parse_score_value(raw):
             normalized = str(raw or '').translate(
@@ -246,6 +361,11 @@ class ListeningResponseParser(BaseParser):
 
         for position, (_, text, _) in enumerate(self.paras):
             value = str(text or '').strip()
+            if (response_section_seen and is_major_section_heading(value)
+                    and not self.RE_SECTION_START.search(value)
+                    and not self.RE_RESPONSE_SUBSECTION.match(value)):
+                flush()
+                break
             if self.RE_SECTION_START.search(value):
                 response_section_seen = True
             score_match = self.RE_SCORE.search(value)
@@ -276,6 +396,7 @@ class ListeningResponseParser(BaseParser):
                 flush()
                 awaiting_answer_choices = False
                 collecting = True
+                current_prompt_position = self.paras[position][0]
                 expected_count = self._parse_count(prompt.group('count'))
                 continue
 
@@ -308,6 +429,7 @@ class ListeningResponseParser(BaseParser):
                     )
                     if options and 1 <= item_index <= len(questions):
                         question = questions[item_index - 1]
+                        response_prompt_positions[item_index] = current_prompt_position
                         question["options"] = options
                         if len(red_option_indexes) == 1:
                             question["answer"] = options[red_option_indexes[0]]["option_id"]
@@ -361,6 +483,37 @@ class ListeningResponseParser(BaseParser):
                     apply_source_number(items[item_index - 1], number)
                     if item_index <= len(questions):
                         questions[item_index - 1]["number"] = number
+        # Associate only images inside this question's own prompt window.
+        # A bitmap elsewhere in the paper must never be borrowed by proximity.
+        for item_index, start in response_prompt_positions.items():
+            if start is None:
+                continue
+            end = next((source_index for source_index, value, _ in self.paras
+                        if source_index > start and (self.RE_PROMPT.search(value)
+                           or self.RE_SECOND_SECTION.search(value)
+                           or is_major_section_heading(value))), None)
+            images = [block for block in self.document_blocks
+                      if block.kind == 'embedded_image'
+                      and start <= block.metadata.get('paragraph_index', -1)
+                      and (end is None or block.metadata.get('paragraph_index', -1) < end)]
+            if len(images) == 1:
+                questions[item_index - 1].update({
+                    'block_image_required': True,
+                    'block_kind': 'embedded_image',
+                    'block_index': images[0].metadata['embedded_image_index'],
+                })
+
+        prior_number = questions[-1].get('number') if answer_numbers and questions else None
+        dialogue_items, dialogue_questions = self._dialogue_response_items(
+            prior_number=prior_number, score=section_score, answer_time=answer_time,
+        )
+        if dialogue_items:
+            for item, question in zip(items, questions):
+                item['section'] = question['section'] = '第一节'
+            for item in dialogue_items:
+                item['index'] = len(items) + 1
+                items.append(item)
+            questions.extend(dialogue_questions)
         if use_exam_naming:
             for ordinal, item in enumerate(items, start=1):
                 filename_stem = audio_filename_stem(["听后应答"], ordinal)
@@ -376,6 +529,7 @@ class ListeningResponseParser(BaseParser):
             and all(
                 isinstance(question.get("options"), list)
                 and len(question["options"]) == 2
+                and question.get("block_image_required") is not True
                 and question.get("answer") in {
                     option.get("option_id") for option in question["options"]
                 }
@@ -392,20 +546,39 @@ class ListeningResponseParser(BaseParser):
                 for question in questions
             )
         )
+        two_section_confirmed = bool(
+            len(questions) == len(items) == 10
+            and [question.get("section") for question in questions] == ["第一节"] * 5 + ["第二节"] * 5
+            and all(
+                isinstance(question.get("options"), list)
+                and len(question["options"]) == 3
+                and question.get("answer") in {option.get("option_id") for option in question["options"]}
+                for question in questions[:5]
+            )
+            and all(question.get("prompt") and question.get("listening_text")
+                    and question.get("reference_answers") for question in questions[5:])
+        )
+        two_section_ready = bool(two_section_confirmed and all(
+            isinstance(question.get("score"), (int, float))
+            and not isinstance(question.get("score"), bool)
+            and isinstance(question.get("answer_time"), (int, float))
+            and not isinstance(question.get("answer_time"), bool)
+            for question in questions
+        ))
         for item in items:
             item.update({
                 "major_section_profile": (
-                    RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE
+                    RESPONSE_TWO_SECTION_PROFILE if two_section_confirmed else RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE
                     if profile_confirmed
                     else RESPONSE_UNKNOWN_PROFILE
                 ),
                 "entry_profile": (
-                    RESPONSE_ENTRY_PROFILE
+                    RESPONSE_TWO_SECTION_ENTRY_PROFILE if two_section_ready else RESPONSE_ENTRY_PROFILE
                     if external_input_ready
                     else None
                 ),
                 "capabilities": self._capabilities(
-                    external_input=external_input_ready,
+                    external_input=external_input_ready or two_section_ready,
                 ),
             })
         result = self._result(items)

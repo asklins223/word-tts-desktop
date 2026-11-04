@@ -858,6 +858,7 @@ _PAPER_DOCUMENT_TYPES = frozenset({
     "听后应答",
     "信息转述及询问",
     "听后记录并转述信息",
+    "听后转述",
     "模仿朗读",
 })
 _TEXTBOOK_DOCUMENT_TYPES = frozenset({"课文跟读"})
@@ -940,7 +941,7 @@ def _classify_input_type(items: Sequence[Mapping[str, Any]], filename: str, conf
                 item_families.add("textbook")
             elif token in _PAPER_DOCUMENT_TYPES or any(
                 marker in token for marker in ("听后选择", "听后应答", "信息获取", "信息转述", "模仿朗读")
-            ) or token.casefold() in {"paper", "exam", "listening_choice", "listening_response", "imitation_reading", "info_acquisition", "info_retelling", "listening_record_retelling"}:
+            ) or token.casefold() in {"paper", "exam", "listening_choice", "listening_response", "imitation_reading", "info_acquisition", "info_retelling", "listening_record_retelling", "listening_retelling"}:
                 item_families.add("paper")
         if len(item_families) == 1:
             families.update(item_families)
@@ -3438,6 +3439,105 @@ class SystemInputService:
             self.repository.events.write_snapshot_in_transaction(con, workflow_id, snapshot.as_dict())
             return self._projection_from_connection(con, workflow_id)
 
+    def repair_partial_receipt_replay(
+        self, workflow_id: str, input_run_id: str, attempt_id: str,
+    ) -> dict[str, Any]:
+        """Correct a success produced solely by replaying a partial draft receipt.
+
+        This targeted repair is intentionally separate from normal retry: it
+        requires an exact attempt and proof that the same operation was
+        previously reconciled as a partial record.  It never changes the
+        external record or starts a page operation.
+        """
+        message = "此前只确认了试卷草稿，尚未确认整卷保存；可继续录入已有试卷"
+        with self.database.transaction() as con:
+            self._require_available(con)
+            attempt = con.execute(
+                """SELECT ia.*, ir.workflow_id, ie.input_status, ie.external_record_id,
+                          eo.receipt_json
+                   FROM input_attempts ia
+                   JOIN input_runs ir ON ir.input_run_id=ia.input_run_id
+                   JOIN input_entries ie ON ie.entry_id=ia.entry_id
+                   JOIN external_operations eo ON eo.external_operation_id=ia.external_operation_id
+                   WHERE ir.workflow_id=? AND ia.input_run_id=? AND ia.attempt_id=?""",
+                (workflow_id, input_run_id, attempt_id),
+            ).fetchone()
+            if attempt is None:
+                raise NotFoundError(f"input attempt does not exist: {attempt_id}")
+            evidence = _json_object(attempt["evidence_json"])
+            if (str(attempt["status"]) == "FAILED"
+                    and evidence.get("partial_receipt_replay_repaired") is True):
+                return self._projection_from_connection(con, workflow_id)
+            prior = con.execute(
+                """SELECT attempt_id FROM input_attempts
+                   WHERE entry_id=? AND external_operation_id=? AND attempt_id<>?
+                     AND status='FAILED' AND error_code='INPUT_PARTIAL_EXTERNAL_RECORD'
+                   LIMIT 1""",
+                (attempt["entry_id"], attempt["external_operation_id"], attempt_id),
+            ).fetchone()
+            newer = con.execute(
+                """SELECT 1 FROM input_attempts newer
+                   JOIN input_attempts current ON current.attempt_id=?
+                   WHERE newer.entry_id=current.entry_id
+                     AND (newer.created_at>current.created_at
+                          OR (newer.created_at=current.created_at AND newer.rowid>current.rowid))
+                   LIMIT 1""", (attempt_id,),
+            ).fetchone()
+            receipt = _json_object(attempt["receipt_json"])
+            if (str(attempt["status"]) != "SUCCEEDED"
+                    or str(attempt["input_status"]) != "succeeded"
+                    or evidence.get("replayed_external_receipt") is not True
+                    or prior is None or newer is not None
+                    or not _text(attempt["external_record_id"], limit=512)
+                    or _text(receipt.get("external_record_id"), limit=512)
+                    != _text(attempt["external_record_id"], limit=512)):
+                raise ConflictError("录入回执不符合部分试卷修复条件", code="INPUT_REPAIR_STATE_CONFLICT")
+            now = utc_now()
+            evidence["partial_receipt_replay_repaired"] = True
+            evidence["partial_source_attempt_id"] = str(prior["attempt_id"])
+            con.execute(
+                """UPDATE input_attempts SET status='FAILED', error_code='INPUT_PARTIAL_EXTERNAL_RECORD',
+                   error_message=?, evidence_json=?, updated_at=? WHERE attempt_id=?""",
+                (message, canonical_json(evidence), now, attempt_id),
+            )
+            con.execute(
+                """UPDATE input_entries SET input_status='failed_retryable', requires_reconcile=0,
+                   review_url_status='unknown', updated_at=? WHERE workflow_id=? AND entry_id=?""",
+                (now, workflow_id, attempt["entry_id"]),
+            )
+            statuses = {str(row["status"]) for row in con.execute(
+                """SELECT current.status FROM input_attempts current
+                   WHERE current.input_run_id=? AND NOT EXISTS (
+                       SELECT 1 FROM input_attempts newer WHERE newer.input_run_id=current.input_run_id
+                         AND newer.entry_id=current.entry_id
+                         AND (newer.created_at>current.created_at
+                              OR (newer.created_at=current.created_at AND newer.rowid>current.rowid)))""",
+                (input_run_id,),
+            )}
+            if statuses == {"FAILED"}:
+                run_status = "FAILED"
+            elif statuses.issubset({"FAILED", "SUCCEEDED"}):
+                run_status = "PARTIAL_SUCCESS"
+            else:
+                raise ConflictError("录入运行状态发生变化，不能修复", code="INPUT_REPAIR_STATE_CONFLICT")
+            con.execute(
+                """UPDATE input_runs SET status=?, error_code='INPUT_PARTIAL_EXTERNAL_RECORD',
+                   error_message=?, finished_at=?, updated_at=? WHERE input_run_id=?""",
+                (run_status, message, now, now, input_run_id),
+            )
+            con.execute("UPDATE workflows SET state_version=state_version+1, updated_at=? WHERE workflow_id=?",
+                        (now, workflow_id))
+            self.repository.events.append_in_transaction(
+                con, workflow_id, "SYSTEM_INPUT_PARTIAL_RECEIPT_REPLAY_REPAIRED",
+                {"input_run_id": input_run_id, "attempt_id": attempt_id,
+                 "source_attempt_id": str(prior["attempt_id"]),
+                 "external_record_id": str(attempt["external_record_id"])},
+                actor_type="SYSTEM", actor_id="system-input-repair",
+            )
+            snapshot = _snapshot_from_connection(con, workflow_id)
+            self.repository.events.write_snapshot_in_transaction(con, workflow_id, snapshot.as_dict())
+            return self._projection_from_connection(con, workflow_id)
+
     def resolve_ambiguous_external_operation(
         self,
         workflow_id: str,
@@ -5349,14 +5449,76 @@ class SystemInputService:
                     operation_id = str(operation["external_operation_id"])
                     operation_state = str(operation.get("side_effect_state") or "NOT_STARTED")
 
+                # A confirmed partial-record reconciliation only establishes
+                # that the draft exists; it does not mean its contents were
+                # saved.  A retry must open that same record with a fresh
+                # operation, rather than replaying the creation receipt as a
+                # completed paper.
+                if operation_state == "CONFIRMED":
+                    receipt = operation.get("receipt") if isinstance(operation.get("receipt"), Mapping) else {}
+                    receipt_summary = receipt.get("summary") if isinstance(receipt.get("summary"), Mapping) else {}
+                    with self.database.read_transaction() as con:
+                        partial = con.execute(
+                            """SELECT 1 FROM input_attempts
+                               WHERE external_operation_id=? AND entry_id=?
+                                 AND status='FAILED'
+                                 AND error_code='INPUT_PARTIAL_EXTERNAL_RECORD'
+                               LIMIT 1""",
+                            (operation_id, entry_id),
+                        ).fetchone()
+                    if partial is not None or receipt_summary.get("deferred_page_fields"):
+                        confirmed_id = _text(receipt.get("external_record_id"), limit=512)
+                        if not confirmed_id or confirmed_id != preserved_external_id:
+                            raise SystemInputError(
+                                "部分试卷的外部记录与重试目标不一致，需要重新核对",
+                                code="INPUT_RESULT_UNCONFIRMED",
+                            )
+                        operation = self.external.prepare_operation(
+                            workflow_id,
+                            mapping_id=mapping_id,
+                            operation_key=f"input-run:{input_run_id}:{entry_id}:attempt:{attempt_id}",
+                            payload=operation_payload,
+                            mapping_version=mapping_version,
+                            item_id=None,
+                        )
+                        operation_id = str(operation["external_operation_id"])
+                        operation_state = str(operation.get("side_effect_state") or "NOT_STARTED")
+
                 # A lost worker response can leave the local attempt pending
-                # even though the durable external operation was confirmed.
-                # Replay its receipt instead of opening another page.
+                # even though a full page operation was confirmed. Replay its
+                # receipt instead of opening another page.
                 if operation_state == "CONFIRMED":
                     receipt = operation.get("receipt") if isinstance(operation.get("receipt"), Mapping) else {}
                     external_id = _text(receipt.get("external_record_id"), limit=512)
                     if not external_id:
                         raise SystemInputError("已确认操作缺少录入 ID", code="INPUT_RESULT_UNCONFIRMED")
+                    receipt_summary = receipt.get("summary") if isinstance(receipt.get("summary"), Mapping) else {}
+                    deferred = receipt_summary.get("deferred_page_fields")
+                    if isinstance(deferred, list) and deferred:
+                        # A worker may stop after the partial-save receipt is
+                        # confirmed but before its attempt row is updated.
+                        # Recover that receipt as retryable, not as a full
+                        # successful content submission.
+                        self._set_run_state(
+                            input_run_id,
+                            run_status="RUNNING",
+                            attempt_id=attempt_id,
+                            attempt_status="FAILED",
+                            side_effect_state="CONFIRMED",
+                            external_operation_id=operation_id,
+                            error_code="INPUT_PARTIAL_EXTERNAL_RECORD",
+                            error_message="试卷已保存；部分字段待后续录入",
+                            evidence={"replayed_partial_receipt": True, "feedback": dict(receipt_summary)},
+                            entry_updates={
+                                "input_status": "failed_retryable",
+                                "external_record_mapping_id": mapping_id,
+                                "external_record_id": external_id,
+                                "external_status": "SUCCEEDED",
+                                "requires_reconcile": 0,
+                                "review_url_status": "unknown",
+                            },
+                        )
+                        continue
                     self._set_run_state(
                         input_run_id,
                         run_status="RUNNING",
@@ -5550,6 +5712,14 @@ class SystemInputService:
                     raise SystemInputError("页面保存后没有观察到录入 ID", code="INPUT_RESULT_UNCONFIRMED")
                 feedback = redact_public_json(result.get("feedback") if isinstance(result.get("feedback"), Mapping) else {})
                 feedback = dict(feedback) if isinstance(feedback, Mapping) else {}
+                deferred_fields = redact_public_json(result.get("deferred_page_fields") or [])
+                deferred_fields = deferred_fields if isinstance(deferred_fields, list) else []
+                if deferred_fields:
+                    # Include this in the immutable submission receipt as
+                    # well as the attempt, so a crash between confirmation
+                    # and the status update cannot replay a partial save as
+                    # a fully completed paper.
+                    feedback["deferred_page_fields"] = deferred_fields
                 steps = redact_public_json(result.get("steps") or [])
                 steps = steps if isinstance(steps, list) else []
                 self.external.record_submission(
@@ -5565,16 +5735,26 @@ class SystemInputService:
                     evidence_hash=content_hash({"operation_id": operation_id, "feedback": feedback, "steps": steps}),
                     evidence={"feedback": feedback, "steps": steps},
                 )
+                deferred_numbers = [
+                    str(item.get("question_number")) for item in deferred_fields
+                    if isinstance(item, Mapping) and item.get("question_number") is not None
+                ]
+                partial_message = (
+                    "试卷已保存；听后应答第" + "、".join(deferred_numbers) + "题的原文或音频待后续录入"
+                    if deferred_numbers else "试卷已保存；部分字段待后续录入"
+                )
                 self._set_run_state(
                     input_run_id,
                     run_status="RUNNING",
                     attempt_id=attempt_id,
-                    attempt_status="SUCCEEDED",
+                    attempt_status="FAILED" if deferred_fields else "SUCCEEDED",
                     side_effect_state="CONFIRMED",
                     external_operation_id=operation_id,
+                    error_code="INPUT_PARTIAL_EXTERNAL_RECORD" if deferred_fields else None,
+                    error_message=partial_message if deferred_fields else None,
                     evidence={"feedback": feedback, "steps": steps},
                     entry_updates={
-                        "input_status": "succeeded",
+                        "input_status": "failed_retryable" if deferred_fields else "succeeded",
                         "external_record_mapping_id": mapping_id,
                         "external_record_id": external_id,
                         "external_status": "SUCCEEDED",

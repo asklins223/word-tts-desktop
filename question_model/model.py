@@ -111,6 +111,10 @@ FAMILY_REGISTRY: dict[str, QuestionFamily] = {f.code: f for f in (
         ),
     ),
     QuestionFamily(
+        code="listening_retelling", display_name="听后转述", color="#0369a1",
+        content_markers=(re.compile(r'^\s*(?:[一二三四五六七八九十]+\s*[、.．)]\s*)?听后转述(?:[（(\s:：]|$)'),),
+    ),
+    QuestionFamily(
         code="imitation_reading", display_name="模仿朗读", color="#9f1239",
         content_markers=(
             re.compile(r'模仿朗读'),
@@ -192,6 +196,8 @@ SUB_TYPE_REGISTRY: dict[str, QuestionSubType] = {
         QuestionSubType("listening_record_retelling", "listening_record_retelling",
                         "听后记录并转述信息", "stimulus",
                         audio_granularity="script_whole"),
+        QuestionSubType("listening_retelling", "listening_retelling", "听后转述",
+                        "stimulus", audio_granularity="script_whole"),
         # 模仿朗读：本身就是最小题型；外网/教材是来源属性不是小题型
         QuestionSubType("imitation_reading", "imitation_reading", "模仿朗读",
                         "stimulus", audio_granularity="passage"),

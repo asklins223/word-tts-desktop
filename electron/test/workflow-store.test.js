@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createWorkflowStore } = require('../renderer/workflow-store');
+const { createWorkflowStore, projectSystemInput } = require('../renderer/workflow-store');
 
 function memoryStorage() {
     const values = new Map();
@@ -21,6 +21,28 @@ function event(seq, id = `event-${seq}`) {
         payload: {}, created_at: '2026-01-01T00:00:00Z', step_id: null, item_id: null, attempt_id: null,
     } };
 }
+
+test('武汉新题型的文稿核对和两类图片在工作区投影后保留', () => {
+    const projection = projectSystemInput({
+        document_entry_support: { supported: false, review_supported: true, label: '武汉新题型' },
+        content_segments: [
+            { item_id: 'q15', page_input: { type: '听后应答', questions: [{
+                number: 15, section: '第一节', block_image_required: true,
+                block_kind: 'embedded_image', block_index: 0, image_artifact_id: 'image-q15',
+            }] } },
+            { item_id: 'q22', page_input: { type: '听后转述',
+                recording: { block_kind: 'drawing_group', block_index: 1, image_artifact_id: 'image-map' },
+                retelling: { number: 22, reference_answers: ['First answer.', 'Second answer.'] },
+            } },
+        ],
+    });
+    assert.equal(projection.document_entry_support.supported, false);
+    assert.equal(projection.document_entry_support.review_supported, true);
+    assert.equal(projection.content_segments[0].page_input.questions[0].image_artifact_id, 'image-q15');
+    assert.equal(projection.content_segments[1].page_input.recording.image_artifact_id, 'image-map');
+    assert.deepEqual(projection.content_segments[1].page_input.retelling.reference_answers,
+        ['First answer.', 'Second answer.']);
+});
 
 test('Store 只在 reducer 成功后推进并持久化 SSE 游标，重复事件幂等', () => {
     const storage = memoryStorage();

@@ -28,6 +28,7 @@ _GROUP_PART_KEYWORDS: dict[str, tuple[str, ...]] = {
     "听后应答": ("听后应答",),
     "模仿朗读": ("模仿朗读",),
     "听后记录并转述信息": ("听后记录",),
+    "听后转述": ("听后转述",),
     "信息获取": ("信息获取",),
     "信息转述及询问": ("信息转述",),
 }
@@ -105,7 +106,19 @@ class OutlineStructure:
         if resolved is None:
             return None
         number, kind = resolved
-        return OutlineCard(number, kind).text, 0
+        if group_type != "听后应答":
+            return OutlineCard(number, kind).text, 0
+        occurrence = sum(
+            card.number == number and card.kind == kind
+            for previous in self.sections[:self.sections.index(section)]
+            for card in previous.cards
+        )
+        for title, prior_number in section.subsections:
+            if any(keyword in title for keyword in keywords):
+                break
+            if prior_number == number and section.kind_at(prior_number) == kind:
+                occurrence += 1
+        return OutlineCard(number, kind).text, occurrence
 
 
 def analyze_outline_rows(rows: Sequence[Any]) -> OutlineStructure | None:

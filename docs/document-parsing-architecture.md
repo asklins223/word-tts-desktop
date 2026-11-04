@@ -5,7 +5,7 @@
 
 ## 1. 背景与结论
 
-当前 `question_types` 的 8 个 Parser（信息获取、听后选择、听后应答、课文跟读、信息转述及询问、听后记录并转述信息、模仿朗读、词汇）是现有的**解析能力入口**，不是产品领域中的并列顶层文档类型。
+当前 `question_types` 的 9 个 Parser（信息获取、听后选择、听后应答、课文跟读、信息转述及询问、听后记录并转述信息、听后转述、模仿朗读、词汇）是现有的**解析能力入口**，不是产品领域中的并列顶层文档类型。
 
 产品实际面对的是三类源文档：
 
@@ -93,9 +93,10 @@ AudioSegment ──rendered_as────────────────�
 | `listening_response` | `exam` | `MajorSection` 抽取器 | 听后应答 |
 | `info_retelling` | `exam` | `MajorSection` 抽取器 | 信息转述、询问信息 |
 | `listening_record_retelling` | `exam` | `MajorSection` 抽取器 | 听后记录并转述信息 |
+| `listening_retelling` | `exam` | `MajorSection` 抽取器 | 听后转述 |
 | `imitation_reading` | `exam` | `MajorSection` 抽取器 | 模仿朗读 |
 
-现有 8 个 Family 和 12 个 SubType 可以继续使用，但它们必须位于本表所示的第二、三层。新增出版社或教材排版时，原则上新增/调整 profile，而不是新增一个 Family。
+现有 9 个 Family 和 13 个 SubType 必须位于本表所示的第二、三层。新增出版社或教材排版时，原则上新增/调整 profile，而不是新增一个 Family。
 
 ### 2.4 身份、定位与修订边界
 

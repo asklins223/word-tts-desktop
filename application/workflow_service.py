@@ -851,8 +851,24 @@ class WorkflowApplicationService:
         return self.repository.get_configuration(workflow_id)
 
     @staticmethod
+    def _block_image_selector(holder: Mapping[str, Any]) -> tuple[str, int] | None:
+        if holder.get("block_image_required") is True:
+            block_kind = str(holder.get("block_kind") or "")
+            block_index = holder.get("block_index")
+        elif holder.get("table_image_required") is True:
+            block_kind = "table"
+            block_index = holder.get("table_index")
+        else:
+            return None
+        if block_kind not in {"table", "drawing_group", "embedded_image"}:
+            raise WorkflowApplicationError("PARSER_ERROR", "文档块图片缺少有效的块类型，不能开始录入")
+        if isinstance(block_index, bool) or not isinstance(block_index, int) or block_index < 0:
+            raise WorkflowApplicationError("PARSER_ERROR", "文档块图片缺少有效的块序号，不能开始录入")
+        return block_kind, block_index
+
+    @staticmethod
     def _block_image_requests(parsed: ParsedDocument) -> list[tuple[str, int]]:
-        """Collect parser-owned DOCX block selectors requiring an image."""
+        """Collect recording and question-level DOCX image selectors."""
 
         requests: set[tuple[str, int]] = set()
         for item in parsed.items:
@@ -860,32 +876,15 @@ class WorkflowApplicationService:
             page_input = metadata.get("page_input")
             if not isinstance(page_input, Mapping):
                 continue
-            recording = page_input.get("recording")
-            if not isinstance(recording, Mapping):
-                continue
-            if recording.get("block_image_required") is True:
-                block_kind = str(recording.get("block_kind") or "")
-                block_index = recording.get("block_index")
-            elif recording.get("table_image_required") is True:
-                block_kind = "table"
-                block_index = recording.get("table_index")
-            else:
-                continue
-            if block_kind not in {"table", "drawing_group", "embedded_image"}:
-                raise WorkflowApplicationError(
-                    "PARSER_ERROR",
-                    "文档块图片缺少有效的块类型，不能开始录入",
-                )
-            if (
-                isinstance(block_index, bool)
-                or not isinstance(block_index, int)
-                or block_index < 0
-            ):
-                raise WorkflowApplicationError(
-                    "PARSER_ERROR",
-                    "文档块图片缺少有效的块序号，不能开始录入",
-                )
-            requests.add((block_kind, block_index))
+            holders = [page_input.get("recording")]
+            questions = page_input.get("questions")
+            if isinstance(questions, list):
+                holders.extend(questions)
+            for holder in holders:
+                if isinstance(holder, Mapping):
+                    selector = WorkflowApplicationService._block_image_selector(holder)
+                    if selector is not None:
+                        requests.add(selector)
         return sorted(requests)
 
     @staticmethod
@@ -954,31 +953,31 @@ class WorkflowApplicationService:
             if not isinstance(page_input, Mapping):
                 updated_items.append(item)
                 continue
-            recording = page_input.get("recording")
-            if not isinstance(recording, Mapping):
-                updated_items.append(item)
-                continue
-            if recording.get("block_image_required") is True:
-                block_kind = str(recording.get("block_kind") or "")
-                block_index = recording.get("block_index")
-            elif recording.get("table_image_required") is True:
-                block_kind = "table"
-                block_index = recording.get("table_index")
-            else:
-                block_kind = ""
-                block_index = None
-            artifact_id = (
-                artifact_ids.get((block_kind, block_index))
-                if isinstance(block_index, int) and not isinstance(block_index, bool)
-                else None
-            )
-            if not artifact_id:
-                updated_items.append(item)
-                continue
-            next_recording = dict(recording)
-            next_recording["image_artifact_id"] = artifact_id
             next_page_input = dict(page_input)
-            next_page_input["recording"] = next_recording
+            changed = False
+
+            def attach(holder: Mapping[str, Any]) -> dict[str, Any]:
+                nonlocal changed
+                value = dict(holder)
+                selector = WorkflowApplicationService._block_image_selector(holder)
+                artifact_id = artifact_ids.get(selector) if selector is not None else None
+                if artifact_id:
+                    value["image_artifact_id"] = artifact_id
+                    changed = True
+                return value
+
+            recording = page_input.get("recording")
+            if isinstance(recording, Mapping):
+                next_page_input["recording"] = attach(recording)
+            questions = page_input.get("questions")
+            if isinstance(questions, list):
+                next_page_input["questions"] = [
+                    attach(question) if isinstance(question, Mapping) else question
+                    for question in questions
+                ]
+            if not changed:
+                updated_items.append(item)
+                continue
             metadata["page_input"] = next_page_input
             updated_items.append(replace(item, metadata=metadata))
         return replace(parsed, items=tuple(updated_items))

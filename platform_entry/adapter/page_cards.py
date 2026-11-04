@@ -98,6 +98,14 @@ _ANSWER_CONTROL_SNAPSHOT_JS = """
 class PlatformInputCardMixin:
     """Discover cards and fill text, options, answers, and scores."""
 
+    def _question_page_scope(self, card: Any, description: str) -> Any:
+        scope = card.locator(
+            'xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " rightMiddleContent ")][1]'
+        )
+        if scope.count() != 1:
+            raise PlatformInputUiError(f"无法唯一定位{description}所属页面")
+        return scope
+
     def _text_editors(self) -> list[Any]:
         editors = self.page.locator(
             '.rich-text-editor .editor-content[contenteditable="true"]'

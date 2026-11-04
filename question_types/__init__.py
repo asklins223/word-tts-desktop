@@ -41,6 +41,7 @@ from . import (  # noqa: F401
     info_acquisition,
     info_retelling,
     listening_record_retelling,
+    listening_retelling,
     listening_response,
     listening_selection,
     text_reading,
@@ -51,6 +52,7 @@ from .imitation_reading import ImitationReadingParser  # noqa: F401
 from .info_acquisition import InfoAcquisitionParser  # noqa: F401
 from .info_retelling import InfoRetellingParser  # noqa: F401
 from .listening_record_retelling import ListeningRecordRetellingParser  # noqa: F401
+from .listening_retelling import ListeningRetellingParser  # noqa: F401
 from .listening_response import ListeningResponseParser  # noqa: F401
 from .listening_selection import ListeningSelectionParser  # noqa: F401
 from .text_reading import TextReadingParser  # noqa: F401
@@ -64,6 +66,7 @@ PARSERS_BY_FAMILY = {
     "text_reading": TextReadingParser,
     "info_retelling": InfoRetellingParser,
     "listening_record_retelling": ListeningRecordRetellingParser,
+    "listening_retelling": ListeningRetellingParser,
     "imitation_reading": ImitationReadingParser,
     "vocabulary": ExcelVocabularyParser,
 }

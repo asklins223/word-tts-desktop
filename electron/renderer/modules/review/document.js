@@ -223,7 +223,7 @@ function applyReviewViewMode(documentSupported = false) {
     }
     if (switcherNote) {
         switcherNote.textContent = canShowDocument
-            ? '文稿核对只在识别到可录入的文档结构时显示。'
+            ? '按题型核对文稿内容和图片。'
             : '当前文档暂不支持文稿录入，仅展示音频条目和绑定状态。';
     }
     if (tabs) tabs.setAttribute('aria-label', canShowDocument ? '内容核对视图' : '音频核对视图');
@@ -308,7 +308,7 @@ function reviewPageQuestionList(pageInput) {
         return (Array.isArray(pageInput.materials) ? pageInput.materials : [])
             .flatMap(material => Array.isArray(material?.questions) ? material.questions : []);
     }
-    if (pageInput.type === '听后记录并转述信息') {
+    if (pageInput.type === '听后记录并转述信息' || pageInput.type === '听后转述') {
         const questions = Array.isArray(pageInput.recording?.questions)
             ? pageInput.recording.questions.slice()
             : [];
@@ -1818,17 +1818,56 @@ function renderDocumentPageFacts(parent, pageInput, item, imageTasks) {
         renderInfoRetellingFacts(parent, pageInput, item, imageTasks);
         return;
     }
+    if (type === '听后转述') {
+        const recording = pageInput.recording || {};
+        const retelling = pageInput.retelling || {};
+        reviewDocumentTextBlock(parent, '听力原文', recording.listening_text || reviewContentForItem(item));
+        if (recording.image_artifact_id) {
+            const preview = createReviewImagePreview(item, recording.image_artifact_id, {
+                label: '听后转述思维导图', note: '从原文提取的题目配图。',
+            });
+            parent.appendChild(preview.figure);
+            imageTasks.push(preview.hydrate);
+        }
+        reviewDocumentTextBlock(parent, '转述开头', retelling.prompt, 'review-document-prompt');
+        renderReviewReferenceAnswers(parent, retelling.reference_answers);
+        return;
+    }
     const questions = reviewPageQuestionList(pageInput);
     if (type === '听后选择') {
         renderListeningSelectionFacts(parent, pageInput, item);
         return;
     }
     if (type === '听后应答') {
-        questions.forEach(question => reviewDocumentQuestion(parent, question, item, {
-            showHeading: false,
-            promptLabel: '听力原文',
-            optionsLabel: '应答语',
-        }));
+        questions.forEach(question => {
+            if (question.section === '第二节') {
+                reviewDocumentTextBlock(parent, '听力原文', question.listening_text || reviewContentForItem(item));
+            }
+            if (question.number_inferred === true) {
+                const note = document.createElement('p');
+                note.className = 'review-document-question-meta';
+                note.textContent = '题号根据相邻题目推断';
+                parent.appendChild(note);
+            }
+            const displayOptions = {
+                showHeading: false,
+                promptLabel: '听力原文',
+                optionsLabel: '应答语',
+            };
+            if (question.section === '第二节') {
+                displayOptions.promptLabel = '屏幕问题';
+                displayOptions.showPrompt = Boolean(question.prompt);
+                if (!question.prompt) reviewDocumentTextBlock(parent, '屏幕问题', '未识别');
+            }
+            reviewDocumentQuestion(parent, question, item, displayOptions);
+            if (question.image_artifact_id) {
+                const preview = createReviewImagePreview(item, question.image_artifact_id, {
+                    label: '题目配图', note: '从原文提取的题目配图。',
+                });
+                parent.appendChild(preview.figure);
+                imageTasks.push(preview.hydrate);
+            }
+        });
         if (!questions.length) reviewDocumentTextBlock(parent, '听力原文', reviewContentForItem(item));
         return;
     }
@@ -1873,18 +1912,20 @@ function renderReviewDocumentView(unitModels, presentation, entrySupport = null,
         || currentSession?.source_filename
         || activeResultContext?.sourceFilename
         || '';
-    const supported = resolvedEntrySupport?.supported === true;
+    const entrySupported = resolvedEntrySupport?.supported === true;
+    const supported = entrySupported || resolvedEntrySupport?.review_supported === true;
     const documentView = $('review-document-view');
     if (documentView) documentView.classList.toggle('is-empty', !supported || models.length === 0);
     const format = $('review-document-format');
     if (format) {
         format.hidden = !supported;
-        format.textContent = supported ? `${resolvedEntrySupport.label} · 可进入录入流程` : '暂不支持文稿录入';
+        format.textContent = entrySupported ? `${resolvedEntrySupport.label} · 可进入录入流程`
+            : supported ? `${resolvedEntrySupport.label} · 解析核对` : '暂不支持文稿录入';
         format.className = `review-document-format-badge is-${supported ? 'supported' : 'unsupported'}`;
     }
     if ($('review-document-description')) {
         $('review-document-description').textContent = supported
-            ? `${resolvedSourceFilename || '当前文档'} · 按原文顺序查看录入脚本会读取的内容。`
+            ? `${resolvedSourceFilename || '当前文档'} · 按原文顺序查看解析内容。`
             : '当前任务仍保留音频核对；文稿录入入口会在识别到支持的文档结构后出现。';
     }
     if (nav) {
@@ -1916,7 +1957,9 @@ function renderReviewDocumentView(unitModels, presentation, entrySupport = null,
                     && presentation?.candidateCount > 1
                     ? ` 已根据 ${presentation.candidateCount} 个独立结构范围完成分组。`
                     : '';
-            boundary.textContent = `${resolvedEntrySupport.label}结构已识别。${candidateHint || '下面按题型展示文稿和页面录入字段。'}`;
+            boundary.textContent = entrySupported
+                ? `${resolvedEntrySupport.label}结构已识别。${candidateHint || '下面按题型展示文稿和页面录入字段。'}`
+                : (resolvedEntrySupport.reason || '已识别文稿结构，自动录入暂未接入。');
             boundary.className = `review-document-boundary is-${presentation?.status || 'single_default'} is-supported`;
         }
     }

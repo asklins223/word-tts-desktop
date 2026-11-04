@@ -185,6 +185,8 @@ QUESTION_TYPE_ALIASES = {
     "listening_record_retelling": "听后记录并转述信息",
     "listening-record-retelling": "听后记录并转述信息",
     "record_retelling": "听后记录并转述信息",
+    "听后转述": "听后转述",
+    "listening_retelling": "听后转述",
     "信息获取": "信息获取",
     "info_acquisition": "信息获取",
     "信息转述及询问": "信息转述及询问",
@@ -198,6 +200,7 @@ GROUP_FILL_ORDER = (
     "信息获取",
     "信息转述及询问",
     "听后记录并转述信息",
+    "听后转述",
 )
 
 DEFAULT_OUTLINE_TARGETS = {
@@ -205,6 +208,7 @@ DEFAULT_OUTLINE_TARGETS = {
     "听后应答": ("第1题(录音题)", 0),
     "模仿朗读": ("第1题(录音题)", 0),
     "听后记录并转述信息": ("第1题(填空题)", 0),
+    "听后转述": ("第1题(录音题)", 0),
     "信息获取": ("第1题(录音题)", 0),
     "信息转述及询问": ("第1题(录音题)", 0),
 }

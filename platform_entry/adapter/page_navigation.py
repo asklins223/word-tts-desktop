@@ -421,6 +421,8 @@ class PlatformInputNavigationMixin:
             elif current_type == "信息转述及询问":
                 number += (1 if group.get("retelling") else 0)
                 number += len(group.get("asking") or ())
+            elif current_type == "听后转述":
+                number += 1 if group.get("retelling") else 0
             elif current_type == "听后记录并转述信息":
                 recording = group.get("recording") or {}
                 number += len(recording.get("questions") or ())
@@ -684,11 +686,22 @@ class PlatformInputNavigationMixin:
             (candidate for candidate in PAPER_BUNDLE_RULES if candidate.key == self.spec.bundle_rule),
             None,
         )
-        target = outline_target or (
-            rule.outline_target(group_type)
-            if rule is not None
-            else _DEFAULT_OUTLINE_TARGETS.get(group_type)
-        )
+        if outline_target is None and any(
+            group.get("type") == "听后转述" for group in self.spec.groups
+        ):
+            structure = self._read_outline_structure()
+            section = structure.section_for(group_type) if structure is not None else None
+            if section is not None:
+                kind = section.kind_at(section.first_number)
+                occurrence = sum(
+                    card.number == section.first_number and card.kind == kind
+                    for previous in structure.sections[:structure.sections.index(section)]
+                    for card in previous.cards
+                )
+                outline_target = (f"第{section.first_number}题({kind})", occurrence)
+        target = (outline_target
+                  or (rule.outline_target(group_type) if rule is not None else None)
+                  or _DEFAULT_OUTLINE_TARGETS.get(group_type))
         if target is None:
             raise PlatformInputUiError(f"没有配置题型“{group_type}”的页面导航定位")
         target_text, wanted_occurrence = target

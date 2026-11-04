@@ -136,7 +136,7 @@ def _enabled(row: Mapping[str, Any]) -> bool:
         # The current platform list uses 1=启用 and 0=停用.
         return raw != 0
     normalized = _normal_key(raw)
-    return normalized not in {"false", "disabled", "disable", "inactive", "off", "停用", "禁用", "已停用"}
+    return normalized not in {"0", "false", "disabled", "disable", "inactive", "off", "停用", "禁用", "已停用"}
 
 
 def _question_types(row: Mapping[str, Any]) -> list[dict[str, str]]:

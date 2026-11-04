@@ -34,6 +34,10 @@ def count_record_retelling_group(group: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+def count_listening_retelling_group(group: Mapping[str, Any]) -> dict[str, int]:
+    return {"录音题": 1 if group.get("retelling") else 0}
+
+
 def count_info_acquisition_group(group: Mapping[str, Any]) -> dict[str, int]:
     return {
         "录音题": sum(
@@ -52,6 +56,7 @@ def count_info_retelling_group(group: Mapping[str, Any]) -> dict[str, int]:
 __all__ = [
     "count_imitation_group",
     "count_record_retelling_group",
+    "count_listening_retelling_group",
     "count_info_acquisition_group",
     "count_info_retelling_group",
     "count_response_group",

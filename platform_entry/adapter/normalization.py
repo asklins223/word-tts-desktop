@@ -27,6 +27,7 @@ from .group_counts import (
     count_info_retelling_group,
     count_imitation_group,
     count_record_retelling_group,
+    count_listening_retelling_group,
     count_response_group,
     count_selection_group,
 )
@@ -322,7 +323,7 @@ def _normalise_question(
         raise PlatformInputError(f"{name} 必须是对象")
 
     prompt_keys = ("prompt", "stem", "question", "text")
-    if group_type == "听后应答":
+    if group_type == "听后应答" and value.get("section") != "第二节":
         # The response page can use its listening sentence as the visible
         # question prompt when the compact input has no separate prompt. A
         # selection/reading page must not silently turn the listening script
@@ -376,7 +377,9 @@ def _normalise_question(
     )
 
     raw_options = _first_present(value, ("options", "choices"))
-    if group_type in {"听后选择", "听后应答"}:
+    if group_type == "听后选择" or (
+        group_type == "听后应答" and value.get("section") != "第二节"
+    ):
         if raw_options is None:
             raise PlatformInputError(f"{name}.options 不能为空；页面小题必须完整录入选项")
         options = _normalise_options(raw_options, f"{name}.options")
@@ -410,6 +413,7 @@ from .normalizers.legacy_exam import (
 from .normalizers.record_retelling import (
     normalise_record_retelling_group as _normalise_record_group,
 )
+from .normalizers.listening_retelling import normalise_listening_retelling_group
 from .normalizers.response import normalise_response_group as _normalise_response_group
 from .normalizers.selection import normalise_selection_group as _normalise_selection_group
 
@@ -465,6 +469,14 @@ def _register_builtin_question_types() -> None:
             normalizer=_normalise_record_group,
             page_method="_fill_record_retelling_groups",
             card_counter=count_record_retelling_group,
+        ),
+        QuestionTypeHandler(
+            canonical_type="听后转述",
+            aliases=(),
+            card_kind="录音题",
+            normalizer=normalise_listening_retelling_group,
+            page_method="_fill_listening_retelling_groups",
+            card_counter=count_listening_retelling_group,
         ),
     )
     for handler in builtins:

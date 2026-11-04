@@ -8,6 +8,29 @@ from .page_shared import *  # noqa: F403,F401
 class PlatformInputRecordContentMixin:
     """Fill the table/blank section and its separate retelling section."""
 
+    def _fill_listening_retelling_groups(
+        self, groups_by_type: Mapping[str, Sequence[Mapping[str, Any]]],
+    ) -> dict[str, int]:
+        groups = groups_by_type["听后转述"]
+        cards, editors = self._activate_group_section(
+            "听后转述", "录音题", len(groups), len(groups),
+        )
+        for index, group in enumerate(groups):
+            source = group["recording"]
+            question = group["retelling"]
+            description = f"听后转述第{index + 1}题"
+            scope = self._question_page_scope(cards[index], description)
+            self._replace_rich_text(
+                self._next_listening_editor(editors, index, description),
+                source["listening_text"], field=f"{description}听力原文",
+            )
+            self._upload_original_audio(source["audio_path"], index, description)
+            self._upload_image(source["image_path"], 0, scope=scope)
+            self._fill_recording_card(
+                cards[index], question, description=description, prompt=question["prompt"],
+            )
+        return {"录音题": len(groups)}
+
     def _fill_record_retelling_groups(
         self,
         groups_by_type: Mapping[str, Sequence[Mapping[str, Any]]],

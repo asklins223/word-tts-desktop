@@ -29,7 +29,7 @@ ANSWER_MARKER_RE = re.compile(
 
 _MAJOR_SECTION_NAMES = (
     r'(?:信息获取|回答问题|听选信息|听后选择|听后应答|'
-    r'听后记录并转述信息|听后记录|信息转述及询问|信息转述|询问信息|'
+    r'听后记录并转述信息|听后记录|听后转述|信息转述及询问|信息转述|询问信息|'
     r'模仿朗读|课文跟读|词汇)'
 )
 _MAJOR_TYPE_SUFFIX = r'(?:题型?|试题)?'
@@ -502,6 +502,15 @@ def _build_document_blocks(document):
                     metadata={'paragraph_index': paragraph_index},
                 ))
                 block_index += 1
+
+            # The renderer numbers *all* anchored drawing groups, including
+            # pictures without text boxes. Keep the same group numbering so
+            # a later mind map cannot accidentally select an earlier photo.
+            has_anchors = bool(child.xpath('.//wp:anchor'))
+            if has_anchors and not drawing_group_open:
+                drawing_group_index += 1
+            if has_anchors:
+                drawing_group_open = True
 
             textbox_fragments = _textbox_fragments(child)
             if textbox_fragments:

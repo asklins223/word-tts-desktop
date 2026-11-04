@@ -92,6 +92,30 @@ def test_inline_embedded_image_is_extracted_and_normalized_to_png(tmp_path: Path
     assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
+def test_inline_image_index_ignores_earlier_images_in_tables(tmp_path: Path):
+    from question_types.segmenter import load_document_once
+
+    red = tmp_path / "table.png"
+    blue = tmp_path / "question.png"
+    Image.new("RGB", (8, 8), "red").save(red)
+    Image.new("RGB", (8, 8), "blue").save(blue)
+    document = Document()
+    table = document.add_table(rows=1, cols=1)
+    table.cell(0, 0).paragraphs[0].add_run().add_picture(str(red))
+    document.add_paragraph("Question picture")
+    document.add_picture(str(blue))
+    source = tmp_path / "table-and-question.docx"
+    document.save(source)
+
+    blocks = load_document_once(source, include_structure=True)[2]
+    image_block = next(block for block in blocks if block.kind == "embedded_image")
+    output = tmp_path / "extracted.png"
+    render_docx_block_image(source, output, block_kind="embedded_image",
+                            block_index=image_block.metadata["embedded_image_index"])
+    with Image.open(output) as image:
+        assert image.convert("RGB").getpixel((0, 0)) == (0, 0, 255)
+
+
 def test_drawing_group_uses_document_grid_and_anchor_positions():
     root, theme = _read_document_xml(DRAWING_FIXTURE)
     groups = _drawing_groups(root, theme)

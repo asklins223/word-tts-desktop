@@ -11,7 +11,10 @@ from ..errors import PlatformInputError
 from ..normalization import (
     _first_present,
     _normalise_question,
+    _normalise_number,
+    _normalise_string_list,
     _require_nonempty_text,
+    _resolve_image_path,
 )
 
 
@@ -57,6 +60,26 @@ def normalise_response_group(
             fallback_prompt=group_text,
             fallback_audio=group_audio,
         )
+        section = str(raw_question.get("section") or "").strip()
+        if section in {"第一节", "第二节"}:
+            question["section"] = section
+        if raw_question.get("image_path"):
+            question["image_path"] = _resolve_image_path(
+                raw_question["image_path"], f"{question_name}.image_path", base_dir,
+            )
+        if raw_question.get("block_image_required") is True and not question.get("image_path"):
+            raise PlatformInputError(f"{question_name} 缺少题目配图")
+        if section == "第二节":
+            question["score"] = _normalise_number(raw_question.get("score"), f"{question_name}.score", minimum=0)
+            question["reference_answers"] = tuple(_normalise_string_list(
+                raw_question.get("reference_answers"), f"{question_name}.reference_answers",
+            ))
+            question["listening_text"] = _require_nonempty_text(
+                question.get("listening_text") or group_text,
+                f"{question_name}.listening_text",
+            )
+            questions.append(question)
+            continue
         listening_fallback = question["prompt"]
         # The platform's listening-response section is rendered as a spoken
         # card.  Its two Word choices are not editable option rows there: the

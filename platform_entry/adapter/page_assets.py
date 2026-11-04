@@ -434,11 +434,13 @@ class PlatformInputAssetMixin:
         self,
         labels: Sequence[str],
         occurrence: int = 0,
+        *,
+        scope: Any | None = None,
     ) -> Any | None:
         """按上传提示文字找非音频文件控件，例如信息记录表图片。"""
 
         for label in labels:
-            nodes = self.page.get_by_text(label, exact=True)
+            nodes = (scope or self.page).get_by_text(label, exact=True)
             try:
                 count = nodes.count()
             except Exception:
@@ -474,7 +476,7 @@ class PlatformInputAssetMixin:
                 return matches[occurrence]
         return None
 
-    def _image_region(self, occurrence: int = 0) -> Any | None:
+    def _image_region(self, occurrence: int = 0, *, scope: Any | None = None) -> Any | None:
         """定位信息记录表图片区域，兼容空上传和已有图片两种状态。"""
 
         labels = (
@@ -484,7 +486,7 @@ class PlatformInputAssetMixin:
         )
         for label in labels:
             matches: list[Any] = []
-            nodes = self.page.get_by_text(label, exact=True)
+            nodes = (scope or self.page).get_by_text(label, exact=True)
             try:
                 count = nodes.count()
             except Exception:
@@ -508,7 +510,7 @@ class PlatformInputAssetMixin:
                 return matches[occurrence]
         return None
 
-    def _saved_image(self, occurrence: int = 0) -> Any | None:
+    def _saved_image(self, occurrence: int = 0, *, scope: Any | None = None) -> Any | None:
         """定位页面已保存的图片本体。
 
         记录页在图片已经存在时只渲染 ``.contentImgBorder img``，不会把
@@ -516,7 +518,7 @@ class PlatformInputAssetMixin:
         页面才会挂载替换菜单。因此不能只按上传文案查找图片控件。
         """
 
-        nodes = self.page.locator(".contentImgBorder img")
+        nodes = (scope or self.page).locator(".contentImgBorder img")
         matches: list[Any] = []
         try:
             count = nodes.count()
@@ -533,10 +535,11 @@ class PlatformInputAssetMixin:
             return matches[occurrence]
         return None
 
-    def _activate_saved_image_editor(self, occurrence: int = 0) -> None:
+    def _activate_saved_image_editor(self, occurrence: int = 0, *, scope: Any | None = None) -> None:
         """通过页面已有图片的悬浮菜单挂载“重新上传”控件。"""
 
-        image = self._saved_image(occurrence)
+        scope_args = {} if scope is None else {"scope": scope}
+        image = self._saved_image(occurrence, **scope_args)
         if image is None:
             return
         try:
@@ -550,14 +553,15 @@ class PlatformInputAssetMixin:
                 f"激活第 {occurrence + 1} 个信息记录表图片上传菜单失败: {exc}"
             ) from exc
         self._wait_until(
-            lambda: self._image_region(occurrence) is not None,
+            lambda: self._image_region(occurrence, **scope_args) is not None,
             f"第 {occurrence + 1} 个已有信息记录表图片没有出现替换控件",
             timeout_seconds=10,
             interval_ms=100,
         )
 
-    def _image_delete(self, occurrence: int = 0) -> Any | None:
-        region = self._image_region(occurrence)
+    def _image_delete(self, occurrence: int = 0, *, scope: Any | None = None) -> Any | None:
+        scope_args = {} if scope is None else {"scope": scope}
+        region = self._image_region(occurrence, **scope_args)
         if region is None:
             return None
         try:
@@ -568,14 +572,17 @@ class PlatformInputAssetMixin:
             pass
         return None
 
-    def _upload_image(self, path: str, occurrence: int = 0) -> None:
-        region = self._image_region(occurrence)
+    def _upload_image(self, path: str, occurrence: int = 0, *, scope: Any | None = None) -> None:
+        scope_args = {} if scope is None else {"scope": scope}
+        old_image = self._saved_image(occurrence, **scope_args) if scope is not None else None
+        old_src = old_image.get_attribute("src") if old_image is not None else None
+        region = self._image_region(occurrence, **scope_args)
         if region is None:
             # 编辑既有试卷时，图片本体先于悬浮菜单挂载；先通过页面图片
             # 控件激活“重新上传”，再重新定位其 JPG/PNG 文件 input。
-            self._activate_saved_image_editor(occurrence)
-            region = self._image_region(occurrence)
-        if region is None:
+            self._activate_saved_image_editor(occurrence, **scope_args)
+            region = self._image_region(occurrence, **scope_args)
+        if region is None and scope is None:
             # 页面对记录部分使用视口级懒加载；填写听力原文后视口可能已
             # 滚到下方，顶部的图片上传控件会暂时不在 DOM。先把记录标题
             # 滚回视口，再重新查找页面自己的上传区域。
@@ -599,7 +606,7 @@ class PlatformInputAssetMixin:
             except Exception:
                 pass
         if input_locator is None:
-            delete = self._image_delete(occurrence)
+            delete = self._image_delete(occurrence, **scope_args)
             if delete is not None:
                 try:
                     delete.scroll_into_view_if_needed()
@@ -607,21 +614,22 @@ class PlatformInputAssetMixin:
                 except Exception as exc:
                     raise PlatformInputUiError("清除已有信息记录表图片失败") from exc
                 self._wait_until(
-                    lambda: self._image_region(occurrence) is not None
-                    and self._image_region(occurrence).locator(
+                    lambda: self._image_region(occurrence, **scope_args) is not None
+                    and self._image_region(occurrence, **scope_args).locator(
                         'input[type="file"]'
                     ).count()
                     == 1,
                     f"清除第 {occurrence + 1} 个信息记录表图片后上传控件没有出现",
                     timeout_seconds=15,
                 )
-                region = self._image_region(occurrence)
+                region = self._image_region(occurrence, **scope_args)
                 if region is not None:
                     input_locator = region.locator('input[type="file"]').first
         if input_locator is None:
             input_locator = self._file_input_near_text(
                 ("点击上传 支持 JPG/PNG", "支持 JPG/PNG"),
                 occurrence,
+                **scope_args,
             )
         if input_locator is None:
             raise PlatformInputUiError(
@@ -631,15 +639,24 @@ class PlatformInputAssetMixin:
             input_locator.set_input_files(path, timeout=self.action_timeout_ms)
         except Exception as exc:
             raise PlatformInputUiError(f"通过页面上传图片 {path} 失败: {exc}") from exc
-        self._wait_image_rendered(occurrence)
+        self._wait_image_rendered(occurrence, **scope_args)
+        if old_src:
+            self._wait_until(
+                lambda: (image := self._saved_image(occurrence, **scope_args)) is not None
+                and image.get_attribute("src") != old_src,
+                "题目图片上传后仍显示原来的示例图",
+                timeout_seconds=60,
+                interval_ms=100,
+            )
 
-    def _wait_image_rendered(self, occurrence: int = 0) -> None:
+    def _wait_image_rendered(self, occurrence: int = 0, *, scope: Any | None = None) -> None:
         """确认图片上传控件已经渲染新图片，而不是只接受了文件选择。"""
 
+        scope_args = {} if scope is None else {"scope": scope}
         def rendered() -> bool:
-            if self._saved_image(occurrence) is not None:
+            if self._saved_image(occurrence, **scope_args) is not None:
                 return True
-            region = self._image_region(occurrence)
+            region = self._image_region(occurrence, **scope_args)
             if region is None:
                 return False
             try:

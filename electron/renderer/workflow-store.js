@@ -437,10 +437,10 @@ function projectSystemInput(systemInput) {
             const value = capWorkspaceText(systemInput.document_entry_support[field], 512);
             if (value !== null) entrySupport[field] = value;
         });
-        ['supported', 'structured_count', 'invalid_count',
+        ['supported', 'review_supported', 'structured_count', 'invalid_count',
             'major_section_profile_invalid_count', 'entry_profile_invalid_count', 'entry_capability_invalid_count'].forEach((field) => {
             if (systemInput.document_entry_support[field] !== undefined) {
-                if (field === 'supported') {
+                if (field === 'supported' || field === 'review_supported') {
                     entrySupport[field] = systemInput.document_entry_support[field] === true;
                 } else {
                     const count = nonNegativeInteger(systemInput.document_entry_support[field]);
@@ -477,10 +477,14 @@ function projectSystemInput(systemInput) {
         const projectQuestion = (question) => {
             if (!question || typeof question !== 'object' || Array.isArray(question)) return null;
             const projectedQuestion = {};
-            ['number', 'prompt', 'listening_text', 'answer_prompt', 'prompt_audio_filename_stem', 'reference_answers_source'].forEach((field) => {
+            ['number', 'prompt', 'listening_text', 'answer_prompt', 'prompt_audio_filename_stem', 'reference_answers_source', 'section', 'image_artifact_id', 'block_kind'].forEach((field) => {
                 const value = capWorkspaceText(question[field], 16 * 1024);
                 if (value !== null) projectedQuestion[field] = value;
             });
+            if (question.block_image_required === true) projectedQuestion.block_image_required = true;
+            if (question.number_inferred === true) projectedQuestion.number_inferred = true;
+            const imageBlockIndex = nonNegativeInteger(question.block_index);
+            if (imageBlockIndex !== null) projectedQuestion.block_index = imageBlockIndex;
             ['score', 'answer_time', 'times', 'gap'].forEach((field) => {
                 const value = finiteNumber(question[field]);
                 if (value !== null) projectedQuestion[field] = value;
@@ -538,7 +542,7 @@ function projectSystemInput(systemInput) {
             }).filter(Boolean);
         } else if (pageInput.type === '听后应答' || pageInput.type === '模仿朗读') {
             projectedPageInput.questions = projectQuestions(pageInput.questions);
-        } else if (pageInput.type === '听后记录并转述信息' || pageInput.type === '信息转述及询问') {
+        } else if (pageInput.type === '听后记录并转述信息' || pageInput.type === '信息转述及询问' || pageInput.type === '听后转述') {
             const recording = pageInput.recording;
             if (recording && typeof recording === 'object' && !Array.isArray(recording)) {
                 const projectedRecording = {};
@@ -564,7 +568,7 @@ function projectSystemInput(systemInput) {
                 if (imageId !== null) projectedRecording.image_artifact_id = imageId;
                 if (recording.table_image_required === true) projectedRecording.table_image_required = true;
                 if (recording.block_image_required === true) projectedRecording.block_image_required = true;
-                if (recording.block_kind === 'table' || recording.block_kind === 'drawing_group') {
+                if (['table', 'drawing_group', 'embedded_image'].includes(recording.block_kind)) {
                     projectedRecording.block_kind = recording.block_kind;
                 }
                 const blockIndex = nonNegativeInteger(recording.block_index);
@@ -590,6 +594,8 @@ function projectSystemInput(systemInput) {
             }
             if (pageInput.retelling && typeof pageInput.retelling === 'object' && !Array.isArray(pageInput.retelling)) {
                 const retelling = {};
+                const number = capWorkspaceText(pageInput.retelling.number, 32);
+                if (number !== null) retelling.number = number;
                 ['prompt', 'prompt_audio_filename_stem'].forEach((field) => {
                     const value = capWorkspaceText(pageInput.retelling[field], 16 * 1024);
                     if (value !== null) retelling[field] = value;

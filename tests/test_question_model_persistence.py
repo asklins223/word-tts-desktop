@@ -219,11 +219,12 @@ class TestSubTypeRegistry(PersistenceTestBase):
             "SELECT sub_type_code, type_family FROM question_sub_types"))
         self.assertEqual(rows["listening_info"], "info_acquisition")
         self.assertEqual(rows["asking_info"], "info_retelling")
-        self.assertEqual(len(rows), 12)
+        self.assertEqual(rows["listening_retelling"], "listening_retelling")
+        self.assertEqual(len(rows), 13)
         # 幂等：重复同步不产生新行
         from question_model import sync_sub_type_registry
         sync_sub_type_registry(self.con)
-        self.assertEqual(self.table_count("question_sub_types"), 12)
+        self.assertEqual(self.table_count("question_sub_types"), len(rows))
 
     def test_asking_info_registry_state(self):
         """询问信息已激活：注册表状态与 answer_kind 落库。"""

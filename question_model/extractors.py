@@ -354,7 +354,7 @@ def _extract_listening_record_retelling(result: dict, source_key: str) -> ParseC
     该题型目前只要求生成听力材料音频；第二节的转述开头与参考答案
     不属于音频正文，因此保持 audio_only，不虚构口语作答题字段。
     """
-    type_code = QUESTION_TYPE_CODES["听后记录并转述信息"]
+    type_code = QUESTION_TYPE_CODES[result.get("doc_type", "听后记录并转述信息")]
     stimuli = []
     for raw in result["items"]:
         category = raw.get("category", "听后记录并转述信息录音稿")
@@ -552,6 +552,7 @@ EXTRACTORS = {
     "listening_response": _extract_listening_response,
     "info_retelling": _extract_info_retelling,
     "listening_record_retelling": _extract_listening_record_retelling,
+    "listening_retelling": _extract_listening_record_retelling,
     "imitation_reading": _extract_imitation_reading,
     "text_reading": _extract_text_reading,
     "vocabulary": _extract_vocabulary,

@@ -1584,7 +1584,7 @@ class SystemInputServiceTests(unittest.TestCase):
         finished = self.service.execute_input_run(run_id)
         self.assertEqual(finished["input_status"], "succeeded")
 
-    def test_ambiguous_page_write_can_bind_observed_record_without_reopening_page(self) -> None:
+    def test_ambiguous_page_write_retries_the_confirmed_partial_record(self) -> None:
         saved = self.service.save_configuration(
             self.workflow.workflow_id,
             self.workflow.state_version,
@@ -1632,14 +1632,14 @@ class SystemInputServiceTests(unittest.TestCase):
         self.assertEqual(entry["external_record_id"], "observed-paper-1")
         self.assertFalse(entry["requires_reconcile"])
 
-        calls = 0
+        calls = []
 
-        def must_not_reopen(_payload: dict[str, object]) -> dict[str, object]:
-            nonlocal calls
-            calls += 1
-            raise AssertionError("confirmed external receipt must be replayed locally")
+        def complete_existing(payload: dict[str, object]) -> dict[str, object]:
+            calls.append(payload)
+            self.assertEqual(payload["entry"]["external_record_id"], "observed-paper-1")
+            return {"external_record_id": "observed-paper-1", "feedback": {"status": "saved"}}
 
-        self.service.executor = must_not_reopen
+        self.service.executor = complete_existing
         retried = self.service.start_input(
             self.workflow.workflow_id,
             self.repository.get_workflow(self.workflow.workflow_id).state_version,
@@ -1648,7 +1648,98 @@ class SystemInputServiceTests(unittest.TestCase):
         self.assertEqual(retried["input_run_id"], run_id)
         finished = self.service.execute_input_run(run_id)
         self.assertEqual(finished["input_status"], "succeeded")
-        self.assertEqual(calls, 0)
+        self.assertEqual(len(calls), 1)
+        with self.database.read_transaction() as con:
+            retry = con.execute(
+                "SELECT external_operation_id FROM input_attempts WHERE input_run_id=? AND entry_id=? AND status='SUCCEEDED'",
+                (run_id, attempt["entry_id"]),
+            ).fetchone()
+        self.assertNotEqual(retry["external_operation_id"], attempt["external_operation_id"])
+
+    def test_saved_paper_with_deferred_fields_remains_retryable_and_reuses_record(self) -> None:
+        saved = self.service.save_configuration(
+            self.workflow.workflow_id, self.workflow.state_version, self._configuration(),
+        )
+        self._finish_audio_workflow()
+        accepted = self.service.accept_audio(self.workflow.workflow_id, saved["snapshot"]["state_version"])
+        first_unit_id = self.projection["units"][0]["unit_id"]
+        deferred = [{"question_number": 15, "fields": ["听力原文", "原文音频"]}]
+
+        def save_with_deferred(payload: dict[str, object]) -> dict[str, object]:
+            unit = payload["unit"]
+            if unit["unit_id"] == first_unit_id:
+                return {"external_record_id": "existing-paper", "deferred_page_fields": deferred}
+            return {"external_record_id": f"paper-{unit['unit_id']}"}
+
+        self.service.executor = save_with_deferred
+        started = self.service.start_input(
+            self.workflow.workflow_id, accepted["snapshot"]["state_version"],
+            idempotency_key="system-input-deferred-fields",
+        )
+        run_id = started["input_run_id"]
+        projection = self.service.execute_input_run(run_id)
+        pending = next(entry for entry in projection["entries"] if entry.get("external_record_id") == "existing-paper")
+        self.assertEqual(pending["input_status"], "failed_retryable")
+        self.assertFalse(pending["requires_reconcile"])
+        with self.database.read_transaction() as con:
+            row = con.execute(
+                """SELECT ia.error_code, eo.receipt_json FROM input_attempts ia
+                   JOIN external_operations eo ON eo.external_operation_id=ia.external_operation_id
+                   WHERE ia.input_run_id=? AND ia.entry_id=?""",
+                (run_id, pending["entry_id"]),
+            ).fetchone()
+        self.assertEqual(row["error_code"], "INPUT_PARTIAL_EXTERNAL_RECORD")
+        self.assertEqual(json.loads(row["receipt_json"])["summary"]["deferred_page_fields"], deferred)
+
+        calls = []
+        def complete_existing(payload: dict[str, object]) -> dict[str, object]:
+            calls.append(payload)
+            self.assertEqual(payload["entry"]["external_record_id"], "existing-paper")
+            return {"external_record_id": "existing-paper"}
+        self.service.executor = complete_existing
+        self.service.start_input(
+            self.workflow.workflow_id, self.repository.get_workflow(self.workflow.workflow_id).state_version,
+            idempotency_key="system-input-deferred-retry",
+        )
+        finished = self.service.execute_input_run(run_id)
+        self.assertEqual(finished["input_status"], "succeeded")
+        self.assertEqual(len(calls), 1)
+
+    def test_confirmed_deferred_receipt_is_not_replayed_as_full_success_after_crash(self) -> None:
+        run_id, original = self._run_to_ambiguous_state("deferred-crash-initial")
+        self.service.resolve_ambiguous_external_operation(
+            self.workflow.workflow_id, run_id, original["attempt_id"], "CONFIRMED",
+            external_record_id="existing-draft", resolved_by="test",
+        )
+        self.service.start_input(
+            self.workflow.workflow_id, self.repository.get_workflow(self.workflow.workflow_id).state_version,
+            idempotency_key="deferred-crash-retry",
+        )
+        self.service.executor = lambda _payload: {
+            "external_record_id": "existing-draft",
+            "deferred_page_fields": [{"question_number": 15, "fields": ["原文音频"]}],
+        }
+        set_state = self.service._set_run_state
+        def crash_after_receipt(*args, **kwargs):
+            if kwargs.get("error_code") == "INPUT_PARTIAL_EXTERNAL_RECORD":
+                raise SystemExit("simulated worker crash")
+            return set_state(*args, **kwargs)
+        with patch.object(self.service, "_set_run_state", side_effect=crash_after_receipt):
+            with self.assertRaises(SystemExit):
+                self.service.execute_input_run(run_id)
+
+        self.service.executor = lambda _payload: self.fail("partial receipt must not be resubmitted")
+        projection = self.service.execute_input_run(run_id)
+        entry = next(item for item in projection["entries"] if item["entry_id"] == original["entry_id"])
+        self.assertEqual(entry["input_status"], "failed_retryable")
+        self.assertEqual(entry["external_record_id"], "existing-draft")
+        with self.database.read_transaction() as con:
+            latest = con.execute(
+                "SELECT status,error_code,evidence_json FROM input_attempts WHERE input_run_id=? AND entry_id=? ORDER BY rowid DESC LIMIT 1",
+                (run_id, original["entry_id"]),
+            ).fetchone()
+        self.assertEqual((latest["status"], latest["error_code"]), ("FAILED", "INPUT_PARTIAL_EXTERNAL_RECORD"))
+        self.assertTrue(json.loads(latest["evidence_json"])["replayed_partial_receipt"])
 
     def _run_to_ambiguous_state(self, idempotency_key: str) -> tuple[str, dict[str, object]]:
         saved = self.service.save_configuration(
@@ -1683,6 +1774,50 @@ class SystemInputServiceTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(attempt)
         return started["input_run_id"], dict(attempt)
+
+    def test_repair_false_partial_receipt_replay_keeps_existing_record_retryable(self) -> None:
+        run_id, original = self._run_to_ambiguous_state("partial-replay-repair-initial")
+        self.service.resolve_ambiguous_external_operation(
+            self.workflow.workflow_id, run_id, original["attempt_id"], "CONFIRMED",
+            external_record_id="existing-draft", resolved_by="test",
+        )
+        self.service.start_input(
+            self.workflow.workflow_id,
+            self.repository.get_workflow(self.workflow.workflow_id).state_version,
+            idempotency_key="partial-replay-repair-retry",
+        )
+        with self.database.read_transaction() as con:
+            partial = con.execute("SELECT external_operation_id FROM input_attempts WHERE attempt_id=?",
+                                  (original["attempt_id"],)).fetchone()
+            pending = con.execute("SELECT attempt_id FROM input_attempts WHERE input_run_id=? AND status='PENDING'",
+                                  (run_id,)).fetchone()
+        # Simulate the old bug: the partial draft's receipt was incorrectly
+        # replayed as a successfully saved paper without opening the page.
+        self.service._set_run_state(
+            run_id, run_status="RUNNING", attempt_id=pending["attempt_id"],
+            attempt_status="SUCCEEDED", side_effect_state="CONFIRMED",
+            external_operation_id=partial["external_operation_id"],
+            evidence={"replayed_external_receipt": True},
+            entry_updates={"input_status": "succeeded", "external_record_id": "existing-draft"},
+        )
+        repaired = self.service.repair_partial_receipt_replay(
+            self.workflow.workflow_id, run_id, pending["attempt_id"],
+        )
+        entry = next(value for value in repaired["entries"] if value["entry_id"] == original["entry_id"])
+        self.assertEqual(entry["input_status"], "failed_retryable")
+        self.assertEqual(entry["external_record_id"], "existing-draft")
+        self.assertEqual(repaired["input_status"], "failed_retryable")
+        self.assertEqual(self.service.repair_partial_receipt_replay(
+            self.workflow.workflow_id, run_id, pending["attempt_id"],
+        )["input_status"], "failed_retryable")
+        with self.database.read_transaction() as con:
+            repaired_attempt = con.execute("SELECT status, error_code, evidence_json FROM input_attempts WHERE attempt_id=?",
+                                           (pending["attempt_id"],)).fetchone()
+            self.assertEqual((repaired_attempt["status"], repaired_attempt["error_code"]),
+                             ("FAILED", "INPUT_PARTIAL_EXTERNAL_RECORD"))
+            self.assertTrue(json.loads(repaired_attempt["evidence_json"])["partial_receipt_replay_repaired"])
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM workflow_events WHERE event_type=?",
+                ("SYSTEM_INPUT_PARTIAL_RECEIPT_REPLAY_REPAIRED",)).fetchone()[0], 1)
 
     def test_readonly_verification_binds_single_platform_record(self) -> None:
         run_id, attempt = self._run_to_ambiguous_state("system-input-verify-found")

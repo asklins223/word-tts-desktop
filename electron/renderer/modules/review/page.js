@@ -25,17 +25,20 @@ function renderContentReview(parseResults = currentSession?.parse_results) {
         workspace?.system_input || {},
     );
     const reviewShell = ensureReviewViewShell();
-    const activeReviewViewMode = applyReviewViewMode(entrySupport.supported === true);
+    const activeReviewViewMode = applyReviewViewMode(
+        entrySupport.supported === true || entrySupport.review_supported === true,
+    );
     const unitPresentation = reviewUnitCountPresentation(orderedGroups, workspace?.system_input);
     const unitModels = buildReviewUnitModels(orderedGroups, items, workspace?.system_input);
     const isAudioView = activeReviewViewMode === 'audio';
     if ($('review-unit-status-label')) {
-        $('review-unit-status-label').textContent = isAudioView && entrySupport.supported
+        $('review-unit-status-label').textContent = isAudioView && (entrySupport.supported || entrySupport.review_supported)
             ? '音频目录'
-            : (entrySupport.supported ? `${entrySupport.label} · 已支持` : '文稿录入暂不支持');
+            : (entrySupport.supported ? `${entrySupport.label} · 已支持`
+                : entrySupport.review_supported ? `${entrySupport.label} · 可核对` : '文稿录入暂不支持');
     }
     if ($('review-unit-status-count')) {
-        $('review-unit-status-count').textContent = isAudioView && entrySupport.supported
+        $('review-unit-status-count').textContent = isAudioView && (entrySupport.supported || entrySupport.review_supported)
             ? audioOverview
             : (entrySupport.supported
                 ? `${unitModels.length} 个录入单元`

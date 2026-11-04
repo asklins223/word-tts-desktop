@@ -441,6 +441,11 @@ const REVIEW_DOCUMENT_ENTRY_PROFILES = [
         types: ['听后选择', '听后应答', '模仿朗读', '听后记录并转述信息'],
     },
     {
+        format: 'wuhan_listening_paper',
+        label: '听说测试题（新题型）',
+        types: ['听后选择', '听后应答', '模仿朗读', '听后转述'],
+    },
+    {
         format: 'listening_selection',
         label: '听后选择',
         types: ['听后选择'],
@@ -461,6 +466,11 @@ const REVIEW_DOCUMENT_ENTRY_PROFILES = [
         types: ['听后记录并转述信息'],
     },
     {
+        format: 'listening_retelling',
+        label: '听后转述',
+        types: ['听后转述'],
+    },
+    {
         // Textbook reading items intentionally do not carry page_input.  The
         // parser's document type is the structure evidence for this shape.
         format: 'text_reading',
@@ -472,6 +482,10 @@ const REVIEW_DOCUMENT_ENTRY_PROFILES = [
 const IMITATION_READING_ENTRY_PROFILE = 'imitation_reading_v1';
 const RESPONSE_ENTRY_PROFILE = 'listening_response_v1';
 const RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE = 'response_colored_options_special';
+const RESPONSE_TWO_SECTION_PROFILE = 'response_two_section_v1';
+const RESPONSE_TWO_SECTION_ENTRY_PROFILE = 'listening_response_two_section_v1';
+const LISTENING_RETELLING_PROFILE = 'listening_retelling_picture_v1';
+const LISTENING_RETELLING_ENTRY_PROFILE = 'listening_retelling_v1';
 const RECORD_RETELLING_ENTRY_PROFILE = 'listening_record_retelling_v1';
 const RECORD_RETELLING_TABLE_SPECIAL_PROFILE = 'record_retelling_table_special';
 const SUPPORTED_IMITATION_SECTION_PROFILES = new Set([
@@ -600,14 +614,30 @@ function reviewResponseEntryFactsAreCurrent(list) {
         const pageInput = metadata.page_input || item?.page_input;
         if (String(pageInput?.type || '').trim() !== '听后应答') return true;
         const capabilities = metadata.capabilities || item?.capabilities;
-        return String(
+        const sectionProfile = String(
             metadata.major_section_profile || item?.major_section_profile || '',
-        ).trim() === RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE
-            && String(metadata.entry_profile || item?.entry_profile || '').trim()
-                === RESPONSE_ENTRY_PROFILE
+        ).trim();
+        const entryProfile = String(metadata.entry_profile || item?.entry_profile || '').trim();
+        return ((sectionProfile === RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE
+                && entryProfile === RESPONSE_ENTRY_PROFILE)
+            || (sectionProfile === RESPONSE_TWO_SECTION_PROFILE
+                && entryProfile === RESPONSE_TWO_SECTION_ENTRY_PROFILE))
             && capabilities
             && typeof capabilities === 'object'
             && !Array.isArray(capabilities)
+            && capabilities.external_input === true;
+    });
+}
+
+function reviewListeningRetellingFactsAreCurrent(list) {
+    return list.every(item => {
+        const metadata = item?.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+        const pageInput = metadata.page_input || item?.page_input;
+        if (String(pageInput?.type || '').trim() !== '听后转述') return true;
+        const capabilities = metadata.capabilities || item?.capabilities;
+        return String(metadata.major_section_profile || item?.major_section_profile || '').trim() === LISTENING_RETELLING_PROFILE
+            && String(metadata.entry_profile || item?.entry_profile || '').trim() === LISTENING_RETELLING_ENTRY_PROFILE
+            && capabilities && typeof capabilities === 'object' && !Array.isArray(capabilities)
             && capabilities.external_input === true;
     });
 }
@@ -616,6 +646,13 @@ function reviewEntryProfilesAreCurrent(list, format) {
     if (String(format || '').trim().startsWith('legacy_')) return true;
     if (String(format || '').trim() === 'listening_response') {
         return reviewResponseEntryFactsAreCurrent(list);
+    }
+    if (String(format || '').trim() === 'wuhan_listening_paper') {
+        return reviewImitationEntryFactsAreCurrent(list) && reviewResponseEntryFactsAreCurrent(list)
+            && reviewListeningRetellingFactsAreCurrent(list);
+    }
+    if (String(format || '').trim() === 'listening_retelling') {
+        return reviewListeningRetellingFactsAreCurrent(list);
     }
     if (String(format || '').trim() === 'listening_record_retelling') {
         return reviewRecordRetellingEntryFactsAreCurrent(list);

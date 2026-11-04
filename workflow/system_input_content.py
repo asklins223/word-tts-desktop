@@ -27,6 +27,10 @@ from document_profiles import (
     RECORD_RETELLING_TABLE_SPECIAL_PROFILE,
     RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE,
     RESPONSE_ENTRY_PROFILE,
+    RESPONSE_TWO_SECTION_PROFILE,
+    RESPONSE_TWO_SECTION_ENTRY_PROFILE,
+    LISTENING_RETELLING_PROFILE,
+    LISTENING_RETELLING_ENTRY_PROFILE,
     SUPPORTED_IMITATION_SECTION_PROFILES,
     is_imitation_document_type,
     is_imitation_item,
@@ -39,6 +43,7 @@ PAGE_INPUT_TYPES = frozenset({
     "听后应答",
     "模仿朗读",
     "听后记录并转述信息",
+    "听后转述",
     "信息获取",
     "信息转述及询问",
 })
@@ -69,6 +74,11 @@ DOCUMENT_ENTRY_PROFILES = (
         "types": ("听后选择",),
     },
     {
+        "format": "wuhan_listening_paper",
+        "label": "听说测试题（新题型）",
+        "types": ("听后选择", "听后应答", "模仿朗读", "听后转述"),
+    },
+    {
         "format": "legacy_listening_paper",
         "label": "听说测试题（旧版套卷）",
         "types": ("模仿朗读", "信息获取", "信息转述及询问"),
@@ -87,6 +97,11 @@ DOCUMENT_ENTRY_PROFILES = (
         "format": "listening_record_retelling",
         "label": "听后记录并转述信息",
         "types": ("听后记录并转述信息",),
+    },
+    {
+        "format": "listening_retelling",
+        "label": "听后转述",
+        "types": ("听后转述",),
     },
     {
         "format": "legacy_info_retelling",
@@ -279,6 +294,22 @@ def _question(
     reference_answers_source = _text(value.get("reference_answers_source"), limit=32)
     if reference_answers_source in {"document", "red_option"}:
         result["reference_answers_source"] = reference_answers_source
+    section = _text(value.get("section"), limit=32)
+    if section in {"第一节", "第二节"}:
+        result["section"] = section
+    if value.get("number_inferred") is True:
+        result["number_inferred"] = True
+    if value.get("block_image_required") is True:
+        result["block_image_required"] = True
+    block_kind = _text(value.get("block_kind"), limit=32)
+    if block_kind in {"table", "drawing_group", "embedded_image"}:
+        result["block_kind"] = block_kind
+    block_index = value.get("block_index")
+    if isinstance(block_index, int) and not isinstance(block_index, bool) and block_index >= 0:
+        result["block_index"] = block_index
+    image_artifact_id = _text(value.get("image_artifact_id"), limit=256)
+    if image_artifact_id:
+        result["image_artifact_id"] = image_artifact_id
     answers = _string_list(value.get("answers"), limit=PAGE_INPUT_MAX_LIST)
     if answers:
         result["answers"] = answers
@@ -424,7 +455,10 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
         for item in list(questions)[:PAGE_INPUT_MAX_LIST]:
             question = _question(
                 item,
-                listening_text_as_prompt=group_type == "听后应答",
+                listening_text_as_prompt=(
+                    group_type == "听后应答"
+                    and (not isinstance(item, Mapping) or item.get("section") != "第二节")
+                ),
             )
             if question:
                 normalized_questions.append(question)
@@ -616,6 +650,9 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
         raw_retelling = value.get("retelling")
         if isinstance(raw_retelling, Mapping):
             retelling: dict[str, Any] = {}
+            number = raw_retelling.get("number")
+            if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                retelling["number"] = number
             prompt = _text(raw_retelling.get("prompt") or raw_retelling.get("stem") or raw_retelling.get("text"), limit=PAGE_INPUT_MAX_TEXT)
             if prompt:
                 retelling["prompt"] = prompt
@@ -698,7 +735,20 @@ def page_input_completeness(value: Any) -> dict[str, Any]:
         return {"status": "missing", "reason": "缺少页面内容事实"}
 
     group_type = facts["type"]
-    if group_type == "听后选择":
+    if group_type == "听后转述":
+        recording = facts.get("recording")
+        retelling = facts.get("retelling")
+        complete = (
+            isinstance(recording, Mapping)
+            and _has_text(recording.get("listening_text"))
+            and _has_text(recording.get("image_artifact_id"))
+            and isinstance(retelling, Mapping)
+            and _has_text(retelling.get("prompt"))
+            and _has_non_negative_number(retelling.get("score"))
+            and bool(_string_list(retelling.get("reference_answers")))
+        )
+        reason = "听后转述页面内容不完整（请补齐原文、提示图、题干、分值和参考答案）"
+    elif group_type == "听后选择":
         materials = facts.get("materials")
         if not isinstance(materials, list) or not materials:
             return {"status": "incomplete", "reason": "听后选择缺少录音材料"}
@@ -738,9 +788,24 @@ def page_input_completeness(value: Any) -> dict[str, Any]:
         complete = (
             isinstance(questions, list)
             and bool(questions)
-            and all(_choice_question_complete(question) for question in questions)
+            and all(
+                isinstance(question, Mapping)
+                and (
+                    _choice_question_complete(question)
+                    if question.get("section") != "第二节"
+                    else (
+                        _has_text(question.get("prompt"))
+                        and _has_text(question.get("listening_text"))
+                        and _has_non_negative_number(question.get("score"))
+                        and bool(_string_list(question.get("reference_answers")))
+                    )
+                )
+                and (question.get("block_image_required") is not True
+                     or _has_text(question.get("image_artifact_id")))
+                for question in questions
+            )
         )
-        reason = "听后应答页面内容不完整（请补齐选项、答案和分值）"
+        reason = "听后应答页面内容不完整（请补齐题干、选项或参考答案、分值和配图）"
     elif group_type == "模仿朗读":
         questions = facts.get("questions")
         complete = (
@@ -1029,6 +1094,30 @@ def document_entry_support(
 
     normalized_input_type = _text(input_type, limit=32).casefold()
     detected_set = set(detected)
+    response_facts = [
+        question
+        for value in raw_values if isinstance(value, Mapping) and value.get("type") == "听后应答"
+        for question in (value.get("questions") or ()) if isinstance(question, Mapping)
+    ]
+    two_section_response = bool(
+        len(response_facts) == 10
+        and [question.get("section") for question in response_facts] == ["第一节"] * 5 + ["第二节"] * 5
+    )
+    unsupported_response_content = any(
+        isinstance(value, Mapping)
+        and value.get("type") == "听后应答"
+        and isinstance(value.get("questions"), list)
+        and any(
+            isinstance(question, Mapping)
+            and (
+                question.get("section") == "第二节"
+                or question.get("block_image_required") is True
+                or (isinstance(question.get("options"), list) and len(question["options"]) > 2)
+            )
+            for question in value["questions"]
+        )
+        for value in raw_values
+    ) and not two_section_response
     profile = next(
         (
             candidate
@@ -1043,7 +1132,7 @@ def document_entry_support(
     )
     response_profile = (
         profile is not None
-        and profile["format"] == "listening_response"
+        and profile["format"] in {"listening_response", "wuhan_listening_paper"}
     )
     matched_profile = profile
     if response_profile:
@@ -1056,13 +1145,15 @@ def document_entry_support(
                 else "",
                 limit=128,
             )
-            if major_section_profile != RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE:
+            expected_section_profile = RESPONSE_TWO_SECTION_PROFILE if two_section_response else RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE
+            if major_section_profile != expected_section_profile:
                 major_section_profile_invalid_count += 1
             entry_profile = _text(
                 raw_entry_profiles[index] if index < len(raw_entry_profiles) else "",
                 limit=128,
             )
-            if entry_profile != RESPONSE_ENTRY_PROFILE:
+            expected_entry_profile = RESPONSE_TWO_SECTION_ENTRY_PROFILE if two_section_response else RESPONSE_ENTRY_PROFILE
+            if entry_profile != expected_entry_profile:
                 entry_profile_invalid_count += 1
             raw_capability = (
                 raw_capabilities[index]
@@ -1095,6 +1186,22 @@ def document_entry_support(
                 else {}
             )
             if not isinstance(raw_capability, Mapping) or raw_capability.get("external_input") is not True:
+                entry_capability_invalid_count += 1
+    listening_retelling_profile = profile is not None and profile["format"] in {
+        "listening_retelling", "wuhan_listening_paper",
+    }
+    if listening_retelling_profile:
+        for index, page_type in enumerate(page_types_by_index):
+            if page_type != "听后转述":
+                continue
+            section_profile = _text(raw_major_section_profiles[index] if index < len(raw_major_section_profiles) else "", limit=128)
+            entry_profile = _text(raw_entry_profiles[index] if index < len(raw_entry_profiles) else "", limit=128)
+            capability = raw_capabilities[index] if index < len(raw_capabilities) else {}
+            if section_profile != LISTENING_RETELLING_PROFILE:
+                major_section_profile_invalid_count += 1
+            if entry_profile != LISTENING_RETELLING_ENTRY_PROFILE:
+                entry_profile_invalid_count += 1
+            if not isinstance(capability, Mapping) or capability.get("external_input") is not True:
                 entry_capability_invalid_count += 1
     # A single malformed page fact means the parser did not provide a
     # reliable document-level preflight.  Keep the review view closed rather
@@ -1151,6 +1258,14 @@ def document_entry_support(
     elif invalid_count:
         status = "unsupported"
         reason = "当前文档的页面内容事实格式无效，暂不支持文稿录入。"
+    elif profile and profile["format"] == "wuhan_listening_paper" and not two_section_response:
+        profile = None
+        status = "unsupported"
+        reason = "听后应答的两节结构不完整，请核对各5道小题。"
+    elif unsupported_response_content:
+        profile = None
+        status = "unsupported"
+        reason = "听后应答包含尚未接入自动录入的题型或配图。"
     elif profile is not None:
         status = "supported"
         reason = None
@@ -1176,14 +1291,37 @@ def document_entry_support(
     expected_types = list(
         expected_profile["types"]
         if expected_profile
-        else DOCUMENT_ENTRY_PROFILES[0]["types"]
+        else next(candidate["types"] for candidate in DOCUMENT_ENTRY_PROFILES if candidate["format"] == "listening_paper")
     )
+    # The new paper has a different external page layout. Its parsed facts
+    # are reviewable, but must not open an older automatic-entry flow.
+    wuhan_types = {"听后选择", "听后应答", "模仿朗读", "听后转述"}
+    has_wuhan_response = any(
+        isinstance(value, Mapping)
+        and value.get("type") == "听后应答"
+        and isinstance(value.get("questions"), list)
+        and any(isinstance(question, Mapping) and question.get("section") == "第二节"
+                for question in value["questions"])
+        for value in raw_values
+    )
+    review_only = bool(
+        status != "supported"
+        and normalized_input_type in {"", "paper"}
+        and detected_set
+        and detected_set <= wuhan_types
+        and ("听后转述" in detected_set or has_wuhan_response)
+        and not invalid_count
+        and structured_count == len(raw_values)
+    )
+    if review_only:
+        reason = "听说新题型已支持解析核对，自动录入暂未接入。"
     return {
         "schema_version": DOCUMENT_ENTRY_SCHEMA_VERSION,
         "supported": status == "supported",
+        "review_supported": status == "supported" or review_only,
         "status": status,
         "format": profile["format"] if profile else None,
-        "label": profile["label"] if profile else "暂不支持",
+        "label": profile["label"] if profile else ("听说新题型" if review_only else "暂不支持"),
         "reason": reason,
         "detected_types": detected,
         "document_types": known_document_types[:16],
@@ -1285,14 +1423,19 @@ def _response_builder(
     questions = []
     raw_questions = result.get("questions")
     if isinstance(raw_questions, Sequence) and not isinstance(raw_questions, (bytes, bytearray, str)):
+        if raw_item.get("number") in (None, "") and 0 <= item_index < len(raw_questions):
+            candidate = raw_questions[item_index]
+            if isinstance(candidate, Mapping):
+                questions.append(dict(candidate))
         for question in raw_questions:
+            if questions:
+                break
             if not isinstance(question, Mapping):
                 continue
             number = question.get("number") or question.get("question_number") or question.get("index")
-            if number in {ordinal, str(ordinal), None}:
+            if number in {ordinal, str(ordinal)}:
                 questions.append(dict(question))
-                if number not in (None, ""):
-                    break
+                break
     if not questions:
         questions = [{"listening_text": _item_text(raw_item)}]
     return {
@@ -1470,7 +1613,7 @@ def _record_builder(
     value: dict[str, Any] = {
         "schema_version": PAGE_INPUT_SCHEMA_VERSION,
         "input_type": "paper",
-        "type": "听后记录并转述信息",
+        "type": "听后转述" if _document_type == "听后转述" else "听后记录并转述信息",
         "recording": {
             "listening_text": _text(recording.get("listening_text") if isinstance(recording, Mapping) else "", limit=PAGE_INPUT_MAX_TEXT) or _item_text(raw_item),
             "questions": list(recording_questions)[:PAGE_INPUT_MAX_LIST],
@@ -1540,6 +1683,7 @@ register_page_input_builder("听后应答", _response_builder)
 register_page_input_builder("模仿朗读", _imitation_builder)
 register_page_input_builder("信息获取", _info_acquisition_builder)
 register_page_input_builder("听后记录并转述信息", _record_builder)
+register_page_input_builder("听后转述", _record_builder)
 register_page_input_builder("信息转述及询问", _info_retelling_builder)
 
 

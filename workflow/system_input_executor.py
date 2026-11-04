@@ -740,8 +740,31 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
     ) -> dict[str, Any]:
         """Resolve internal page asset references without persisting paths."""
 
+        if str(page_input.get("type") or "") == "听后应答":
+            result = dict(page_input)
+            questions = []
+            for index, raw_question in enumerate(page_input.get("questions") or ()):
+                if not isinstance(raw_question, Mapping):
+                    continue
+                question = dict(raw_question)
+                artifact_id = _text(question.get("image_artifact_id"), limit=256)
+                if artifact_id:
+                    destination_base = base_dir / f"segment-{ordinal + 1}-question-{index + 1}"
+                    destination = destination_base.with_suffix(".png")
+                    image_format = self._materialize_page_image(artifact_id, workflow_id, destination)
+                    if image_format != "png":
+                        renamed = destination_base.with_suffix(f".{image_format}")
+                        destination.replace(renamed)
+                        destination = renamed
+                    question.pop("image_artifact_id", None)
+                    question["image_path"] = str(destination)
+                questions.append(question)
+            result["questions"] = questions
+            return result
+
         if str(page_input.get("type") or "") not in {
             "听后记录并转述信息",
+            "听后转述",
             "信息转述及询问",
         }:
             return dict(page_input)
@@ -894,7 +917,7 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                     if question.get("score") is None and segment.get("score") is not None:
                         question["score"] = segment.get("score")
                     imitation_questions.append(question)
-            elif group_type == "听后记录并转述信息":
+            elif group_type in {"听后记录并转述信息", "听后转述"}:
                 raw_recording = facts.get("recording")
                 recording = dict(raw_recording) if isinstance(raw_recording, Mapping) else {}
                 recording["audio_path"] = audio_path
@@ -987,6 +1010,7 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
             "听后选择": ("听后选择",),
             "听后应答": ("听后应答",),
             "模仿朗读": ("模仿朗读",),
+            "听后转述": ("听后转述",),
             "听后记录并转述信息": ("听后记录并转述信息", "信息转述", "听后记录"),
             "信息获取": ("信息获取",),
             "信息转述及询问": ("信息转述及询问", "信息转述及询问题"),
@@ -1446,6 +1470,7 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
             # durable entry keeps the submitted paper name for manual search.
             "review_url": None,
             "feedback": feedback,
+            "deferred_page_fields": feedback.get("deferred_page_fields") or [],
             "steps": redact_public_json(result.get("steps") or []),
         }
 

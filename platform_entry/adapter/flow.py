@@ -178,7 +178,19 @@ def run_page_input(
         exc.feedback = automation.feedback()
         raise
 
-    status = "SUCCEEDED" if feedback.get("paperId") is not None else "SAVED_NEEDS_REVIEW"
+    deferred_fields = list(getattr(automation, "_deferred_response_fields", ()))
+    if deferred_fields:
+        # The user can continue entering the other fields even when this
+        # paper's page has no matching source-material controls.  Preserve
+        # the omissions in the durable receipt so a saved draft is never
+        # mistaken for a completely entered paper.
+        feedback = dict(feedback)
+        feedback["deferred_page_fields"] = deferred_fields
+    status = (
+        "SUCCEEDED"
+        if feedback.get("paperId") is not None and not deferred_fields
+        else "SAVED_NEEDS_REVIEW"
+    )
     return {
         "status": status,
         "side_effect_policy": "PAGE_UI_ONLY",
@@ -188,6 +200,7 @@ def run_page_input(
         "questionCount": automation.spec.question_count,
         "paperId": feedback.get("paperId"),
         "feedback": feedback,
+        "deferred_page_fields": deferred_fields,
         "preview": "SKIPPED",
         "steps": steps,
     }
