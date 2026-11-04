@@ -16,6 +16,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import pacing
+from .catalog_pagination import (
+    collect_catalog_pages,
+    pagination_button_disabled as _pagination_button_disabled,
+    validate_catalog_rows,
+    visible_next_button as _visible_next_button,
+)
 from .constants import (
     API_BASE_URL,
     RESOURCE_TEXT_ROUTE,
@@ -84,7 +90,7 @@ def _safe_int(value: Any) -> int | None:
     return number if number >= 0 else None
 
 
-def _page_rows(body: Any) -> tuple[list[Mapping[str, Any]], int | None, int | None]:
+def _page_rows(body: Any) -> tuple[list[Mapping[str, Any]], int | None, int | None, bool]:
     """Read common Element/Admin page envelopes without calling the API."""
 
     data = body.get("data") if isinstance(body, Mapping) else None
@@ -95,11 +101,11 @@ def _page_rows(body: Any) -> tuple[list[Mapping[str, Any]], int | None, int | No
         for key in ("list", "records", "rows", "items", "data"):
             value = source.get(key)
             if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                return [row for row in value if isinstance(row, Mapping)], total, page_size
-        return [], total, page_size
+                return [row for row in value if isinstance(row, Mapping)], total, page_size, True
+        return [], total, page_size, total == 0
     if isinstance(source, Sequence) and not isinstance(source, (str, bytes)):
-        return [row for row in source if isinstance(row, Mapping)], None, None
-    return [], None, None
+        return [row for row in source if isinstance(row, Mapping)], None, None, True
+    return [], None, None, False
 
 
 class TextbookCatalogResponseObserver:
@@ -109,6 +115,8 @@ class TextbookCatalogResponseObserver:
         self.api_base = str(api_base or "").rstrip("/")
         self.pages: dict[int, list[Mapping[str, Any]]] = {}
         self.page_order: list[list[Mapping[str, Any]]] = []
+        self.page_versions: dict[int, int] = {}
+        self.expected_page = 1
         self.page_totals: dict[int, int] = {}
         self.page_sizes: dict[int, int] = {}
         self.response_count = 0
@@ -143,7 +151,11 @@ class TextbookCatalogResponseObserver:
                 self.auth_error = True
                 self.last_error = message or "账号未登录"
                 return
-            rows, total, page_size = _page_rows(body)
+            if status >= 400:
+                return
+            rows, total, page_size, is_page = _page_rows(body)
+            if not is_page:
+                return
             # A stale first response can be followed by a successful request
             # after the user signs in inside the visible browser.
             self.auth_error = False
@@ -155,8 +167,9 @@ class TextbookCatalogResponseObserver:
                 data = body.get("data")
                 page_no = _safe_int(data.get("pageNo") if isinstance(data, Mapping) else None)
             if page_no is None:
-                page_no = len(self.page_order) + 1
+                page_no = self.expected_page
             self.pages[page_no] = rows
+            self.page_versions[page_no] = self.page_versions.get(page_no, 0) + 1
             self.page_order.append(rows)
             if total is not None:
                 self.page_totals[page_no] = total
@@ -186,6 +199,14 @@ class TextbookCatalogResponseObserver:
     @property
     def page_size(self) -> int | None:
         return next(iter(self.page_sizes.values()), None)
+
+    def reset_pages(self) -> None:
+        self.pages.clear()
+        self.page_order.clear()
+        self.page_versions.clear()
+        self.page_totals.clear()
+        self.page_sizes.clear()
+        self.expected_page = 1
 
 
 def _open_catalog_list(
@@ -269,29 +290,6 @@ def _wait_for_authenticated_catalog_page(
         _wait_for_catalog_page(page, observer, page_no)
 
 
-def _visible_next_button(page: Any) -> Any | None:
-    selectors = (
-        "button.btn-next:visible",
-        ".el-pagination button[aria-label*='下一页']:visible",
-        ".el-pagination button[title*='下一页']:visible",
-    )
-    for selector in selectors:
-        try:
-            node = page.locator(selector).first
-            if node.count() and node.is_visible():
-                return node
-        except Exception:
-            continue
-    return None
-
-
-def _pagination_button_disabled(button: Any) -> bool:
-    try:
-        return bool(button.is_disabled()) or str(button.get_attribute("class") or "").find("is-disabled") >= 0
-    except Exception:
-        return False
-
-
 def sync_textbook_catalog_live(
     *,
     profile_dir: Any,
@@ -325,66 +323,37 @@ def sync_textbook_catalog_live(
             # response arrives after the user signs in.
             _wait_for_authenticated_catalog_page(page, observer, 1, login_timeout_seconds)
 
-            current_page = 1
-            visited_pages = {1}
-            max_pages = 1000
-            while len(visited_pages) < max_pages:
-                if observer.auth_error:
-                    _recover_catalog_auth(page, observer, login_timeout_seconds)
-                    current_page = 1
-                    visited_pages = {1}
-                    _wait_for_catalog_page(page, observer, 1)
-                    continue
-                total = observer.total
-                page_size = observer.page_size or 10
-                if total is not None and total > 0 and len(visited_pages) >= (total + page_size - 1) // page_size:
-                    break
-                next_button = _visible_next_button(page)
-                if next_button is None or _pagination_button_disabled(next_button):
-                    break
-                before_response_count = observer.response_count
-                next_button.click()
-                target_page = current_page + 1
-                deadline = time.monotonic() + 30.0
-                reauthenticated = False
-                while time.monotonic() < deadline:
-                    if observer.auth_error:
-                        _recover_catalog_auth(page, observer, login_timeout_seconds)
-                        current_page = 1
-                        visited_pages = {1}
-                        _wait_for_catalog_page(page, observer, 1)
-                        reauthenticated = True
-                        break
-                    if target_page in observer.pages or observer.response_count > before_response_count:
-                        break
-                    page.wait_for_timeout(250)
-                if reauthenticated:
-                    continue
-                if target_page not in observer.pages:
-                    # Some deployment versions omit pageNo from the request;
-                    # the response-order fallback still proves progress.
-                    if observer.response_count <= before_response_count:
-                        raise TimeoutError("等待教材列表下一页响应超时")
-                    target_page = max(observer.pages or {current_page})
-                if target_page in visited_pages and observer.response_count <= before_response_count:
-                    break
-                visited_pages.add(target_page)
-                current_page = target_page
+            def recover_auth() -> None:
+                observer.reset_pages()
+                _recover_catalog_auth(page, observer, login_timeout_seconds)
+                _wait_for_catalog_page(page, observer, 1)
+
+            visited_pages = collect_catalog_pages(
+                page,
+                observer.pages,
+                observer.page_versions,
+                total=lambda: observer.total,
+                set_expected_page=lambda number: setattr(observer, "expected_page", number),
+                auth_error=lambda: observer.auth_error,
+                label="教材列表",
+                recover_auth=recover_auth,
+            )
 
             rows: list[Mapping[str, Any]] = []
             seen: set[str] = set()
-            for page_no in sorted(observer.pages):
+            for page_no in sorted(visited_pages):
                 for row in observer.pages[page_no]:
                     fingerprint = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
                     if fingerprint in seen:
                         continue
                     seen.add(fingerprint)
                     rows.append(row)
+            validate_catalog_rows(rows, observer.total, "教材列表")
             return {
                 "status": "SUCCEEDED",
                 "rows": rows,
                 "total": observer.total if observer.total is not None else len(rows),
-                "page_count": len(observer.pages),
+                "page_count": len(visited_pages),
             }
         finally:
             context.close()

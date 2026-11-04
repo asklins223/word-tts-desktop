@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .catalog_pagination import collect_catalog_pages, validate_catalog_rows
 from .constants import (
     API_BASE_URL,
     PAPER_TEMPLATE_PAGE_PATH,
@@ -39,7 +40,7 @@ def _page_rows(body: Any) -> tuple[list[Mapping[str, Any]], int | None, int | No
             value = source.get(key)
             if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
                 return [row for row in value if isinstance(row, Mapping)], total, page_size, True
-        return [], total, page_size, total is not None
+        return [], total, page_size, total == 0
     if isinstance(source, Sequence) and not isinstance(source, (str, bytes)):
         return [row for row in source if isinstance(row, Mapping)], None, None, True
     return [], None, None, False
@@ -52,6 +53,8 @@ class PlatformTemplateCatalogResponseObserver:
         self.api_base = str(api_base or "").rstrip("/")
         self.active_kind = "question"
         self.pages: dict[str, dict[int, list[Mapping[str, Any]]]] = {"question": {}, "paper": {}}
+        self.page_versions: dict[str, dict[int, int]] = {"question": {}, "paper": {}}
+        self.expected_pages: dict[str, int] = {"question": 1, "paper": 1}
         self.totals: dict[str, int] = {}
         self.page_sizes: dict[str, int] = {}
         self.response_counts: dict[str, int] = {"question": 0, "paper": 0}
@@ -84,7 +87,9 @@ class PlatformTemplateCatalogResponseObserver:
                 QUESTION_TEMPLATE_PAGE_PATH,
                 QUESTION_TYPE_TEMPLATE_PAGE_PATH,
             } and not (
-                parsed.path.startswith("/admin-api/system/") and "template" in path_key
+                path_key.startswith("/admin-api/system/")
+                and "template" in path_key
+                and path_key.endswith("/page")
             ):
                 return
             body = self._read_json(response)
@@ -97,6 +102,8 @@ class PlatformTemplateCatalogResponseObserver:
             if status in {401, 403} or str(code) in {"401", "403"} or "登录" in message or "未登录" in message:
                 self.auth_error = True
                 self.last_error = message or "账号未登录"
+                return
+            if status >= 400:
                 return
             rows, total, page_size, is_page = _page_rows(body)
             if not is_page:
@@ -113,10 +120,12 @@ class PlatformTemplateCatalogResponseObserver:
             if page_no is None and isinstance(body, Mapping) and isinstance(body.get("data"), Mapping):
                 page_no = _safe_int(body["data"].get("pageNo", body["data"].get("page")))
             if page_no is None:
-                page_no = len(self.pages[kind]) + 1
+                page_no = self.expected_pages[kind]
             self.auth_error = False
             self.last_error = ""
             self.pages[kind][page_no] = rows
+            versions = self.page_versions[kind]
+            versions[page_no] = versions.get(page_no, 0) + 1
             self.response_counts[kind] += 1
             if total is not None:
                 self.totals[kind] = total
@@ -216,58 +225,17 @@ def _wait_for_kind_page(
     raise TimeoutError("等待模板列表接口响应超时")
 
 
-def _next_button(page: Any) -> Any | None:
-    for selector in (
-        "button.btn-next:visible",
-        ".el-pagination button[aria-label*='下一页']:visible",
-        ".el-pagination button[title*='下一页']:visible",
-    ):
-        try:
-            node = page.locator(selector).first
-            if node.count() and node.is_visible():
-                return node
-        except Exception:
-            continue
-    return None
-
-
-def _disabled(button: Any) -> bool:
-    try:
-        return bool(button.is_disabled()) or "is-disabled" in str(button.get_attribute("class") or "")
-    except Exception:
-        return False
-
-
-def _collect_visible_pages(page: Any, observer: PlatformTemplateCatalogResponseObserver, kind: str) -> None:
+def _collect_visible_pages(page: Any, observer: PlatformTemplateCatalogResponseObserver, kind: str) -> set[int]:
     _wait_for_kind_page(page, observer, kind)
-    visited = {1}
-    current = 1
-    while len(visited) < 1000:
-        total = observer.totals.get(kind)
-        page_size = observer.page_sizes.get(kind, 10)
-        if total is not None and (total == 0 or len(visited) >= (total + page_size - 1) // page_size):
-            break
-        button = _next_button(page)
-        if button is None or _disabled(button):
-            break
-        before = observer.response_counts[kind]
-        button.click()
-        target = current + 1
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            if observer.auth_error:
-                raise TimeoutError("平台登录状态已失效")
-            if target in observer.pages[kind] or observer.response_counts[kind] > before:
-                break
-            page.wait_for_timeout(250)
-        if observer.response_counts[kind] <= before:
-            raise TimeoutError("等待模板列表下一页响应超时")
-        if target not in observer.pages[kind]:
-            target = max(observer.pages[kind] or {current})
-        if target in visited:
-            break
-        visited.add(target)
-        current = target
+    return collect_catalog_pages(
+        page,
+        observer.pages[kind],
+        observer.page_versions[kind],
+        total=lambda: observer.totals.get(kind),
+        set_expected_page=lambda number: observer.expected_pages.__setitem__(kind, number),
+        auth_error=lambda: observer.auth_error,
+        label="题型模板列表" if kind == "question" else "试卷模板列表",
+    )
 
 
 def _dedupe_rows(pages: Mapping[int, Sequence[Mapping[str, Any]]]) -> list[Mapping[str, Any]]:
@@ -312,24 +280,26 @@ def sync_platform_template_catalog_live(
                 raise RuntimeError("模板管理页面缺少题型模板列表")
             observer.set_active_kind("question")
             question_tab.click()
-            _collect_visible_pages(page, observer, "question")
+            question_pages = _collect_visible_pages(page, observer, "question")
 
             paper_tab = _visible_exact(page, "试卷模板管理")
             if paper_tab is None:
                 raise RuntimeError("模板管理页面缺少试卷模板列表")
             observer.set_active_kind("paper")
             paper_tab.click()
-            _collect_visible_pages(page, observer, "paper")
+            paper_pages = _collect_visible_pages(page, observer, "paper")
 
-            question_rows = _dedupe_rows(observer.pages["question"])
-            paper_rows = _dedupe_rows(observer.pages["paper"])
+            question_rows = _dedupe_rows({number: observer.pages["question"][number] for number in question_pages})
+            paper_rows = _dedupe_rows({number: observer.pages["paper"][number] for number in paper_pages})
+            validate_catalog_rows(question_rows, observer.totals.get("question"), "题型模板列表")
+            validate_catalog_rows(paper_rows, observer.totals.get("paper"), "试卷模板列表")
             return {
                 "status": "SUCCEEDED",
                 "question_rows": question_rows,
                 "paper_rows": paper_rows,
                 "question_total": observer.totals.get("question", len(question_rows)),
                 "paper_total": observer.totals.get("paper", len(paper_rows)),
-                "page_count": len(observer.pages["question"]) + len(observer.pages["paper"]),
+                "page_count": len(question_pages) + len(paper_pages),
             }
         finally:
             context.close()
