@@ -24,7 +24,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # GitHub retired all macOS 14 images on 2026-11-02.
+    # https://github.com/actions/runner-images/issues/13518
+    runs-on: macos-15
     permissions:
       contents: read
     # Release CI must never open a real external-provider session. Platform
