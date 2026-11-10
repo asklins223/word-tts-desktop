@@ -25,6 +25,8 @@ class PlatformInputRecordContentMixin:
                 source["listening_text"], field=f"{description}听力原文",
             )
             self._upload_original_audio(source["audio_path"], index, description)
+            if any(source.get(key) is not None for key in ('times', 'gap')):
+                self._fill_material_numbers(source, index, description)
             self._upload_image(source["image_path"], 0, scope=scope)
             self._fill_recording_card(
                 cards[index], question, description=description, prompt=question["prompt"],

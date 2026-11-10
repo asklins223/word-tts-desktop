@@ -245,7 +245,7 @@ function extractParsedRoleLabels(parseResults) {
             const itemSeen = new Set();
             lines.forEach(line => {
                 const value = line.trim();
-                if (!value || /^[WwMm]\s*[:：]/.test(value) || /^\([WwMm]\)/.test(value)) return;
+                if (!value || parseSpeakerMarkerClient(value)) return;
                 const match = /^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$/.exec(value);
                 const label = match?.[1]?.trim() || '';
                 if (!match || !roleLooksLikeLabel(label)) return;

@@ -49,13 +49,15 @@ class PlatformInputImitationContentMixin:
                     description,
                 )
                 original_audio_cursor += 1
+                if any(question.get(key) is not None for key in ('times', 'gap')):
+                    self._fill_material_numbers(question, recording_cursor, description)
                 if recording_cursor >= len(cards):
                     raise PlatformInputUiError("模仿朗读小题数量超过页面卡片数量")
                 self._fill_recording_card(
                     cards[recording_cursor],
                     question,
                     description=description,
-                    fill_answer_time=False,
+                    fill_answer_time=question.get('answer_time') is not None,
                 )
                 recording_cursor += 1
 

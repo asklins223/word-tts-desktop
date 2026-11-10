@@ -10,6 +10,7 @@ from ..errors import PlatformInputError
 from ..normalization import (
     _first_present,
     _normalise_number,
+    _normalise_common_numbers,
     _normalise_string_list,
     _require_nonempty_text,
     _resolve_audio_path,
@@ -91,6 +92,14 @@ def normalise_imitation_group(
                         f"{question_name}.reference_answers",
                         required=False,
                     )
+                ),
+                **_normalise_common_numbers(
+                    raw_question, question_name,
+                    keys={
+                        'times': ('times', 'play_count'),
+                        'gap': ('gap', 'interval'),
+                        'answer_time': ('answer_time', 'reply', 'answerDuration'),
+                    },
                 ),
             }
         )

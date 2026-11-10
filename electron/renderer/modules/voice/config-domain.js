@@ -69,6 +69,17 @@ function normalizeRoleKeyClient(value) {
     return String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('zh-CN').slice(0, 80);
 }
 
+function parseSpeakerMarkerClient(line) {
+    const value = String(line || '').trim();
+    const match = /^([WwMmＷｗＭｍ])\s*[:：]\s*(.*)$/.exec(value)
+        || /^[（(]\s*([WwMmＷｗＭｍ])\s*[）)]\s*[:：]?\s*(.*)$/.exec(value);
+    if (!match) return null;
+    return {
+        gender: /[MmＭｍ]/.test(match[1]) ? 'male' : 'female',
+        text: match[2],
+    };
+}
+
 function createDefaultVoiceParams(roleKey = null) {
     if (
         roleKey === QUESTION_STEM_ROLE_CONFIG_KEY
@@ -333,6 +344,7 @@ registerRendererModule("voice.configDomain", {
     normalizeVoiceKey,
     canonicalVoiceKey,
     normalizeRoleKeyClient,
+    parseSpeakerMarkerClient,
     createDefaultVoiceParams,
     normalizeRoleConfigKeyClient,
     roleConfigKeyForRole,

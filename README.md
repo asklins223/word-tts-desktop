@@ -4,7 +4,7 @@
 
 小猪wordTTS 是一款本地桌面文档配音工作台：解析教学 `.docx` 与 `.xlsx`，按文档结构核对条目，为不同角色配置声音，批量生成或导入可试听、可单独保存或打包下载的 MP3，并可选地把已验证的音频继续录入外部教学系统。全部任务状态、产物和恢复事实保存在当前电脑，应用离线重启后可以接着做。
 
-版本以 `version.json` 为唯一来源（当前 3.4.4），构建前由 `scripts/project_version.js --sync` 同步到 Electron 的 `package.json`、`package-lock.json` 与 `CHANGELOG.md`。
+版本以 `version.json` 为唯一来源（当前 3.4.5），构建前由 `scripts/project_version.js --sync` 同步到 Electron 的 `package.json`、`package-lock.json` 与 `CHANGELOG.md`。
 
 > 仓库目录名 `edge-tts-webui-main` 与包名 `wordtts/` 是历史遗留。自 v3.x 起 Edge TTS、TTSMaker 及其回退代码已全部移除，新生成音频由讯飞配音提供，也支持直接导入外部音频；`edge-tts` 不再出现在依赖清单中。
 
@@ -71,6 +71,8 @@ python3 tools/verify_backup.py   # 备份与迁移摘要校验
 `python3 -m question_types` 批量解析示例文档：路径硬编码为输入 `examples/documents/`、输出 `examples/parsed/parsed_results.json`，只处理 `.docx`/`.xlsx` 并跳过 `~$` 临时文件，不接受命令行参数。`question_types/` 只保留解析器与手写注册表连接点，题型清单来自 `question_model/model.py` 的 `FAMILY_REGISTRY`。
 
 武汉新题型支持解析两节听后应答、独立听后转述及题目配图，并提供相应录入规则；文稿核对中可以查看图片和逐条参考答案。缺失题号只在前后题号能确定连续关系时推断并标注。录入时根据平台实际大纲、屏幕问题和图片位置填写；应答题的听力原文和音频分别录入各题的听力原文及原文音频区域，并保留应答选项或屏幕问题。纯图片题没有这两处控件时，只录入图片及其题目内容。
+
+模仿朗读可在朗读框前的独立段落或框内使用 `(M)`、`(W)` 指定男女声，也支持中文括号、大小写和全角字母。框前标记只作用于紧随本题提示的朗读框；核对页、合成声音和角色参数保持一致，括号角色标记不进入实际朗读文本及参考答案。
 
 解析回归基线在 `examples/baselines/parse/`，每次快照记录 `git_commit`、脏文件清单与各文档的 `sha256` 与解析结果：
 

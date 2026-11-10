@@ -8,7 +8,7 @@ from typing import Any
 
 from ..errors import PlatformInputError
 from ..normalization import (
-    _first_present, _normalise_number, _normalise_string_list,
+    _first_present, _normalise_number, _normalise_string_list, _normalise_common_numbers,
     _require_nonempty_text, _resolve_audio_path, _resolve_image_path,
 )
 
@@ -31,6 +31,9 @@ def normalise_listening_retelling_group(
         "listening_text": _require_nonempty_text(source.get("listening_text"), f"{name}.recording.listening_text"),
         "audio_path": _resolve_audio_path(audio, f"{name}.recording.audio_path", base_dir),
         "image_path": _resolve_image_path(image, f"{name}.recording.image_path", base_dir),
+        **_normalise_common_numbers(source, f'{name}.recording', keys={
+            'times': ('times', 'play_count'), 'gap': ('gap', 'interval'),
+        }),
     }
     retelling = {
         "prompt": _require_nonempty_text(question.get("prompt"), f"{name}.retelling.prompt"),

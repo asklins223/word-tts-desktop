@@ -139,7 +139,7 @@ def _safe_stem(value: Any, *, limit: int = 240) -> str:
 
 
 _PAGE_PAREN_SPEAKER_MARKER_RE = re.compile(
-    r"(?im)^[ \t]*\([WwMm]\)(?:[ \t]*[:：])?[ \t]*"
+    r"(?im)^[ \t]*[（(][ \t]*[WwMmＷｗＭｍ][ \t]*[）)](?:[ \t]*[:：])?[ \t]*"
 )
 
 
@@ -625,6 +625,10 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
             # the trusted page adapter resolves this ID through ArtifactStore
             # immediately before the visible upload control is used.
             recording["image_artifact_id"] = image_artifact_id
+        for key in ("times", "gap"):
+            number_value = _number(recording_source.get(key))
+            if number_value is not None:
+                recording[key] = number_value
         if recording_source.get("table_image_required") is True:
             recording["table_image_required"] = True
         if recording_source.get("block_image_required") is True:
@@ -1409,6 +1413,7 @@ def _selection_builder(
         "materials": [{
             "listening_text": _page_listening_text(_item_text(raw_item)),
             "questions": questions,
+            **{key: raw_item[key] for key in ("times", "gap") if key in raw_item},
         }],
     }
 
@@ -1473,6 +1478,7 @@ def _imitation_builder(
     question: dict[str, Any] = {
         "listening_text": text,
         "score": score,
+        **{key: raw_item[key] for key in ("times", "gap", "answer_time") if key in raw_item},
     }
     # Only a complete listening exam has a reference-answer row for imitation
     # reading. A topic-specific special paper must leave that field absent;
@@ -1480,9 +1486,12 @@ def _imitation_builder(
     # for an answer that should be entered.
     if is_exam_paper:
         if references:
-            question["reference_answers"] = references
+            question["reference_answers"] = [
+                _page_listening_text(value)
+                for value in _string_list(references, limit=PAGE_INPUT_MAX_LIST)
+            ]
         elif text:
-            question["reference_answers"] = [text]
+            question["reference_answers"] = [_page_listening_text(text)]
         question["reference_answers_source"] = "document"
     return {
         "schema_version": PAGE_INPUT_SCHEMA_VERSION,
@@ -1617,6 +1626,9 @@ def _record_builder(
         "recording": {
             "listening_text": _text(recording.get("listening_text") if isinstance(recording, Mapping) else "", limit=PAGE_INPUT_MAX_TEXT) or _item_text(raw_item),
             "questions": list(recording_questions)[:PAGE_INPUT_MAX_LIST],
+            **{key: raw_item.get(key, recording.get(key))
+               for key in ('times', 'gap')
+               if raw_item.get(key, recording.get(key)) is not None},
         },
     }
     # A document may contain multiple retelling sets.  The parser can attach

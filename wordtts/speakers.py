@@ -3,6 +3,8 @@
 
 import re
 
+from question_types.text_utils import LINE_SPEAKER_RE, PAREN_SPEAKER_RE, speaker_marker_gender
+
 from wordtts.config import (
     DEFAULT_FEMALE_ROLE_KEY,
     DEFAULT_MALE_ROLE_KEY,
@@ -20,9 +22,9 @@ from wordtts.tts_config import normalize_role_key
 # ============================================================================
 
 # 匹配行首的 W: / M: / W：/ M：标记
-RE_LINE_SPEAKER = re.compile(r'^([WwMm])\s*[:：]\s*(.*)')
+RE_LINE_SPEAKER = LINE_SPEAKER_RE
 # 匹配行首的 (W) / (M) 标记
-RE_PAREN_SPEAKER = re.compile(r'^\(([WwMm])\)\s*(.*)')
+RE_PAREN_SPEAKER = PAREN_SPEAKER_RE
 # 匹配题型录音稿中的通用角色标记，例如 Reporter: / Mr Yan: / Ms Wu:
 RE_ROLE_LINE = re.compile(r'^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$')
 
@@ -113,10 +115,10 @@ def parse_speakers_with_roles(
         marker = RE_LINE_SPEAKER.match(stripped)
         if marker:
             flush()
-            gender = marker.group(1).upper()
-            current_voice = fv if gender == 'W' else mv
+            gender = speaker_marker_gender(marker.group(1))
+            current_voice = fv if gender == 'female' else mv
             current_role = (
-                DEFAULT_FEMALE_ROLE_KEY if gender == 'W' else DEFAULT_MALE_ROLE_KEY
+                DEFAULT_FEMALE_ROLE_KEY if gender == 'female' else DEFAULT_MALE_ROLE_KEY
             ) if preserve_default_roles else None
             content = marker.group(2).strip()
             if content:
@@ -126,10 +128,10 @@ def parse_speakers_with_roles(
         paren_marker = RE_PAREN_SPEAKER.match(stripped)
         if paren_marker:
             flush()
-            gender = paren_marker.group(1).upper()
-            current_voice = fv if gender == 'W' else mv
+            gender = speaker_marker_gender(paren_marker.group(1))
+            current_voice = fv if gender == 'female' else mv
             current_role = (
-                DEFAULT_FEMALE_ROLE_KEY if gender == 'W' else DEFAULT_MALE_ROLE_KEY
+                DEFAULT_FEMALE_ROLE_KEY if gender == 'female' else DEFAULT_MALE_ROLE_KEY
             ) if preserve_default_roles else None
             content = paren_marker.group(2).strip()
             if content:

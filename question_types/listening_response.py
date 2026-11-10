@@ -11,7 +11,7 @@ from document_profiles import (
     RESPONSE_TWO_SECTION_ENTRY_PROFILE,
 )
 from question_types.base import BaseParser
-from question_types.text_utils import is_chinese, is_major_section_heading, sanitize
+from question_types.text_utils import is_chinese, is_major_section_heading, listening_play_count, sanitize
 from question_types.text_utils import has_red_text_in_range
 
 
@@ -210,6 +210,7 @@ class ListeningResponseParser(BaseParser):
         blocks = []
         current = None
         mode = ''
+        times = None
 
         def finish():
             nonlocal current, mode
@@ -224,11 +225,15 @@ class ListeningResponseParser(BaseParser):
                 continue
             if is_major_section_heading(value):
                 break
+            if current is None or '计算机' in value:
+                explicit_times = listening_play_count(value)
+                if explicit_times is not None:
+                    times = explicit_times
             start = self.RE_DIALOGUE_START.match(value)
             if start:
                 finish()
                 current = {'number': int(start.group(1)) if start.group(1) else None,
-                           'lines': [], 'prompt': '', 'answers': []}
+                           'lines': [], 'prompt': '', 'answers': [], 'times': times}
                 continue
             if current is None:
                 continue
@@ -284,6 +289,8 @@ class ListeningResponseParser(BaseParser):
                 item['score'] = question['score'] = score
             if answer_time is not None:
                 item['answer_time'] = question['answer_time'] = answer_time
+            if block['times'] is not None:
+                item['times'] = question['times'] = block['times']
             items.append(item)
             questions.append(question)
         return items, questions
@@ -307,6 +314,7 @@ class ListeningResponseParser(BaseParser):
         answer_time = None
         response_prompt_positions = {}
         current_prompt_position = None
+        times = None
 
         def parse_score_value(raw):
             normalized = str(raw or '').translate(
@@ -354,6 +362,8 @@ class ListeningResponseParser(BaseParser):
                     question["score"] = section_score
                 if answer_time is not None:
                     question["answer_time"] = answer_time
+                if times is not None:
+                    item['times'] = question['times'] = times
                 questions.append(question)
             collecting = False
             expected_count = None
@@ -368,6 +378,10 @@ class ListeningResponseParser(BaseParser):
                 break
             if self.RE_SECTION_START.search(value):
                 response_section_seen = True
+            if response_section_seen and '计算机' in value:
+                explicit_times = listening_play_count(value)
+                if explicit_times is not None:
+                    times = explicit_times
             score_match = self.RE_SCORE.search(value)
             if response_section_seen and score_match:
                 section_score = parse_score_value(score_match.group('score'))

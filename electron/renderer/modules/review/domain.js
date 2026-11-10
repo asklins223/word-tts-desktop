@@ -282,6 +282,27 @@ function reviewItemGender(item) {
 }
 
 function reviewVoicePresentation(item) {
+    // Explicit turn markers outrank the item's unmarked-content default,
+    // including after an inline edit of an older female-default passage.
+    const text = String(reviewContentForItem(item) || item?.text || '').trim();
+    const speakerGenders = [];
+    let marked = false;
+    let activeGender = reviewItemGender(item);
+    text.split(/\r?\n/).forEach(line => {
+        const marker = parseSpeakerMarkerClient(line);
+        if (marker) {
+            marked = true;
+            activeGender = marker.gender;
+            line = marker.text;
+        }
+        if (String(line).trim() && !speakerGenders.includes(activeGender)) speakerGenders.push(activeGender);
+    });
+    if (marked && speakerGenders.length) {
+        return {
+            role: '',
+            voice: speakerGenders.map(gender => gender === 'male' ? '默认男声' : '默认女声').join(' / '),
+        };
+    }
     const role = reviewRoleLabel(item);
     const gender = reviewItemGender(item);
     const genderLabel = gender === 'male' ? '男声' : '女声';

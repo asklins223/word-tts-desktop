@@ -8,6 +8,7 @@ from question_types.base import BaseParser
 from question_types.text_utils import (
     is_chinese,
     is_major_section_heading,
+    listening_play_count,
     match_answer_marker,
     match_script_marker,
     sanitize,
@@ -24,7 +25,9 @@ class ListeningRetellingParser(BaseParser):
     RE_NUMBER = re.compile(r"^\s*(\d+)\s*[.．、）)]")
     RE_SCORE = re.compile(r"满分\s*([0-9０-９]+(?:\.\d+)?)\s*分")
     RE_TIME = re.compile(r"(?:在|答题(?:时间|时长)\s*(?:为|是)?)\s*([0-9０-９]+)\s*秒")
-    RE_ANSWER_LABEL = re.compile(r"^\s*Answer\s*\d+\s*[：:.．、）)]\s*", re.I)
+    RE_ANSWER_LABEL = re.compile(
+        r"^\s*(?P<explicit>Answer\s*)?(?P<number>\d+)\s*[：:.．、）)](?!\d)\s*", re.I,
+    )
 
     def parse(self):
         start = next((i for i, (_, text, _) in enumerate(self.paras)
@@ -42,6 +45,16 @@ class ListeningRetellingParser(BaseParser):
         answer_labeled = False
         mode = 'preamble'
         script_start = None
+        times = None
+
+        def answer_label(value):
+            label = self.RE_ANSWER_LABEL.match(value)
+            # Bare numbering is a list marker only when it continues the
+            # alternatives in order. A year/decimal in an answer is content.
+            expected = len(answers) + bool(answer_parts) + 1
+            if label and (label.group('explicit') or int(label.group('number')) == expected):
+                return label
+            return None
 
         def finish_answer():
             if answer_parts:
@@ -67,6 +80,10 @@ class ListeningRetellingParser(BaseParser):
             time_match = self.RE_TIME.search(value)
             if time_match and answer_time is None:
                 answer_time = int(time_match.group(1).translate(str.maketrans('０１２３４５６７８９', '0123456789')))
+            if mode == 'preamble':
+                explicit_times = listening_play_count(value)
+                if explicit_times is not None:
+                    times = explicit_times
 
             script = match_script_marker(value)
             if script:
@@ -79,7 +96,7 @@ class ListeningRetellingParser(BaseParser):
             if answer_marker:
                 mode = 'answers'
                 remainder = str(answer_marker.group(1) or '').strip()
-                label = self.RE_ANSWER_LABEL.match(remainder)
+                label = answer_label(remainder)
                 if label:
                     answer_labeled = True
                     remainder = remainder[label.end():].strip()
@@ -91,7 +108,7 @@ class ListeningRetellingParser(BaseParser):
                     script_lines.append(value)
                 continue
             if mode == 'answers':
-                label = self.RE_ANSWER_LABEL.match(value)
+                label = answer_label(value)
                 if label:
                     finish_answer()
                     answer_labeled = True
@@ -124,6 +141,8 @@ class ListeningRetellingParser(BaseParser):
         if score is not None:
             item['score'] = score
         recording = {'listening_text': text}
+        if times is not None:
+            recording['times'] = times
         image_end = script_start if script_start is not None else source_end
         candidates = [block for block in self.document_blocks
                       if block.kind in {'embedded_image', 'textbox'}

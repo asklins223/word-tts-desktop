@@ -16,6 +16,9 @@ from question_types.text_utils import (
     MAJOR_SECTION_RE,
     is_chinese,
     is_major_section_heading,
+    listening_play_count,
+    match_speaker_marker,
+    speaker_marker_gender,
     sanitize,
 )
 
@@ -130,15 +133,35 @@ class ImitationReadingParser(BaseParser):
             # 同一份资料偶尔会把旧版单元素材和新版框选短文放在一起；
             # 两套规则都命中时合并结果，不能因为新版存在就丢掉旧素材。
             if legacy_result["items"]:
-                return self._result(legacy_result["items"] + boxed_result["items"])
-            return boxed_result
+                return self._with_speaker_facts(self._result(legacy_result["items"] + boxed_result["items"]))
+            return self._with_speaker_facts(boxed_result)
         legacy_result = self._parse_legacy_format()
         unit_source_result = self._parse_unit_source_special_format(legacy_result)
         if unit_source_result is not None:
-            return unit_source_result
+            return self._with_speaker_facts(unit_source_result)
         if legacy_result["items"]:
-            return legacy_result
-        return self._parse_exam_paragraph_format()
+            return self._with_speaker_facts(legacy_result)
+        return self._with_speaker_facts(self._parse_exam_paragraph_format())
+
+    @staticmethod
+    def _with_speaker_facts(result):
+        for item in result.get('items', []):
+            genders = set()
+            current_gender = 'female'
+            marked = False
+            for line in str(item.get('text') or '').splitlines():
+                marker = match_speaker_marker(line)
+                if marker:
+                    current_gender = speaker_marker_gender(marker.group(1))
+                    marked = True
+                    line = marker.group(2)
+                if str(line).strip():
+                    genders.add(current_gender)
+            if marked:
+                # The item default describes unmarked content. Explicit
+                # turns still keep their own marker for the synthesis path.
+                item['voice'] = 'male' if genders == {'male'} else 'female'
+        return result
 
     def _boxed_question_numbers(self):
         numbers = []
@@ -147,6 +170,43 @@ class ImitationReadingParser(BaseParser):
             if match:
                 numbers.append(int(match.group('number')))
         return numbers
+
+    def _with_task_controls(self, result):
+        """Keep each reading task's playback and recording duration separate."""
+        controls = {}
+        number = None
+        in_section = False
+        for _, raw, _ in self.paras:
+            value = str(raw or '').strip()
+            question = self.RE_EXAM_QUESTION.match(value)
+            if question:
+                number = int(question.group('number'))
+                in_section = True
+            elif self.RE_EXAM_SECTION.match(value):
+                in_section = True
+                number = None
+            elif is_major_section_heading(value):
+                in_section = False
+            if not in_section:
+                continue
+            task = controls.setdefault(number, {})
+            times = listening_play_count(value)
+            if times is not None:
+                task['times'] = times
+            # A preparation countdown must never become the recording time.
+            duration = re.search(
+                r'在\s*([0-9０-９]+)\s*秒(?:钟)?内\s*(?:朗读|录音)'
+                r'|显示\s*([0-9０-９]+)\s*秒(?:钟)?录音时间', value,
+            )
+            if duration:
+                if duration.group(1):
+                    task['answer_time'] = int(duration.group(1))
+                else:
+                    task.setdefault('answer_time', int(duration.group(2)))
+        for target in [*result.get('items', []), *result.get('questions', [])]:
+            task = {**controls.get(None, {}), **controls.get(target.get('number'), {})}
+            target.update(task)
+        return result
 
     @staticmethod
     def _parse_number_token(value):
@@ -217,17 +277,31 @@ class ImitationReadingParser(BaseParser):
         blocks = self.document_blocks
 
         waiting_for_table = False
+        pending_marker = None
         for block in blocks:
             if block.kind == 'paragraph':
                 if self.RE_BOXED_QUESTION.match(block.text.strip()):
                     waiting_for_table = True
+                    pending_marker = None
+                elif is_major_section_heading(block.text):
+                    waiting_for_table = False
+                    pending_marker = None
+                elif waiting_for_table:
+                    marker = match_speaker_marker(block.text)
+                    if marker and not marker.group(2).strip():
+                        pending_marker = '(M)' if speaker_marker_gender(marker.group(1)) == 'male' else '(W)'
                 continue
             if block.kind != 'table' or not waiting_for_table:
                 continue
             text = self._english_only(block.text)
             if text:
+                # A standalone role annotation between the task instruction
+                # and its boxed passage belongs to this passage only.
+                if pending_marker and not match_speaker_marker(text.splitlines()[0]):
+                    text = f'{pending_marker}\n{text}'
                 texts.append(text)
                 waiting_for_table = False
+                pending_marker = None
         self._boxed_table_texts_cache = texts
         return texts
 
@@ -326,7 +400,7 @@ class ImitationReadingParser(BaseParser):
         else:
             result["section_score"] = computed_score
         result["computed_score"] = computed_score
-        return result
+        return self._with_task_controls(result)
 
     def _parse_legacy_format(self):
         """旧版 U 单元 + 外网/教材规则，保留原有行为。"""
@@ -623,7 +697,7 @@ class ImitationReadingParser(BaseParser):
             # 被误当成朗读稿。
             if self.RE_EXAM_CONTROL.search(value) or self.RE_CJK.search(value):
                 continue
-            if re.search(r'[A-Za-z]', value):
+            if match_speaker_marker(value) or re.search(r'[A-Za-z]', value):
                 current_lines.append(value)
 
         flush()
@@ -640,4 +714,4 @@ class ImitationReadingParser(BaseParser):
         else:
             result["section_score"] = computed_score
         result["computed_score"] = computed_score
-        return result
+        return self._with_task_controls(result)

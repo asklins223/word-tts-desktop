@@ -440,7 +440,7 @@ function resultVoiceKeysFromAcceptedContent(item, workspace = null) {
     const candidateRoleKeys = new Set();
     lines.forEach(line => {
         const value = line.trim();
-        if (!value || /^[WwMm]\s*[:：]/.test(value) || /^\([WwMm]\)/.test(value)) return;
+        if (!value || parseSpeakerMarkerClient(value)) return;
         const match = /^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$/.exec(value);
         if (match && roleLooksLikeLabel(match[1])) {
             candidateRoleKeys.add(normalizeRoleKeyClient(match[1]));
@@ -452,11 +452,10 @@ function resultVoiceKeysFromAcceptedContent(item, workspace = null) {
         const value = line.trim();
         if (!value) return;
 
-        const speakerMatch = /^([WwMm])\s*[:：]\s*(.*)$/.exec(value)
-            || /^\(([WwMm])\)\s*(.*)$/.exec(value);
+        const speakerMatch = parseSpeakerMarkerClient(value);
         if (speakerMatch) {
-            activeVoice = speakerMatch[1].toUpperCase() === 'W' ? femaleVoice : maleVoice;
-            if (String(speakerMatch[2] || '').trim()) append(activeVoice);
+            activeVoice = speakerMatch.gender === 'female' ? femaleVoice : maleVoice;
+            if (String(speakerMatch.text || '').trim()) append(activeVoice);
             return;
         }
 
@@ -478,10 +477,7 @@ function resultContentHasExplicitVoiceEvidence(item) {
     const text = String(item?.normalized_content ?? item?.text ?? item?.content ?? '').trim();
     if (!text) return false;
     const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    if (lines.some(line => (
-        /^[WwMm]\s*[:：]/.test(line)
-        || /^\([WwMm]\)\s*/.test(line)
-    ))) return true;
+    if (lines.some(line => parseSpeakerMarkerClient(line))) return true;
     const roleLabels = new Set();
     lines.forEach(line => {
         const match = /^([^:：\n]{1,60}?)\s*[:：]\s*(.*)$/.exec(line);

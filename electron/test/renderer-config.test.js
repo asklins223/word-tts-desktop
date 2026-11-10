@@ -302,6 +302,31 @@ test('核对页展示解析出的多级题型和默认男女声', () => {
     assert.equal(api.reviewVoicePresentation({ voice: 'male' }).voice, '默认男声');
 });
 
+test('模仿朗读的显式男女声标记优先于旧的默认女声元数据', () => {
+    const { api } = loadRendererConfigFunctions();
+    ['(M) Reading text.', '(m)\nReading text.', '（Ｍ）：Reading text.', '（ M ） Reading text.'].forEach(text => {
+        const item = { normalized_content: text, voice: 'female', metadata: { voice: 'female' } };
+        assert.equal(api.reviewVoicePresentation(item).voice, '默认男声');
+    });
+    assert.equal(api.reviewVoicePresentation({
+        normalized_content: '(M) First line.\n（W） Second line.', voice: 'female',
+    }).voice, '默认男声 / 默认女声');
+    assert.equal(api.reviewPageText('（ M ）: Reading text.'), 'Reading text.');
+});
+
+test('朗读角色标记的核对展示与已接受合成配置使用相同男女声', () => {
+    const { api } = loadRendererConfigFunctions();
+    const workspace = { configuration: { effective: {
+        default_female_voice: 'speaker:test-female', default_male_voice: 'speaker:test-male',
+    } } };
+    const item = { normalized_content: '（Ｍ）：First line.\n(W) Second line.', voice: 'female' };
+    assert.deepEqual(JSON.parse(JSON.stringify(api.resultVoiceKeysFromAcceptedContent(item, workspace))), [
+        'speaker:test-male', 'speaker:test-female',
+    ]);
+    const roles = api.discoverVoiceRoles([{ items: [item] }]);
+    assert.equal(roles.some(role => /[（(][MW]/i.test(role.label)), false);
+});
+
 test('文稿核对开放已接入的文档结构，并支持单独听后选择', () => {
     const { api } = loadRendererConfigFunctions();
     const fullPaper = api.reviewDocumentEntrySupport([

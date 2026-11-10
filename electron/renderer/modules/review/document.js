@@ -7,7 +7,7 @@ let reviewImageDialogBound = false;
 let reviewImageDialogState = { returnFocus: null, scale: 1, url: null };
 let reviewPanelViewportSyncBound = false;
 let reviewPanelViewportSyncFrame = 0;
-const REVIEW_PAGE_PAREN_SPEAKER_MARKER_RE = /^[ \t]*\([WwMm]\)(?:[ \t]*[:：])?[ \t]*/gim;
+const REVIEW_PAGE_PAREN_SPEAKER_MARKER_RE = /^[ \t]*[（(][ \t]*[WwMmＷｗＭｍ][ \t]*[）)](?:[ \t]*[:：])?[ \t]*/gim;
 const REVIEW_PAGE_COLON_SPEAKER_MARKER_RE = /^[ \t]*[WwMm][ \t]*[:：][ \t]*/gim;
 const REVIEW_PAGE_ANSWER_SPLIT_RE = /\s*\/\s*/;
 

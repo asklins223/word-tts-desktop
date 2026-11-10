@@ -9,6 +9,7 @@ from question_types.text_utils import (
     SCRIPT_MARKER_RE,
     has_red_text_in_range,
     is_major_section_heading,
+    listening_play_count,
     match_script_marker,
     sanitize,
 )
@@ -203,6 +204,7 @@ class ListeningSelectionParser(BaseParser):
         declared_section_scores = []
         pending_answer_time = None
         pending_answer_count = None
+        times = None
 
         def parse_score(value):
             match = self.RE_SCORE.search(str(value or ''))
@@ -293,6 +295,8 @@ class ListeningSelectionParser(BaseParser):
                     "question_index": script_index,
                     "text": text,
                 }
+                if times is not None:
+                    item["times"] = times
                 question_numbers = question_numbers_by_script.get(script_index, [])
                 if use_exam_naming:
                     filename_stem = audio_filename_stem(
@@ -317,6 +321,7 @@ class ListeningSelectionParser(BaseParser):
                 flush_questions(None)
                 clear_pending_reading_prompt()
                 in_section = True
+                times = None
                 section_score = parse_score(value)
                 if section_score is not None:
                     declared_item_scores.append(section_score)
@@ -337,6 +342,11 @@ class ListeningSelectionParser(BaseParser):
                 clear_pending_reading_prompt()
                 in_section = False
                 continue
+
+            if not collecting:
+                explicit_times = listening_play_count(value)
+                if explicit_times is not None:
+                    times = explicit_times
 
             script_match = match_script_marker(value)
             if script_match:

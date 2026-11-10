@@ -27,6 +27,21 @@ ANSWER_MARKER_RE = re.compile(
     r'(.*)\s*$'
 )
 
+LINE_SPEAKER_RE = re.compile(r'^([WwMmＷｗＭｍ])\s*[:：]\s*(.*)')
+PAREN_SPEAKER_RE = re.compile(r'^[（(]\s*([WwMmＷｗＭｍ])\s*[）)]\s*[:：]?\s*(.*)')
+
+
+def match_speaker_marker(text: Any):
+    """Match a line-leading W/M marker, including Chinese input punctuation."""
+
+    value = str(text or '').strip()
+    return LINE_SPEAKER_RE.match(value) or PAREN_SPEAKER_RE.match(value)
+
+
+def speaker_marker_gender(marker: Any) -> str:
+    token = str(marker or '').translate(str.maketrans('ＷｗＭｍ', 'WwMm')).upper()
+    return 'male' if token == 'M' else 'female'
+
 _MAJOR_SECTION_NAMES = (
     r'(?:信息获取|回答问题|听选信息|听后选择|听后应答|'
     r'听后记录并转述信息|听后记录|听后转述|信息转述及询问|信息转述|询问信息|'
@@ -128,6 +143,25 @@ def match_answer_marker(text: Any):
     """匹配参考答案/答案/解析标签，并返回标签后的内容。"""
 
     return ANSWER_MARKER_RE.match(str(text or '').strip())
+
+
+def listening_play_count(text: Any) -> int | None:
+    """Read an explicit recording repeat count, excluding student reading."""
+
+    value = str(text or '').translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+    match = re.search(
+        r'(?<!朗)(?:读|听|播放)\s*([0-9一二两三四五六七八九十]+)\s*(?:遍|次)'
+        r'|请?听(?:以下|下面)?(?:一篇|一段)?短文\s*([0-9一二两三四五六七八九十]+)\s*遍',
+        value,
+    )
+    if match is None:
+        return None
+    token = match.group(1) or match.group(2)
+    count = int(token) if token.isdigit() else {
+        '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+        '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+    }.get(token)
+    return count if count and count > 0 else None
 
 
 # ============================================================================
