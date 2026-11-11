@@ -114,6 +114,36 @@ def test_shenzhen_template_has_its_own_four_subsection_targets():
     ] == [(f"第{number}题(录音题)", 0) for number in (2, 8, 12, 13)]
 
 
+@pytest.mark.parametrize("template_name", ["信息获取专项模板", "改名后的专项模板"])
+def test_standalone_acquisition_uses_its_own_two_panel_targets(template_name):
+    rule = resolve_paper_bundle_rule(template_name)
+    if template_name == "信息获取专项模板":
+        assert rule is not None
+    owner = _automation_with_outline(list(range(1, 11)))
+    owner.spec = replace(
+        owner.spec, paper_category="题型专项", template_name=template_name,
+        bundle_rule=rule.key if rule else None, groups=(owner.spec.groups[1],),
+    )
+    assert owner._legacy_subsection_target("信息获取", "听选信息", ("fallback", 0)) == (
+        "第1题(录音题)", 0,
+    )
+    assert owner._legacy_subsection_target("信息获取", "回答问题", ("fallback", 0)) == (
+        "第7题(录音题)", 0,
+    )
+
+
+def test_standalone_acquisition_registered_targets_survive_an_unreadable_outline():
+    rule = resolve_paper_bundle_rule("信息获取")
+    owner = _automation_with_outline([])
+    owner.spec = replace(owner.spec, bundle_rule=rule.key)
+    assert owner._legacy_subsection_target("信息获取", "听选信息", ("fallback", 0)) == (
+        "第1题(录音题)", 0,
+    )
+    assert owner._legacy_subsection_target("信息获取", "回答问题", ("fallback", 0)) == (
+        "第7题(录音题)", 0,
+    )
+
+
 @pytest.mark.parametrize("bundle_rule", [None, "platform_input-shenzhen-listening-exam-v1"])
 @pytest.mark.parametrize("full_width", [False, True])
 @pytest.mark.parametrize("group,number", [("信息获取", 8), ("信息转述及询问", 13)])

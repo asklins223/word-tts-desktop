@@ -13,6 +13,16 @@ from .models import PaperBundleRule
 
 PAPER_BUNDLE_RULES: tuple[PaperBundleRule, ...] = (
     PaperBundleRule(
+        key="platform_input-info-acquisition-special-v1",
+        template_name_tokens=("信息获取",),
+        outline_targets=(("信息获取", "第1题(录音题)", 0),),
+        outline_numbering="local",
+        outline_subsection_targets=(
+            ("信息获取", "听选信息", "第1题(录音题)", 0),
+            ("信息获取", "回答问题", "第7题(录音题)", 0),
+        ),
+    ),
+    PaperBundleRule(
         key="platform_input-info-retelling-special-v1",
         # The standalone question template is the same major topic as the
         # bundled 外研版 exam, but its two lazy panels contain only this one

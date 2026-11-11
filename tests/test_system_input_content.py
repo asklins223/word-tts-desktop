@@ -135,6 +135,32 @@ class SystemInputContentTests(unittest.TestCase):
         self.assertEqual(support["label"], "听后选择")
         self.assertEqual(page_input_completeness(facts)["status"], "complete")
 
+    def test_standalone_info_acquisition_is_an_entry_shape(self) -> None:
+        facts = {
+            "type": "信息获取",
+            "materials": [{
+                "section": "回答问题",
+                "listening_text": "They practice every Thursday.",
+                "audio_filename_stem": "回答问题-录音稿1",
+                "questions": [{
+                    "prompt": "When do they practice?", "score": 1.5,
+                    "reference_answers": ["Every Thursday."],
+                }],
+            }],
+        }
+        support = document_entry_support(
+            [None, facts], input_type="paper",
+            document_types=["信息获取", "信息获取"], auxiliary=[True, False],
+        )
+        self.assertTrue(support["supported"])
+        self.assertEqual(support["format"], "info_acquisition")
+        self.assertEqual(support["structured_count"], 1)
+        self.assertEqual(support["expected_types"], ["信息获取"])
+        self.assertEqual(page_input_completeness(facts)["status"], "complete")
+
+        del facts["materials"][0]["questions"][0]["reference_answers"]
+        self.assertEqual(page_input_completeness(facts)["status"], "incomplete")
+
     def test_record_retelling_entry_requires_confirmed_table_profile(self) -> None:
         missing_profile = document_entry_support(
             [{"type": "听后记录并转述信息"}],

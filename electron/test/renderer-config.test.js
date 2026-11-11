@@ -560,6 +560,37 @@ test('文稿视图按页面题目计数，并校准两类专项卷的字段层�
     assert.match(source, /review-document-material/);
 });
 
+test('信息获取专项接受服务端结构判断并保留题干音频', () => {
+    const { api } = loadRendererConfigFunctions();
+    const items = [
+        { metadata: { doc_type: '信息获取', audio_only_auxiliary: true } },
+        { metadata: { doc_type: '信息获取', page_input: {
+            type: '信息获取', materials: [{ questions: [{ number: 1 }, { number: 2 }] }],
+        } } },
+        { metadata: { doc_type: '信息获取', page_input: {
+            type: '信息获取', materials: [{ questions: [{ number: 7 }] }],
+        } } },
+    ];
+    const projection = { document_entry_support: {
+        schema_version: 'document-entry-preflight-v1', supported: true,
+        format: 'info_acquisition', label: '信息获取', structured_count: 2,
+        invalid_count: 0, major_section_profile_invalid_count: 0,
+        entry_profile_invalid_count: 0, entry_capability_invalid_count: 0,
+        detected_types: ['信息获取'], expected_types: ['信息获取'],
+    } };
+    assert.equal(api.reviewDocumentEntrySupport(items).supported, true);
+    const support = api.reviewDocumentEntrySupport(items, projection);
+    assert.equal(support.supported, true);
+    assert.equal(support.format, 'info_acquisition');
+    assert.equal(support.supportedCount, 2);
+    const unitItems = api.buildReviewUnitModels([], items)[0].items;
+    assert.equal(api.reviewDocumentQuestionCountForItems(unitItems), 3);
+    assert.equal(api.reviewDocumentEntrySupport(items, {}).supported, false);
+    assert.equal(api.reviewDocumentEntrySupport([...items, { metadata: {
+        page_input: { type: '听后选择' },
+    } }], projection).supported, false);
+});
+
 test('文稿核对缺少服务端前置判断时默认关闭，不在前端自行放行', () => {
     const { api } = loadRendererConfigFunctions();
     const items = [

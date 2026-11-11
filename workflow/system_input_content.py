@@ -104,6 +104,11 @@ DOCUMENT_ENTRY_PROFILES = (
         "types": ("听后转述",),
     },
     {
+        "format": "info_acquisition",
+        "label": "信息获取",
+        "types": ("信息获取",),
+    },
+    {
         "format": "legacy_info_retelling",
         "label": "信息转述及询问",
         "types": ("信息转述及询问",),
@@ -1276,9 +1281,7 @@ def document_entry_support(
     elif detected or invalid_count or known_document_types:
         status = "unsupported"
         reason = (
-            "当前录入脚本只支持“听说测试题”“听后选择”“模仿朗读”“听后应答”和"
-            "“听后记录并转述信息”五种文档结构；"
-            "这份文档尚未形成可录入的完整结构。"
+            "当前文档尚未形成已接入录入脚本的完整结构，请重新解析并核对题型。"
         )
     else:
         # Some old workspaces predate page_input facts.  Missing preflight

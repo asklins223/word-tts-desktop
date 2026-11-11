@@ -202,6 +202,55 @@ class InfoAcquisitionQuestionRulesTests(unittest.TestCase):
         for script in scripts:
             self.assertNotIn("参考答案", script["text"])
 
+        self.assertEqual(
+            [question.get("reference_answers") for question in result["questions"]],
+            [
+                ["Reading.", "She is reading."],
+                ["At home.", "He is at home."],
+                ["The shadow play club."],
+                ["Every Thursday."],
+                ["On the stage."],
+            ],
+        )
+        self.assertTrue(all(
+            question.get("reference_answers_source") == "document"
+            for question in result["questions"]
+        ))
+
+    def test_formula_scores_and_standalone_material_audio_names(self):
+        paragraphs = [
+            "二、信息获取（共15分）",
+            "第一节 听选信息（1.5 分 ×6=9）",
+            "1. What is Amy doing?",
+            "（Reading. / Singing. / Running.）",
+            "参考答案：Reading. / She is reading.",
+            "录音稿：W: Amy is reading.",
+            "第二节 回答问题（１．５ 分 ×4=6）",
+            "7. Tell me when they practice.",
+            "参考答案：Every Thursday. / They practice every Thursday.",
+            "8. Tell me where they practice.",
+            "参考答案：At school. / They practice at school.",
+            "录音稿：(M) They practice at school on Thursday.",
+        ]
+        parser = InfoAcquisitionParser(
+            "anonymous.docx",
+            preloaded_paras=([(i, text, "Normal") for i, text in enumerate(paragraphs)], []),
+        )
+        result = parser.parse()
+
+        self.assertEqual([q["number"] for q in result["questions"]], [1, 7, 8])
+        self.assertEqual([q["score"] for q in result["questions"]], [1.5] * 3)
+        self.assertEqual(result["computed_score"], 4.5)
+        self.assertEqual(result["score_per_item"], 1.5)
+        self.assertEqual(result["questions"][2]["reference_answers"], [
+            "At school.", "They practice at school.",
+        ])
+        self.assertEqual(
+            [item.get("filename_stem") for item in result["items"]
+             if item["category"].endswith("录音稿")],
+            ["听选信息-录音稿1", "回答问题-录音稿1"],
+        )
+
     def test_reference_answer_block_takes_priority_over_red_option(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir, "信息获取.docx")

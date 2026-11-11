@@ -1146,10 +1146,16 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
                     limit=128,
                 )
                 if not any(
-                    group_type == "信息转述及询问"
-                    and (
-                        "信息转述" in category_hint
-                        or "询问信息" in category_hint
+                    (
+                        group_type == "信息转述及询问"
+                        and (
+                            "信息转述" in category_hint
+                            or "询问信息" in category_hint
+                        )
+                    )
+                    or (
+                        group_type == "信息获取"
+                        and category_hint in {"听选信息题目", "回答问题题目"}
                     )
                     for group_type in special_group_types
                 ):

@@ -48,6 +48,9 @@ class InfoAcquisitionParser(BaseParser):
         r'每(?:小题|道题|题)\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
         re.IGNORECASE,
     )
+    RE_SCORE_FORMULA = re.compile(
+        r'(?P<score>[0-9０-９]+(?:[.．][0-9０-９]+)?)\s*分\s*[×xX*＊]\s*[0-9０-９]+'
+    )
     RE_FULL_SCORE = re.compile(
         r'满分\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分',
         re.IGNORECASE,
@@ -56,7 +59,7 @@ class InfoAcquisitionParser(BaseParser):
     @staticmethod
     def _number_value(value):
         raw = str(value or '').translate(
-            str.maketrans('０１２３４５６７８９', '0123456789')
+            str.maketrans('０１２３４５６７８９．', '0123456789.')
         )
         try:
             number = float(raw)
@@ -161,8 +164,8 @@ class InfoAcquisitionParser(BaseParser):
                         for question in script_questions
                         if isinstance(question.get("score"), (int, float))
                     )
+                script_idx_by_cat[category] = script_idx_by_cat.get(category, 0) + 1
                 if use_exam_naming:
-                    script_idx_by_cat[category] = script_idx_by_cat.get(category, 0) + 1
                     filename_stem = audio_filename_stem_for_category(
                         category, script_idx_by_cat[category]
                     )
@@ -171,6 +174,12 @@ class InfoAcquisitionParser(BaseParser):
                             "audio_filename_stem": filename_stem,
                             "type_path": [filename_stem.rsplit("-", 1)[0]],
                         })
+                else:
+                    # Keep the existing standalone audio names explicit so
+                    # page facts and durable audio delivery share the same stem.
+                    item["filename_stem"] = (
+                        f"{current_section_name}-录音稿{script_idx_by_cat[category]}"
+                    )
                 items.append(item)
             collecting = False
             current_lines = []
@@ -251,6 +260,8 @@ class InfoAcquisitionParser(BaseParser):
                 next_qnum = None
                 answer_block = False
                 section_score = self._score(self.RE_SCORE, value)
+                if section_score is None:
+                    section_score = self._score(self.RE_SCORE_FORMULA, value)
                 if section_score is not None:
                     declared_item_scores.append(section_score)
                 full_score = self._score(self.RE_FULL_SCORE, value)
@@ -266,6 +277,8 @@ class InfoAcquisitionParser(BaseParser):
                 current_section_name = "回答问题"
                 answer_block = False
                 section_score = self._score(self.RE_SCORE, value)
+                if section_score is None:
+                    section_score = self._score(self.RE_SCORE_FORMULA, value)
                 if section_score is not None:
                     declared_item_scores.append(section_score)
                 full_score = self._score(self.RE_FULL_SCORE, value)
@@ -307,6 +320,14 @@ class InfoAcquisitionParser(BaseParser):
                 answer_block = True
                 inline = (answer_marker.group(1) or '').strip()
                 number, answers = self._answer_line(inline)
+                if number is None and inline and pending_questions:
+                    # Per-question answers omit the number because they sit
+                    # directly below the prompt/options. A trailing numbered
+                    # answer block still uses its explicit question numbers.
+                    number = pending_questions[-1]["number"]
+                    answers = [sanitize(part) for part in re.split(r'\s*/\s*', inline)]
+                    answers = [answer for answer in answers if answer]
+                    answer_block = False
                 if number is not None and answers:
                     answer_map[number] = answers
                 continue

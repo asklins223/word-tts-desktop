@@ -110,13 +110,13 @@ class PlatformInputLegacyExamContentMixin:
             resolved = structure.subsection_target(group_type, subsection)
             if resolved is not None:
                 return resolved
-        if rule is None:
-            return fallback
-        target = rule.outline_subsection_target(group_type, subsection) or fallback
-        # The same 14-card bundle is also used by the Shenzhen paper, whose
-        # visible outline numbers run from 1 to 14. Only use global numbers
-        # after the complete DOM outline confirms that layout; older Foshan
-        # pages repeat local numbers and must keep their registered targets.
+        target = (
+            rule.outline_subsection_target(group_type, subsection) if rule is not None else None
+        ) or fallback
+        # Both standalone specials and Shenzhen papers can number the outline
+        # globally. Only use those numbers after the complete DOM outline
+        # confirms that layout, including for renamed/unregistered templates;
+        # older Foshan pages must keep their registered local targets.
         page = getattr(self, "page", None)
         if page is None:
             return target

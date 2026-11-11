@@ -431,6 +431,11 @@ const REVIEW_DOCUMENT_ENTRY_PROFILES = [
         types: ['模仿朗读', '信息获取', '信息转述及询问'],
     },
     {
+        format: 'info_acquisition',
+        label: '信息获取',
+        types: ['信息获取'],
+    },
+    {
         format: 'legacy_info_retelling',
         label: '信息转述及询问',
         types: ['信息转述及询问'],
@@ -917,7 +922,7 @@ function reviewDocumentEntrySupport(items, systemInput = null) {
                 : entryCapabilityInvalidCount
                     ? `${validationProfileLabel}的录入字段尚未确认完整，当前暂不支持文稿录入。`
                     : detectedTypes.length || documentTypes.length || invalidCount
-                        ? '当前录入脚本只支持“听说测试题”“听后选择”“模仿朗读”“听后应答”和“听后记录并转述信息”五种文档结构。'
+                        ? '当前文档尚未形成已接入录入脚本的完整结构，请重新解析并核对题型。'
                         : '尚未获得文档录入结构判断，当前暂不支持文稿录入。',
         detected_types: detectedTypes,
         document_types: documentTypes.slice(0, 16),
