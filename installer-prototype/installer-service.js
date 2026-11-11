@@ -30,6 +30,12 @@ const NON_NUMERIC_IDENTIFIER = '(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)';
 const PRERELEASE_IDENTIFIER = `(?:${NUMERIC_IDENTIFIER}|${NON_NUMERIC_IDENTIFIER})`;
 const BUILD_IDENTIFIER = '[0-9A-Za-z-]+';
 const WRITE_PERMISSION_ERROR_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
+// MoveFileEx on a directory returns ACCESS_DENIED while any file inside the
+// tree is open without FILE_SHARE_DELETE. Freshly written executables are
+// routinely held for a moment by antivirus/indexing filters, so the swap must
+// ride out transient sharing violations instead of failing the whole update.
+const RETRYABLE_RENAME_ERROR_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY']);
+const DEFAULT_RENAME_RETRY_DELAYS = [150, 300, 500, 700, 900, 1100, 1300, 1500, 1500, 1500];
 const VERSION_PATTERN = new RegExp(
     `^${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}\\.${NUMERIC_IDENTIFIER}`
     + `(?:-${PRERELEASE_IDENTIFIER}(?:\\.${PRERELEASE_IDENTIFIER})*)?`
@@ -519,6 +525,33 @@ async function removePath(filePath) {
     await withNativeFileSystem(() => fsp.rm(filePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 120 }));
 }
 
+async function renameDirectoryWithRetry(source, destination, options = {}) {
+    const rename = typeof options.rename === 'function'
+        ? options.rename
+        : (from, to) => fsp.rename(from, to);
+    const delays = Array.isArray(options.delays) ? options.delays : DEFAULT_RENAME_RETRY_DELAYS;
+    let lastError = null;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+        if (attempt > 0) {
+            const delay = Math.max(0, Number(delays[attempt - 1]) || 0);
+            if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+            if (typeof options.onRetry === 'function') {
+                try {
+                    options.onRetry(attempt, lastError);
+                } catch (_) { /* progress reporting must not abort the swap */ }
+            }
+        }
+        try {
+            await rename(source, destination);
+            return;
+        } catch (error) {
+            if (!RETRYABLE_RENAME_ERROR_CODES.has(error?.code)) throw error;
+            lastError = error;
+        }
+    }
+    throw lastError;
+}
+
 async function removeInstallTarget(filePath) {
     if (!filePath || !(await pathExists(filePath))) return;
     // Once the uninstaller is running from TEMP there is no legitimate lock
@@ -810,6 +843,67 @@ function setupProcessEnvironment(environment, setupExecutable, payloadExportDire
 
 function powershellLiteral(value) {
     return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function normalizeWindowsDirectory(targetPath) {
+    const normalized = path.win32.normalize(String(targetPath || ''));
+    if (!normalized) return '';
+    const root = path.win32.parse(normalized).root;
+    // A drive root would turn the process filter below into "kill everything
+    // on this drive". Install targets are validated against that, but this
+    // helper is the last line of defense before Stop-Process runs.
+    if (!root || path.win32.normalize(normalized) === path.win32.normalize(root)) return '';
+    return normalized.replace(/[\\/]+$/, '');
+}
+
+function processQueryScript(targetDirectory, excludeProcessId) {
+    return [
+        `$targetDir = ${powershellLiteral(targetDirectory)}`,
+        `$excludeId = ${Number(excludeProcessId) || 0}`,
+        'function Get-WordTtsProcess {',
+        '  @(Get-Process -ErrorAction SilentlyContinue | Where-Object {',
+        '    if ($_.Id -eq $excludeId) { return }',
+        '    $processPath = $null',
+        '    try { $processPath = $_.Path } catch { $processPath = $null }',
+        `    $processPath -and $processPath.StartsWith($targetDir + '\\', [StringComparison]::OrdinalIgnoreCase)`,
+        '  })',
+        '}',
+    ];
+}
+
+function closeProcessesScript(targetDirectory, excludeProcessId) {
+    return [
+        ...processQueryScript(targetDirectory, excludeProcessId),
+        '$targets = @(Get-WordTtsProcess)',
+        'foreach ($process in $targets) { try { $null = $process.CloseMainWindow() } catch { } }',
+        '$deadline = (Get-Date).AddSeconds(3)',
+        'while ((Get-Date) -lt $deadline) {',
+        '  if (@(Get-WordTtsProcess).Count -eq 0) { break }',
+        '  Start-Sleep -Milliseconds 200',
+        '}',
+        'Get-WordTtsProcess | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }',
+        '$deadline = (Get-Date).AddSeconds(4)',
+        'do {',
+        '  $remaining = @(Get-WordTtsProcess)',
+        '  if ($remaining.Count -eq 0) { break }',
+        '  Start-Sleep -Milliseconds 200',
+        '} while ((Get-Date) -lt $deadline)',
+        '$remaining = @(Get-WordTtsProcess)',
+        'Write-Output ("REMAINING=" + $remaining.Count)',
+    ].join('\n');
+}
+
+function countProcessesScript(targetDirectory, excludeProcessId) {
+    return [
+        ...processQueryScript(targetDirectory, excludeProcessId),
+        '$remaining = @(Get-WordTtsProcess)',
+        'Write-Output ("REMAINING=" + $remaining.Count)',
+    ].join('\n');
+}
+
+function parseRemainingProcessCount(result) {
+    const match = /REMAINING=(\d+)/.exec(String(result?.stdout || ''));
+    return match ? Number(match[1]) : 0;
 }
 
 function resolveCleanupLauncherPath(targetPath, setupExecutable, environment = process.env) {
@@ -1203,6 +1297,10 @@ function createInstallerService(options = {}) {
     const execFileImpl = options.execFile || require('node:child_process').execFile;
     const execFileSyncImpl = options.execFileSync || execFileSync;
     const runPowerShell = options.runPowerShell || (script => runPowerShellDefault(script, execFileImpl));
+    const renameImpl = typeof options.rename === 'function' ? options.rename : null;
+    const renameRetryDelays = Array.isArray(options.renameRetryDelays)
+        ? options.renameRetryDelays
+        : DEFAULT_RENAME_RETRY_DELAYS;
     const spawnImpl = options.spawn || spawn;
     const waitForCleanupReadyImpl = options.waitForCleanupReady || waitForCleanupReady;
     const payloadPath = options.payloadPath || path.join(resourcesPath, 'payload');
@@ -1380,26 +1478,42 @@ function createInstallerService(options = {}) {
         };
     }
 
+    // Match by executable path under the install directory instead of /IM
+    // alone. A user may have a portable copy or another installation open
+    // elsewhere; the installer must never terminate those unrelated
+    // processes. Matching the whole directory also covers the bundled Python
+    // backend (resources\server_backend), which keeps file handles in the
+    // install tree after the Electron window is gone.
     async function closeRunningApp(targetPath) {
-        if (platform !== 'win32') return;
-        const executable = path.win32.join(targetPath, APP_EXECUTABLE);
-        if (!existsSyncSafe(executable)) return;
-        const stopMatchingProcesses = force => runPowerShell([
-            `$target = ${powershellLiteral(executable)}`,
-            `$processes = Get-CimInstance Win32_Process -Filter ${powershellLiteral(`Name = '${APP_EXECUTABLE}'`)} -ErrorAction SilentlyContinue`,
-            'foreach ($process in $processes) {',
-            '  $processPath = [string]$process.ExecutablePath',
-            '  if ($processPath -and [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($processPath), [IO.Path]::GetFullPath($target))) {',
-            `    Stop-Process -Id ([int]$process.ProcessId)${force ? ' -Force' : ''} -ErrorAction SilentlyContinue`,
-            '  }',
-            '}',
-        ].join('\n'));
-        // Match by the executable's full path instead of /IM alone. A user
-        // may have a portable copy or another installation open elsewhere;
-        // an uninstaller must never terminate those unrelated processes.
-        try { await stopMatchingProcesses(false); } catch (_) { /* no running instance is normal */ }
-        await new Promise(resolve => setTimeout(resolve, 700));
-        try { await stopMatchingProcesses(true); } catch (_) { /* the process may already be gone */ }
+        if (platform !== 'win32') return { remaining: 0 };
+        const targetDirectory = normalizeWindowsDirectory(targetPath);
+        if (!targetDirectory || !existsSyncSafe(targetDirectory)) return { remaining: 0 };
+        try {
+            const result = await runPowerShell(closeProcessesScript(targetDirectory, process.pid));
+            return { remaining: parseRemainingProcessCount(result) };
+        } catch (_) {
+            // A failed probe must not turn a normal install into an error; the
+            // swap retry below still gets its chance.
+            return { remaining: 0 };
+        }
+    }
+
+    async function countAppProcesses(targetPaths) {
+        if (platform !== 'win32') return 0;
+        const directories = [...new Set(
+            (Array.isArray(targetPaths) ? targetPaths : [targetPaths])
+                .map(normalizeWindowsDirectory)
+                .filter(directory => directory && existsSyncSafe(directory)),
+        )];
+        let remaining = 0;
+        for (const directory of directories) {
+            try {
+                remaining += parseRemainingProcessCount(
+                    await runPowerShell(countProcessesScript(directory, process.pid)),
+                );
+            } catch (_) { /* diagnostics only */ }
+        }
+        return remaining;
     }
 
     async function stageSetupExecutable() {
@@ -1523,10 +1637,63 @@ function createInstallerService(options = {}) {
         }
     }
 
+    // An update that failed after renaming the old directory but before the
+    // new one was moved into place leaves the previous installation behind as
+    // a sibling `<target>.backup-*` directory. Without this recovery a retry
+    // would report NOT_INSTALLED and the user could not update or even launch
+    // the app from its usual location anymore.
+    async function recoverInterruptedBackup(targetPath) {
+        if (await pathExists(targetPath)) return null;
+        const parent = path.dirname(targetPath);
+        const prefix = `${path.basename(targetPath)}.backup-`;
+        let entries;
+        try {
+            entries = await fsp.readdir(parent);
+        } catch (_) {
+            return null;
+        }
+        const candidates = [];
+        for (const entry of entries) {
+            if (!entry.startsWith(prefix)) continue;
+            const candidate = path.join(parent, entry);
+            const state = parseJsonFile(path.join(candidate, INSTALL_STATE_FILE));
+            if (!state || state.format !== INSTALL_STATE_VERSION || state.product !== PRODUCT_NAME) continue;
+            if (!state.installPath || !pathEquals(state.installPath, targetPath, platform)) continue;
+            if (!existsSyncSafe(path.join(candidate, APP_EXECUTABLE))) continue;
+            try {
+                candidates.push({ path: candidate, mtimeMs: (await fsp.stat(candidate)).mtimeMs });
+            } catch (_) { /* a concurrent cleanup may have removed it */ }
+        }
+        candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+        if (!candidates.length) return null;
+        await closeRunningApp(candidates[0].path);
+        await renameDirectoryWithRetry(candidates[0].path, targetPath, {
+            rename: renameImpl,
+            delays: renameRetryDelays,
+        });
+        return candidates[0].path;
+    }
+
     async function replaceApplication({ targetPath, mode, scope, version, desktopShortcut, startMenuShortcut, refreshShortcuts = true, onProgress, isCancelled }) {
         const normalizedTarget = validateServiceTargetPath(targetPath);
         const stagingPath = `${normalizedTarget}.staging-${randomSuffix()}`;
         const backupPath = `${normalizedTarget}.backup-${randomSuffix()}`;
+        const recoveredBackup = await recoverInterruptedBackup(normalizedTarget).catch(error => {
+            throw new InstallerError(
+                'REPLACE_FAILED',
+                '上一次更新没有完成，暂时无法恢复旧版本文件，请关闭占用文件的程序后重试。',
+                error,
+            );
+        });
+        if (recoveredBackup) {
+            formatProgress(onProgress, {
+                percent: 2,
+                phase: 'prepare',
+                stage: '正在恢复上次未完成的更新',
+                file: '已找回上一版本的应用文件…',
+                count: '准备中',
+            });
+        }
         let targetStat = null;
         try {
             targetStat = await fsp.stat(normalizedTarget);
@@ -1598,22 +1765,56 @@ function createInstallerService(options = {}) {
             const hasExisting = await pathExists(normalizedTarget);
             let backupMoved = false;
             let newTargetMoved = false;
+            const renameOptions = { rename: renameImpl, delays: renameRetryDelays };
+            const reportSwapRetry = attempt => {
+                formatProgress(onProgress, {
+                    percent: 72,
+                    phase: 'write',
+                    stage: '正在替换应用文件',
+                    file: `文件正被其他程序占用，正在自动重试（第 ${attempt} 次）…`,
+                    count: '请稍候',
+                });
+            };
+            const replaceFailure = async error => {
+                const remaining = await countAppProcesses([
+                    normalizedTarget,
+                    backupMoved ? backupPath : null,
+                ]);
+                return new InstallerError(
+                    'REPLACE_FAILED',
+                    remaining > 0
+                        ? '无法替换旧应用文件，请关闭小猪wordTTS后重试。'
+                        : '无法替换旧应用文件：文件仍被其他程序占用（常见于杀毒软件扫描），'
+                            + '请稍等几秒后重试；如果反复失败，请重启电脑后再更新。',
+                    error,
+                );
+            };
             try {
                 if (hasExisting) {
-                    await fsp.rename(normalizedTarget, backupPath);
+                    try {
+                        await renameDirectoryWithRetry(normalizedTarget, backupPath, {
+                            ...renameOptions,
+                            onRetry: reportSwapRetry,
+                        });
+                    } catch (error) {
+                        throw await replaceFailure(error);
+                    }
                     backupMoved = true;
                 }
                 try {
-                    await fsp.rename(stagingPath, normalizedTarget);
+                    await renameDirectoryWithRetry(stagingPath, normalizedTarget, {
+                        ...renameOptions,
+                        onRetry: reportSwapRetry,
+                    });
                     newTargetMoved = true;
                 } catch (error) {
                     if (backupMoved && await pathExists(backupPath)) {
-                        await fsp.rename(backupPath, normalizedTarget).then(
+                        await renameDirectoryWithRetry(backupPath, normalizedTarget, renameOptions).then(
                             () => { backupMoved = false; },
                             () => {},
                         );
                     }
-                    throw new InstallerError('REPLACE_FAILED', '无法替换旧应用文件，请关闭小猪wordTTS后重试。', error);
+                    throw await replaceFailure(error);
                 }
                 formatProgress(onProgress, { percent: 76, phase: 'shortcut', stage: '正在创建快捷方式', file: '正在准备应用入口…', count: '最后一步' });
                 if (platform === 'win32' && refreshShortcuts) {
@@ -1649,9 +1850,9 @@ function createInstallerService(options = {}) {
                     await removePath(normalizedTarget).catch(() => {});
                     if (backupMoved && await pathExists(backupPath)) {
                         try {
-                            await fsp.rename(backupPath, normalizedTarget);
+                            await renameDirectoryWithRetry(backupPath, normalizedTarget, renameOptions);
                             backupMoved = false;
-                        } catch (_) { /* retain the backup for manual recovery */ }
+                        } catch (_) { /* retain the backup so the next run can recover it */ }
                     }
                     if (platform === 'win32' && oldState && await pathExists(normalizedTarget)) {
                         try {

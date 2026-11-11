@@ -898,3 +898,154 @@ test('安装器拒绝把程序目录放进个人数据目录或其父目录', as
         await fsp.rm(root, { recursive: true, force: true });
     }
 });
+
+function createSwapFixture(prefix) {
+    return fsp.mkdtemp(path.join(os.tmpdir(), prefix)).then(async root => {
+        const payload = path.join(root, 'payload');
+        const target = path.join(root, 'installed', '小猪wordTTS');
+        const dataPath = path.join(root, 'user-data');
+        await fsp.mkdir(payload, { recursive: true });
+        await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v1');
+        await fsp.writeFile(path.join(payload, 'runtime.txt'), 'runtime v1');
+        return { root, payload, target, dataPath };
+    });
+}
+
+function createSwapService({ root, payload, dataPath, rename, renameRetryDelays }) {
+    return createInstallerService({
+        platform: process.platform,
+        payloadPath: payload,
+        dataPath,
+        tempDirectory: path.join(root, 'temp'),
+        // Keep the process probe out of the test: this suite exercises the
+        // directory swap, not real PowerShell process control.
+        runPowerShell: async () => ({ stdout: 'REMAINING=0' }),
+        rename,
+        renameRetryDelays,
+    });
+}
+
+async function installSwapFixture(service, target, version) {
+    return service.run({
+        mode: 'install',
+        targetPath: target,
+        scope: 'per-user',
+        version,
+        desktopShortcut: false,
+        startMenuShortcut: false,
+    });
+}
+
+test('目录替换遇到短暂的共享冲突会自动重试并完成更新', async () => {
+    const fixture = await createSwapFixture('wordtts-installer-rename-retry-');
+    const { root, payload, target, dataPath } = fixture;
+    let busyFailures = 0;
+    const service = createSwapService({
+        root,
+        payload,
+        dataPath,
+        renameRetryDelays: [5, 5, 5],
+        rename: async (from, to) => {
+            if (from.includes('.staging-') && busyFailures < 2) {
+                busyFailures += 1;
+                const error = new Error('EBUSY: resource busy or locked, rename');
+                error.code = 'EBUSY';
+                throw error;
+            }
+            await fsp.rename(from, to);
+        },
+    });
+    try {
+        await installSwapFixture(service, target, '3.0.1');
+        busyFailures = 0;
+        await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v2');
+        const progress = [];
+        const updated = await service.run({
+            mode: 'update',
+            targetPath: target,
+            scope: 'per-user',
+            version: '3.0.2',
+        }, {
+            onProgress: value => progress.push(value),
+        });
+
+        assert.equal(updated.success, true);
+        assert.equal(busyFailures, 2);
+        assert.equal(await fsp.readFile(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v2');
+        assert.equal(service.readState(target).version, '3.0.2');
+        assert.equal(
+            progress.some(value => /自动重试/.test(String(value?.file || ''))),
+            true,
+        );
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('目录替换持续被占用时保留旧版本并报出可重试的错误', async () => {
+    const fixture = await createSwapFixture('wordtts-installer-rename-locked-');
+    const { root, payload, target, dataPath } = fixture;
+    let lockStaging = false;
+    const service = createSwapService({
+        root,
+        payload,
+        dataPath,
+        renameRetryDelays: [1, 1],
+        rename: async (from, to) => {
+            if (lockStaging && from.includes('.staging-')) {
+                const error = new Error('EPERM: operation not permitted, rename');
+                error.code = 'EPERM';
+                throw error;
+            }
+            await fsp.rename(from, to);
+        },
+    });
+    try {
+        await installSwapFixture(service, target, '3.0.1');
+        lockStaging = true;
+        await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v2');
+
+        await assert.rejects(
+            () => service.run({ mode: 'update', targetPath: target, scope: 'per-user', version: '3.0.2' }),
+            error => error.code === 'REPLACE_FAILED' && /无法替换旧应用文件/.test(error.message),
+        );
+        assert.equal(await fsp.readFile(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v1');
+        assert.equal(service.readState(target).version, '3.0.1');
+        assert.deepEqual(
+            (await fsp.readdir(path.dirname(target))).filter(name => name !== '小猪wordTTS'),
+            [],
+        );
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('更新中断留下的备份目录会在下次运行前自动恢复', async () => {
+    const fixture = await createSwapFixture('wordtts-installer-rename-recover-');
+    const { root, payload, target, dataPath } = fixture;
+    const service = createSwapService({ root, payload, dataPath, renameRetryDelays: [1] });
+    try {
+        await installSwapFixture(service, target, '3.0.1');
+        // Simulate a crash between "old directory renamed to backup" and
+        // "staging renamed to the install path".
+        await fsp.rename(target, `${target}.backup-interrupted`);
+        await fsp.writeFile(path.join(payload, '小猪wordTTS.exe'), 'application v2');
+
+        const updated = await service.run({
+            mode: 'update',
+            targetPath: target,
+            scope: 'per-user',
+            version: '3.0.2',
+        });
+        assert.equal(updated.success, true);
+        assert.equal(updated.previousState.version, '3.0.1');
+        assert.equal(await fsp.readFile(path.join(target, '小猪wordTTS.exe'), 'utf8'), 'application v2');
+        assert.equal(await fsp.readFile(path.join(target, 'runtime.txt'), 'utf8'), 'runtime v1');
+        assert.deepEqual(
+            (await fsp.readdir(path.dirname(target))).filter(name => name !== '小猪wordTTS'),
+            [],
+        );
+    } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+    }
+});

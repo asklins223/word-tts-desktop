@@ -549,7 +549,22 @@
     };
   }
 
+  function describeOperationError(error) {
+    const raw = String(error?.message || '').trim();
+    if (!raw) return '操作没有完成，请重试。';
+    // The install failure arrives twice: once as the structured
+    // `installer-error` event and once as the rejected invoke() promise.
+    // Electron prefixes the rejection with the IPC method name and the error
+    // class, which must never leak into the window.
+    const unwrapped = raw
+      .replace(/^Error invoking remote method '[^']*':\s*/, '')
+      .replace(/^(?:InstallerError|Error):\s*/, '')
+      .trim();
+    return unwrapped || raw;
+  }
+
   function handleOperationError(error) {
+    if (state.operationHandled) return;
     const code = String(error?.code || 'INSTALLER_ERROR');
     if (code === 'CANCELLED') {
       const previousScreen = currentFlow()[currentFlow().indexOf('progress') - 1];
@@ -561,7 +576,7 @@
     }
     state.operationRunning = false;
     state.operationHandled = true;
-    state.operationError = error?.message || '操作没有完成，请重试。';
+    state.operationError = describeOperationError(error);
     operationErrorMessage.textContent = state.operationError;
     operationError.hidden = false;
     updateActions('progress');
