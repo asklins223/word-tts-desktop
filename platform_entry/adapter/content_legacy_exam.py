@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .page_shared import *  # noqa: F403,F401
 
 
@@ -159,6 +161,81 @@ class PlatformInputLegacyExamContentMixin:
                 return global_targets.get(first_number, target)
         return target
 
+    def _retelling_panel_spans_pages(self) -> bool:
+        """Return whether the open card renders as more than one page block.
+
+        The reviewed standalone template keeps 信息转述 on its own lazy panel
+        and renders that card as two right-hand pages (页面1/页面2); 询问信息
+        then mounts from the next recording-card outline entry.  A
+        single-panel layout mounts every card of the group at once, so the
+        multi-page shape is what tells the two layouts apart.
+        """
+
+        try:
+            return self.page.locator(".rightMiddleContent:visible").count() >= 2
+        except Exception:
+            return False
+
+    def _split_retelling_shape_ready(self, retelling_only: int) -> Callable[[], bool]:
+        """Accept the retelling-only panel once its mount has settled."""
+
+        streak = {"hits": 0}
+
+        def ready() -> bool:
+            matched = (
+                retelling_only > 0
+                and len(self._question_cards("录音题")) == retelling_only
+                and self._retelling_panel_spans_pages()
+            )
+            streak["hits"] = streak["hits"] + 1 if matched else 0
+            return streak["hits"] >= 3
+
+        return ready
+
+    def _next_recording_outline_target(self) -> tuple[str, int] | None:
+        """Return the recording-card entry after the selected navigation item.
+
+        The outline is the page's own statement of where the next lazy panel
+        lives.  Reading it keeps the asking questions from being guessed from
+        a template name or a hard-coded occurrence.
+        """
+
+        page = getattr(self, "page", None)
+        if page is None:
+            return None
+        try:
+            boxes = page.locator(".qBox")
+            count = boxes.count()
+        except Exception:
+            return None
+        entries: list[tuple[str, bool]] = []
+        for index in range(min(count, 60)):
+            try:
+                box = boxes.nth(index)
+                if not box.is_visible():
+                    continue
+                text = re.sub(
+                    r"\s+", "", _fast_inner_text(box, timeout_ms=300)
+                )
+                if re.fullmatch(r"第\s*(\d+)\s*题?\s*[（(]\s*录音题\s*[）)]", text) is None:
+                    continue
+                entries.append(
+                    (text, "isSelectBox" in str(box.get_attribute("class") or ""))
+                )
+            except Exception:
+                continue
+        for position, (_text, selected) in enumerate(entries):
+            if not selected:
+                continue
+            if position + 1 >= len(entries):
+                return None
+            next_text = entries[position + 1][0]
+            occurrence = sum(
+                1 for value, _selected in entries[: position + 1] if value == next_text
+            )
+            return next_text, occurrence
+        return None
+
     def _locate_retelling_page_instructions(
         self,
     ) -> tuple[Any, list[Any], list[Any]] | None:
@@ -265,24 +342,30 @@ class PlatformInputLegacyExamContentMixin:
         *,
         retelling_target: tuple[str, int],
         asking_target: tuple[str, int],
+        preactivated: tuple[Sequence[Any], Sequence[Any]] | None = None,
     ) -> dict[str, int]:
         """Fill the two lazy panels used by the 外研旧版转述套卷.
 
         The parser keeps the recording material, one retelling card, and the
         asking cards in one semantic group. The page, however, mounts them
         under separate outline entries, so each panel gets its own card and
-        editor cursors.
+        editor cursors.  ``preactivated`` carries the retelling panel that a
+        caller already opened while deciding the layout, so the card is not
+        clicked a second time.
         """
 
         retelling_count = sum(1 for group in groups if group.get("retelling"))
         asking_count = sum(len(group.get("asking", ())) for group in groups)
-        cards, editors = self._activate_group_section(
-            "信息转述及询问",
-            "录音题",
-            retelling_count,
-            len(groups),
-            outline_target=retelling_target,
-        )
+        if preactivated is None:
+            cards, editors = self._activate_group_section(
+                "信息转述及询问",
+                "录音题",
+                retelling_count,
+                len(groups),
+                outline_target=retelling_target,
+            )
+        else:
+            cards, editors = list(preactivated[0]), list(preactivated[1])
         instruction_scopes = self._retelling_page_instruction_scopes()
         if instruction_scopes is not None and len(groups) != 1:
             raise PlatformInputUiError("当前指导语页面只能录入一组信息转述材料")
@@ -481,16 +564,37 @@ class PlatformInputLegacyExamContentMixin:
         if has_reading_instruction:
             raise PlatformInputUiError("当前模板尚未配置三条中文指导语的对应位置")
 
-        retelling_count = sum(
-            (1 if group.get("retelling") else 0) + len(group.get("asking", ()))
-            for group in groups
+        retelling_only = sum(1 for group in groups if group.get("retelling"))
+        asking_count = sum(len(group.get("asking", ())) for group in groups)
+        retelling_count = retelling_only + asking_count
+        # 页面把转述卡单独渲染成两页、询问信息留在下一题入口时，先按合并
+        # 页去等 3 张卡会白等到超时。用一个页面自身可读的形态接受这种
+        # 分面板挂载，再把已经打开的转述面板交给分面板流程。
+        alternate_ready = (
+            self._split_retelling_shape_ready(retelling_only)
+            if asking_count and retelling_only < retelling_count
+            else None
         )
         cards, editors = self._activate_group_section(
             "信息转述及询问",
             "录音题",
             retelling_count,
             len(groups),
+            alternate_ready=alternate_ready,
         )
+        if len(cards) != retelling_count:
+            asking_target = self._next_recording_outline_target()
+            if asking_target is None:
+                raise PlatformInputUiError(
+                    f"“信息转述及询问”当前有 {len(cards)} 个录音题，"
+                    f"输入/模板要求 {retelling_count} 个，且找不到询问信息的题目导航"
+                )
+            return self._fill_split_info_retelling_groups(
+                groups,
+                retelling_target=retelling_target,
+                asking_target=asking_target,
+                preactivated=(cards, editors),
+            )
         card_cursor = 0
         listening_cursor = 0
         audio_cursor = 0

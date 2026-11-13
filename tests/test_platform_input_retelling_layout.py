@@ -473,3 +473,52 @@ def test_preparation_scope_is_the_field_after_the_listening_material():
     owner._audio_region_in_scope = Mock(return_value=Mock())
 
     assert owner._retelling_page_preparation_scope() is after
+
+
+def test_retelling_only_panel_is_handed_to_the_split_handler():
+    """A page that opens only the retelling card is not a partial mount.
+
+    The asking cards live on the next recording-card outline entry, so the
+    already-open panel must be reused instead of failing after the combined
+    card-count wait.
+    """
+
+    owner = _retelling_automation(None)
+    owner.spec = SimpleNamespace(bundle_rule=None, template_name="未登记模板")
+    owner._read_outline_structure = Mock(return_value=None)
+    owner._legacy_subsection_target = Mock(return_value=("第1题(录音题)", 0))
+    owner._activate_group_section = Mock(
+        return_value=(["retelling-card"], ["listening-editor"])
+    )
+    owner._next_recording_outline_target = Mock(return_value=("第2题(录音题)", 0))
+    owner._fill_split_info_retelling_groups = Mock(return_value={"录音题": 3})
+    group = _retelling_group()
+
+    assert owner._fill_info_retelling_groups({"信息转述及询问": [group]}) == {
+        "录音题": 3
+    }
+    owner._fill_split_info_retelling_groups.assert_called_once_with(
+        [group],
+        retelling_target=("第1题(录音题)", 0),
+        asking_target=("第2题(录音题)", 0),
+        preactivated=(["retelling-card"], ["listening-editor"]),
+    )
+    owner._replace_rich_text.assert_not_called()
+
+
+def test_preactivated_retelling_panel_is_not_clicked_again():
+    owner = _retelling_automation(None)
+    owner._activate_group_section = Mock(
+        return_value=(["asking-card-1", "asking-card-2"], [])
+    )
+    group = _retelling_group()
+
+    assert owner._fill_split_info_retelling_groups(
+        [group],
+        retelling_target=("第1题(录音题)", 0),
+        asking_target=("第2题(录音题)", 0),
+        preactivated=(["retelling-card"], ["listening-editor"]),
+    ) == {"录音题": 3}
+
+    owner._activate_group_section.assert_called_once()
+    assert owner._activate_group_section.call_args.args[0] == "询问信息"

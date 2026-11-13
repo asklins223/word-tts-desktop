@@ -12,19 +12,24 @@ from docx.text.paragraph import Paragraph
 from docx.oxml.ns import qn
 
 
+# 一个 DOCX 段落可以用换行承载多行内容（录音稿正文、逐题参考答案）。
+# 标记仍必须位于段落开头，但余下内容要跨行保留，否则多行段落里的
+# “录音稿：/参考答案：”整段都识别不到。
 SCRIPT_MARKER_RE = re.compile(
     r'^\s*(?:[【\[（(]\s*)?'
     r'(?:录音稿|听力原文|录音原文)\s*'
     r'(?=\s|[：:】\]）)]|$)'
     r'\s*(?:[：:]\s*)?(?:[】\]）)]\s*)?(?:[：:]\s*)?'
-    r'(.*)\s*$'
+    r'(.*)\s*$',
+    re.DOTALL,
 )
 ANSWER_MARKER_RE = re.compile(
     r'^\s*(?:[【\[（(]\s*)?'
     r'(?:参考答案|答案|解析)\s*'
     r'(?=\s|[：:【\[（(】\]）)]|$)'
     r'(?:[：:]\s*)?(?:[】\]）)]\s*)?(?:[：:]\s*)?'
-    r'(.*)\s*$'
+    r'(.*)\s*$',
+    re.DOTALL,
 )
 
 LINE_SPEAKER_RE = re.compile(r'^([WwMmＷｗＭｍ])\s*[:：]\s*(.*)')

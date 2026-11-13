@@ -248,3 +248,66 @@ def test_mount_state_without_a_page_stays_empty():
     owner.page = None
 
     assert owner._page_mount_state("录音题", "第12题(录音题)") == ""
+
+
+def test_alternate_page_shape_is_returned_instead_of_a_partial_mount_error():
+    owner = _owner()
+    state = {"cards": 1}
+    owner._activate_outline_section = Mock(return_value="第1题(录音题)")
+    owner._outline_entry_selected = lambda _text: True
+    owner._labeled_text_editors = lambda _label: [Mock()]
+    _install_waits(owner, state)
+
+    cards, editors = owner._activate_group_section(
+        "信息转述及询问",
+        "录音题",
+        3,
+        1,
+        alternate_ready=lambda: True,
+    )
+
+    assert len(cards) == 1
+    assert len(editors) == 1
+
+
+def test_next_recording_outline_target_follows_the_selected_entry():
+    owner = _owner(
+        _Page(boxes=[
+            _Node("第1题(录音题)", "w-full qBox isSelectBox"),
+            _Node("第2题(录音题)", "w-full qBox"),
+            _Node("第3题(录音题)", "w-full qBox"),
+        ])
+    )
+
+    assert owner._next_recording_outline_target() == ("第2题(录音题)", 0)
+
+
+def test_next_recording_outline_target_keeps_repeated_entry_occurrences():
+    owner = _owner(
+        _Page(boxes=[
+            _Node("第1题(录音题)", "w-full qBox"),
+            _Node("第1题(录音题)", "w-full qBox"),
+            _Node("第2题(录音题)", "w-full qBox isSelectBox"),
+            _Node("第2题(录音题)", "w-full qBox"),
+            _Node("第3题(录音题)", "w-full qBox"),
+        ])
+    )
+
+    assert owner._next_recording_outline_target() == ("第2题(录音题)", 1)
+
+
+def test_split_retelling_shape_needs_one_card_and_two_right_pages():
+    owner = _owner(
+        _Page(panels=[
+            _Node("页面1 小节指导文字", "rightMiddleContent"),
+            _Node("页面2 考点", "rightMiddleContent"),
+        ])
+    )
+    owner._question_cards = lambda _kind: [Mock()]
+
+    ready = owner._split_retelling_shape_ready(1)
+    assert ready() is False
+    assert ready() is False
+    assert ready() is True
+
+    assert owner._split_retelling_shape_ready(2)() is False

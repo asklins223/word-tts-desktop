@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from . import pacing
 from .handlers import get_question_type_handler, registered_question_types
 from .page_shared import *  # noqa: F403,F401
@@ -58,9 +60,15 @@ class PlatformInputContentMixin:
         question_kind: str,
         expected_cards: int,
         timeout_seconds: float,
+        alternate_ready: Callable[[], bool] | None = None,
     ) -> None:
+        def ready() -> bool:
+            if len(self._question_cards(question_kind)) == expected_cards:
+                return True
+            return alternate_ready is not None and alternate_ready()
+
         self._wait_until(
-            lambda: len(self._question_cards(question_kind)) == expected_cards,
+            ready,
             f"题卡没有完整挂载（{question_kind}）",
             timeout_seconds=timeout_seconds,
             interval_ms=200,
@@ -95,8 +103,15 @@ class PlatformInputContentMixin:
         expected_listening_editors: int,
         *,
         outline_target: tuple[str, int] | None = None,
+        alternate_ready: Callable[[], bool] | None = None,
     ) -> tuple[list[Any], list[Any]]:
-        """Activate one lazy-loaded family and validate its visible card set."""
+        """Activate one lazy-loaded family and validate its visible card set.
+
+        ``alternate_ready`` lets a caller whose family can live on more than
+        one lazy panel accept a page-owned second shape.  When it fires, the
+        mounted cards are returned unchanged so the caller can hand the
+        already-open panel to the matching handler instead of clicking again.
+        """
 
         clicked = self._activate_outline_section(
             group_type, outline_target=outline_target
@@ -107,7 +122,10 @@ class PlatformInputContentMixin:
         retried = False
         try:
             self._wait_for_group_cards(
-                question_kind, expected_cards, self.GROUP_MOUNT_FIRST_WAIT_SECONDS
+                question_kind,
+                expected_cards,
+                self.GROUP_MOUNT_FIRST_WAIT_SECONDS,
+                alternate_ready=alternate_ready,
             )
         except PlatformInputUiError:
             _debug_dom_snapshot(
@@ -138,6 +156,7 @@ class PlatformInputContentMixin:
                     expected_cards,
                     self.GROUP_MOUNT_TOTAL_WAIT_SECONDS
                     - self.GROUP_MOUNT_FIRST_WAIT_SECONDS,
+                    alternate_ready=alternate_ready,
                 )
             except PlatformInputUiError as exc:
                 raise self._group_mount_failure(
@@ -148,7 +167,9 @@ class PlatformInputContentMixin:
                     retried=retried,
                 ) from exc
         cards = self._question_cards(question_kind)
-        if len(cards) != expected_cards:
+        if len(cards) != expected_cards and not (
+            alternate_ready is not None and alternate_ready()
+        ):
             raise PlatformInputUiError(
                 f"“{group_type}”当前有 {len(cards)} 个{question_kind}，"
                 f"输入/模板要求 {expected_cards} 个，拒绝留下未录入的小题"

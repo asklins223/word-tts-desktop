@@ -207,28 +207,42 @@ class InfoRetellingParser(BaseParser):
 
     @classmethod
     def _answer_lines(cls, value):
-        """Return numbered/plain answers, splitting slash alternatives."""
+        """Return numbered/plain answers, splitting slash alternatives.
+
+        One DOCX paragraph may carry several numbered answer rows separated
+        by soft line breaks (one row per retelling version, or the 11/12 rows
+        of the asking section).  Each line is parsed on its own so a second
+        number cannot be swallowed by the first row, and a multi-row block
+        never degrades into unnumbered answers that pair with the wrong
+        question.
+        """
 
         text = str(value or "").strip()
         if not text:
             return []
-        numbered = cls.RE_NUMBERED_ANSWER.match(text)
-        if numbered:
-            number = int(numbered.group(1))
-            answers = re.split(r"\s*/\s*", numbered.group(2))
-            return [
-                (number, sanitize(answer).strip(" /"))
-                for answer in answers
-                if sanitize(answer).strip(" /")
-            ]
-        if cls._is_english_payload(text):
-            answers = re.split(r"\s*/\s*", text)
-            return [
-                (None, sanitize(answer).strip(" /"))
-                for answer in answers
-                if sanitize(answer).strip(" /")
-            ]
-        return []
+        results = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            numbered = cls.RE_NUMBERED_ANSWER.match(line)
+            if numbered:
+                number = int(numbered.group(1))
+                answers = re.split(r"\s*/\s*", numbered.group(2))
+                results.extend(
+                    (number, sanitize(answer).strip(" /"))
+                    for answer in answers
+                    if sanitize(answer).strip(" /")
+                )
+                continue
+            if cls._is_english_payload(line):
+                answers = re.split(r"\s*/\s*", line)
+                results.extend(
+                    (None, sanitize(answer).strip(" /"))
+                    for answer in answers
+                    if sanitize(answer).strip(" /")
+                )
+        return results
 
     @classmethod
     def _prompt_from_preamble_line(cls, value):

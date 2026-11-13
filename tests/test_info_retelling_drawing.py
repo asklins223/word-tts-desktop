@@ -7,6 +7,7 @@ from question_types.info_retelling import InfoRetellingParser
 from question_types.segmenter import parse_document_once
 from question_types.text_utils import load_paragraphs
 from workflow.parser import DocumentParser
+from workflow.system_input_content import page_input_completeness
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,3 +88,61 @@ def test_workflow_preserves_three_guide_audio_items_and_entry_facts(tmp_path):
     assert recording["reading_instruction_audio_filename_stem"] == "信息转述阅图指导文字-1"
     assert recording["reading_instruction_occurrence"] == 1
     assert all(item.role == "题干音色" for item in guides)
+
+
+def test_multiline_answer_blocks_keep_numbered_rows_apart(tmp_path):
+    """A DOCX paragraph may carry several numbered answer rows in one run.
+
+    The two attached papers put all retelling versions in one 参考答案
+    paragraph and the 11/12 asking answers in another.  Each row must keep
+    its own number instead of being appended to the recording text or being
+    paired with the wrong question as a plain answer.
+    """
+
+    source = tmp_path / "multiline-answers.docx"
+    document = Document()
+    retelling_answers = "\n".join(
+        f"{index}. Jack wants to talk about version {index}."
+        for index in range(1, 4)
+    )
+    asking_answers = (
+        "11. When was Helen born? / What year was Helen born?\n"
+        "12. Which college did Helen graduate from? / What college did she graduate from?"
+    )
+    for text in (
+        "第一节 信息转述（6 分）",
+        "你将听到 Jack 介绍海伦凯勒的故事，录音播放两遍。请根据所听到的内容，选择思维导图中的正确信息。",
+        "下面你有 50 秒钟的时间准备。你的介绍可以这样开始：Jack wants to talk about Helen Keller.",
+        "录音稿：Helen Keller lost her sight at 19 months old.",
+        "参考答案：" + retelling_answers,
+        "第二节 询问信息（3 分）",
+        "你希望了解更多，请根据以下提示向提问者提两个问题。",
+        "11. 海伦是哪一年出生的？",
+        "12. 海伦毕业于哪所大学？",
+        "参考答案：",
+        asking_answers,
+    ):
+        document.add_paragraph(text)
+    document.save(source)
+
+    results, _summary = parse_document_once(source)
+    result = results[0]
+
+    assert result["recording"]["listening_text"] == (
+        "Helen Keller lost her sight at 19 months old."
+    )
+    assert result["retelling"]["reference_answers"] == [
+        f"Jack wants to talk about version {index}." for index in range(1, 4)
+    ]
+    assert result["asking"][0]["reference_answers"] == [
+        "When was Helen born?",
+        "What year was Helen born?",
+    ]
+    assert result["asking"][1]["reference_answers"] == [
+        "Which college did Helen graduate from?",
+        "What college did she graduate from?",
+    ]
+
+    parsed = DocumentParser().parse(source)
+    facts = parsed.items[0].metadata["page_input"]
+    assert page_input_completeness(facts) == {"status": "complete", "reason": None}
