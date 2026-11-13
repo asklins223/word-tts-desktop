@@ -10,6 +10,13 @@ from .page_shared import *  # noqa: F403,F401
 class PlatformInputContentMixin:
     """Coordinate registered type handlers and shared save/readback actions."""
 
+    # A lazy panel mounts in well under a second after its outline entry is
+    # clicked.  The first window is kept short so a click swallowed by a
+    # loading mask can be repeated while the rest of the budget still waits
+    # for the panel; both windows together keep the previous 60-second cap.
+    GROUP_MOUNT_FIRST_WAIT_SECONDS = 15.0
+    GROUP_MOUNT_TOTAL_WAIT_SECONDS = 60.0
+
     @staticmethod
     def _group_requested_card_counts(
         groups: Sequence[Mapping[str, Any]],
@@ -46,6 +53,40 @@ class PlatformInputContentMixin:
             )
         self._replace_rich_text(editors[occurrence], text, field=description)
 
+    def _wait_for_group_cards(
+        self,
+        question_kind: str,
+        expected_cards: int,
+        timeout_seconds: float,
+    ) -> None:
+        self._wait_until(
+            lambda: len(self._question_cards(question_kind)) == expected_cards,
+            f"题卡没有完整挂载（{question_kind}）",
+            timeout_seconds=timeout_seconds,
+            interval_ms=200,
+        )
+
+    def _group_mount_failure(
+        self,
+        group_type: str,
+        question_kind: str,
+        expected_cards: int,
+        target_text: Any,
+        *,
+        retried: bool,
+    ) -> PlatformInputUiError:
+        actual_cards = len(self._question_cards(question_kind))
+        target = target_text if isinstance(target_text, str) else ""
+        target_label = f"，导航“{target}”" if target else ""
+        retry_label = "；已再次点击该导航仍未挂载" if retried else ""
+        state = self._page_mount_state(question_kind, target)
+        state_label = f"；页面状态：{state}" if state else ""
+        return PlatformInputUiError(
+            f"切换到“{group_type}”后题卡没有完整挂载："
+            f"期望 {expected_cards} 个{question_kind}，实际 {actual_cards} 个{target_label}"
+            f"{retry_label}{state_label}"
+        )
+
     def _activate_group_section(
         self,
         group_type: str,
@@ -57,28 +98,55 @@ class PlatformInputContentMixin:
     ) -> tuple[list[Any], list[Any]]:
         """Activate one lazy-loaded family and validate its visible card set."""
 
-        self._activate_outline_section(group_type, outline_target=outline_target)
+        clicked = self._activate_outline_section(
+            group_type, outline_target=outline_target
+        )
         # 左侧栏目切换是一个独立的动作：人切完栏目会先看一眼题卡再生成，
         # 后续挂载等待只负责确认页面真的渲染出了 expected_cards。
         pacing.pause(self.page, "group")
+        retried = False
         try:
-            self._wait_until(
-                lambda: len(self._question_cards(question_kind)) == expected_cards,
-                f"切换到“{group_type}”后题卡没有完整挂载",
-                timeout_seconds=60,
-                interval_ms=200,
+            self._wait_for_group_cards(
+                question_kind, expected_cards, self.GROUP_MOUNT_FIRST_WAIT_SECONDS
             )
-        except PlatformInputUiError as exc:
+        except PlatformInputUiError:
             _debug_dom_snapshot(
                 self,
                 f"mount-timeout:{group_type}:expected-{question_kind}-{expected_cards}",
             )
-            actual_cards = len(self._question_cards(question_kind))
-            target_label = f"，导航“{outline_target[0]}”" if outline_target else ""
-            raise PlatformInputUiError(
-                f"切换到“{group_type}”后题卡没有完整挂载："
-                f"期望 {expected_cards} 个{question_kind}，实际 {actual_cards} 个{target_label}"
-            ) from exc
+            clicked_text = clicked if isinstance(clicked, str) else ""
+            # 载入遮罩或一次重渲染可以吞掉导航点击。面板一个题卡都没有挂载
+            # 时重点同一条导航不会关闭任何已打开的面板，所以只在页面的选中
+            # 状态明确表明点击没生效时补一次点击；页面没有暴露选中标记时
+            # 保持原行为，只把剩余时间等满。
+            if (
+                expected_cards
+                and not self._question_cards(question_kind)
+                and self._outline_entry_selected(clicked_text) is False
+            ):
+                retried = True
+                clicked_text = (
+                    self._activate_outline_section(
+                        group_type, outline_target=outline_target
+                    )
+                    or clicked_text
+                )
+                pacing.pause(self.page, "group")
+            try:
+                self._wait_for_group_cards(
+                    question_kind,
+                    expected_cards,
+                    self.GROUP_MOUNT_TOTAL_WAIT_SECONDS
+                    - self.GROUP_MOUNT_FIRST_WAIT_SECONDS,
+                )
+            except PlatformInputUiError as exc:
+                raise self._group_mount_failure(
+                    group_type,
+                    question_kind,
+                    expected_cards,
+                    clicked_text or (outline_target[0] if outline_target else ""),
+                    retried=retried,
+                ) from exc
         cards = self._question_cards(question_kind)
         if len(cards) != expected_cards:
             raise PlatformInputUiError(

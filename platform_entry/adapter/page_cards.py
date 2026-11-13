@@ -57,6 +57,7 @@ _QUESTION_HEADING_SNAPSHOT_JS = """
             && style.visibility !== 'hidden'
             && rect.width > 0
             && rect.height > 0,
+        inRightPanel: !!(node.closest && node.closest('.rightMiddleContent')),
     };
 })
 """
@@ -443,11 +444,15 @@ class PlatformInputCardMixin:
         return None
 
     def _question_cards(self, question_kind: str) -> list[Any]:
+        # 右侧题卡有两种标题写法：常见“小题 12(录音题)”，也有模板沿用
+        # 导航的“第12题(录音题)”。左侧导航同样使用后一种写法，所以带
+        # “题”的标题只在右侧编辑面板内才算题卡，导航文字仍被排除。
+        kind = re.escape(question_kind)
         pattern = re.compile(
-            r"^(?:小题|第)\s*\d+\s*[（(]\s*"
-            + re.escape(question_kind)
-            + r"\s*[）)]$"
+            rf"^(?:小题|第)\s*\d+\s*(?:题\s*)?[（(]\s*{kind}\s*[）)]$"
         )
+        plain_heading = re.compile(rf"(?:小题|第)\d+[（(]{kind}[）)]")
+        numbered_heading = re.compile(rf"(?:小题|第)\d+题[（(]{kind}[）)]")
         try:
             nodes = self.page.get_by_text(pattern)
         except Exception:
@@ -467,11 +472,10 @@ class PlatformInputCardMixin:
                     if not isinstance(item, Mapping) or not item.get("visible"):
                         continue
                     heading = self._normalise_question_heading(item.get("text"))
-                    if re.fullmatch(
-                        r"(?:小题|第)\d+[（(]"
-                        + re.escape(question_kind)
-                        + r"[）)]",
-                        heading,
+                    if plain_heading.fullmatch(heading):
+                        candidate_indices.append(int(item["index"]))
+                    elif numbered_heading.fullmatch(heading) and item.get(
+                        "inRightPanel"
                     ):
                         candidate_indices.append(int(item["index"]))
         if candidate_indices is None:
@@ -495,19 +499,35 @@ class PlatformInputCardMixin:
                     heading = self._normalise_question_heading(
                         _fast_inner_text(node, timeout_ms=500)
                     )
-                    if not re.fullmatch(
-                        r"(?:小题|第)\d+[（(]"
-                        + re.escape(question_kind)
-                        + r"[）)]",
-                        heading,
-                    ):
-                        continue
+                    if not plain_heading.fullmatch(heading):
+                        if not numbered_heading.fullmatch(heading):
+                            continue
+                        if self._heading_outside_right_panel(node):
+                            continue
                 card = self._question_card_from_heading(node, question_kind)
                 if card is not None:
                     result.append(card)
             except Exception:
                 continue
         return result
+
+    @staticmethod
+    def _heading_outside_right_panel(node: Any) -> bool:
+        """Only a heading outside the right editor can be a navigation entry.
+
+        Playwright nodes answer through ``closest``; lightweight test shims do
+        not, and an unknown answer keeps the previous permissive behavior.
+        """
+
+        probe = getattr(node, "evaluate", None)
+        if not callable(probe):
+            return False
+        try:
+            return not bool(
+                probe("(el) => !!(el.closest && el.closest('.rightMiddleContent'))")
+            )
+        except Exception:
+            return False
 
     def _fill_labeled_input_at(
         self,

@@ -366,6 +366,115 @@ class PlatformInputNavigationMixin:
             return True
         return False
 
+    def _outline_entry_selected(self, text: Any) -> bool | None:
+        """Return whether one left outline entry carries the selected class.
+
+        The page marks the entry whose panel is open with ``isSelectBox``.
+        A mount timeout can therefore tell "the click never took effect"
+        apart from "the panel is open but its card is missing" from the
+        page's own state instead of guessing.  ``None`` means the page gave
+        no readable answer, and callers keep the plain wait semantics.
+        """
+
+        wanted = re.sub(r"\s+", "", str(text or ""))
+        page = getattr(self, "page", None)
+        if not wanted or page is None:
+            return None
+        try:
+            boxes = page.locator(".qBox")
+            count = boxes.count()
+        except Exception:
+            return None
+        for index in range(min(count, 60)):
+            try:
+                box = boxes.nth(index)
+                if not box.is_visible():
+                    continue
+                label = re.sub(r"\s+", "", _fast_inner_text(box, timeout_ms=300))
+                if label != wanted:
+                    continue
+                return "isSelectBox" in str(box.get_attribute("class") or "")
+            except Exception:
+                continue
+        return None
+
+    def _page_mount_state(self, question_kind: str, target_text: Any) -> str:
+        """Describe what the second-step page shows instead of the cards.
+
+        The text is appended to the durable failure message, so it stays
+        short and every probe is best-effort: one rejected selector must not
+        hide the rest of the page facts.
+        """
+
+        page = getattr(self, "page", None)
+        if page is None:
+            return ""
+        parts: list[str] = []
+        target = str(target_text or "")
+        if target:
+            selected = self._outline_entry_selected(target)
+            parts.append(
+                "导航"
+                + ("已选中" if selected else "未选中" if selected is False else "状态未知")
+            )
+        try:
+            headings = page.locator(".partName:visible")
+            titles: list[str] = []
+            for index in range(min(headings.count(), 4)):
+                title = re.sub(
+                    r"\s+", "", _fast_inner_text(headings.nth(index), timeout_ms=300)
+                )
+                if title:
+                    titles.append(title[:24])
+            if titles:
+                parts.append("大题[" + "、".join(titles) + "]")
+        except Exception:
+            pass
+        try:
+            panels = page.locator(".rightMiddleContent:visible")
+            heads: list[str] = []
+            for index in range(min(panels.count(), 3)):
+                text = re.sub(
+                    r"\s+", " ", _fast_inner_text(panels.nth(index), timeout_ms=300)
+                )
+                if text:
+                    heads.append(text[:36])
+            parts.append("右栏" + ("[" + " | ".join(heads) + "]" if heads else "[]"))
+        except Exception:
+            pass
+        try:
+            kind = re.escape(question_kind)
+            pattern = re.compile(
+                rf"^(?:小题|第)\s*\d+\s*(?:题\s*)?[（(]\s*{kind}\s*[）)]$"
+            )
+            plain = re.compile(rf"(?:小题|第)\d+[（(]{kind}[）)]")
+            numbered = re.compile(rf"(?:小题|第)\d+题[（(]{kind}[）)]")
+            nodes = page.get_by_text(pattern)
+            labels: list[str] = []
+            for index in range(min(nodes.count(), 20)):
+                node = nodes.nth(index)
+                try:
+                    if not node.is_visible():
+                        continue
+                    heading = re.sub(
+                        r"\s+", "", _fast_inner_text(node, timeout_ms=300)
+                    )
+                    if not plain.fullmatch(heading):
+                        if not numbered.fullmatch(heading):
+                            continue
+                        if self._heading_outside_right_panel(node):
+                            continue
+                    labels.append(heading)
+                except Exception:
+                    continue
+            if labels:
+                parts.append(f"可见{question_kind}标题[" + "、".join(labels[:6]) + "]")
+            else:
+                parts.append(f"无可见{question_kind}标题")
+        except Exception:
+            pass
+        return "；".join(parts)[:320]
+
     def _read_outline_structure(self, *, refresh: bool = False) -> Any | None:
         """Read the visible second-step outline as layout facts.
 
@@ -674,12 +783,15 @@ class PlatformInputNavigationMixin:
         group_type: str,
         *,
         outline_target: tuple[str, int] | None = None,
-    ) -> None:
+    ) -> str:
         """点击左侧题目导航，让对应题型内容挂载到页面。
 
         第二步页面按左侧导航懒加载题型区域；未点击的题型虽然出现在
         导航文字里，但其编辑控件不在 DOM 中。每种题型的导航序号来自
         当前完整听说测试模板：选择题有听后选择和听后应答两个同名入口。
+
+        Returns the clicked entry's normalized text so callers can check that
+        the page's own selection state actually followed the click.
         """
 
         rule = next(
@@ -879,6 +991,7 @@ class PlatformInputNavigationMixin:
                 raise PlatformInputUiError(
                     f"点击“{group_type}”题目导航失败: {force_exc}"
                 ) from exc
+        return normalised_outline_text(target)
 
     def _activate_retelling_outline(self) -> None:
         """点击记录并转述部分最后一个录音题导航。
