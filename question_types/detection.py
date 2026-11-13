@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -190,20 +190,19 @@ class _Corpus:
             return value if isinstance(value, Mapping) else {}
         return {}
 
-    def window(self, starts: Iterable[int]) -> tuple[int, int]:
-        """Return one family range, skipping repeated headings of that family."""
+    def windows(self, starts: Iterable[int]) -> tuple[tuple[int, int], ...]:
+        """Keep every family range, excluding intervening unrelated sections."""
 
         values = sorted({int(value) for value in starts})
-        if not values:
-            return 0, 0
-        start = values[0]
         family_starts = set(values)
-        end = len(self.paragraphs)
-        for position in self.major_positions:
-            if position > start and position not in family_starts:
-                end = position
-                break
-        return start, end
+        windows = []
+        for start in values:
+            if windows and start < windows[-1][1]:
+                continue
+            end = next((position for position in self.major_positions
+                        if position > start and position not in family_starts), len(self.paragraphs))
+            windows.append((start, end))
+        return tuple(windows)
 
     def table_blocks(self, start: int, end: int) -> tuple[Any, ...]:
         """Return tables whose document-block positions fall in a paragraph range."""
@@ -579,6 +578,25 @@ def _features(corpus: _Corpus, start: int, end: int) -> _Features:
     )
 
 
+def _family_features(corpus: _Corpus, starts: Iterable[int]) -> _Features:
+    features = [_features(corpus, start, end) for start, end in corpus.windows(starts)]
+    return _Features(**{
+        feature.name: (
+            tuple(number for value in features for number in value.question_numbers)
+            if feature.name == "question_numbers"
+            else sum(getattr(value, feature.name) for value in features)
+        )
+        for feature in fields(_Features)
+    })
+
+
+def _family_paragraphs(corpus: _Corpus, starts: Iterable[int]):
+    return [
+        (position, corpus.paragraphs[position])
+        for start, end in corpus.windows(starts) for position in range(start, end)
+    ]
+
+
 def _positions(corpus: _Corpus, predicate) -> tuple[int, ...]:
     return tuple(
         position
@@ -649,8 +667,7 @@ def _detect_info_acquisition(corpus: _Corpus, family):
     starts = _heading_positions(corpus, _INFO_ACQUISITION_HEADING_RE)
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     has_section = any(
         re.search(r"听选信息|回答问题", corpus.paragraphs[position][1])
         for position in starts
@@ -692,8 +709,7 @@ def _detect_selection(corpus: _Corpus, family):
     starts = _heading_positions(corpus, _SELECTION_HEADING_RE)
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     structural = bool(
         features.question_count >= 1
         and features.option_count >= 2
@@ -723,8 +739,7 @@ def _detect_response(corpus: _Corpus, family):
     starts = _heading_positions(corpus, _RESPONSE_HEADING_RE)
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     structural = bool(
         features.response_prompt_count >= 1
         and features.answer_prompt_count >= 1
@@ -756,15 +771,14 @@ def _detect_text_reading(corpus: _Corpus, family):
     ))))
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     subsection_count = sum(
         str(text).strip() in _READING_SUBSECTIONS
-        for _, text, _ in corpus.paragraphs[start:end]
+        for _, (_, text, _) in _family_paragraphs(corpus, starts)
     )
     context_count = sum(
         bool(_READING_CONTEXT_RE.match(str(text).strip()))
-        for _, text, _ in corpus.paragraphs[start:end]
+        for _, (_, text, _) in _family_paragraphs(corpus, starts)
     )
     structural = bool(
         subsection_count >= 1
@@ -809,7 +823,7 @@ def _record_context(corpus: _Corpus, position: int) -> bool:
             # The second section is a child of the immediately preceding
             # record section, not an independent legacy retelling family.
             return latest is not None
-        if candidate == position and is_major_section_heading(value):
+        if is_major_section_heading(value):
             latest = None
     return latest is not None
 
@@ -823,11 +837,10 @@ def _detect_record_retelling(corpus: _Corpus, family):
     ))))
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     record_instruction_count = sum(
         bool(_RECORDING_CONTROL_RE.search(text) or "信息记录表" in text or "一空限填" in text)
-        for _, text, _ in corpus.paragraphs[start:end]
+        for _, (_, text, _) in _family_paragraphs(corpus, starts)
     )
     # The table is the normal source structure for this family.  A
     # paragraph-only import can still be meaningful, but then it must contain
@@ -887,11 +900,10 @@ def _detect_info_retelling(corpus: _Corpus, family):
     starts = tuple(starts)
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     asking_count = sum(
         bool(_ASKING_SECTION_RE.search(text))
-        for _, text, _ in corpus.paragraphs[start:end]
+        for _, (_, text, _) in _family_paragraphs(corpus, starts)
     )
     structural = bool(
         (
@@ -921,15 +933,14 @@ def _detect_imitation(corpus: _Corpus, family):
     starts = _heading_positions(corpus, _IMITATION_HEADING_RE)
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     source_labels = sum(
         bool(_SOURCE_LABEL_RE.match(text))
-        for _, text, _ in corpus.paragraphs[start:end]
+        for _, (_, text, _) in _family_paragraphs(corpus, starts)
     )
     boxed_questions = sum(
         bool(re.match(r"^\s*\d+\s*[.．、）)].*模仿朗读", text, re.IGNORECASE))
-        for _, text, _ in corpus.paragraphs[start:end]
+        for _, (_, text, _) in _family_paragraphs(corpus, starts)
     )
     # The family heading itself contains “模仿朗读”, so it must not count as
     # an operation/control signal.  Otherwise an ordinary note such as
@@ -937,14 +948,14 @@ def _detect_imitation(corpus: _Corpus, family):
     # title repeats the registered marker.
     imitation_control_positions = [
         position
-        for position, (_, text, _) in enumerate(corpus.paragraphs[start:end], start)
+        for position, (_, text, _) in _family_paragraphs(corpus, starts)
         if position not in set(starts)
         and _IMITATION_CONTROL_RE.search(text)
     ]
     imitation_controls = len(imitation_control_positions)
     procedure_lines = sum(
         bool(re.search(r"听以下|请听|准备|开始录音|停止录音|听完后|朗读", text, re.IGNORECASE))
-        for position, (_, text, _) in enumerate(corpus.paragraphs[start:end], start)
+        for position, (_, text, _) in _family_paragraphs(corpus, starts)
         if position not in set(starts)
     )
     has_source_layout = bool(
@@ -983,28 +994,13 @@ def _detect_imitation(corpus: _Corpus, family):
     )
 
 
-def _find_header(headers: Iterable[Any], aliases: tuple[str, ...]) -> int | None:
-    values = {
-        index: str(value).strip()
-        for index, value in enumerate(headers, start=1)
-        if value is not None and str(value).strip()
-    }
-    for alias in aliases:
-        for index, value in values.items():
-            if value == alias:
-                return index
-    for alias in aliases:
-        for index, value in values.items():
-            if alias in value and "释义" not in value:
-                return index
-    return None
-
-
 def _valid_vocabulary_workbook(source: Any) -> bool:
     try:
         import openpyxl
     except ImportError:
         return False
+    from .vocabulary import vocabulary_columns
+
     workbook = None
     try:
         workbook = openpyxl.load_workbook(source, read_only=True, data_only=True)
@@ -1013,10 +1009,8 @@ def _valid_vocabulary_workbook(source: Any) -> bool:
             for row in worksheet.iter_rows(min_row=1, max_row=1, values_only=True):
                 header = list(row)
                 break
-            if (
-                _find_header(header, ("单词名称", "单词")) is not None
-                and _find_header(header, ("例句",)) is not None
-            ):
+            word_column, sentence_column = vocabulary_columns(header)
+            if word_column is not None and sentence_column is not None:
                 return True
         return False
     except Exception:
@@ -1195,8 +1189,7 @@ def _detect_generic(corpus: _Corpus, family):
     )
     if not starts:
         return None
-    start, end = corpus.window(starts)
-    features = _features(corpus, start, end)
+    features = _family_features(corpus, starts)
     structural = bool(
         features.payload_count >= 1
         and (features.question_count >= 1 or features.script_count >= 1 or features.english_count >= 1)

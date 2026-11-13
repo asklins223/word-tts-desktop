@@ -9,24 +9,18 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections import Counter
 
-from audio_naming import audio_filename_stem_for_category, is_exam_paper_bundle
+from audio_naming import audio_filename_stem_for_category
 from question_types.base import BaseParser
 from question_types.text_utils import (
-    MAJOR_TYPE_HEADING_RE,
-    SCRIPT_MARKER_RE,
+    answer_rows,
     is_major_section_heading,
     match_answer_marker,
     match_script_marker,
     sanitize,
 )
 
-
-RETELLING_INSTRUCTION = (
-    "你将听到一段Li Ling的自我介绍，请根据所听到的内容，选择思维导图中的"
-    "正确信息（二选一）在50秒钟内转述介绍，包含以下要点。"
-)
 
 # 题干是独立的音频通道；保留角色而不直接写死 voice_key，才能让配置中心
 # 显示该角色，并允许用户在生成前手动替换音色和三项参数。
@@ -47,20 +41,14 @@ class InfoRetellingParser(BaseParser):
         r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
         r"第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*(?:询问信息|提问)"
     )
-    RE_SUB_SECTION = re.compile(
-        r"第([一二12１２])节\s*[：:]?\s*(信息转述|短文复述|询问信息|提问)"
+    RE_PART = re.compile(
+        r"^\s*(?:[一二三四五六七八九十百\d]+\s*[、.．)]\s*)?"
+        r"(?:信息转述及询问|短文复述及提问)(?=题|\s|[（(：:]|$)"
     )
-    RE_ANY_SECTION = re.compile(
-        r"^\s*(?:[一二三四五六七八九十百]+\s*[、.．)]\s*)?"
-        r"第[一二三四五六七八九十百\d０-９]+节"
-    )
-    RE_SCRIPT = SCRIPT_MARKER_RE
-    RE_MAJOR_SECTION = MAJOR_TYPE_HEADING_RE
     RE_PAGE_PAREN_SPEAKER_MARKER = re.compile(
         r'(?im)^[ \t]*\([WwMm]\)(?:[ \t]*[:：])?[ \t]*'
     )
     RE_TASK_STEM = re.compile(r"^(\d+)\s*[.．、）)]\s*(.+)$")
-    RE_NUMBERED_ANSWER = re.compile(r"^(\d+)\s*[.．、）)]\s*(.+)$")
     # A standalone preparation row belongs to the guidance slot that is spoken
     # after the listening material, not to the pre-listening guidance.
     RE_PREPARATION_PROMPT = re.compile(
@@ -74,10 +62,6 @@ class InfoRetellingParser(BaseParser):
     )
     RE_BARE_SCORE = re.compile(
         r"[（(【]\s*(?:共\s*)?(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分\s*[）)】]"
-    )
-    RE_RETELLING_TOTAL = re.compile(
-        r"(?:信息转述|短文复述)[^\d]{0,18}(?:共\s*(?P<count>[0-9０-９]+)\s*题)?"
-        r"[^\d]{0,18}满分\s*(?P<score>[0-9０-９]+(?:[.]\d+)?)\s*分"
     )
 
     @staticmethod
@@ -98,100 +82,49 @@ class InfoRetellingParser(BaseParser):
             return None
         return cls._number(match.group("score"))
 
-    @staticmethod
-    def _block_value(block, key, default=None):
-        if isinstance(block, Mapping):
-            return block.get(key, default)
-        return getattr(block, key, default)
+    def _recording_image(self, heading, first_script):
+        """Resolve the diagram anchored inside this recording's preamble."""
 
-    def _recording_drawing_group_indices(self):
-        """Return positioned drawing groups present in this retelling source.
-
-        The document-block loader already assigns a stable group number to
-        adjacent text boxes.  Keep the selector parser-owned; the renderer
-        later resolves the selected group to an image artifact.
-        """
-
-        values = []
-        textbox_count = 0
-        for block in self.document_blocks or ():
-            if self._block_value(block, "kind") != "textbox":
-                continue
-            textbox_count += 1
-            metadata = self._block_value(block, "metadata", {})
-            if not isinstance(metadata, Mapping):
-                continue
-            raw = metadata.get("drawing_group_index")
-            try:
-                index = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if index >= 0 and index not in values:
-                values.append(index)
-        # Older fixtures encode the diagram as one OOXML drawing group while
-        # the legacy section locator exposes two source-side group positions.
-        # Preserve both positions for the selector regression contract; the
-        # first position remains the actual render target for the current
-        # page, and later sections can select the second one when it exists.
-        if len(values) == 1 and textbox_count > 1:
-            values.append(values[0] + 1)
-        return tuple(values)
-
-    def _recording_block_image_selector(self):
-        """Resolve an inline mind-map image, falling back to floating shapes."""
-
-        mind_map_paragraphs = []
-        for paragraph_index, value, *_rest in self.paras:
-            if "思维导图" not in str(value or ""):
-                continue
-            try:
-                # Paragraph metadata in DOCX blocks is zero-based; parser
-                # paragraph rows are one-based.
-                mind_map_paragraphs.append(max(0, int(paragraph_index) - 1))
-            except (TypeError, ValueError):
-                continue
-
-        image_blocks = []
-        for block in self.document_blocks or ():
-            if self._block_value(block, "kind") != "embedded_image":
-                continue
-            metadata = self._block_value(block, "metadata", {})
-            if not isinstance(metadata, Mapping):
-                continue
-            try:
-                paragraph_index = int(metadata.get("paragraph_index"))
-                image_index = int(metadata.get("embedded_image_index"))
-            except (TypeError, ValueError):
-                continue
-            if image_index < 0:
-                continue
-            image_blocks.append((paragraph_index, image_index))
-
-        image_indices = []
-        for anchor in mind_map_paragraphs:
-            # Prefer the first image after the mind-map instruction. Some
-            # DOCX files place it in the same paragraph or just before it.
-            following = [
-                (paragraph_index - anchor, image_index)
-                for paragraph_index, image_index in image_blocks
-                if 0 <= paragraph_index - anchor <= 8
-            ]
-            nearby = following or [
-                (anchor - paragraph_index, image_index)
-                for paragraph_index, image_index in image_blocks
-                if 0 < anchor - paragraph_index <= 2
-            ]
-            if nearby:
-                _distance, image_index = min(nearby)
-                if image_index not in image_indices:
-                    image_indices.append(image_index)
-        if image_indices:
-            return "embedded_image", tuple(image_indices)
-
-        drawing_groups = self._recording_drawing_group_indices()
-        if drawing_groups:
-            return "drawing_group", drawing_groups
-        return "", ()
+        start = heading[0]
+        stop = first_script
+        anchors = [
+            index for index, text, _ in self.paras
+            if start <= index <= stop and "思维导图" in text
+        ]
+        blocks = [
+            block for block in self.document_blocks
+            if start <= block.metadata.get("paragraph_index", -1) <= stop
+        ]
+        embedded = {}
+        drawings = set()
+        tables = set()
+        for block in blocks:
+            position = block.metadata["paragraph_index"]
+            if block.kind == "embedded_image":
+                index = block.metadata["embedded_image_index"]
+                distances = [
+                    (position < anchor, abs(position - anchor))
+                    for anchor in anchors if -2 <= position - anchor <= 8
+                ]
+                if distances:
+                    embedded[index] = min(distances)
+            if block.kind == "textbox":
+                drawings.add(block.metadata["drawing_group_index"])
+            if block.kind == "table" and any(0 <= position - anchor <= 8 for anchor in anchors):
+                tables.add(block.metadata["table_index"])
+        if embedded:
+            nearest = min(embedded.values())
+            matches = [index for index, distance in embedded.items() if distance == nearest]
+            if len(matches) == 1:
+                return ("embedded_image", matches[0]), None
+        else:
+            candidates = [("drawing_group", index) for index in drawings]
+            candidates.extend(("table", index) for index in tables)
+            if len(candidates) == 1:
+                return candidates[0], None
+            if not candidates:
+                return (None, f"第 {anchors[0] + 1} 段的思维导图未找到") if anchors else (None, None)
+        return None, f"第 {start + 1} 段开始的转述材料有多张候选配图"
 
     @staticmethod
     def _is_english_payload(value):
@@ -204,45 +137,6 @@ class InfoRetellingParser(BaseParser):
         return cls.RE_PAGE_PAREN_SPEAKER_MARKER.sub(
             "", sanitize(str(value or ""))
         ).strip()
-
-    @classmethod
-    def _answer_lines(cls, value):
-        """Return numbered/plain answers, splitting slash alternatives.
-
-        One DOCX paragraph may carry several numbered answer rows separated
-        by soft line breaks (one row per retelling version, or the 11/12 rows
-        of the asking section).  Each line is parsed on its own so a second
-        number cannot be swallowed by the first row, and a multi-row block
-        never degrades into unnumbered answers that pair with the wrong
-        question.
-        """
-
-        text = str(value or "").strip()
-        if not text:
-            return []
-        results = []
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            numbered = cls.RE_NUMBERED_ANSWER.match(line)
-            if numbered:
-                number = int(numbered.group(1))
-                answers = re.split(r"\s*/\s*", numbered.group(2))
-                results.extend(
-                    (number, sanitize(answer).strip(" /"))
-                    for answer in answers
-                    if sanitize(answer).strip(" /")
-                )
-                continue
-            if cls._is_english_payload(line):
-                answers = re.split(r"\s*/\s*", line)
-                results.extend(
-                    (None, sanitize(answer).strip(" /"))
-                    for answer in answers
-                    if sanitize(answer).strip(" /")
-                )
-        return results
 
     @classmethod
     def _prompt_from_preamble_line(cls, value):
@@ -305,29 +199,6 @@ class InfoRetellingParser(BaseParser):
         return None
 
     @classmethod
-    def _prompt_from_preamble(cls, lines):
-        """Return the prompt slot from the pre-recording block.
-
-        Prefer the last paragraph carrying the prompt payload (normally the
-        English starter) so a trailing Chinese playback instruction cannot
-        displace it.  If a paper uses an all-Chinese starter, fall back to the
-        final paragraph because the section order is still the authoritative
-        signal.
-        """
-
-        values = []
-        for line in lines:
-            value = sanitize(line)
-            if value:
-                values.append(value)
-        if not values:
-            return None
-        for value in reversed(values):
-            if cls._is_english_payload(value) or "_" in value:
-                return cls._prompt_from_preamble_line(value)
-        return cls._prompt_from_preamble_line(values[-1])
-
-    @classmethod
     def _section_scores(cls, value):
         return (
             cls._score(cls.RE_SCORE_PER_ITEM, value),
@@ -335,460 +206,288 @@ class InfoRetellingParser(BaseParser):
             or cls._score(cls.RE_BARE_SCORE, value),
         )
 
-    def _new_group(self, block_index, block_kind=""):
+    def _sections(self):
+        """Yield the retelling and asking ranges within the owned source section."""
+
+        current = None
+        for row in self.paras:
+            _, text, _ = row
+            if self.RE_SECTION_START.match(text):
+                kind = "retelling"
+            elif self.RE_ASKING_SECTION.match(text):
+                kind = "asking"
+            else:
+                kind = None
+            if kind or self.RE_PART.match(text) or is_major_section_heading(text):
+                if current is not None:
+                    yield current
+                current = (kind, row, []) if kind else None
+                if kind is None:
+                    yield None, row, []
+            elif current is not None:
+                current[2].append(row)
+        if current is not None:
+            yield current
+
+    def _read_material(self, heading, rows):
+        preamble = []
+        script = []
+        references = []
+        script_start = None
+        mode = preamble
+        for row in rows:
+            index, value, _ = row
+            if marker := match_script_marker(value):
+                mode = script
+                if script_start is None:
+                    script_start = index
+            elif marker := match_answer_marker(value):
+                mode = references
+            if marker:
+                value = marker.group(1).strip()
+            if value:
+                mode.append(value)
+        if not script:
+            return None
+
+        instruction = None
+        prompt = None
+        reading = []
+        preparation = []
+        if preamble:
+            first, *tail = preamble
+            embedded_prompt = self._embedded_prompt_from_instruction(first)
+            if embedded_prompt == sanitize(first):
+                prompt = embedded_prompt
+            else:
+                instruction = sanitize(first)
+                prompt = embedded_prompt
+            if tail and not prompt:
+                prompt_index = next(
+                    (i for i in range(len(tail) - 1, -1, -1)
+                     if self._is_english_payload(tail[i]) or "_" in tail[i]),
+                    len(tail) - 1,
+                )
+                prompt = self._prompt_from_preamble_line(tail[prompt_index])
+                for line in tail[:prompt_index]:
+                    if self.RE_PREPARATION_PROMPT.match(line):
+                        preparation.append(line)
+                    else:
+                        reading.append(line)
+
+        item_score, full_score = self._section_scores(heading[1])
+        selector, issue = self._recording_image(heading, script_start)
         return {
-            "instruction_text": None,
-            "reading_instruction_text": None,
-            "preparation_instruction_text": None,
-            "prompt": None,
-            "preamble_lines": [],
-            "script_lines": [],
-            "reference_answers": [],
-            "score": None,
-            "block_index": block_index,
-            "block_kind": block_kind,
+            "source_locator": f"第 {heading[0] + 1} 段/信息转述",
+            "script": sanitize("\n".join(script)),
+            "score": full_score if full_score is not None else item_score,
+            "instruction": instruction,
+            "reading": sanitize("\n".join(reading)),
+            "preparation": sanitize("\n".join(preparation)),
+            "prompt": prompt or "",
+            "references": [answer for _, answers in answer_rows(references) for answer in answers],
+            "image": selector,
+            "issues": [issue] if issue else [],
             "asking": [],
         }
 
-    def parse(self):
-        items = []
-        tasks = []
-        groups = []
-        asking_records = []
-        asking_answer_lines = []
-        mode = None
-        current_group = None
-        collecting_script = False
-        answer_region = False
-        first_instruction = None
-        asking_instruction = None
-        retelling_score = None
-        asking_score = None
-        use_exam_naming = is_exam_paper_bundle(self.paras)
-        block_kind, block_indices = self._recording_block_image_selector()
-
-        def flush_script():
-            nonlocal collecting_script
-            if not collecting_script or current_group is None:
-                collecting_script = False
-                return
-            lines = [str(line).strip() for line in current_group["script_lines"] if str(line).strip()]
-            if lines:
-                category = "信息转述录音稿"
-                index = len(items) + 1
-                item = {
-                    "category": category,
-                    "index": index,
-                    "text": sanitize("\n".join(lines)),
-                    "score": current_group.get("score") or 0,
-                    "block_image_required": bool(block_indices),
-                    "block_kind": current_group.get("block_kind") if block_indices else None,
-                    "block_index": current_group.get("block_index"),
-                }
-                item["listening_text"] = self._page_listening_text(item["text"])
-                if not item["block_image_required"]:
-                    item.pop("block_kind", None)
-                    item.pop("block_index", None)
-                stem = audio_filename_stem_for_category(category, index)
-                if stem:
-                    item["audio_filename_stem"] = stem
-                    if use_exam_naming:
-                        item["type_path"] = [stem.rsplit("-", 1)[0]]
-                items.append(item)
-            current_group["script_lines"] = []
-            collecting_script = False
-
-        def start_retelling():
-            nonlocal mode, current_group, answer_region
-            flush_script()
-            group_number = len(groups)
-            block_index = block_indices[group_number] if group_number < len(block_indices) else (
-                block_indices[0] if block_indices else None
-            )
-            current_group = self._new_group(block_index, block_kind=block_kind)
-            groups.append(current_group)
-            mode = "retelling"
-            answer_region = False
-
-        def start_asking():
-            nonlocal mode, answer_region
-            flush_script()
-            mode = "asking"
-            answer_region = False
-
-        for position, (_, raw_text, _) in enumerate(self.paras):
-            value = str(raw_text or "").strip()
-            if not value:
+    def _read_asking(self, heading, rows):
+        records = []
+        answers = []
+        instruction = None
+        in_answers = False
+        for index, value, _ in rows:
+            if marker := match_answer_marker(value):
+                in_answers = True
+                answers.append(marker.group(1))
                 continue
-
-            sub = self.RE_SUB_SECTION.search(value)
-            if sub and sub.group(2) in {"信息转述", "短文复述"}:
-                start_retelling()
-                item_score, full_score = self._section_scores(value)
-                current_group["score"] = full_score or item_score
-                retelling_score = full_score or retelling_score
-                continue
-            if sub and sub.group(2) in {"询问信息", "提问"}:
-                start_asking()
-                item_score, full_score = self._section_scores(value)
-                asking_score = item_score or (
-                    full_score / 2 if isinstance(full_score, (int, float)) else asking_score
-                )
-                continue
-
-            # The full paper uses a major title followed by the two numbered
-            # sections.  It is a scope marker, not an extra audio section.
-            if (
-                re.search(r"(?:信息转述及询问|短文复述及提问)", value)
-                and not self.RE_ANY_SECTION.search(value)
+            task = self.RE_TASK_STEM.match(value)
+            if task and re.search(r"[\u3400-\u9fff]", task.group(2)) and (
+                not in_answers or re.match(r"^[^A-Za-z]*[\u3400-\u9fff]", task.group(2))
             ):
-                flush_script()
-                mode = None
-                continue
-
-            if self.RE_SECTION_START.search(value):
-                start_retelling()
-                item_score, full_score = self._section_scores(value)
-                current_group["score"] = full_score or item_score
-                retelling_score = full_score or retelling_score
-                continue
-            if self.RE_ASKING_SECTION.search(value):
-                start_asking()
-                item_score, full_score = self._section_scores(value)
-                asking_score = item_score or (
-                    full_score / 2 if isinstance(full_score, (int, float)) else asking_score
-                )
-                continue
-
-            if mode in {"retelling", "asking"} and is_major_section_heading(value):
-                # Known subsection headings were handled above. A different
-                # question type is a hard boundary and must not leak its audio
-                # or numbered answers into this parser.
-                if not self.RE_SECTION_START.search(value) and not self.RE_ASKING_SECTION.search(value):
-                    flush_script()
-                    mode = None
-                    answer_region = False
-                    continue
-
-            if mode == "retelling":
-                marker = match_script_marker(value)
-                answer_marker = match_answer_marker(value)
-                if marker:
-                    flush_script()
-                    collecting_script = True
-                    remainder = (marker.group(1) or "").strip()
-                    if remainder:
-                        current_group["script_lines"].append(remainder)
-                    continue
-                if answer_marker:
-                    flush_script()
-                    answer_region = True
-                    remainder = (answer_marker.group(1) or "").strip()
-                    for number, answer in self._answer_lines(remainder):
-                        if answer:
-                            current_group["reference_answers"].append(answer)
-                    continue
-                # The guidance paragraph is identified by its structural slot:
-                # it is the first non-boundary paragraph in the retelling
-                # section, before the prompt/recording/answer blocks.  Do not
-                # inspect its wording; different papers use different names
-                # and instructions here.
-                if current_group.get("instruction_text") is None:
-                    instruction = sanitize(value)
-                    if instruction:
-                        embedded_prompt = self._embedded_prompt_from_instruction(instruction)
-                        if embedded_prompt == instruction:
-                            # A standalone prompt can be the first paragraph
-                            # in a compact layout.  Leave the instruction
-                            # field empty so the normal fallback remains in
-                            # place, while preserving this paragraph as the
-                            # structural prompt.
-                            current_group["prompt"] = embedded_prompt
-                        else:
-                            current_group["instruction_text"] = instruction
-                            if first_instruction is None:
-                                first_instruction = instruction
-                            if embedded_prompt:
-                                current_group["prompt"] = embedded_prompt
-                        continue
-                if answer_region:
-                    if self._is_english_payload(value):
-                        current_group["reference_answers"].extend(
-                            answer
-                            for _number, answer in self._answer_lines(value)
-                            if answer
-                        )
-                    continue
-                if not collecting_script:
-                    # Every remaining paragraph before the recording is part
-                    # of the pre-recording block.  The last one is the prompt;
-                    # defer selection until the section is complete so an
-                    # extra preparation paragraph cannot steal that slot.
-                    current_group["preamble_lines"].append(value)
-                    continue
-                if collecting_script:
-                    # The answer text and the next subsection are already
-                    # handled as boundaries; only the source prose belongs in
-                    # the recording.
-                    current_group["script_lines"].append(value)
-                    continue
-                continue
-
-            if mode == "asking":
-                answer_marker = match_answer_marker(value)
-                if answer_marker:
-                    answer_region = True
-                    remainder = (answer_marker.group(1) or "").strip()
-                    asking_answer_lines.extend(self._answer_lines(remainder))
-                    continue
-                # The section-level asking prompt occupies the first paragraph
-                # after the asking-section heading and before the first
-                # numbered question.  Select that structural slot directly;
-                # matching names, verbs, or timing phrases is intentionally
-                # avoided because those words vary across papers.
-                if asking_instruction is None and not self.RE_TASK_STEM.match(value):
-                    instruction = sanitize(value)
-                    if instruction:
-                        asking_instruction = instruction
-                    continue
-                task = self.RE_TASK_STEM.match(value)
-                if task:
-                    number = int(task.group(1))
-                    text = sanitize(task.group(2))
-                    if answer_region:
-                        asking_answer_lines.extend(self._answer_lines(value))
-                    elif re.search(r"[\u3400-\u9fff]", text):
-                        record = {
-                            "task_kind": "asking",
-                            "number": number,
-                            "prompt": text,
-                            "reference_answer": None,
-                            "score": asking_score,
-                        }
-                        asking_records.append(record)
-                    continue
-                if answer_region and self._is_english_payload(value):
-                    asking_answer_lines.extend(self._answer_lines(value))
-                continue
-
-        flush_script()
-
-        # Fill retelling defaults and preserve one standardized first guidance
-        # paragraph.  The source paragraph wins when present; the fallback is
-        # the confirmed Li Ling paper wording used by the shared page rule.
-        for group in groups:
-            if not group.get("prompt"):
-                preamble = [sanitize(line) for line in group.get("preamble_lines", ()) if sanitize(line)]
-                if preamble:
-                    # The last starter paragraph belongs to the preparation
-                    # slot. Independent paragraphs between the introduction
-                    # and that slot are the earlier reading guidance.
-                    prompt_index = next(
-                        (index for index in range(len(preamble) - 1, -1, -1)
-                         if self._is_english_payload(preamble[index]) or "_" in preamble[index]),
-                        len(preamble) - 1,
-                    )
-                    group["prompt"] = self._prompt_from_preamble_line(preamble[prompt_index])
-                    if prompt_index:
-                        guidance = preamble[:prompt_index]
-                        # A standalone preparation row is spoken after the
-                        # material, so it keeps its own guidance slot; the
-                        # remaining rows stay in the single pre-listening field.
-                        preparation = [
-                            line
-                            for line in guidance
-                            if self.RE_PREPARATION_PROMPT.match(line)
-                        ]
-                        reading = [
-                            line for line in guidance if line not in preparation
-                        ]
-                        if reading:
-                            group["reading_instruction_text"] = sanitize("\n".join(reading))
-                        if preparation:
-                            group["preparation_instruction_text"] = sanitize(
-                                "\n".join(preparation)
-                            )
-            if not group.get("instruction_text"):
-                group["instruction_text"] = first_instruction or RETELLING_INSTRUCTION
-            if group.get("score") is None:
-                group["score"] = retelling_score or 0
-            if not group.get("prompt"):
-                group["prompt"] = ""
-            # ``preamble_lines`` is a parser work buffer, not part of the
-            # stable result contract exposed to downstream consumers.
-            group.pop("preamble_lines", None)
-
-        # Numbered answer rows take precedence. Plain rows are paired in source
-        # order with the asking prompts, which is how the legacy worksheet is
-        # laid out after its single “参考答案” marker.
-        by_number = {}
-        for number, answer in asking_answer_lines:
-            if number is None or not answer:
-                continue
-            by_number.setdefault(number, []).append(answer)
-        plain_answers = [answer for number, answer in asking_answer_lines if number is None and answer]
-        plain_index = 0
-        for record in asking_records:
-            answers = list(by_number.get(record["number"], []))
-            if not answers and plain_index < len(plain_answers):
-                answers = [plain_answers[plain_index]]
-                plain_index += 1
-            record["reference_answers"] = answers
-            # Keep the legacy scalar field for callers that only display one
-            # answer; the page-input channel consumes the full list.
-            record["reference_answer"] = answers[0] if answers else None
-            if record.get("score") is None:
-                record["score"] = asking_score or 0
-            tasks.append(record)
-
-        retelling_tasks = []
-        for group in groups:
-            for answer in group.get("reference_answers", []):
-                retelling_tasks.append({
-                    "task_kind": "retelling",
-                    "reference_answer": answer,
-                    "score": group.get("score") or retelling_score or 0,
+                in_answers = False
+                number = int(task.group(1))
+                records.append({
+                    "task_kind": "asking",
+                    "number": number,
+                    "prompt": sanitize(task.group(2)),
+                    "source_locator": f"第 {index + 1} 段/询问信息/第 {number} 题",
                 })
+            elif in_answers:
+                answers.append(value)
+            elif not instruction and not records:
+                instruction = sanitize(value)
 
-        # The visible page contains one page-input fact per listening script;
-        # the additional guidance and prompt are audio-only auxiliary items.
-        recording = None
-        retelling = None
-        if items:
-            first = groups[0] if groups else self._new_group(
-                block_indices[0] if block_indices else None
+        item_score, full_score = self._section_scores(heading[1])
+        if item_score is None and full_score is not None and records:
+            item_score = full_score / len(records)
+
+        question_counts = Counter(record["number"] for record in records)
+        rows_by_number = {}
+        unnumbered = []
+        for number, alternatives in answer_rows(answers):
+            if number is None:
+                unnumbered.append(alternatives)
+            else:
+                rows_by_number.setdefault(number, []).extend(alternatives)
+
+        # A completely unnumbered key with exactly one row per question is
+        # an established format. Mixed or incomplete keys need explicit review.
+        positional = not rows_by_number and len(unnumbered) == len(records)
+        for index, record in enumerate(records):
+            number = record["number"]
+            references = []
+            if question_counts[number] == 1:
+                if positional:
+                    references = unnumbered[index]
+                else:
+                    references = rows_by_number.get(number, [])
+            record.update(
+                score=item_score,
+                reference_answers=references,
+                reference_answer=references[0] if references else None,
             )
-            recording = {
-                "listening_text": items[0].get("listening_text") or items[0].get("text", ""),
-                "questions": [],
-                "instruction_text": first.get("instruction_text") or RETELLING_INSTRUCTION,
-                "instruction_occurrence": 0,
-                "instruction_audio_filename_stem": "信息转述题目指导文字-1",
-            }
-            if first.get("reading_instruction_text"):
-                recording.update({
-                    "reading_instruction_text": first["reading_instruction_text"],
-                    "reading_instruction_occurrence": 1,
-                    "reading_instruction_audio_filename_stem": "信息转述阅图指导文字-1",
-                })
-            if first.get("preparation_instruction_text"):
-                recording.update({
-                    "preparation_instruction_text": first["preparation_instruction_text"],
-                    "preparation_instruction_occurrence": 2,
-                    "preparation_instruction_audio_filename_stem": "信息转述准备指导文字-1",
-                })
-            if items[0].get("block_image_required"):
-                recording.update({
-                    "block_image_required": True,
-                    "block_kind": items[0].get("block_kind") or block_kind,
-                    "block_index": items[0].get("block_index"),
-                })
-            retelling = {
-                "prompt": first.get("prompt", ""),
-                "score": first.get("score") or retelling_score or 0,
-                "reference_answers": list(first.get("reference_answers", [])),
-                "prompt_audio_filename_stem": "信息转述题干-1",
-            }
-            if asking_records:
-                recording["asking"] = asking_records
-            if asking_instruction:
-                recording.update({
-                    "asking_instruction_text": asking_instruction,
-                    "asking_instruction_occurrence": 0,
-                })
+
+        issues = [
+            f'{record["source_locator"]}的参考答案归属未确认'
+            for record in records if not record["reference_answers"]
+        ]
+        if (rows_by_number.keys() - question_counts.keys()) or (unnumbered and not positional):
+            issues.append(f"第 {heading[0] + 1} 段开始的询问部分有未匹配的答案")
+        return instruction, records, issues
+
+    @staticmethod
+    def _material_items(material, index, *, exam_naming):
+        locator = material["source_locator"]
+        script = material["script"]
+        score = material["score"]
+        category = "信息转述录音稿"
+        stem = audio_filename_stem_for_category(category, index)
+        recording = {
+            "listening_text": InfoRetellingParser._page_listening_text(script),
+            "audio_filename_stem": stem,
+            "questions": [],
+        }
+        item = {
+            "category": category,
+            "index": index,
+            "text": script,
+            "listening_text": recording["listening_text"],
+            "score": score if score is not None else 0,
+            "source_locator": locator,
+            "audio_filename_stem": stem,
+        }
+        if exam_naming:
+            item["type_path"] = [stem.rsplit("-", 1)[0]]
+        if material["image"]:
+            kind, image_index = material["image"]
+            recording.update(block_image_required=True, block_kind=kind, block_index=image_index)
+            item.update(block_image_required=True, block_kind=kind, block_index=image_index)
+
+        retelling = {
+            "prompt": material["prompt"],
+            "score": score,
+            "reference_answers": material["references"],
+        }
+        audio = []
+        for key, text, target, field, occurrence in (
+            ("信息转述题目指导文字", material["instruction"], recording, "instruction", 0),
+            ("信息转述阅图指导文字", material["reading"], recording, "reading_instruction", 1),
+            ("信息转述准备指导文字", material["preparation"], recording, "preparation_instruction", 2),
+            ("信息转述题干", material["prompt"], retelling, "prompt", None),
+        ):
+            if not text:
+                continue
+            audio_stem = f"{key}-{index}"
+            target[f"{field}_audio_filename_stem"] = audio_stem
+            if occurrence is not None:
+                target[f"{field}_text"] = text
+                target[f"{field}_occurrence"] = occurrence
+            audio.append({
+                "category": key,
+                "index": index,
+                "text": text,
+                "role": QUESTION_STEM_ROLE,
+                "voice": "female",
+                "audio_only_auxiliary": True,
+                "audio_filename_stem": audio_stem,
+                "type_path": [key],
+                "source_locator": f"{locator}/{key}",
+            })
+
+        if material.get("asking_instruction"):
+            recording.update(
+                asking_instruction_text=material["asking_instruction"],
+                asking_instruction_occurrence=0,
+            )
+        if material["asking"]:
+            recording["asking"] = material["asking"]
+        item["page_input"] = {
+            "type": InfoRetellingParser.DOC_TYPE,
+            "recording": recording,
+            "retelling": retelling,
+            "asking": material["asking"],
+        }
+        if material["issues"]:
+            item["page_input"]["source_issue"] = "；".join(material["issues"])
+        return item, audio
+
+    def parse(self):
+        materials = []
+        asking_records = []
+        orphan_issues = []
+        current = None
+        for kind, heading, rows in self._sections():
+            if kind is None:
+                current = None
+                continue
+            if kind == "retelling":
+                current = self._read_material(heading, rows)
+                if current is not None:
+                    materials.append(current)
+            else:
+                instruction, records, issues = self._read_asking(heading, rows)
+                asking_records.extend(records)
+                if current is not None:
+                    if current["asking"]:
+                        issues.append(f"第 {heading[0] + 1} 段开始的询问部分找不到唯一的转述材料")
+                    else:
+                        current["asking"] = records
+                        current["asking_instruction"] = instruction
+                    current["issues"].extend(issues)
+                elif records:
+                    orphan_issues.append(f"第 {heading[0] + 1} 段开始的询问部分找不到对应的转述材料")
+                current = None
+
+        items = []
+        audio_items = []
+        for index, material in enumerate(materials, start=1):
+            item, audio = self._material_items(material, index, exam_naming=self.use_exam_naming)
+            if len(materials) > 1 and not self.use_exam_naming:
+                unit = f"第 {index} 组信息转述"
+                for entry in [item, *audio]:
+                    entry.update(unit_id=material["source_locator"], unit_label=unit)
+            items.append(item)
+            audio_items.extend(audio)
 
         result = self._result(items)
-        result["tasks"] = tasks
-        # Keep the historical ``tasks`` list number-addressable for callers
-        # that iterate asking questions.  Retelling references have their own
-        # explicit channel and are still consumed by the question-model
-        # extractor and the page-input builder.
-        result["retelling_tasks"] = retelling_tasks
-        result["groups"] = groups
-        if recording is not None:
-            result["recording"] = recording
-        if retelling is not None:
-            result["retelling"] = retelling
-        if asking_records:
-            result["asking"] = asking_records
-        if items:
-            score = sum(
-                item.get("score", 0)
-                for item in items
-                if isinstance(item.get("score"), (int, float))
-            )
-            if score:
-                result["computed_score"] = score
-                result["section_score"] = score + sum(
-                    record.get("score", 0)
-                    for record in asking_records
-                    if isinstance(record.get("score"), (int, float))
-                )
-
-            # These are intentionally separate from the primary audio items.
-            # DocumentParser includes them only in the application workflow,
-            # keeping legacy parse/progress counts stable for callers that only
-            # need the audio正文 list.
-            instruction = recording.get("instruction_text") if recording else ""
-            reading_instruction = recording.get("reading_instruction_text") if recording else ""
-            preparation_instruction = (
-                recording.get("preparation_instruction_text") if recording else ""
-            )
-            prompt = retelling.get("prompt") if retelling else ""
-            audio_items = []
-            if instruction:
-                audio_items.append({
-                    "category": "信息转述题目指导文字",
-                    "index": 1,
-                    "text": instruction,
-                    # 操作说明也是信息转述题干的一部分；与“你可以这样
-                    # 开始”共用一个角色，用户可在配置中心统一修改。
-                    "role": QUESTION_STEM_ROLE,
-                    "voice": "female",
-                    "audio_only_auxiliary": True,
-                    "audio_filename_stem": "信息转述题目指导文字-1",
-                    "type_path": ["信息转述题目指导文字"],
-                })
-            if reading_instruction:
-                audio_items.append({
-                    "category": "信息转述阅图指导文字",
-                    "index": 1,
-                    "text": reading_instruction,
-                    "role": QUESTION_STEM_ROLE,
-                    "voice": "female",
-                    "audio_only_auxiliary": True,
-                    "audio_filename_stem": "信息转述阅图指导文字-1",
-                    "type_path": ["信息转述阅图指导文字"],
-                })
-            if preparation_instruction:
-                audio_items.append({
-                    "category": "信息转述准备指导文字",
-                    "index": 1,
-                    "text": preparation_instruction,
-                    "role": QUESTION_STEM_ROLE,
-                    "voice": "female",
-                    "audio_only_auxiliary": True,
-                    "audio_filename_stem": "信息转述准备指导文字-1",
-                    "type_path": ["信息转述准备指导文字"],
-                })
-            if prompt:
-                audio_items.append({
-                    "category": "信息转述题干",
-                    "index": 1,
-                    "text": prompt,
-                    "role": QUESTION_STEM_ROLE,
-                    "voice": "female",
-                    "audio_only_auxiliary": True,
-                    "audio_filename_stem": "信息转述题干-1",
-                    "type_path": ["信息转述题干"],
-                })
-            # Asking guidance stays as page text. Retelling introduction,
-            # reading guidance (when present), and preparation/starter each
-            # retain their own audio item.
-            if audio_items:
-                result["audio_items"] = audio_items
-
+        result["tasks"] = asking_records
+        if orphan_issues:
+            result["source_issue"] = "；".join(orphan_issues)
+        if not items:
+            return result
+        first = items[0]["page_input"]
+        result["recording"] = first["recording"]
+        result["retelling"] = first["retelling"]
+        if first["asking"]:
+            result["asking"] = first["asking"]
+        if audio_items:
+            result["audio_items"] = audio_items
+        score = sum(item["score"] for item in items)
+        if score:
+            result["computed_score"] = score
+            result["section_score"] = score + sum(record["score"] or 0 for record in asking_records)
         return result
 
 
-__all__ = ["InfoRetellingParser", "RETELLING_INSTRUCTION", "QUESTION_STEM_ROLE"]
+__all__ = ["InfoRetellingParser", "QUESTION_STEM_ROLE"]

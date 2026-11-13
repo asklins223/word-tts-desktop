@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from workflow.database import WorkflowDatabase
 
@@ -49,6 +50,20 @@ class AtomicBridgeTest(unittest.TestCase):
                              [("LEGACY_BRIDGED", "IMPORTED")])
         finally:
             con.close()
+
+    def test_bridge_reuses_the_workflow_parse_without_reading_again(self):
+        from workflow.parser import DocumentParser
+
+        parsed = DocumentParser().parse(DOC)
+        with patch("question_types.segmenter.load_document_once", side_effect=AssertionError("second read")):
+            result = bridge_parse_to_atomic_model(
+                self.database,
+                source_path=str(DOC), filename=DOC.name,
+                source_sha256=parsed.source_sha256, workflow_id="wf-shared-parse",
+                source_parse=parsed.source_parse, parser_version=parsed.parser_version,
+            )
+        self.assertTrue(result["bridged"], result)
+        self.assertEqual(result["question_count"], 10)
 
     def test_bridge_is_idempotent(self):
         first = self._bridge()

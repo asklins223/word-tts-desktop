@@ -50,13 +50,9 @@ PAGE_INPUT_TYPES = frozenset({
 PAGE_INPUT_MAX_BYTES = 2 * 1024 * 1024
 PAGE_INPUT_MAX_TEXT = 1_000_000
 PAGE_INPUT_MAX_LIST = 256
-# The first version of document entry deliberately recognizes whole document
-# shapes instead of treating every individual page-input fact as an entry
-# point.  This keeps the review screen and the external adapter aligned: a
-# A full listening paper is one flow, while the individual listening families
-# can also be entered as smaller, separate flows. New document families should
-# be added here with a parser-owned profile before they become visible in the
-# UI.
+# Keep the labels of existing entry formats. Additional papers compose the
+# same page-supported sections, with their compatibility checked on the page.
+COMPOSED_PAPER_FORMAT = "composed_listening_paper"
 DOCUMENT_ENTRY_PROFILES = (
     {
         "format": "listening_paper",
@@ -378,6 +374,9 @@ def _sanitize_paper_page_input(value: Mapping[str, Any]) -> dict[str, Any] | Non
         "input_type": "paper",
         "type": group_type,
     }
+    source_issue = _text(value.get("source_issue"), limit=512)
+    if source_issue:
+        result["source_issue"] = source_issue
     if group_type == "听后选择":
         raw_materials = value.get("materials")
         materials = raw_materials if isinstance(raw_materials, Sequence) and not isinstance(raw_materials, (bytes, bytearray, str)) else []
@@ -742,6 +741,8 @@ def page_input_completeness(value: Any) -> dict[str, Any]:
         return {"status": "invalid", "reason": "页面内容事实格式无效"}
     if facts is None:
         return {"status": "missing", "reason": "缺少页面内容事实"}
+    if facts.get("source_issue"):
+        return {"status": "incomplete", "reason": facts["source_issue"]}
 
     group_type = facts["type"]
     if group_type == "听后转述":
@@ -1135,13 +1136,26 @@ def document_entry_support(
         ),
         None,
     )
+    composed = (
+        profile is None and len(detected_set) > 1
+        and detected_set <= PAGE_INPUT_TYPES
+        and structured_count == len(raw_values)
+    )
+    if composed:
+        profile = {
+            "format": COMPOSED_PAPER_FORMAT,
+            "label": "听说考试",
+            "types": tuple(detected),
+        }
     record_retelling_profile = (
         profile is not None
-        and profile["format"] == "listening_record_retelling"
+        and (profile["format"] == "listening_record_retelling"
+             or (composed and "听后记录并转述信息" in detected_set))
     )
     response_profile = (
         profile is not None
-        and profile["format"] in {"listening_response", "wuhan_listening_paper"}
+        and (profile["format"] in {"listening_response", "wuhan_listening_paper"}
+             or (composed and "听后应答" in detected_set))
     )
     matched_profile = profile
     if response_profile:
@@ -1196,9 +1210,7 @@ def document_entry_support(
             )
             if not isinstance(raw_capability, Mapping) or raw_capability.get("external_input") is not True:
                 entry_capability_invalid_count += 1
-    listening_retelling_profile = profile is not None and profile["format"] in {
-        "listening_retelling", "wuhan_listening_paper",
-    }
+    listening_retelling_profile = profile is not None and "听后转述" in detected_set
     if listening_retelling_profile:
         for index, page_type in enumerate(page_types_by_index):
             if page_type != "听后转述":
@@ -1245,6 +1257,7 @@ def document_entry_support(
         profile_label = (
             "听后记录并转述信息" if record_retelling_profile
             else "听后应答" if response_profile
+            else "听后转述" if listening_retelling_profile
             else "模仿朗读"
         )
         reason = f"存在未开放或未确认的{profile_label}版式画像，当前暂不支持文稿录入。"
@@ -1253,6 +1266,7 @@ def document_entry_support(
         profile_label = (
             "听后记录并转述信息" if record_retelling_profile
             else "听后应答" if response_profile
+            else "听后转述" if listening_retelling_profile
             else "模仿朗读"
         )
         reason = f"存在未开放或未确认的{profile_label}录入画像，当前暂不支持文稿录入。"
@@ -1261,6 +1275,7 @@ def document_entry_support(
         profile_label = (
             "听后记录并转述信息" if record_retelling_profile
             else "听后应答" if response_profile
+            else "听后转述" if listening_retelling_profile
             else "模仿朗读"
         )
         reason = f"{profile_label}的录入字段尚未确认完整，当前暂不支持文稿录入。"
@@ -1428,9 +1443,10 @@ def _response_builder(
     item_index: int,
 ) -> Mapping[str, Any]:
     ordinal = _item_ordinal(raw_item, item_index)
-    questions = []
+    linked_question = raw_item.get("response_question")
+    questions = [dict(linked_question)] if isinstance(linked_question, Mapping) else []
     raw_questions = result.get("questions")
-    if isinstance(raw_questions, Sequence) and not isinstance(raw_questions, (bytes, bytearray, str)):
+    if not questions and isinstance(raw_questions, Sequence) and not isinstance(raw_questions, (bytes, bytearray, str)):
         if raw_item.get("number") in (None, "") and 0 <= item_index < len(raw_questions):
             candidate = raw_questions[item_index]
             if isinstance(candidate, Mapping):
@@ -1744,6 +1760,8 @@ def build_page_input_facts(
     if builder is None:
         builder = _PAGE_INPUT_BUILDERS.get(_DOCUMENT_TYPE_ALIASES.get(_text(document_type, limit=128), ""))
     value = explicit if explicit is not None else builder(document_type, result, raw_item, item_index) if builder else None
+    if isinstance(value, Mapping) and result.get("source_issue"):
+        value = {**value, "source_issue": result["source_issue"]}
     return sanitize_page_input(value)
 
 

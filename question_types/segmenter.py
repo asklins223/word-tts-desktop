@@ -1,22 +1,28 @@
-"""统一结构读取与分段（阶段 3 第一步）。
-
-现状：每个题型的 Parser 各自调用 ``load_paragraphs`` 重复加载并扫描
-全文（方案风险 13）。本模块收口“结构读取”和题型路由：
-
-- ``load_document_once``：文档只加载一次，产出段落与元数据；
-- ``parse_document_once``：所有解析器复用同一次加载结果，并按结构证据
-  路由题型；
-- 后续分段切片（大题/材料范围划分 + 一次 owner 裁决）在此模块上继续
-  演进，最终替代各 Parser 对全文的独立重扫。
-"""
+"""Read source structure once and dispatch ranges to their owning parsers."""
 
 from __future__ import annotations
 
 import inspect
+from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 
-from .detection import PaperCategoryEvidence, classify_paper_category
-from .text_utils import load_paragraphs
+from audio_naming import is_exam_paper_bundle
+from .detection import PaperCategoryEvidence, classify_paper_category, detect_document_types
+from .section_slice import family_sections
+from .text_utils import load_paragraphs, split_marker_paragraphs
+
+
+# Keep workflow snapshots, the atomic model, and the legacy cache on the same version.
+PARSER_VERSION = 26
+
+
+@dataclass(frozen=True)
+class SourceParse:
+    results: list[dict]
+    summary: str
+    detected_family_codes: frozenset[str]
+    issues: tuple[str, ...] = ()
 
 
 def load_document_once(filepath, *, include_structure=False):
@@ -110,39 +116,70 @@ def _annotate_paper_category(
     return annotated
 
 
+def _source_range(result, first, last, *, disambiguate):
+    """Preserve global source positions and scope any reused item IDs/stems."""
+
+    locator = f"段落 {first + 1}–{last + 1}"
+    result["source_range"] = locator
+    if disambiguate:
+        result["scope_key"] = f"p{first + 1}"
+        suffix = f"-{result['scope_key']}"
+        visited = set()
+
+        def scope_identities(value):
+            if isinstance(value, dict):
+                if id(value) in visited:
+                    return
+                visited.add(id(value))
+                for key, entry in value.items():
+                    if key.endswith("filename_stem") and isinstance(entry, str) and entry:
+                        value[key] = entry[:240 - len(suffix)] + suffix
+                    elif key == "unit_id" and isinstance(entry, str) and entry:
+                        value[key] = f"{result['scope_key']}:{entry}"[:256]
+                    else:
+                        scope_identities(entry)
+            elif isinstance(value, (tuple, list)):
+                for entry in value:
+                    scope_identities(entry)
+
+        # Compatibility views can share dicts with individual items.
+        scope_identities(result)
+    for collection in ("items", "audio_items"):
+        for index, item in enumerate(result.get(collection, ()), start=1):
+            item.setdefault("source_locator", f"{locator}/{item.get('category') or collection}/{index}")
+    return result
+
+
 def parse_document_once(filepath):
-    """一次加载、结构判型并解析文档。
+    """Compatibility view used by the CLI and existing callers."""
 
-    返回 ``(results_list, summary_str)``。
-    """
-    from . import PARSER_MAP
-    from .detection import detect_document_types
+    parsed = parse_source(filepath)
+    return parsed.results, parsed.summary
 
-    # xlsx 词汇走专用分支（不经过 Word 结构读取）
+
+def parse_source(filepath) -> SourceParse:
+    from . import PARSERS_BY_FAMILY
+
     if str(filepath).lower().endswith(".xlsx"):
-        detected = detect_document_types(filepath)
-        if len(detected) != 1:
-            return [], "未识别到任何题型内容"
-        doc_type = detected[0].doc_type
-        parser = PARSER_MAP.get(doc_type)
-        if parser is None:
-            return [], f"未找到题型 {doc_type} 的解析器"
+        parser = PARSERS_BY_FAMILY["vocabulary"]
         try:
-            result = parser(filepath).parse()
+            result = parser(filepath).parse(require_headers=False)
         except Exception as exc:
-            return [], f"解析失败: {exc}"
+            return SourceParse([], f"解析失败: {exc}", frozenset())
+        if result is None:
+            return SourceParse([], "未识别到任何题型内容", frozenset())
+        codes = frozenset({"vocabulary"})
         if result["item_count"] == 0:
-            return [], "未提取到任何内容"
-        return [result], f"检测到 1 种题型，成功提取 {result['item_count']} 条内容"
+            return SourceParse([], "未提取到任何内容", codes)
+        return SourceParse([result], f"检测到 1 种题型，成功提取 {result['item_count']} 条内容", codes)
 
     try:
-        loaded = load_document_once(filepath, include_structure=True)
-        paras, metadata = loaded[:2]
-        blocks = loaded[2] if len(loaded) > 2 else ()
+        paras, metadata, blocks = load_document_once(filepath, include_structure=True)
+        paras, metadata = split_marker_paragraphs(paras, metadata)
     except Exception as exc:
-        return [], f"文档加载失败: {exc}"
+        return SourceParse([], f"文档加载失败: {exc}", frozenset())
     if not paras:
-        return [], "文档内容为空"
+        return SourceParse([], "文档内容为空", frozenset())
 
     detected_evidence = detect_document_types(
         paragraphs=paras,
@@ -150,32 +187,60 @@ def parse_document_once(filepath):
         blocks=blocks,
     )
     if not detected_evidence:
-        return [], "未识别到任何题型内容"
-    detected_types = [evidence.doc_type for evidence in detected_evidence]
+        return SourceParse([], "未识别到任何题型内容", frozenset())
+    codes = frozenset(evidence.code for evidence in detected_evidence)
     paper_category = classify_paper_category(
         paras,
         evidences=detected_evidence,
     )
     results = []
     errors = []
-    preloaded = (paras, metadata, blocks)
-    for doc_type in detected_types:
-        parser_cls = PARSER_MAP.get(doc_type)
+    issues = []
+    sections = family_sections(
+        paras, detected_evidence,
+        repeat_major={
+            code for code, parser in PARSERS_BY_FAMILY.items()
+            if parser._REPEAT_MAJOR_SECTIONS
+        },
+    )
+    section_counts = Counter(section.family_code for section in sections)
+    use_exam_naming = is_exam_paper_bundle(paras)
+    block_positions = [(block.metadata.get("paragraph_index", -1), block) for block in blocks]
+    for section in sections:
+        parser_cls = PARSERS_BY_FAMILY.get(section.family_code)
         if parser_cls is None:
             continue
+        first = paras[section.start][0]
+        end = paras[section.end][0] if section.end < len(paras) else float("inf")
+        scoped_blocks = tuple(block for index, block in block_positions if first <= index < end)
+        preloaded = (paras[section.start:section.end], metadata[section.start:section.end], scoped_blocks)
         try:
             parser = _build_parser(parser_cls, filepath, preloaded)
+            parser.document_header = paras[:8]
+            parser.use_exam_naming = use_exam_naming
             result = parser.parse()
+            if result.get("source_issue"):
+                issues.append(str(result["source_issue"]))
             if result["item_count"] > 0:
+                result = _source_range(
+                    result, first, paras[section.end - 1][0],
+                    disambiguate=section_counts[section.family_code] > 1,
+                )
                 results.append(_annotate_paper_category(result, paper_category))
+            else:
+                issues.append(f"第 {first + 1}–{paras[section.end - 1][0] + 1} 段（{parser_cls.DOC_TYPE}）未提取到内容")
         except Exception as exc:
-            errors.append(f"{doc_type}: {exc}")
+            issue = f"第 {first + 1} 段开始的{parser_cls.DOC_TYPE}解析失败：{exc}"
+            errors.append(issue)
+            issues.append(issue)
 
     total = sum(r["item_count"] for r in results)
-    parts = [f"检测到 {len(detected_types)} 种题型"]
+    parts = [f"检测到 {len(codes)} 种题型"]
     if results:
         parts.append(f"成功提取 {total} 条内容")
     if errors:
         parts.append(f"{len(errors)} 种解析出错")
+    elif issues:
+        parts.append(f"{len(issues)} 处内容需核对")
     summary = "，".join(parts)
-    return results, summary
+    return SourceParse(results, summary, codes, tuple(issues))

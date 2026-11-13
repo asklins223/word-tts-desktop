@@ -3,9 +3,8 @@ from pathlib import Path
 from docx import Document
 from PIL import Image
 
-from question_types.info_retelling import InfoRetellingParser
+from question_model import extract_candidate
 from question_types.segmenter import parse_document_once
-from question_types.text_utils import load_paragraphs
 from workflow.parser import DocumentParser
 from workflow.system_input_content import page_input_completeness
 
@@ -41,13 +40,6 @@ def test_workflow_page_facts_keep_the_drawing_selector():
     assert "asking_instruction_audio_filename_stem" not in recording
 
 
-def test_retelling_sections_keep_distinct_group_indexes_before_deduplication():
-    loaded = load_paragraphs(FIXTURE, include_metadata=True, include_blocks=True)
-    parser = InfoRetellingParser(FIXTURE, preloaded_paras=loaded)
-
-    assert parser._recording_drawing_group_indices() == (0, 1)
-
-
 def test_retelling_selector_prefers_inline_image_in_its_subsection(tmp_path):
     source = tmp_path / "inline-retelling.docx"
     image_source = tmp_path / "mind-map.png"
@@ -56,13 +48,13 @@ def test_retelling_selector_prefers_inline_image_in_its_subsection(tmp_path):
     document.add_paragraph("第一节 信息转述")
     document.add_paragraph("请根据思维导图复述。")
     document.add_picture(str(image_source))
+    document.add_paragraph("录音稿：My favourite hobby is reading.")
     document.add_paragraph("第二节 询问信息")
     document.save(source)
 
-    loaded = load_paragraphs(source, include_metadata=True, include_blocks=True)
-    parser = InfoRetellingParser(str(source), preloaded_paras=loaded)
-
-    assert parser._recording_block_image_selector() == ("embedded_image", (0,))
+    parsed = DocumentParser().parse(source)
+    recording = parsed.items[0].metadata["page_input"]["recording"]
+    assert (recording["block_kind"], recording["block_index"]) == ("embedded_image", 0)
 
 
 def test_workflow_preserves_three_guide_audio_items_and_entry_facts(tmp_path):
@@ -111,10 +103,9 @@ def test_multiline_answer_blocks_keep_numbered_rows_apart(tmp_path):
     )
     for text in (
         "第一节 信息转述（6 分）",
-        "你将听到 Jack 介绍海伦凯勒的故事，录音播放两遍。请根据所听到的内容，选择思维导图中的正确信息。",
+        "你将听到 Jack 介绍海伦凯勒的故事，录音播放两遍。请根据所听到的内容转述。",
         "下面你有 50 秒钟的时间准备。你的介绍可以这样开始：Jack wants to talk about Helen Keller.",
-        "录音稿：Helen Keller lost her sight at 19 months old.",
-        "参考答案：" + retelling_answers,
+        "录音稿：Helen Keller lost her sight at 19 months old.\n参考答案：" + retelling_answers,
         "第二节 询问信息（3 分）",
         "你希望了解更多，请根据以下提示向提问者提两个问题。",
         "11. 海伦是哪一年出生的？",
@@ -146,3 +137,76 @@ def test_multiline_answer_blocks_keep_numbered_rows_apart(tmp_path):
     parsed = DocumentParser().parse(source)
     facts = parsed.items[0].metadata["page_input"]
     assert page_input_completeness(facts) == {"status": "complete", "reason": None}
+
+
+def test_repeated_materials_keep_own_answers_diagrams_and_audio(tmp_path):
+    document = Document()
+    for index, name in enumerate(("Mia", "Jack"), start=1):
+        diagram = tmp_path / f"diagram-{index}.png"
+        Image.new("RGB", (32, 24), ("blue" if index == 1 else "red")).save(diagram)
+        for text in ("三、信息转述及询问（共9分）", "第一节 信息转述（6分）",
+                     f"请根据思维导图转述 {name} 的故事。"):
+            document.add_paragraph(text)
+        document.add_picture(str(diagram))
+        for text in (
+            f"你可以这样开始：Let me tell you about {name}.",
+            f"录音稿：My name is {name}.\n参考答案：1. This is {name}.\n2. It is {name}.",
+            "第二节 询问信息（3分）",
+            f"请向 {name} 提两个问题。",
+            "11. 你最喜欢什么？",
+            "12. 你住在哪里？",
+            f"参考答案：11. What do you like, {name}?\n12. Where do you live, {name}?",
+        ):
+            document.add_paragraph(text)
+    source = tmp_path / "two-retellings.docx"
+    document.save(source)
+
+    parsed = DocumentParser().parse(source, include_auxiliary_audio=True)
+    materials = [item for item in parsed.items if item.item_type == "信息转述录音稿"]
+    assert [item.normalized_content for item in materials] == ["My name is Mia.", "My name is Jack."]
+    assert len({item.identity_key for item in parsed.items}) == parsed.item_count
+    for index, (item, name) in enumerate(zip(materials, ("Mia", "Jack"))):
+        facts = item.metadata["page_input"]
+        assert facts["recording"]["block_index"] == index
+        assert facts["retelling"]["reference_answers"] == [f"This is {name}.", f"It is {name}."]
+        assert [question["number"] for question in facts["asking"]] == [11, 12]
+        assert [question["reference_answers"] for question in facts["asking"]] == [
+            [f"What do you like, {name}?"], [f"Where do you live, {name}?"],
+        ]
+        audio = [clip for clip in parsed.items if clip.metadata["unit_id"] == item.metadata["unit_id"]]
+        prompt, = [clip for clip in audio if clip.item_type == "信息转述题干"]
+        assert prompt.metadata["audio_filename_stem"] == facts["retelling"]["prompt_audio_filename_stem"]
+        assert name in prompt.normalized_content
+
+    result, = parsed.source_parse.results
+    candidate = extract_candidate(result["doc_type"], result, "two-retellings")
+    questions = [entity for entity in candidate.entities if hasattr(entity, "question_type")]
+    assert len({question.question_id for question in questions}) == 6
+    for name in ("Mia", "Jack"):
+        material, = [entity for entity in candidate.entities if getattr(entity, "text", "") == f"My name is {name}."]
+        linked = [question for question in questions if question.stimulus_id == material.stimulus_id]
+        assert len(linked) == 3
+        assert all(name in question.answer.value for question in linked)
+
+
+def test_ambiguous_answers_point_to_the_question_without_guessing(tmp_path):
+    source = tmp_path / "ambiguous-key.docx"
+    document = Document()
+    for text in (
+        "第一节 信息转述（6分）", "请听短文并转述。",
+        "起始语：Let me tell you about Mia.", "录音稿：My name is Mia.",
+        "参考答案：This is Mia.", "第二节 询问信息（3分）", "请根据提示提问。",
+        "11. 她喜欢什么？", "12. 她住在哪里？",
+        "参考答案：11. What does she like? / What is her hobby?",
+        "Where does she live?",
+    ):
+        document.add_paragraph(text)
+    document.save(source)
+
+    material = DocumentParser().parse(source).items[0]
+    facts = material.metadata["page_input"]
+    assert len(facts["asking"][0]["reference_answers"]) == 2
+    assert not facts["asking"][1].get("reference_answers")
+    readiness = page_input_completeness(facts)
+    assert readiness["status"] == "incomplete"
+    assert "第 9 段/询问信息/第 12 题" in readiness["reason"]

@@ -803,9 +803,11 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
         response_questions: list[dict[str, Any]] = []
         imitation_questions: list[dict[str, Any]] = []
         record_groups: list[dict[str, Any]] = []
+        family_order: dict[str, int] = {}
 
         for facts, audio_path, segment in facts_with_audio:
             group_type = str(facts.get("type") or "")
+            family_order.setdefault(group_type, len(family_order))
             if group_type == "听后选择":
                 raw_materials = facts.get("materials")
                 if not isinstance(raw_materials, Sequence) or isinstance(raw_materials, (str, bytes, bytearray)):
@@ -999,6 +1001,7 @@ class PlatformInputWorkflowPageExecutor(_ReusableBrowserSessionMixin):
         if info_acquisition_materials:
             groups.append({"type": "信息获取", "materials": info_acquisition_materials})
         groups.extend(record_groups)
+        groups.sort(key=lambda group: family_order[group["type"]])
         return groups
 
     @staticmethod

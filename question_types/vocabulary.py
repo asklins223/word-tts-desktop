@@ -10,6 +10,29 @@ from question_types.base import BaseParser
 from question_types.text_utils import sanitize
 
 
+def vocabulary_columns(headers):
+    """Resolve the word and example columns in one worksheet."""
+
+    normalized = {
+        index: str(value).strip()
+        for index, value in enumerate(headers, start=1)
+        if value is not None and str(value).strip()
+    }
+
+    def find(keywords):
+        for keyword in keywords:
+            for index, header in normalized.items():
+                if header == keyword:
+                    return index
+        for keyword in keywords:
+            for index, header in normalized.items():
+                if keyword in header and "释义" not in header:
+                    return index
+        return None
+
+    return find(("单词名称", "单词")), find(("例句",))
+
+
 # ============================================================================
 # 7. 词汇解析器（Excel 单词导入模板）
 # ============================================================================
@@ -42,30 +65,7 @@ class ExcelVocabularyParser(BaseParser):
     # Excel 文件不使用 load_paragraphs
     _SKIP_LOAD_PARAGRAPHS = True
 
-    # 表头匹配关键词
-    WORD_HEADER_KEYWORDS = ("单词名称", "单词")
-    SENTENCE_HEADER_KEYWORDS = ("例句",)
-
-    @staticmethod
-    def _find_header_column(headers, keywords):
-        """Prefer an exact template header before falling back to aliases."""
-
-        normalized = {
-            index: str(value).strip()
-            for index, value in enumerate(headers, start=1)
-            if value is not None and str(value).strip()
-        }
-        for keyword in keywords:
-            for index, header in normalized.items():
-                if header == keyword:
-                    return index
-        for keyword in keywords:
-            for index, header in normalized.items():
-                if keyword in header:
-                    return index
-        return None
-
-    def parse(self):
+    def parse(self, *, require_headers=True):
         if not _OPENPYXL_AVAILABLE:
             raise RuntimeError(
                 "解析 Excel 文件需要 openpyxl 库，请运行: pip install openpyxl"
@@ -82,8 +82,7 @@ class ExcelVocabularyParser(BaseParser):
                 for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
                     header_values = list(row)
                     break
-                word_col = self._find_header_column(header_values, self.WORD_HEADER_KEYWORDS)
-                sentence_col = self._find_header_column(header_values, self.SENTENCE_HEADER_KEYWORDS)
+                word_col, sentence_col = vocabulary_columns(header_values)
                 saw_word_header = saw_word_header or word_col is not None
                 saw_sentence_header = saw_sentence_header or sentence_col is not None
                 # Excel templates often contain empty/instruction sheets.  Only
@@ -92,6 +91,8 @@ class ExcelVocabularyParser(BaseParser):
                     worksheets.append((ws, word_col, sentence_col))
 
             if not worksheets:
+                if not require_headers:
+                    return None
                 if not saw_word_header:
                     raise ValueError(
                         "未找到「单词名称」列，请确认 Excel 表头包含「单词名称」或「单词」"

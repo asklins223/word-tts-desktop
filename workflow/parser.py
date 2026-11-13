@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, TextIO
 
 from document_profiles import is_imitation_item
+from question_types.segmenter import PARSER_VERSION, SourceParse, parse_source
 
 from .domain import DomainError, canonical_json, content_hash
 from .system_input_content import (
@@ -61,15 +62,23 @@ class ParsedDocument:
     source_size_bytes: int
     items: tuple[ParsedItem, ...]
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    source_parse: SourceParse | None = field(default=None, repr=False, compare=False)
 
     @property
     def item_count(self) -> int:
         return len(self.items)
 
     def as_dict(self) -> dict[str, Any]:
-        value = asdict(self)
-        value["items"] = [item.as_dict() for item in self.items]
-        return value
+        return {
+            "schema_version": self.schema_version,
+            "parser_version": self.parser_version,
+            "normalization_version": self.normalization_version,
+            "source_filename": self.source_filename,
+            "source_sha256": self.source_sha256,
+            "source_size_bytes": self.source_size_bytes,
+            "items": [item.as_dict() for item in self.items],
+            "metadata": dict(self.metadata),
+        }
 
 
 class ParserPort:
@@ -280,7 +289,7 @@ class DocumentParser(ParserPort):
         self,
         *,
         parse_callable: Callable[[str], tuple[list[Mapping[str, Any]], str]] | None = None,
-        parser_version: str = "25",
+        parser_version: str = str(PARSER_VERSION),
     ) -> None:
         self.parse_callable = parse_callable
         self.parser_version = str(parser_version)
@@ -294,9 +303,13 @@ class DocumentParser(ParserPort):
             raise ParserError("UNSUPPORTED_MEDIA_TYPE", "only .docx and .xlsx sources are supported")
         source_sha256, size = document_hash(path)
         source_basis = str(kwargs.get("source_basis") or source_sha256[:32])
-        parse_callable = self.parse_callable or _load_parse_callable()
         try:
-            raw_results, summary = parse_callable(str(path))
+            if self.parse_callable is None:
+                source_parse = parse_source(path)
+                raw_results, summary = source_parse.results, source_parse.summary
+            else:
+                source_parse = None
+                raw_results, summary = self.parse_callable(str(path))
         except ParserError:
             raise
         except Exception as exc:
@@ -312,15 +325,29 @@ class DocumentParser(ParserPort):
             if not isinstance(raw_items, list):
                 continue
             parse_auxiliary_audio = kwargs.get("include_auxiliary_audio") is True
-            selected_items = list(raw_items)
+            selected_items = list(enumerate(raw_items))
             if parse_auxiliary_audio:
                 auxiliary_items = result.get("audio_items")
                 if isinstance(auxiliary_items, list):
-                    selected_items.extend(auxiliary_items)
-            for raw_index, raw in enumerate(selected_items):
+                    selected_items.extend(enumerate(auxiliary_items, start=len(raw_items)))
+                    if any(raw.get("unit_id") for raw in raw_items if isinstance(raw, Mapping)):
+                        # Keep all clips belonging to a parser-owned unit
+                        # contiguous so that a review boundary cannot split it.
+                        unit_order = {
+                            raw["unit_id"]: index for index, raw in reversed(selected_items[:len(raw_items)])
+                            if isinstance(raw, Mapping) and raw.get("unit_id")
+                        }
+                        selected_items.sort(key=lambda pair: (
+                            unit_order.get(pair[1].get("unit_id"), pair[0])
+                            if isinstance(pair[1], Mapping) else pair[0]
+                        ))
+            for raw_index, raw in selected_items:
                 if not isinstance(raw, Mapping):
                     continue
                 raw_for_item = dict(raw)
+                if scope_key := result.get("scope_key"):
+                    basis = raw.get("identity_key") or raw.get("item_id") or raw_index
+                    raw_for_item["identity_key"] = f"{scope_key}:{basis}"
                 try:
                     page_input = build_page_input_facts(
                         document_type,
@@ -346,6 +373,13 @@ class DocumentParser(ParserPort):
                     raw_for_item.pop("page_input", None)
                     raw_for_item.pop("input_payload", None)
                 if page_input is not None:
+                    if source_parse is not None and source_parse.issues:
+                        page_input = {
+                            **page_input,
+                            "source_issue": "；".join(dict.fromkeys(filter(None, (
+                                page_input.get("source_issue"), *source_parse.issues,
+                            ))))[:512],
+                        }
                     raw_for_item["page_input"] = page_input
                 items.append(normalize_item(raw_for_item, sequence=len(items), source_basis=source_basis, document_type=document_type))
         if not items:
@@ -365,20 +399,13 @@ class DocumentParser(ParserPort):
             source_sha256=source_sha256,
             source_size_bytes=size,
             items=tuple(items),
-            metadata={"summary": str(summary or "")[:500]},
+            metadata={
+                "summary": str(summary or "")[:500],
+                **({"source_issues": list(source_parse.issues)}
+                   if source_parse is not None and source_parse.issues else {}),
+            },
+            source_parse=source_parse,
         )
-
-def _load_parse_callable() -> Callable[[str], tuple[list[Mapping[str, Any]], str]]:
-    """返回题型注册表的文档解析入口。
-
-    统一结构读取（``parse_document_once``，文档只加载一次）。
-    """
-    try:
-        from question_types.segmenter import parse_document_once
-    except ImportError as exc:
-        raise ParserError("PARSER_ERROR", "question type registry is unavailable") from exc
-    return parse_document_once
-
 
 def _text_or_none(value: Any) -> str | None:
     text = str(value or "").strip()

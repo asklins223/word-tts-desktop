@@ -189,6 +189,8 @@ SUB_TYPE_REGISTRY: dict[str, QuestionSubType] = {
         # 信息转述及询问：转述（材料级）与询问信息（完整小题）
         QuestionSubType("info_retelling", "info_retelling", "信息转述",
                         "stimulus", audio_granularity="script_whole"),
+        QuestionSubType("info_retelling_response", "info_retelling", "信息转述作答",
+                        "question", answer_kind="spoken_response"),
         QuestionSubType("asking_info", "info_retelling", "询问信息",
                         "question", answer_kind="spoken_response"),
         # 听后记录并转述信息：第一节整篇听力材料是一个音频单元；
@@ -196,8 +198,14 @@ SUB_TYPE_REGISTRY: dict[str, QuestionSubType] = {
         QuestionSubType("listening_record_retelling", "listening_record_retelling",
                         "听后记录并转述信息", "stimulus",
                         audio_granularity="script_whole"),
+        QuestionSubType("listening_record_blank", "listening_record_retelling",
+                        "听后记录填空", "question", answer_kind="short_answer"),
+        QuestionSubType("listening_record_response", "listening_record_retelling",
+                        "听后记录转述作答", "question", answer_kind="spoken_response"),
         QuestionSubType("listening_retelling", "listening_retelling", "听后转述",
                         "stimulus", audio_granularity="script_whole"),
+        QuestionSubType("listening_retelling_response", "listening_retelling",
+                        "听后转述作答", "question", answer_kind="spoken_response"),
         # 模仿朗读：本身就是最小题型；外网/教材是来源属性不是小题型
         QuestionSubType("imitation_reading", "imitation_reading", "模仿朗读",
                         "stimulus", audio_granularity="passage"),
@@ -272,6 +280,14 @@ class Option:
 class Answer:
     kind: str   # single_choice / multi_choice / short_answer / ...
     value: str
+    alternatives: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "value": self.value,
+            **({"alternatives": list(self.alternatives)} if self.alternatives else {}),
+        }
 
 
 @dataclass(frozen=True)
@@ -347,7 +363,10 @@ class QuestionItem:
                 "question_type": self.question_type,
                 "stem": self.stem,
                 "options": [(o.option_id, o.text) for o in self.options],
-                "answer": (self.answer.kind, self.answer.value) if self.answer else None,
+                "answer": (
+                    (self.answer.kind, self.answer.value, self.answer.alternatives)
+                    if self.answer.alternatives else (self.answer.kind, self.answer.value)
+                ) if self.answer else None,
                 "stimulus_id": self.stimulus_id,
             }))
 
@@ -388,7 +407,7 @@ class QuestionItem:
             "number_inferred": self.number_inferred,
             "stem": self.stem,
             "options": [{"option_id": o.option_id, "text": o.text} for o in self.options],
-            "answer": {"kind": self.answer.kind, "value": self.answer.value} if self.answer else None,
+            "answer": self.answer.to_dict() if self.answer else None,
             "section": self.section,
             "stimulus_id": self.stimulus_id,
             "source_locator": self.source_locator,

@@ -3,16 +3,16 @@
 import os
 from dataclasses import dataclass
 
-from question_types.text_utils import load_paragraphs
+from audio_naming import is_exam_paper_bundle
+from question_types.text_utils import load_paragraphs, split_marker_paragraphs
 
 
 @dataclass(frozen=True)
 class QuestionType:
     """一个题型的全部静态定义。
 
-    新增题型时在对应切片模块中定义解析器和 QUESTION_TYPE，并到
-    question_types/__init__.py 注册；解析映射、结构识别、展示颜色和
-    音色策略都从这里派生，不再散落在多个文件中。
+    题型语义来自 question_model 的注册表，本类是绑定解析器后的兼容
+    视图；解析映射、展示颜色和音色策略共用同一份注册事实。
     """
 
     key: str                          # 题型名，如 "信息获取"
@@ -35,6 +35,7 @@ class BaseParser:
     # 只有需要读取表格/文本框的解析器才在独立构造时建立结构块；
     # 统一分段器会把结构块注入所有解析器，避免普通专项解析重复扫描。
     _REQUIRES_DOCUMENT_BLOCKS = False
+    _REPEAT_MAJOR_SECTIONS = False
 
     def __init__(self, filepath, *, preloaded_paras=None):
         # 统一分段器：可注入已加载的段落（文档只读一次），缺省时自行
@@ -63,6 +64,11 @@ class BaseParser:
             )
             self.paras, self.paragraph_metadata = loaded[:2]
             self.document_blocks = loaded[2] if len(loaded) > 2 else ()
+            self.paras, self.paragraph_metadata = split_marker_paragraphs(
+                self.paras, self.paragraph_metadata,
+            )
+        self.document_header = self.paras[:8]
+        self.use_exam_naming = is_exam_paper_bundle(self.paras)
 
     def parse(self):
         """子类实现：返回解析结果字典"""

@@ -470,6 +470,8 @@ function projectSystemInput(systemInput) {
     const projectPageInput = (pageInput) => {
         if (!pageInput || typeof pageInput !== 'object' || Array.isArray(pageInput)) return null;
         const projectedPageInput = {};
+        const sourceIssue = capWorkspaceText(pageInput.source_issue, 512);
+        if (sourceIssue !== null) projectedPageInput.source_issue = sourceIssue;
         ['schema_version', 'input_type', 'type'].forEach((field) => {
             const value = capWorkspaceText(pageInput[field], 128);
             if (value !== null) projectedPageInput[field] = value;

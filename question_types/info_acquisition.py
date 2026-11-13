@@ -1,8 +1,9 @@
 """「信息获取」题型切片：解析器与题型元数据。"""
 
 import re
+from collections import Counter
 
-from audio_naming import audio_filename_stem_for_category, is_exam_paper_bundle
+from audio_naming import audio_filename_stem_for_category
 from question_types.base import BaseParser
 from question_types.text_utils import (
     MAJOR_SECTION_RE,
@@ -26,6 +27,7 @@ class InfoAcquisitionParser(BaseParser):
     """
 
     DOC_TYPE = "信息获取"
+    _REPEAT_MAJOR_SECTIONS = True
 
     RE_SECTION_START = re.compile(
         r'第[一二三四五六七八九十百\d０-９]+节\s*[：:]?\s*听选信息'
@@ -113,6 +115,7 @@ class InfoAcquisitionParser(BaseParser):
         questions = []
         pending_questions = []
         answer_map = {}
+        section_scope = 0
         in_section = False
         current_category = ""
         current_section_name = ""
@@ -128,7 +131,7 @@ class InfoAcquisitionParser(BaseParser):
         declared_section_scores = []
         idx_by_cat = {}
         script_idx_by_cat = {}
-        use_exam_naming = is_exam_paper_bundle(self.paras)
+        use_exam_naming = self.use_exam_naming
 
         def flush_questions(ordinal=None):
             nonlocal pending_questions
@@ -213,6 +216,8 @@ class InfoAcquisitionParser(BaseParser):
                 "answer": None,
                 "score": section_score,
                 "script_ordinal": None,
+                "section_scope": section_scope,
+                "source_locator": f"第 {source_index + 1} 段/{current_section_name}/第 {question_number} 题",
             })
 
             category = f"{current_section_name}题目"
@@ -238,13 +243,15 @@ class InfoAcquisitionParser(BaseParser):
                         "type_path": [filename_stem.rsplit("-", 1)[0]],
                     })
             question = pending_questions[-1]
+            question_item["acquisition_question"] = question
+            question_item["source_locator"] = question["source_locator"]
             question["prompt_audio_filename_stem"] = (
                 question_item.get("audio_filename_stem")
                 or question_item.get("filename_stem")
             )
             items.append(question_item)
 
-        for position, (_, text, _) in enumerate(self.paras):
+        for position, (source_index, text, _) in enumerate(self.paras):
             value = str(text or '').strip()
             script_marker = match_script_marker(value)
             answer_marker = match_answer_marker(value)
@@ -255,6 +262,7 @@ class InfoAcquisitionParser(BaseParser):
                 in_section = True
                 current_category = "听选信息录音稿"
                 current_section_name = "听选信息"
+                section_scope += 1
                 question_order = 0
                 last_qnum = 0
                 next_qnum = None
@@ -275,6 +283,7 @@ class InfoAcquisitionParser(BaseParser):
                 in_section = True
                 current_category = "回答问题录音稿"
                 current_section_name = "回答问题"
+                section_scope += 1
                 answer_block = False
                 section_score = self._score(self.RE_SCORE, value)
                 if section_score is None:
@@ -300,6 +309,9 @@ class InfoAcquisitionParser(BaseParser):
             if not in_section:
                 continue
 
+            if collecting and self.RE_QUESTION.match(value) and re.search(r"[?？]\s*$", value):
+                flush()
+
             if collecting:
                 if answer_marker:
                     flush()
@@ -307,7 +319,7 @@ class InfoAcquisitionParser(BaseParser):
                     inline = (answer_marker.group(1) or '').strip()
                     number, answers = self._answer_line(inline)
                     if number is not None and answers:
-                        answer_map[number] = answers
+                        answer_map.setdefault((section_scope, number), []).append(answers)
                     continue
                 if script_marker or self.RE_RECORDING_PROMPT.search(value):
                     flush()
@@ -320,16 +332,18 @@ class InfoAcquisitionParser(BaseParser):
                 answer_block = True
                 inline = (answer_marker.group(1) or '').strip()
                 number, answers = self._answer_line(inline)
-                if number is None and inline and pending_questions:
+                if inline and pending_questions and (number is None or number == pending_questions[-1]["number"]):
                     # Per-question answers omit the number because they sit
                     # directly below the prompt/options. A trailing numbered
                     # answer block still uses its explicit question numbers.
-                    number = pending_questions[-1]["number"]
-                    answers = [sanitize(part) for part in re.split(r'\s*/\s*', inline)]
-                    answers = [answer for answer in answers if answer]
+                    if number is None:
+                        answers = [sanitize(part) for part in re.split(r'\s*/\s*', inline)]
+                        answers = [answer for answer in answers if answer]
+                    pending_questions[-1]["reference_answers"] = answers
+                    pending_questions[-1]["reference_answers_source"] = "document"
                     answer_block = False
-                if number is not None and answers:
-                    answer_map[number] = answers
+                elif number is not None and answers:
+                    answer_map.setdefault((section_scope, number), []).append(answers)
                 continue
 
             if answer_block:
@@ -346,7 +360,7 @@ class InfoAcquisitionParser(BaseParser):
                 else:
                     number, answers = self._answer_line(value)
                     if number is not None and answers:
-                        answer_map[number] = answers
+                        answer_map.setdefault((section_scope, number), []).append(answers)
                         continue
                     # Inline/standalone answer blocks can be followed directly
                     # by the next question.  Leave the current line for the
@@ -425,13 +439,23 @@ class InfoAcquisitionParser(BaseParser):
         flush()
         flush_questions(None)
 
+        question_keys = Counter((question["section_scope"], question.get("number")) for question in questions)
+        number_counts = Counter(question.get("number") for question in questions)
+        issues = []
         for question in questions:
-            question_number = question.get("number")
-            references = answer_map.get(question_number)
-            if question_number in answer_map:
-                question["reference_answers"] = references
+            key = (question["section_scope"], question.get("number"))
+            answer_rows = answer_map.get(key, ())
+            if not answer_rows and number_counts[key[1]] == 1:
+                # Whole-section answer keys can follow both subsections.
+                # The displayed number is sufficient only when it is unique
+                # across the owned source range.
+                answer_rows = [row for (_, number), rows in answer_map.items() if number == key[1] for row in rows]
+            if answer_rows and question_keys[key] == 1:
+                question["reference_answers"] = list(dict.fromkeys(answer for row in answer_rows for answer in row))
                 question["reference_answers_source"] = "document"
-            elif question.get("answer"):
+            elif not question.get("reference_answers") and answer_rows:
+                issues.append(f'{question["source_locator"]}的参考答案归属未确认')
+            elif question.get("reference_answers_source") != "document" and question.get("answer"):
                 fallback_references = [
                     option["text"]
                     for option in question.get("options", [])
@@ -441,8 +465,21 @@ class InfoAcquisitionParser(BaseParser):
                     question["reference_answers"] = fallback_references
                     question["reference_answers_source"] = "red_option"
 
+        # A spoken prompt keeps its material's answer object. Numbering may
+        # restart between subsections, so neither answers nor audio may use
+        # the displayed question number as a global identity.
+        stems = Counter(item.get("filename_stem") for item in items if item.get("filename_stem"))
+        for index, item in enumerate(items):
+            stem = item.get("filename_stem")
+            if stem and stems[stem] > 1:
+                item["filename_stem"] = f"{stem}-q{index + 1}"
+                if question := item.get("acquisition_question"):
+                    question["prompt_audio_filename_stem"] = item.get("audio_filename_stem") or item["filename_stem"]
+
         result = self._result(items)
         result["questions"] = questions
+        if issues:
+            result["source_issue"] = "；".join(issues)
         computed_score = sum(
             question.get("score", 0)
             for question in questions

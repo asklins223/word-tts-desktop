@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from question_types import ImitationReadingParser
+from question_types.segmenter import PARSER_VERSION
 from question_types.text_utils import load_paragraphs, match_script_marker
 from workflow.parser import DocumentParser
 from workflow.system_input import _resolve_unit_groups
@@ -65,7 +66,7 @@ def test_script_marker_accepts_colon_inside_wrapping_brackets():
 def test_new_rule_voice_survives_workflow_parser_normalization():
     parsed = DocumentParser().parse(NEW_FIXTURE)
 
-    assert parsed.parser_version == "25"
+    assert parsed.parser_version == str(PARSER_VERSION)
     assert [item.metadata["voice"] for item in parsed.items] == ["female", "female"]
     assert all(item.metadata["entry_profile"] == "imitation_reading_v1" for item in parsed.items)
     assert all(item.metadata["capabilities"]["external_input"] is True for item in parsed.items)

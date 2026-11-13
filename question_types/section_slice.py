@@ -16,12 +16,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from question_model.model import FAMILY_REGISTRY, SUB_TYPE_REGISTRY
+
+from .text_utils import MAJOR_TYPE_HEADING_RE, is_major_section_heading
+
 # 通用标题形态（题型无关）：
 #   一、二、… / （一）（二）… / 第一节… / Section A…
-RE_CN_ORDINAL = re.compile(r"^[一二三四五六七八九十]+[、.．]")
+RE_CN_ORDINAL = re.compile(r"^[一二三四五六七八九十百]+\s*[、.．)]")
 RE_CN_PAREN = re.compile(r"^[（(][一二三四五六七八九十]+[)）]")
 RE_SESSION = re.compile(r"^第[一二三四五六七八九十\d]+节")
 RE_SECTION_AB = re.compile(r"^Section\s+[A-Z]\b", re.IGNORECASE)
+_MAJOR_ORDINAL = re.compile(r"^(?:\d+|[一二三四五六七八九十百]+)\s*[、.．)]\s*")
 
 HEADING_PATTERNS = (RE_SESSION, RE_CN_ORDINAL, RE_CN_PAREN, RE_SECTION_AB)
 
@@ -77,3 +82,88 @@ def slice_sections(paras: list[tuple]) -> list[SectionRange]:
             start=start, end=end,
         ))
     return ranges
+
+
+@dataclass(frozen=True)
+class FamilySection:
+    """A continuous range owned by one detected family."""
+
+    family_code: str
+    start: int
+    end: int
+
+
+def family_sections(paragraphs, evidences, *, repeat_major=()) -> list[FamilySection]:
+    """Assign ranges before parsers inspect their contents.
+
+    A detected family owns its headings and the intervening paragraphs. A
+    different family or an unclaimed major heading closes that range.
+    Subsection headings stay with their parent family. The first family
+    receives the document's leading context (unit, title, or reading section).
+    """
+
+    starts = {}
+    family_names = {}
+    for evidence in evidences:
+        family_names[evidence.code] = evidence.doc_type
+        for position in evidence.start_positions:
+            starts.setdefault(position, set()).add(evidence.code)
+    titles = {family.display_name: code for code, family in FAMILY_REGISTRY.items()}
+    titles.update({subtype.display_name: subtype.family for subtype in SUB_TYPE_REGISTRY.values()})
+    titles = sorted(titles.items(), key=lambda entry: len(entry[0]), reverse=True)
+    sections = []
+    owner = None
+    start = 0
+    prefix_available = True
+    parent_heading_seen = False
+    first_subsection_seen = False
+
+    def close(end):
+        if owner is not None and end > start:
+            sections.append(FamilySection(owner, start, end))
+
+    for position, (_, text, _) in enumerate(paragraphs):
+        title = text.splitlines()[0].strip()
+        label = _MAJOR_ORDINAL.sub("", title)
+        major = bool(MAJOR_TYPE_HEADING_RE.match(title)) or (
+            bool(RE_CN_ORDINAL.match(title)) and is_major_section_heading(title)
+        )
+        candidates = starts.get(position, ())
+        if len(candidates) == 1:
+            family = next(iter(candidates))
+            parent_heading = major and label.startswith(family_names[family])
+            first_subsection = bool(re.match(r"^第(?:一|1)节", label))
+            repeated = family in repeat_major and (
+                (parent_heading and parent_heading_seen)
+                or (first_subsection and first_subsection_seen)
+            )
+            if family == owner and not repeated:
+                parent_heading_seen = parent_heading_seen or parent_heading
+                first_subsection_seen = first_subsection_seen or first_subsection
+                continue
+            boundary = position
+            if position and re.fullmatch(
+                r"(?:Unit\s*|U)\d+\s*[：:]?", paragraphs[position - 1][1], re.I
+            ):
+                boundary -= 1
+            close(boundary)
+            start = 0 if prefix_available else boundary
+            owner = family
+            parent_heading_seen = parent_heading
+            first_subsection_seen = first_subsection
+        elif candidates or major:
+            heading_family = next(
+                (family for name, family in titles if label.startswith(name)),
+                None,
+            )
+            if not candidates and owner is not None and owner == heading_family:
+                continue
+            close(position)
+            owner = None
+            parent_heading_seen = False
+            first_subsection_seen = False
+        else:
+            continue
+        prefix_available = False
+    close(len(paragraphs))
+    return sections

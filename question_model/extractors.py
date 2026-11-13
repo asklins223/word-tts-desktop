@@ -15,14 +15,15 @@
   不伪装成考试小题；阶段 1 只使用解析器实际输出的结构字段生成定位，
   定位冲突时追加出现序号并写诊断，不臆测段落/语篇分组。
 
-八个注册题型全部接入；每种题型的“业务原子边界”与“音频边界”在
-阶段 1 相同（逐条目），复合结构拆分推迟到阶段 3 统一分段器。
+九个注册题型全部接入；材料、作答任务、学习内容分别映射为
+Stimulus、QuestionItem、ContentUnit，共享材料通过显式引用关联。
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import replace
 
 from .model import (
     QUESTION_TYPE_CODES,
@@ -79,6 +80,27 @@ def _profile_fact(result: dict, key: str) -> str | None:
     return values[0] if len(values) == 1 else None
 
 
+def _spoken_answer(value: Mapping, *, kind="spoken_response") -> Answer | None:
+    references = value.get("reference_answers") or value.get("answers") or ()
+    if isinstance(references, str):
+        references = (references,)
+    alternatives = tuple(str(text).strip() for text in references if str(text or "").strip())
+    if alternatives:
+        return Answer(kind, alternatives[0], alternatives)
+    reference = value.get("reference_answer")
+    return Answer(kind, reference) if reference else None
+
+
+def _choice_answer(facts: Mapping, options: tuple[Option, ...]) -> Answer | None:
+    reference = _spoken_answer(facts)
+    choice = facts.get("answer")
+    option_ids = {option.option_id for option in options}
+    if choice not in option_ids and reference:
+        matches = {option.option_id for option in options if option.text in reference.alternatives}
+        choice = next(iter(matches)) if len(matches) == 1 else None
+    return Answer("single_choice", choice, reference.alternatives if reference else ()) if choice in option_ids else None
+
+
 # category → 小题型；信息获取按听选信息/回答问题两个小题型产出
 INFO_ACQUISITION_SUB_TYPES = {
     "听选信息题目": "listening_info",
@@ -94,20 +116,38 @@ def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
     questions: list[QuestionItem] = []
     diagnostics: list[str] = []
     pending: list[dict] = []          # 等待关联到下一段录音稿的题目
+    by_number: dict[int, list[dict]] = {}
+    for question in result.get("questions", ()):
+        if question.get("number") is not None:
+            by_number.setdefault(question["number"], []).append(question)
+    raw_questions = [raw for raw in result["items"] if raw.get("category", "").endswith("题目")]
+    locators, _ = _dedupe_locators([
+        f"{raw['category']}/题目{raw.get('number', raw.get('filename_stem', '?'))}"
+        for raw in raw_questions
+    ])
+    locator_by_item = {id(raw): locator for raw, locator in zip(raw_questions, locators)}
 
     def flush_pending(stimulus_id: str | None):
         for raw in pending:
             number = raw.get("number")
-            locator = f"{raw['category']}/题目{number if number is not None else raw.get('filename_stem', '?')}"
+            locator = locator_by_item[id(raw)]
+            facts = raw.get("acquisition_question")
+            if not isinstance(facts, Mapping):
+                candidates = by_number.get(number, ())
+                facts = candidates[0] if len(candidates) == 1 else {}
+            options = tuple(Option(o["option_id"], o["text"]) for o in facts.get("options", ()))
+            answer = _choice_answer(facts, options) if options else _spoken_answer(facts)
             questions.append(QuestionItem(
                 question_id=build_identity("question", source_key, locator),
                 question_type=INFO_ACQUISITION_SUB_TYPES[raw["category"]],
                 stem=raw["text"],
                 source_locator=locator,
                 question_number=number,
+                options=options,
+                answer=answer,
                 section=_section_of(raw["category"]),
                 stimulus_id=stimulus_id,
-                resolution_state=ResolutionState.DRAFT,
+                resolution_state=ResolutionState.CANDIDATE if answer and stimulus_id else ResolutionState.DRAFT,
             ))
         pending.clear()
 
@@ -135,9 +175,10 @@ def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
         flush_pending(None)
         diagnostics.append("question_without_stimulus")
 
-    numbers = sorted(q.question_number for q in questions if q.question_number is not None)
+    numbers = sorted({q.question_number for q in questions if q.question_number is not None})
     if numbers:
-        if len(set(numbers)) != len(numbers):
+        material_numbers = [(q.stimulus_id, q.question_number) for q in questions if q.question_number is not None]
+        if len(set(material_numbers)) != len(material_numbers):
             diagnostics.append("duplicate_question_number")
         if numbers != list(range(numbers[0], numbers[-1] + 1)):
             diagnostics.append("question_number_gap")
@@ -146,6 +187,7 @@ def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
             diagnostics.append(f"stimulus_without_questions:{stimulus.source_locator}")
 
     entities: tuple = tuple(stimuli) + tuple(questions)
+    complete = bool(questions and all(q.question_fields_complete and q.stimulus_id for q in questions))
     return ParseCandidate(
         candidate_id=f"candidate:{type_code}:{source_key}",
         type_code=type_code,
@@ -153,7 +195,7 @@ def _extract_info_acquisition(result: dict, source_key: str) -> ParseCandidate:
         entities=entities,
         confidence=_confidence(diagnostics),
         diagnostics=tuple(diagnostics),
-        capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+        capabilities=dict(CAPABILITIES_BUSINESS_COMPLETE if complete else CAPABILITIES_AUDIO_ONLY),
     )
 
 
@@ -183,26 +225,36 @@ def _extract_listening_selection(result: dict, source_key: str) -> ParseCandidat
         stimuli.append(stimulus)
 
     questions: list[QuestionItem] = []
-    for raw in result.get("questions", []):
-        locator = f"听后选择题目/题目{raw['number']}"
+    raw_questions = result.get("questions", [])
+    locators, duplicates = _dedupe_locators([
+        f"听后选择题目/题目{raw['number']}" for raw in raw_questions
+    ])
+    for raw, locator in zip(raw_questions, locators):
         script_ordinal = raw.get("script_ordinal")
+        options = tuple(Option(o["option_id"], o["text"]) for o in raw.get("options", []))
+        choice = _choice_answer(raw, options)
         questions.append(QuestionItem(
             question_id=build_identity("question", source_key, locator),
             question_type=type_code,
             stem=raw["stem"],
             source_locator=locator,
             question_number=raw["number"],
-            options=tuple(Option(o["option_id"], o["text"])
-                          for o in raw.get("options", [])),
-            answer=None,
+            options=options,
+            answer=choice,
             section=_section_of("听后选择录音稿"),
             stimulus_id=stimulus_by_ordinal.get(script_ordinal),
-            resolution_state=ResolutionState.DRAFT,
+            resolution_state=ResolutionState.CANDIDATE if choice and script_ordinal in stimulus_by_ordinal else ResolutionState.DRAFT,
         ))
 
-    diagnostics = ["audio_only_candidate"]
+    diagnostics = []
+    if duplicates:
+        diagnostics.append("duplicate_question_number")
+    complete = bool(questions and all(q.question_fields_complete and q.stimulus_id for q in questions))
+    if not complete:
+        diagnostics.append("audio_only_candidate")
     if questions:
-        diagnostics.append("listening_choice_answer_not_extracted")
+        if any(q.answer is None for q in questions):
+            diagnostics.append("listening_choice_answer_not_extracted")
         if any(q.stimulus_id is None for q in questions):
             diagnostics.append("listening_choice_question_without_script")
     else:
@@ -215,7 +267,7 @@ def _extract_listening_selection(result: dict, source_key: str) -> ParseCandidat
         entities=entities,
         confidence=_confidence(diagnostics),
         diagnostics=tuple(diagnostics),
-        capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+        capabilities=dict(CAPABILITIES_BUSINESS_COMPLETE if complete else CAPABILITIES_AUDIO_ONLY),
     )
 
 
@@ -235,26 +287,39 @@ def _dedupe_locators(locators):
 def _extract_listening_response(result: dict, source_key: str) -> ParseCandidate:
     """听后应答：每个待应答句一条 QuestionItem（方案 4 节映射表）。
 
-    提示句即题干；期望应答（答案）未由旧 Parser 抽取，保持 audio_only。
+    优先消费解析器绑定的题目事实；缺少应答时保留 audio_only 诊断。
     """
     type_code = QUESTION_TYPE_CODES["听后应答"]
     questions = []
-    for raw in result["items"]:
+    locators, _ = _dedupe_locators([
+        f"{raw.get('category', '听后应答录音稿')}/应答{raw.get('number', raw.get('index'))}"
+        for raw in result["items"]
+    ])
+    for raw, locator in zip(result["items"], locators):
         category = raw.get("category", "听后应答录音稿")
         number = raw.get("number", raw.get("index"))
-        locator = f"{category}/应答{number}"
+        facts = raw.get("response_question") or {}
+        answer = _spoken_answer(facts)
+        options = tuple(Option(o["option_id"], o["text"]) for o in facts.get("options", ()))
+        if answer is None:
+            correct = next((o.text for o in options if o.option_id == facts.get("answer")), None)
+            if correct:
+                answer = Answer("spoken_response", correct)
         questions.append(QuestionItem(
             question_id=build_identity("question", source_key, locator),
             question_type=type_code,
-            stem=raw["text"],
+            stem=facts.get("prompt") or raw["text"],
             source_locator=locator,
             question_number=number,
+            options=options,
+            answer=answer,
             section=_section_of(category),
             stimulus_id=None,
-            resolution_state=ResolutionState.DRAFT,
+            resolution_state=ResolutionState.CANDIDATE if answer else ResolutionState.DRAFT,
         ))
 
-    diagnostics = ["listening_response_expected_answer_not_extracted"]
+    complete = bool(questions and all(q.question_fields_complete for q in questions))
+    diagnostics = [] if complete else ["listening_response_expected_answer_not_extracted"]
     numbers = [q.question_number for q in questions if q.question_number is not None]
     if len(set(numbers)) != len(numbers):
         diagnostics.append("duplicate_question_number")
@@ -265,17 +330,15 @@ def _extract_listening_response(result: dict, source_key: str) -> ParseCandidate
         entities=tuple(questions),
         confidence=_confidence(diagnostics),
         diagnostics=tuple(diagnostics),
-        capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+        capabilities=dict(CAPABILITIES_BUSINESS_COMPLETE if complete else CAPABILITIES_AUDIO_ONLY),
     )
 
 
 def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
     """信息转述及询问：转述材料 + 询问信息小题（业务字段通道）。
 
-    ``result["tasks"]`` 由解析器提供：retelling 任务携带转述参考答案；
-    asking 任务（题干+参考应答字段完整）→ ``asking_info`` QuestionItem，
-    ``resolution_state=CANDIDATE``（待人工确认），是首个可进外部链路的
-    完整小题候选。
+    每段录音的页面事实绑定自己的转述和询问小题；兼容旧快照中独立的
+    ``tasks`` 通道。多条参考应答保持在同一个答案对象中。
     """
     type_code = QUESTION_TYPE_CODES["信息转述及询问"]
     stimuli = []
@@ -293,45 +356,76 @@ def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
         ))
 
     questions = []
-    for raw in result.get("tasks", []):
+    material_tasks = [
+        (raw["page_input"], stimulus)
+        for raw, stimulus in zip(result["items"], stimuli)
+        if isinstance(raw.get("page_input"), Mapping)
+    ]
+    for raw in result.get("tasks", []) if not material_tasks else ():
         if raw.get("task_kind") != "asking":
             continue
         locator = f"询问信息/问题{raw['number']}"
-        reference = raw.get("reference_answer")
         questions.append(QuestionItem(
             question_id=build_identity("question", source_key, locator),
             question_type="asking_info",
             stem=raw["prompt"],
             source_locator=locator,
             question_number=raw["number"],
-            answer=Answer("spoken_response", reference) if reference else None,
+            answer=_spoken_answer(raw),
             section="询问信息",
             resolution_state=ResolutionState.CANDIDATE,
         ))
+    asking_numbers = Counter(
+        raw["number"] for facts, _ in material_tasks for raw in facts.get("asking", ())
+    )
+    for facts, stimulus in material_tasks:
+        material_locator = stimulus.source_locator
+        retelling = facts["retelling"]
+        answer = _spoken_answer(retelling)
+        prompt = retelling.get("prompt") or ""
+        unresolved = bool(facts.get("source_issue"))
+        questions.append(QuestionItem(
+            question_id=build_identity("question", source_key, f"{material_locator}/作答"),
+            question_type="info_retelling_response",
+            stem=prompt,
+            source_locator=f"{material_locator}/作答",
+            answer=answer,
+            section="信息转述",
+            stimulus_id=stimulus.stimulus_id,
+            resolution_state=(
+                ResolutionState.UNRESOLVED if unresolved else
+                ResolutionState.CANDIDATE if answer and prompt else ResolutionState.DRAFT
+            ),
+        ))
+        for raw in facts.get("asking", ()):
+            answer = _spoken_answer(raw)
+            locator = raw["source_locator"]
+            number = raw["number"]
+            identity = f"询问信息/问题{number}" if asking_numbers[number] == 1 else locator
+            questions.append(QuestionItem(
+                question_id=build_identity("question", source_key, identity),
+                question_type="asking_info",
+                stem=raw["prompt"],
+                source_locator=locator,
+                question_number=number,
+                answer=answer,
+                section="询问信息",
+                stimulus_id=stimulus.stimulus_id,
+                resolution_state=ResolutionState.UNRESOLVED if unresolved or not answer else ResolutionState.CANDIDATE,
+            ))
 
     diagnostics = []
-    retelling_tasks = [
-        task for task in result.get("tasks", [])
-        if isinstance(task, dict) and task.get("task_kind") == "retelling"
-    ]
-    if not retelling_tasks:
-        retelling_tasks = [
-            task for task in result.get("retelling_tasks", [])
-            if isinstance(task, dict) and task.get("task_kind") == "retelling"
-        ]
-    if not retelling_tasks:
-        retelling = result.get("retelling")
-        references = retelling.get("reference_answers") if isinstance(retelling, dict) else []
-        if isinstance(references, list):
-            retelling_tasks = [
-                {"task_kind": "retelling", "reference_answer": reference}
-                for reference in references
-                if str(reference or "").strip()
-            ]
-    if not retelling_tasks:
+    has_retelling_reference = any(
+        q.question_type == "info_retelling_response" and q.answer for q in questions
+    ) or bool((result.get("retelling") or {}).get("reference_answers")) or any(task.get("task_kind") == "retelling"
+             for key in ("tasks", "retelling_tasks") for task in result.get(key, ()))
+    if not has_retelling_reference:
         diagnostics.append("info_retelling_reference_not_extracted")
-    if not questions:
+    if not any(q.question_type == "asking_info" for q in questions):
         diagnostics.append("info_retelling_task_split_not_extracted")
+    if not questions or not all(q.question_fields_complete for q in questions) or any(
+        facts.get("source_issue") for facts, _ in material_tasks
+    ):
         diagnostics.append("audio_only_candidate")
         capabilities = dict(CAPABILITIES_AUDIO_ONLY)
     else:
@@ -349,11 +443,7 @@ def _extract_info_retelling(result: dict, source_key: str) -> ParseCandidate:
 
 
 def _extract_listening_record_retelling(result: dict, source_key: str) -> ParseCandidate:
-    """听后记录并转述信息：第一节听力短文映射为一个 Stimulus。
-
-    该题型目前只要求生成听力材料音频；第二节的转述开头与参考答案
-    不属于音频正文，因此保持 audio_only，不虚构口语作答题字段。
-    """
+    """Keep listening material, written blanks, and retelling tasks distinct."""
     type_code = QUESTION_TYPE_CODES[result.get("doc_type", "听后记录并转述信息")]
     stimuli = []
     for raw in result["items"]:
@@ -369,15 +459,53 @@ def _extract_listening_record_retelling(result: dict, source_key: str) -> ParseC
             resolution_state=ResolutionState.DRAFT,
         ))
 
-    diagnostics = ("audio_only_candidate",)
+    questions = []
+    if len(stimuli) == 1:
+        stimulus = stimuli[0]
+        recording = result.get("recording") or {}
+        for raw in recording.get("questions", ()):
+            number = raw.get("number")
+            locator = f"{stimulus.source_locator}/填空{number}"
+            questions.append(QuestionItem(
+                question_id=build_identity("question", source_key, locator),
+                question_type="listening_record_blank",
+                stem=raw.get("prompt") or raw.get("stem") or "",
+                source_locator=locator,
+                question_number=number,
+                answer=_spoken_answer(raw, kind="short_answer"),
+                section="听后记录",
+                stimulus_id=stimulus.stimulus_id,
+            ))
+        retelling = result.get("retelling")
+        if retelling:
+            locator = f"{stimulus.source_locator}/转述作答"
+            answer = _spoken_answer(retelling)
+            prompt = retelling.get("prompt") or ""
+            questions.append(QuestionItem(
+                question_id=build_identity("question", source_key, locator),
+                question_type=(
+                    "listening_retelling_response" if type_code == "listening_retelling"
+                    else "listening_record_response"
+                ),
+                stem=prompt,
+                source_locator=locator,
+                question_number=retelling.get("number"),
+                answer=answer,
+                section="转述",
+                stimulus_id=stimulus.stimulus_id,
+                resolution_state=ResolutionState.CANDIDATE if answer and prompt else ResolutionState.DRAFT,
+            ))
+    entities = tuple(stimuli) + tuple(questions)
+    complete = bool(questions and all(q.question_fields_complete for q in questions))
+    diagnostics = () if complete else ("audio_only_candidate",)
     return ParseCandidate(
         candidate_id=f"candidate:{type_code}:{source_key}",
         type_code=type_code,
-        claimed_blocks=tuple(stimulus.source_locator for stimulus in stimuli),
-        entities=tuple(stimuli),
+        claimed_blocks=tuple(entity.source_locator for entity in entities),
+        entities=entities,
         confidence=_confidence(diagnostics),
         diagnostics=diagnostics,
-        capabilities=dict(CAPABILITIES_AUDIO_ONLY),
+        capabilities=dict(CAPABILITIES_BUSINESS_COMPLETE if complete else CAPABILITIES_AUDIO_ONLY),
     )
 
 
@@ -583,4 +711,15 @@ def extract_candidate(doc_type: str, result: dict, source_key: str) -> ParseCand
             diagnostics=("family_extractor_not_registered",),
             capabilities=dict(CAPABILITIES_AUDIO_ONLY),
         )
-    return extractor(result, source_key)
+    scope_key = result.get("scope_key")
+    candidate = extractor(result, f"{source_key}:{scope_key}" if scope_key else source_key)
+    source_range = result.get("source_range")
+    if not source_range:
+        return candidate
+    # All candidates carry their actual document range, including those
+    # whose historical entity IDs were built from locally reused numbers.
+    entities = tuple(
+        replace(entity, source_locator=f"{source_range}/{entity.source_locator}")
+        for entity in candidate.entities
+    )
+    return replace(candidate, entities=entities, claimed_blocks=tuple(e.source_locator for e in entities))

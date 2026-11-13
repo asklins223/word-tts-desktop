@@ -30,11 +30,11 @@ _GROUP_PART_KEYWORDS: dict[str, tuple[str, ...]] = {
     "听后记录并转述信息": ("听后记录",),
     "听后转述": ("听后转述",),
     "信息获取": ("信息获取",),
-    "信息转述及询问": ("信息转述",),
+    "信息转述及询问": ("信息转述及询问", "短文复述及提问"),
 }
 
 _RETELLING_SUBSECTION_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "信息转述": ("信息转述",),
+    "信息转述": ("信息转述", "短文复述"),
     "询问信息": ("询问信息", "提问"),
 }
 
@@ -56,13 +56,15 @@ class OutlineSection:
     title: str
     first_number: int
     cards: tuple[OutlineCard, ...]
-    subsections: tuple[tuple[str, int], ...] = ()
+    subsections: tuple[tuple[str, int], ...] = ()  # title and zero-based card offset
+    card_offset: int = 0
 
-    def subsection_target(self, keywords: Sequence[str]) -> tuple[int, str] | None:
-        for title, number in self.subsections:
-            if any(keyword in title for keyword in keywords):
-                return number, self.kind_at(number)
-        return None
+    def subsection_offset(self, keywords: Sequence[str]) -> int | None:
+        matches = [
+            offset for title, offset in self.subsections
+            if any(keyword in title for keyword in keywords)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def kind_at(self, number: int) -> str:
         for card in self.cards:
@@ -85,40 +87,34 @@ class OutlineStructure:
         return counts
 
     def section_for(self, group_type: str) -> OutlineSection | None:
+        matches = self.sections_for(group_type)
+        return matches[0] if len(matches) == 1 else None
+
+    def sections_for(self, group_type: str) -> tuple[OutlineSection, ...]:
         keywords = _GROUP_PART_KEYWORDS.get(group_type, (group_type,))
-        for section in self.sections:
-            if any(keyword in section.title for keyword in keywords):
-                return section
-        return None
+        return tuple(
+            section for section in self.sections
+            if any(keyword in section.title for keyword in keywords)
+        )
+
+    def card_target(self, position: int) -> tuple[str, int]:
+        card = self.cards[position]
+        occurrence = sum(previous == card for previous in self.cards[:position])
+        return card.text, occurrence
 
     def group_target(self, group_type: str) -> tuple[str, int] | None:
         section = self.section_for(group_type)
         if section is None:
             return None
-        return OutlineCard(section.first_number, section.kind_at(section.first_number)).text, 0
+        return self.card_target(section.card_offset)
 
     def subsection_target(self, group_type: str, subsection: str) -> tuple[str, int] | None:
         section = self.section_for(group_type)
         if section is None:
             return None
         keywords = _RETELLING_SUBSECTION_KEYWORDS.get(subsection, (subsection,))
-        resolved = section.subsection_target(keywords)
-        if resolved is None:
-            return None
-        number, kind = resolved
-        if group_type != "听后应答":
-            return OutlineCard(number, kind).text, 0
-        occurrence = sum(
-            card.number == number and card.kind == kind
-            for previous in self.sections[:self.sections.index(section)]
-            for card in previous.cards
-        )
-        for title, prior_number in section.subsections:
-            if any(keyword in title for keyword in keywords):
-                break
-            if prior_number == number and section.kind_at(prior_number) == kind:
-                occurrence += 1
-        return OutlineCard(number, kind).text, occurrence
+        offset = section.subsection_offset(keywords)
+        return self.card_target(section.card_offset + offset) if offset is not None else None
 
 
 def analyze_outline_rows(rows: Sequence[Any]) -> OutlineStructure | None:
@@ -146,6 +142,7 @@ def analyze_outline_rows(rows: Sequence[Any]) -> OutlineStructure | None:
                     first_number=current_cards[0].number,
                     cards=tuple(current_cards),
                     subsections=tuple(current_subsections),
+                    card_offset=len(cards) - len(current_cards),
                 )
             )
         current_title = None
@@ -175,7 +172,7 @@ def analyze_outline_rows(rows: Sequence[Any]) -> OutlineStructure | None:
             cards.append(card)
             current_cards.append(card)
             if pending_subsection is not None:
-                current_subsections.append((pending_subsection, number))
+                current_subsections.append((pending_subsection, len(current_cards) - 1))
                 pending_subsection = None
             continue
         if kind == "part":

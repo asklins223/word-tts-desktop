@@ -61,7 +61,7 @@ def test_numbering_restarts_are_read_as_section_local():
     assert structure is not None
     # Section starts come from the page, not from an assumed global counter.
     assert structure.group_target("模仿朗读") == ("第1题(录音题)", 0)
-    assert structure.group_target("信息获取") == ("第1题(录音题)", 0)
+    assert structure.group_target("信息获取") == ("第1题(录音题)", 1)
 
 
 def test_unreadable_outline_returns_none_so_callers_keep_registered_rules():

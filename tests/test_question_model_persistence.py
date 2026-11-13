@@ -15,6 +15,7 @@ from db.migration_runner import (
 
 from question_model import (
     ResolutionState,
+    SUB_TYPE_REGISTRY,
     adjudicate,
     extract_candidate,
     persist_candidate,
@@ -220,7 +221,7 @@ class TestSubTypeRegistry(PersistenceTestBase):
         self.assertEqual(rows["listening_info"], "info_acquisition")
         self.assertEqual(rows["asking_info"], "info_retelling")
         self.assertEqual(rows["listening_retelling"], "listening_retelling")
-        self.assertEqual(len(rows), 13)
+        self.assertEqual(rows, {code: entry.family for code, entry in SUB_TYPE_REGISTRY.items()})
         # 幂等：重复同步不产生新行
         from question_model import sync_sub_type_registry
         sync_sub_type_registry(self.con)

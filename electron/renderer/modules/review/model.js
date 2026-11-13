@@ -509,6 +509,8 @@ function isImitationDocumentType(value) {
         || normalized.startsWith('imitation_reading/');
 }
 const DOCUMENT_ENTRY_SCHEMA_VERSION = 'document-entry-preflight-v1';
+const COMPOSED_PAPER_FORMAT = 'composed_listening_paper';
+const REVIEW_PAPER_TYPES = new Set(REVIEW_DOCUMENT_ENTRY_PROFILES.flatMap(profile => profile.types));
 
 function unsupportedStaleDocumentEntrySupport(list, explicit) {
     return {
@@ -648,6 +650,12 @@ function reviewListeningRetellingFactsAreCurrent(list) {
 }
 
 function reviewEntryProfilesAreCurrent(list, format) {
+    if (format === COMPOSED_PAPER_FORMAT) {
+        return reviewImitationEntryFactsAreCurrent(list)
+            && reviewResponseEntryFactsAreCurrent(list)
+            && reviewRecordRetellingEntryFactsAreCurrent(list)
+            && reviewListeningRetellingFactsAreCurrent(list);
+    }
     if (String(format || '').trim().startsWith('legacy_')) return true;
     if (String(format || '').trim() === 'listening_response') {
         return reviewResponseEntryFactsAreCurrent(list);
@@ -672,21 +680,18 @@ function reviewEntryTypeSetMatches(values, expected) {
     return expected.every(type => normalized.includes(type));
 }
 
-function reviewEntryPageFactsMatchFormat(list, format) {
-    const profile = REVIEW_DOCUMENT_ENTRY_PROFILES.find(
-        candidate => candidate.format === String(format || '').trim(),
-    );
-    if (!profile || !Array.isArray(list) || list.length === 0) return false;
+function reviewEntryPageFactsMatchTypes(list, types) {
+    if (!Array.isArray(list) || list.length === 0) return false;
     const detectedTypes = new Set();
     for (const item of list) {
         const metadata = item?.metadata && typeof item.metadata === 'object' ? item.metadata : {};
         const pageInput = metadata.page_input || item?.page_input;
         if (!pageInput || typeof pageInput !== 'object' || Array.isArray(pageInput)) return false;
         const type = String(pageInput.type || '').trim();
-        if (!profile.types.includes(type)) return false;
+        if (!types.includes(type)) return false;
         detectedTypes.add(type);
     }
-    return reviewEntryTypeSetMatches([...detectedTypes], profile.types);
+    return reviewEntryTypeSetMatches([...detectedTypes], types);
 }
 
 function reviewTextbookEntryFactsMatchFormat(list) {
@@ -705,13 +710,6 @@ function reviewTextbookEntryFactsMatchFormat(list) {
     });
 }
 
-function reviewEntryFactsMatchFormat(list, format) {
-    if (String(format || '').trim() === 'text_reading') {
-        return reviewTextbookEntryFactsMatchFormat(list);
-    }
-    return reviewEntryPageFactsMatchFormat(list, format);
-}
-
 function reviewDocumentEntrySupport(items, systemInput = null) {
     const list = Array.isArray(items) ? items : [];
     const activeList = list.filter(item => !reviewItemIsAudioOnlyAuxiliary(item));
@@ -721,9 +719,13 @@ function reviewDocumentEntrySupport(items, systemInput = null) {
         // workspace refresh is in flight.  Never trust an old
         // ``supported: true`` report that predates the profile/capability
         // contract; the safe recovery is to re-parse the document.
-        const explicitProfile = REVIEW_DOCUMENT_ENTRY_PROFILES.find(
-            candidate => candidate.format === String(explicit.format || '').trim(),
-        );
+        const format = String(explicit.format || '').trim();
+        let explicitProfile = REVIEW_DOCUMENT_ENTRY_PROFILES.find(candidate => candidate.format === format);
+        if (format === COMPOSED_PAPER_FORMAT && Array.isArray(explicit.expected_types)
+            && explicit.expected_types.length > 1
+            && explicit.expected_types.every(type => REVIEW_PAPER_TYPES.has(type))) {
+            explicitProfile = { format, types: explicit.expected_types };
+        }
         const currentPreflight = explicit.schema_version === DOCUMENT_ENTRY_SCHEMA_VERSION
             && ['invalid_count', 'major_section_profile_invalid_count', 'entry_profile_invalid_count', 'entry_capability_invalid_count']
                 .every(field => Number.isInteger(explicit[field]) && explicit[field] >= 0)
@@ -741,7 +743,9 @@ function reviewDocumentEntrySupport(items, systemInput = null) {
             && reviewEntryTypeSetMatches(explicit.detected_types, explicitProfile.types)
             && reviewEntryTypeSetMatches(explicit.expected_types, explicitProfile.types)
             && activeList.length > 0
-            && reviewEntryFactsMatchFormat(activeList, explicitProfile.format)
+            && (format === 'text_reading'
+                ? reviewTextbookEntryFactsMatchFormat(activeList)
+                : reviewEntryPageFactsMatchTypes(activeList, explicitProfile.types))
             && reviewEntryProfilesAreCurrent(activeList, explicitProfile.format);
         if (explicit.supported === true && !currentPreflight) {
             return unsupportedStaleDocumentEntrySupport(list, explicit);
@@ -843,7 +847,17 @@ function reviewDocumentEntrySupport(items, systemInput = null) {
         && entryCapabilityInvalidCount === 0
         && detectedSet.size === candidate.types.length
         && candidate.types.every(type => detectedSet.has(type))
-    )) || null;
+    )) || (
+        detectedSet.size > 1
+        && invalidCount === 0
+        && detectedTypes.every(type => REVIEW_PAPER_TYPES.has(type))
+        && reviewEntryPageFactsMatchTypes(activeList, detectedTypes)
+        ? { format: COMPOSED_PAPER_FORMAT, label: '听说考试', types: detectedTypes }
+        : null
+    );
+    if (profile?.format === COMPOSED_PAPER_FORMAT && !reviewEntryProfilesAreCurrent(activeList, profile.format)) {
+        entryProfileInvalidCount += 1;
+    }
     if (profile?.format === 'listening_response') {
         activeList.forEach(item => {
             const metadata = item?.metadata && typeof item.metadata === 'object' ? item.metadata : {};

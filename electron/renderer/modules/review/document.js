@@ -1805,6 +1805,9 @@ function renderDocumentPageFacts(parent, pageInput, item, imageTasks) {
         );
         return;
     }
+    if (pageInput.source_issue) {
+        reviewDocumentTextBlock(parent, '请核对原文', pageInput.source_issue);
+    }
     const type = pageInput.type;
     if (type === '听后记录并转述信息') {
         renderRecordFacts(parent, pageInput, item, imageTasks);

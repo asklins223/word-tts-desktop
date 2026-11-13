@@ -17,6 +17,33 @@ from workflow.system_input_executor import PlatformInputWorkflowPageExecutor
 
 
 class SystemInputContentTests(unittest.TestCase):
+    def test_registered_families_compose_without_a_new_paper_format(self) -> None:
+        facts = [{"type": name} for name in ("听后选择", "信息获取", "听后应答")]
+        support = document_entry_support(
+            facts, input_type="paper", document_types=[fact["type"] for fact in facts],
+            major_section_profiles=[None, None, "response_colored_options_special"],
+            entry_profiles=[None, None, "listening_response_v1"],
+            capabilities=[None, None, {"external_input": True}],
+        )
+        self.assertTrue(support["supported"], support)
+        self.assertEqual(support["format"], "composed_listening_paper")
+        self.assertEqual(set(support["expected_types"]), {fact["type"] for fact in facts})
+
+        stale = document_entry_support(facts, input_type="paper")
+        self.assertFalse(stale["supported"])
+        self.assertGreater(stale["entry_profile_invalid_count"], 0)
+
+    def test_page_groups_follow_source_family_order(self) -> None:
+        facts = [
+            {"type": "模仿朗读", "questions": [{"listening_text": "Read me."}]},
+            {"type": "听后应答", "questions": [{"listening_text": "Answer me."}]},
+            {"type": "听后选择", "materials": [{"listening_text": "Listen.", "questions": [{}]}]},
+        ]
+        groups = PlatformInputWorkflowPageExecutor._build_grouped_page_content([
+            (fact, f"audio-{index}.mp3", {}) for index, fact in enumerate(facts)
+        ])
+        self.assertEqual([group["type"] for group in groups], [fact["type"] for fact in facts])
+
     def test_retelling_page_accepts_asking_instruction_without_separate_audio(self) -> None:
         facts = {
             "type": "信息转述及询问",

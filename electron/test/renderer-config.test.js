@@ -76,6 +76,35 @@ function loadRendererConfigFunctions() {
     return { api: context.__rendererTests, storage, document, mediaState };
 }
 
+test('已注册题型可按结构组成新套卷，前后端预检继续校验每个题型', () => {
+    const { api } = loadRendererConfigFunctions();
+    const types = ['信息获取', '听后选择', '听后应答'];
+    const items = types.map(type => ({ metadata: { doc_type: type, page_input: { type } } }));
+    Object.assign(items[2].metadata, {
+        major_section_profile: 'response_colored_options_special',
+        entry_profile: 'listening_response_v1',
+        capabilities: { external_input: true },
+    });
+    const local = api.reviewDocumentEntrySupport(items);
+    assert.equal(local.supported, true);
+    assert.equal(local.format, 'composed_listening_paper');
+
+    const explicit = {
+        schema_version: 'document-entry-preflight-v1', supported: true,
+        format: 'composed_listening_paper', expected_types: types, detected_types: types,
+        structured_count: items.length, invalid_count: 0,
+        major_section_profile_invalid_count: 0, entry_profile_invalid_count: 0,
+        entry_capability_invalid_count: 0,
+    };
+    assert.equal(api.reviewDocumentEntrySupport(items, { document_entry_support: explicit }).supported, true);
+    items[0].metadata.page_input_status = 'invalid';
+    assert.equal(api.reviewDocumentEntrySupport(items).supported, false);
+    delete items[0].metadata.page_input_status;
+    delete items[2].metadata.entry_profile;
+    assert.equal(api.reviewDocumentEntrySupport(items, { document_entry_support: explicit }).supported, false);
+    assert.equal(api.reviewDocumentEntrySupport(items).supported, false);
+});
+
 test('文稿核对仅隐藏圆括号说话人标识并保留系统录入的 W/M 冒号标识', () => {
     const { api } = loadRendererConfigFunctions();
     assert.equal(

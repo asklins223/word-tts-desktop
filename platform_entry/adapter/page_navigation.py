@@ -49,7 +49,8 @@ _OUTLINE_ROWS_JS = """
     const CARD = /^第\\s*(\\d+)\\s*题?\\s*[（(]\\s*(选择题|填空题|录音题)\\s*[）)]$/;
     const visible = (node) => {
         const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
+        return rect.width > 0 && rect.height > 0
+            && window.getComputedStyle(node).visibility !== 'hidden';
     };
     const cards = Array.from(document.querySelectorAll('.qBox')).filter((node) => (
         visible(node) && CARD.test(String(node.innerText || '').trim())
@@ -66,12 +67,11 @@ _OUTLINE_ROWS_JS = """
     }
     const rows = [];
     for (const node of container.querySelectorAll('*')) {
-        if (node.children.length) continue;
         const text = String(node.innerText || '').trim();
-        if (!text) continue;
+        if (!text || !visible(node)) continue;
         const cls = String(node.className || '');
-        const card = CARD.exec(text);
-        if (card) {
+        if (cards.includes(node)) {
+            const card = CARD.exec(text);
             rows.push({ kind: 'card', number: Number(card[1]), card: card[2], text });
         } else if (/(^|\\s)partName(\\s|$)/.test(cls)) {
             rows.push({ kind: 'part', text });
@@ -366,7 +366,7 @@ class PlatformInputNavigationMixin:
             return True
         return False
 
-    def _outline_entry_selected(self, text: Any) -> bool | None:
+    def _outline_entry_selected(self, text: Any, occurrence: int = 0) -> bool | None:
         """Return whether one left outline entry carries the selected class.
 
         The page marks the entry whose panel is open with ``isSelectBox``.
@@ -385,13 +385,16 @@ class PlatformInputNavigationMixin:
             count = boxes.count()
         except Exception:
             return None
-        for index in range(min(count, 60)):
+        for index in range(count):
             try:
                 box = boxes.nth(index)
                 if not box.is_visible():
                     continue
                 label = re.sub(r"\s+", "", _fast_inner_text(box, timeout_ms=300))
                 if label != wanted:
+                    continue
+                if occurrence:
+                    occurrence -= 1
                     continue
                 return "isSelectBox" in str(box.get_attribute("class") or "")
             except Exception:
@@ -798,19 +801,10 @@ class PlatformInputNavigationMixin:
             (candidate for candidate in PAPER_BUNDLE_RULES if candidate.key == self.spec.bundle_rule),
             None,
         )
-        if outline_target is None and any(
-            group.get("type") == "听后转述" for group in self.spec.groups
-        ):
+        if outline_target is None:
             structure = self._read_outline_structure()
-            section = structure.section_for(group_type) if structure is not None else None
-            if section is not None:
-                kind = section.kind_at(section.first_number)
-                occurrence = sum(
-                    card.number == section.first_number and card.kind == kind
-                    for previous in structure.sections[:structure.sections.index(section)]
-                    for card in previous.cards
-                )
-                outline_target = (f"第{section.first_number}题({kind})", occurrence)
+            if structure is not None:
+                outline_target = structure.group_target(group_type)
         target = (outline_target
                   or (rule.outline_target(group_type) if rule is not None else None)
                   or _DEFAULT_OUTLINE_TARGETS.get(group_type))
@@ -881,12 +875,16 @@ class PlatformInputNavigationMixin:
         def question_outline_nodes(kind: str) -> list[Any]:
             """Return visible numbered outline entries for either bracket style."""
 
-            nodes = self.page.get_by_text(
-                re.compile(
-                    rf"^\s*第\s*\d+\s*题?\s*[（(]\s*"
-                    rf"{re.escape(kind)}\s*[）)]\s*$"
-                )
+            pattern = re.compile(
+                rf"^\s*第\s*\d+\s*题?\s*[（(]\s*"
+                rf"{re.escape(kind)}\s*[）)]\s*$"
             )
+            boxes = self.page.locator(".qBox")
+            box_count = boxes.count()
+            if isinstance(box_count, int) and box_count:
+                nodes = boxes
+            else:
+                nodes = self.page.get_by_text(pattern)
             result: list[Any] = []
             try:
                 count = nodes.count()
@@ -895,7 +893,7 @@ class PlatformInputNavigationMixin:
             for index in range(count):
                 try:
                     node = nodes.nth(index)
-                    if node.is_visible():
+                    if node.is_visible() and pattern.fullmatch(normalised_outline_text(node)):
                         result.append(node)
                 except Exception:
                     continue
@@ -922,6 +920,7 @@ class PlatformInputNavigationMixin:
                     ]
                     if 0 <= wanted_occurrence < len(candidates):
                         return candidates[wanted_occurrence]
+                    return None
 
             if dynamic_locator is not None:
                 dynamic_target = self._first_visible(dynamic_locator)
@@ -991,6 +990,7 @@ class PlatformInputNavigationMixin:
                 raise PlatformInputUiError(
                     f"点击“{group_type}”题目导航失败: {force_exc}"
                 ) from exc
+        self._last_outline_occurrence = wanted_occurrence if outline_target is not None else 0
         return normalised_outline_text(target)
 
     def _activate_retelling_outline(self) -> None:
@@ -1000,6 +1000,23 @@ class PlatformInputNavigationMixin:
         “第4题(录音题)”。两者是不同的懒加载面板，不能只按题型取第一
         个录音题入口。
         """
+
+        structure = self._read_outline_structure()
+        if structure is not None:
+            section = structure.section_for("听后记录并转述信息")
+            if section is not None:
+                target = structure.subsection_target("听后记录并转述信息", "第二节")
+                if target is None:
+                    recordings = [
+                        index for index, card in enumerate(section.cards)
+                        if card.kind == "录音题"
+                    ]
+                    if recordings:
+                        target = structure.card_target(section.card_offset + recordings[0])
+                if target is not None:
+                    self._activate_outline_section("听后记录并转述信息", outline_target=target)
+                    return
+                raise PlatformInputUiError("听后记录并转述信息没有可确认的转述题导航")
 
         nodes = self.page.get_by_text(
             re.compile(r"^第\s*\d+\s*题\s*[（(]\s*录音题\s*[）)]$")

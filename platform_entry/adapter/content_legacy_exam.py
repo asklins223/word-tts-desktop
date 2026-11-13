@@ -193,7 +193,7 @@ class PlatformInputLegacyExamContentMixin:
         return ready
 
     def _next_recording_outline_target(self) -> tuple[str, int] | None:
-        """Return the recording-card entry after the selected navigation item.
+        """Return the next recording entry when the outline has no subsections.
 
         The outline is the page's own statement of where the next lazy panel
         lives.  Reading it keeps the asking questions from being guessed from
@@ -209,7 +209,7 @@ class PlatformInputLegacyExamContentMixin:
         except Exception:
             return None
         entries: list[tuple[str, bool]] = []
-        for index in range(min(count, 60)):
+        for index in range(count):
             try:
                 box = boxes.nth(index)
                 if not box.is_visible():
@@ -336,6 +336,58 @@ class PlatformInputLegacyExamContentMixin:
                 description=description,
             )
 
+    @staticmethod
+    def _shared_retelling_recording(groups):
+        """Resolve guidance on a page with one shared slot per subsection."""
+
+        shared = dict(groups[0]["recording"]) if groups else {}
+        for key in (
+            "instruction_text", "reading_instruction_text",
+            "preparation_instruction_text", "asking_instruction_text",
+        ):
+            recordings = [group["recording"] for group in groups if group["recording"].get(key)]
+            if len({recording[key] for recording in recordings}) > 1:
+                raise PlatformInputUiError("多组材料的中文指导语不同，当前共享指导语页面无法逐组对应")
+            if recordings:
+                prefix = key.removesuffix("text")
+                for field in (key, prefix + "audio_path", prefix + "occurrence"):
+                    if field in recordings[0]:
+                        shared[field] = recordings[0][field]
+        return shared
+
+    def _combined_retelling_instruction_plan(self, groups):
+        requests = []
+        for group in groups:
+            recording = group["recording"]
+            for prefix, description, offset in (
+                ("", "信息转述题目指导文字", 0),
+                ("asking_", "询问信息题目指导文字", 1),
+            ):
+                text = recording.get(prefix + "instruction_text")
+                if text is None:
+                    continue
+                occurrence = recording.get(prefix + "instruction_occurrence")
+                if occurrence is not None:
+                    occurrence += offset
+                requests.append((occurrence, text, recording.get(prefix + "instruction_audio_path"), description))
+        if len(groups) <= 1:
+            return requests
+
+        slots = {}
+        for request in requests:
+            occurrence, text, *_ = request
+            if occurrence in slots and slots[occurrence][1] != text:
+                break
+            slots[occurrence] = request
+        else:
+            return list(slots.values())
+
+        # Repeated material panels can expose one guide pair per material.
+        # A shared pair cannot represent different source guidance.
+        if len(self._labeled_text_editors("题目指导文字")) != len(requests):
+            raise PlatformInputUiError("多组材料的指导语数量与页面位置不一致，无法逐组对应")
+        return [(index, *request[1:]) for index, request in enumerate(requests)]
+
     def _fill_split_info_retelling_groups(
         self,
         groups: Sequence[Mapping[str, Any]],
@@ -356,6 +408,9 @@ class PlatformInputLegacyExamContentMixin:
 
         retelling_count = sum(1 for group in groups if group.get("retelling"))
         asking_count = sum(len(group.get("asking", ())) for group in groups)
+        shared_recording = self._shared_retelling_recording(groups)
+        if asking_count and retelling_target == asking_target:
+            raise PlatformInputUiError("信息转述和询问信息指向同一个导航，无法区分两组题卡")
         if preactivated is None:
             cards, editors = self._activate_group_section(
                 "信息转述及询问",
@@ -367,8 +422,6 @@ class PlatformInputLegacyExamContentMixin:
         else:
             cards, editors = list(preactivated[0]), list(preactivated[1])
         instruction_scopes = self._retelling_page_instruction_scopes()
-        if instruction_scopes is not None and len(groups) != 1:
-            raise PlatformInputUiError("当前指导语页面只能录入一组信息转述材料")
         has_extra_instruction = any(
             group["recording"].get("reading_instruction_text")
             or group["recording"].get("preparation_instruction_text")
@@ -413,41 +466,42 @@ class PlatformInputLegacyExamContentMixin:
                 self._upload_image(recording["image_path"], image_cursor)
                 image_cursor += 1
 
-            if group_index == 0 and recording.get("instruction_text") is not None:
-                instruction_audio = recording.get("instruction_audio_path")
+            guidance = shared_recording
+            if group_index == 0 and guidance.get("instruction_text") is not None:
+                instruction_audio = guidance.get("instruction_audio_path")
                 if instruction_scopes is not None:
                     self._fill_retelling_page_instruction(
                         instruction_scopes[0],
-                        recording["instruction_text"],
+                        guidance["instruction_text"],
                         instruction_audio,
                         "信息转述页面1指导文字",
                     )
                 else:
                     self._fill_instruction_editor(
-                        recording["instruction_text"],
-                        recording.get("instruction_occurrence"),
+                        guidance["instruction_text"],
+                        guidance.get("instruction_occurrence"),
                         "信息转述题目指导文字",
                     )
                     if instruction_audio:
                         self._fill_instruction_audio(
                             instruction_audio,
-                            recording.get("instruction_occurrence"),
+                            guidance.get("instruction_occurrence"),
                             "信息转述题目指导文字",
                         )
 
-            if recording.get("reading_instruction_text"):
+            if group_index == 0 and guidance.get("reading_instruction_text"):
                 self._fill_retelling_page_instruction(
                     instruction_scopes[1],
-                    recording["reading_instruction_text"],
-                    recording.get("reading_instruction_audio_path"),
+                    guidance["reading_instruction_text"],
+                    guidance.get("reading_instruction_audio_path"),
                     "信息转述页面2阅图指导文字",
                 )
 
-            if recording.get("preparation_instruction_text"):
+            if group_index == 0 and guidance.get("preparation_instruction_text"):
                 self._fill_retelling_page_instruction(
                     preparation_scope,
-                    recording["preparation_instruction_text"],
-                    recording.get("preparation_instruction_audio_path"),
+                    guidance["preparation_instruction_text"],
+                    guidance.get("preparation_instruction_audio_path"),
                     "信息转述页面2准备指导文字",
                 )
 
@@ -478,7 +532,7 @@ class PlatformInputLegacyExamContentMixin:
             0,
             outline_target=asking_target,
         )
-        first_recording = groups[0].get("recording") if groups else None
+        first_recording = shared_recording
         if (
             isinstance(first_recording, Mapping)
             and first_recording.get("asking_instruction_text") is not None
@@ -595,11 +649,16 @@ class PlatformInputLegacyExamContentMixin:
                 asking_target=asking_target,
                 preactivated=(cards, editors),
             )
+        instructions = self._combined_retelling_instruction_plan(groups)
+        for occurrence, text, audio_path, description in instructions:
+            self._fill_instruction_editor(text, occurrence, description)
+            if audio_path:
+                self._fill_instruction_audio(audio_path, occurrence, description)
         card_cursor = 0
         listening_cursor = 0
         audio_cursor = 0
         image_cursor = 0
-        for group_index, group in enumerate(groups):
+        for group in groups:
             recording = group["recording"]
             description = "信息转述"
             self._replace_rich_text(
@@ -613,48 +672,6 @@ class PlatformInputLegacyExamContentMixin:
             if recording.get("image_path") is not None:
                 self._upload_image(recording["image_path"], image_cursor)
                 image_cursor += 1
-
-            # 只改第一组的题目指导文字及其音频；后续同类控件保留模板/原值。
-            if group_index == 0 and recording.get("instruction_text") is not None:
-                self._fill_instruction_editor(
-                    recording["instruction_text"],
-                    recording.get("instruction_occurrence"),
-                    "信息转述题目指导文字",
-                )
-                instruction_audio = recording.get("instruction_audio_path")
-                if instruction_audio:
-                    self._fill_instruction_audio(
-                        instruction_audio,
-                        recording.get("instruction_occurrence"),
-                        "信息转述题目指导文字",
-                    )
-
-            if (
-                group_index == 0
-                and recording.get("asking_instruction_text") is not None
-            ):
-                # In the combined legacy layout, the retelling guidance is
-                # the first “题目指导文字” editor and the asking guidance is
-                # the next one.  The parser occurrence is relative to the
-                # asking subsection, so offset it by the preceding retelling
-                # editor only in this non-split layout.
-                asking_occurrence = recording.get("asking_instruction_occurrence")
-                if asking_occurrence is not None:
-                    asking_occurrence += 1
-                self._fill_instruction_editor(
-                    recording["asking_instruction_text"],
-                    asking_occurrence,
-                    "询问信息题目指导文字",
-                )
-                asking_instruction_audio = recording.get(
-                    "asking_instruction_audio_path"
-                )
-                if asking_instruction_audio:
-                    self._fill_instruction_audio(
-                        asking_instruction_audio,
-                        asking_occurrence,
-                        "询问信息题目指导文字",
-                    )
 
             retelling = group.get("retelling")
             if isinstance(retelling, Mapping):

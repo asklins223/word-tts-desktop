@@ -2,7 +2,7 @@
 
 import re
 
-from audio_naming import audio_filename_stem, is_exam_paper_bundle
+from audio_naming import audio_filename_stem
 from question_types.base import BaseParser
 from question_types.text_utils import (
     MAJOR_SECTION_RE,
@@ -29,6 +29,7 @@ class ListeningSelectionParser(BaseParser):
     """
 
     DOC_TYPE = "听后选择"
+    _REPEAT_MAJOR_SECTIONS = True
 
     # 题型标题可能带中文序号、题量说明或括号；只接受行首标题形态，
     # 避免正文里偶然提到“听后选择”时误启动解析状态机。
@@ -198,7 +199,7 @@ class ListeningSelectionParser(BaseParser):
         current_lines = []
         script_index = 0
         question_numbers_by_script = {}
-        use_exam_naming = is_exam_paper_bundle(self.paras)
+        use_exam_naming = self.use_exam_naming
         section_score = None
         declared_item_scores = []
         declared_section_scores = []
@@ -359,6 +360,22 @@ class ListeningSelectionParser(BaseParser):
                     current_lines.append(remainder)
                 continue
 
+            # A numbered stem starts the next material even when its source
+            # omits the usual spoken transition. Reprocess that same row as
+            # a question rather than consuming the boundary and losing it.
+            if collecting and (
+                self.RE_PROMPT.search(value)
+                or self.RE_NUMBERED_QUESTION.match(value)
+                or self.RE_OPTION.match(value)
+                or self.RE_ANSWER.match(value)
+            ):
+                flush()
+                if self.RE_PROMPT.search(value):
+                    set_pending_reading_prompt(value)
+                    continue
+                if self.RE_ANSWER.match(value):
+                    continue
+
             if not collecting:
                 # The prompt may be one paragraph or two.  Record the
                 # question range first, then the following “现在，你有…秒”
@@ -456,18 +473,6 @@ class ListeningSelectionParser(BaseParser):
                         f"{current_question.get('stem', '')} {value}"
                     )
                     continue
-                continue
-
-            # 下一道题的提示、题干、选项或答案都不是录音内容。
-            if (
-                self.RE_PROMPT.search(value)
-                or self.RE_NUMBERED_QUESTION.match(value)
-                or self.RE_OPTION.match(value)
-                or self.RE_ANSWER.match(value)
-            ):
-                flush()
-                if self.RE_PROMPT.search(value):
-                    set_pending_reading_prompt(value)
                 continue
 
             current_lines.append(value)

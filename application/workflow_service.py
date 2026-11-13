@@ -256,8 +256,8 @@ class WorkflowApplicationService:
                             producer_version=TABLE_IMAGE_RENDERER_VERSION,
                         )
 
-                # 方案 6.4 桥接：必须在临时源文件仍然存在时执行。桥接会
-                # 重新读取同一份源文档，失败仍然不阻断 workflow 主链路。
+                # Reuse the exact ranges used for audio and page facts.
+                # Custom parser ports without ranges keep the file fallback.
                 from application.atomic_bridge import bridge_parse_to_atomic_model
 
                 self._atomic_bridge = bridge_parse_to_atomic_model(
@@ -266,6 +266,8 @@ class WorkflowApplicationService:
                     filename=filename,
                     source_sha256=parsed.source_sha256,
                     workflow_id=workflow_id,
+                    source_parse=parsed.source_parse,
+                    parser_version=parsed.parser_version,
                 )
             except ArtifactStoreError:
                 raise

@@ -144,8 +144,7 @@ def _options_json(options) -> str:
 def _answer_json(answer) -> str | None:
     if answer is None:
         return None
-    return json.dumps({"kind": answer.kind, "value": answer.value},
-                      ensure_ascii=False)
+    return json.dumps(answer.to_dict(), ensure_ascii=False)
 
 
 def _persist_stimulus(conn, entity: Stimulus, source_document_id: str,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 
 from . import pacing
@@ -137,10 +138,14 @@ class PlatformInputContentMixin:
             # 时重点同一条导航不会关闭任何已打开的面板，所以只在页面的选中
             # 状态明确表明点击没生效时补一次点击；页面没有暴露选中标记时
             # 保持原行为，只把剩余时间等满。
+            occurrence = getattr(self, "_last_outline_occurrence", 0)
             if (
                 expected_cards
                 and not self._question_cards(question_kind)
-                and self._outline_entry_selected(clicked_text) is False
+                and (
+                    self._outline_entry_selected(clicked_text, occurrence)
+                    if occurrence else self._outline_entry_selected(clicked_text)
+                ) is False
             ):
                 retried = True
                 clicked_text = (
@@ -272,6 +277,7 @@ class PlatformInputContentMixin:
             groups_by_type[group_type].append(group)
 
         requested_counts = self._group_requested_card_counts(self.spec.groups)
+        multiple_families = sum(bool(groups) for groups in groups_by_type.values()) > 1
         # The page's own outline outranks the template-name table: an editor
         # can rename or re-create a template at any time, but the rendered
         # card kinds are what the save will actually accept.  When the probe
@@ -285,6 +291,22 @@ class PlatformInputContentMixin:
                         f"当前页面有 {page_counts.get(card_kind, 0)} 个{card_kind}，"
                         f"输入提供 {requested} 个；请按页面实际题卡补齐后再执行"
                     )
+            # Verify named sections individually. The same grand total can
+            # otherwise conceal a mismatch between two recording sections.
+            for group_type, groups in groups_by_type.items():
+                if not groups:
+                    continue
+                sections = structure.sections_for(group_type)
+                if len(sections) > 1:
+                    raise PlatformInputUiError(f"当前模板有多处“{group_type}”导航，无法唯一匹配材料")
+                if not sections:
+                    if self.spec.bundle_rule is None and multiple_families:
+                        raise PlatformInputUiError(f"当前模板没有可确认的“{group_type}”导航")
+                    continue
+                expected = self._group_requested_card_counts(groups)
+                observed = Counter(card.kind for card in sections[0].cards)
+                if any(observed[kind] != count for kind, count in expected.items()):
+                    raise PlatformInputUiError(f"“{group_type}”在当前模板中的题卡类型或数量与文档不一致")
         else:
             rule = next(
                 (
@@ -294,6 +316,8 @@ class PlatformInputContentMixin:
                 ),
                 None,
             )
+            if rule is None and multiple_families:
+                raise PlatformInputUiError("无法读取当前模板的题型导航，请核对试卷模板后重试")
             rule_counts = rule.card_counts() if rule is not None else {}
             for card_kind, requested in requested_counts.items():
                 expected = rule_counts.get(card_kind, requested)
@@ -314,10 +338,10 @@ class PlatformInputContentMixin:
             self._preflight_split_response_questions(response_questions)
 
         consumed = {"选择题": 0, "填空题": 0, "录音题": 0}
-        for handler in handlers:
-            groups = groups_by_type[handler.canonical_type]
-            if not groups:
-                continue
+        # Source order also governs the fallback navigation for templates
+        # whose card numbering is local to each part.
+        for group_type in dict.fromkeys(group["type"] for group in self.spec.groups):
+            handler = get_question_type_handler(group_type)
             method = getattr(self, handler.page_method, None)
             if not callable(method):
                 raise PlatformInputUiError(

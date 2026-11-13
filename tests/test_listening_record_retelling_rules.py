@@ -66,7 +66,7 @@ def test_new_type_is_detected_from_the_real_source():
     assert detect_document_type(FIXTURE) == "听后记录并转述信息"
 
 
-def test_new_type_maps_to_one_audio_only_stimulus():
+def test_new_type_preserves_one_recording_and_four_linked_questions():
     results, _ = parse_document_once(FIXTURE)
     candidate = extract_candidate(
         results[0]["doc_type"], results[0], FIXTURE.stem)
@@ -74,11 +74,14 @@ def test_new_type_maps_to_one_audio_only_stimulus():
     assert candidate.type_code == "listening_record_retelling"
     assert candidate.audio_only is True
     assert candidate.diagnostics == ("audio_only_candidate",)
-    assert len(candidate.entities) == 1
-    stimulus = candidate.entities[0]
+    stimulus, *questions = candidate.entities
     assert stimulus.sub_type_code == "listening_record_retelling"
     assert stimulus.stimulus_type == "listening_script"
     assert stimulus.text.startswith("(W)Hello, I'm Amy Lee.")
+    assert [question.question_number for question in questions[:3]] == [17, 18, 19]
+    assert all(question.stimulus_id == stimulus.stimulus_id for question in questions)
+    assert questions[-1].question_type == "listening_record_response"
+    assert len(questions[-1].answer.alternatives) > 1
 
 
 def test_workflow_parser_normalizes_the_new_audio_item():

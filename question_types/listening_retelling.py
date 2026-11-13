@@ -18,6 +18,7 @@ from question_types.text_utils import (
 class ListeningRetellingParser(BaseParser):
     DOC_TYPE = "听后转述"
     _REQUIRES_DOCUMENT_BLOCKS = True
+    _REPEAT_MAJOR_SECTIONS = True
     RE_HEADING = re.compile(
         r"^\s*(?:[一二三四五六七八九十]+\s*[、.．)]\s*)?"
         r"听后转述(?:[（(\s:：]|$)"

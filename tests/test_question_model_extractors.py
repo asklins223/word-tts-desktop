@@ -428,12 +428,13 @@ class TestListeningChoiceBusinessFields:
         questions = [e for e in candidate.entities if hasattr(e, "question_type")]
         assert len(stimuli) == 6
         assert len(questions) == 8
-        # 题干+选项齐备但文档无答案 → 仍是 DRAFT / audio_only
+        # Word 的颜色标记已提供答案，原子模型应保留同一份答案事实。
         assert all(len(q.options) == 3 for q in questions)
-        assert all(q.question_fields_complete is False for q in questions)
-        assert all(q.resolution_state is ResolutionState.DRAFT
+        assert all(q.question_fields_complete for q in questions)
+        assert all(q.answer.value in {option.option_id for option in q.options} for q in questions)
+        assert all(q.resolution_state is ResolutionState.CANDIDATE
                    for q in questions)
-        assert "listening_choice_answer_not_extracted" in candidate.diagnostics
+        assert "listening_choice_answer_not_extracted" not in candidate.diagnostics
         assert "listening_choice_stem_options_answer_not_extracted" \
             not in candidate.diagnostics
 
@@ -476,7 +477,7 @@ class TestInfoRetellingBusinessFields:
     def test_asking_questions_are_complete_candidates(self):
         """询问信息两个问题字段完整：首个可进外部链路的候选。"""
         candidate = self._live_candidate()
-        questions = [e for e in candidate.entities if hasattr(e, "question_type")]
+        questions = [e for e in candidate.entities if getattr(e, "question_type", None) == "asking_info"]
         assert [q.question_number for q in questions] == [11, 12]
         assert all(q.question_type == "asking_info" for q in questions)
         assert all(q.question_fields_complete for q in questions)
@@ -489,8 +490,10 @@ class TestInfoRetellingBusinessFields:
         assert candidate.capabilities["audio_only"] is False
 
     def test_retelling_reference_captured(self):
-        """转述参考答案进入 tasks 通道（评分参考，不是小题）。"""
+        """Multiple reference versions belong to one retelling question."""
         candidate = self._live_candidate()
+        retelling, = [q for q in candidate.entities if getattr(q, "question_type", None) == "info_retelling_response"]
+        assert retelling.answer.alternatives == (retelling.answer.value,)
         assert "info_retelling_reference_not_extracted" \
             not in candidate.diagnostics
         assert "info_retelling_task_split_not_extracted" \

@@ -265,9 +265,12 @@ def test_bundle_preflights_response_before_editing_earlier_question_types():
         {"section": "第一节"}, {"section": "第二节"},
     )})
     owner = SimpleNamespace(
-        spec=SimpleNamespace(groups=groups),
-        _group_requested_card_counts=Mock(return_value={"选择题": 1, "录音题": 2}),
-        _read_outline_structure=Mock(return_value=SimpleNamespace(counts=lambda: {"选择题": 1, "录音题": 2})),
+        spec=SimpleNamespace(groups=groups, bundle_rule="platform_input-listening-exam-v1"),
+        _group_requested_card_counts=Mock(return_value={"录音题": 2}),
+        _read_outline_structure=Mock(return_value=analyze_outline_rows([
+            {"kind": "card", "text": "第1题(录音题)"},
+            {"kind": "card", "text": "第2题(录音题)"},
+        ])),
         _preflight_split_response_questions=Mock(side_effect=PlatformInputUiError("图片位置不明确")),
         _fill_selection_groups=Mock(),
     )

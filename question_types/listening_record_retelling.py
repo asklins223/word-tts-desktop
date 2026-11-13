@@ -9,7 +9,7 @@
 import re
 from collections.abc import Mapping
 
-from audio_naming import audio_filename_stem, is_exam_paper_bundle
+from audio_naming import audio_filename_stem
 from document_profiles import (
     RECORD_RETELLING_ENTRY_PROFILE,
     RECORD_RETELLING_TABLE_SPECIAL_PROFILE,
@@ -31,6 +31,7 @@ class ListeningRecordRetellingParser(BaseParser):
 
     DOC_TYPE = "听后记录并转述信息"
     _REQUIRES_DOCUMENT_BLOCKS = True
+    _REPEAT_MAJOR_SECTIONS = True
 
     # 标题可能带有“（共...）”等说明，但“第一节 听后记录”是稳定边界。
     RE_SECTION_START = re.compile(
@@ -215,7 +216,7 @@ class ListeningRecordRetellingParser(BaseParser):
         retelling_answer_time = None
         in_retelling_section = False
         collecting_retelling_answers = False
-        use_exam_naming = is_exam_paper_bundle(self.paras)
+        use_exam_naming = self.use_exam_naming
         recording_table_index = self._recording_table_index()
         record_section_score = None
         major_section_score = None

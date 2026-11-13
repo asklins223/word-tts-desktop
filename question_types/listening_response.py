@@ -2,7 +2,7 @@
 
 import re
 
-from audio_naming import audio_filename_stem, is_exam_paper_bundle
+from audio_naming import audio_filename_stem
 from document_profiles import (
     RESPONSE_COLORED_OPTIONS_SPECIAL_PROFILE,
     RESPONSE_ENTRY_PROFILE,
@@ -29,6 +29,7 @@ class ListeningResponseParser(BaseParser):
 
     DOC_TYPE = "听后应答"
     _REQUIRES_DOCUMENT_BLOCKS = True
+    _REPEAT_MAJOR_SECTIONS = True
 
     @staticmethod
     def _capabilities(*, external_input: bool) -> dict[str, bool]:
@@ -301,9 +302,9 @@ class ListeningResponseParser(BaseParser):
         expected_count = None
         current_lines = []
         response_index = 0
-        grade_prefix = self._grade_prefix(self.filename, self.paras)
+        grade_prefix = self._grade_prefix(self.filename, self.document_header)
         awaiting_answer_choices = False
-        use_exam_naming = is_exam_paper_bundle(self.paras)
+        use_exam_naming = self.use_exam_naming
         answer_item_indexes = set()
         answer_numbers = {}
         questions = []
@@ -595,6 +596,8 @@ class ListeningResponseParser(BaseParser):
                     external_input=external_input_ready or two_section_ready,
                 ),
             })
+        for item, question in zip(items, questions, strict=True):
+            item["response_question"] = question
         result = self._result(items)
         computed_score = sum(
             score for score in (

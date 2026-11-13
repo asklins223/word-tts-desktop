@@ -2,7 +2,7 @@
 
 import re
 
-from audio_naming import audio_filename_stem, is_exam_paper_bundle
+from audio_naming import audio_filename_stem
 from document_profiles import (
     IMITATION_BOXED_SPECIAL_PROFILE,
     IMITATION_LEGACY_UNIT_SOURCE_PROFILE,
@@ -251,10 +251,10 @@ class ImitationReadingParser(BaseParser):
         # A heading that says “共1题” while two complete numbered blocks follow
         # is the reliable signal used by the supplied 九上 Unit 1 document.
         if declared_count == 1:
-            return not is_exam_paper_bundle(self.paras)
+            return not self.use_exam_naming
         # If the heading is omitted, keep the fallback narrow: only a direct
         # paragraph document with unique numbered blocks can use this rule.
-        return declared_count is None and not is_exam_paper_bundle(self.paras)
+        return declared_count is None and not self.use_exam_naming
 
     @classmethod
     def _english_only(cls, text):
@@ -313,7 +313,7 @@ class ImitationReadingParser(BaseParser):
         question_numbers = self._boxed_question_numbers()
         texts = self._boxed_table_texts()
         items = []
-        use_exam_naming = is_exam_paper_bundle(self.paras)
+        use_exam_naming = self.use_exam_naming
         # A boxed imitation-reading专项 is laid out as one complete
         # recording task per numbered passage. Keep each passage as its own
         # input unit even when the heading says “共2题”; that count describes
@@ -583,7 +583,7 @@ class ImitationReadingParser(BaseParser):
         current_question_number = None
         current_question_score = None
         section_score = None
-        use_exam_naming = is_exam_paper_bundle(self.paras)
+        use_exam_naming = self.use_exam_naming
         question_numbers = [
             int(match.group('number'))
             for _, paragraph, _ in self.paras

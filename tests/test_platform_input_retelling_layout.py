@@ -407,12 +407,47 @@ def test_three_guides_do_not_silently_drop_reading_in_an_unconfigured_template()
     owner._replace_rich_text.assert_not_called()
 
 
-def test_two_guide_layout_rejects_multiple_materials_before_writing():
+def test_shared_guide_layout_rejects_different_material_guidance_before_writing():
     owner = _retelling_automation((Mock(), Mock()))
-    with pytest.raises(PlatformInputUiError, match="只能录入一组"):
-        _fill_split(owner, [_retelling_group(), _retelling_group()])
+    first, second = _retelling_group(), _retelling_group()
+    second["recording"]["instruction_text"] = "请复述第二个人的经历。"
+    with pytest.raises(PlatformInputUiError, match="共享指导语页面无法逐组对应"):
+        _fill_split(owner, [first, second])
+    owner._activate_group_section.assert_not_called()
     owner._replace_rich_text.assert_not_called()
     owner._upload_original_audio.assert_not_called()
+
+
+def test_combined_panel_maps_each_material_guidance_when_slots_are_separate():
+    owner = _retelling_automation(None)
+    owner._labeled_text_editors = Mock(return_value=[Mock() for _ in range(4)])
+    first, second = _retelling_group(), _retelling_group()
+    second["recording"]["instruction_text"] = "请复述第二个人的经历。"
+    second["recording"]["asking_instruction_text"] = "请向第二个人提问。"
+
+    plan = owner._combined_retelling_instruction_plan([first, second])
+
+    assert [request[0] for request in plan] == [0, 1, 2, 3]
+    assert [request[1] for request in plan] == [
+        first["recording"]["instruction_text"], first["recording"]["asking_instruction_text"],
+        second["recording"]["instruction_text"], second["recording"]["asking_instruction_text"],
+    ]
+
+
+def test_shared_guidance_can_serve_multiple_materials_with_the_same_text():
+    first, second = _retelling_group(), _retelling_group()
+    owner = _retelling_automation(None)
+    owner._activate_group_section = Mock(side_effect=[
+        (["retelling-1", "retelling-2"], ["text-1", "text-2"]),
+        (["asking-1", "asking-2", "asking-3", "asking-4"], []),
+    ])
+
+    assert _fill_split(owner, [first, second]) == {"录音题": 6}
+    assert owner._fill_recording_card.call_count == 6
+    assert [call.args[1] for call in owner._replace_rich_text.call_args_list] == [
+        first["recording"]["listening_text"], second["recording"]["listening_text"],
+    ]
+    assert owner._fill_instruction_editor.call_count == 2
 
 
 @pytest.mark.parametrize("before_count,first_count", [(2, 1), (1, 2)])

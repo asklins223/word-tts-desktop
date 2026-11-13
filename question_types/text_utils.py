@@ -150,6 +150,73 @@ def match_answer_marker(text: Any):
     return ANSWER_MARKER_RE.match(str(text or '').strip())
 
 
+def split_marker_paragraphs(paragraphs, metadata):
+    """Expose script and answer boundaries hidden behind Word soft breaks."""
+
+    rows = []
+    row_metadata = []
+    for position, (index, text, style) in enumerate(paragraphs):
+        meta = metadata[position] if position < len(metadata) else {}
+        boundaries = [0]
+        for match in re.finditer(r'\n[^\n]+', text):
+            line = match.group()[1:]
+            if match_script_marker(line) or match_answer_marker(line):
+                boundaries.append(match.start() + 1)
+        if len(boundaries) == 1:
+            rows.append((index, text, style))
+            row_metadata.append(meta)
+            continue
+        for start, end in zip(boundaries, boundaries[1:] + [len(text)]):
+            value = text[start:end].strip()
+            if not value:
+                continue
+            rows.append((index, value, style))
+            offset = start + len(text[start:end]) - len(text[start:end].lstrip())
+            facts = dict(meta)
+            if start:
+                facts.pop('numbering_number', None)
+                facts.pop('heading_hint', None)
+            if 'colored_runs' in facts:
+                facts['colored_runs'] = [
+                    {
+                        **span,
+                        'start': max(span['start'], offset) - offset,
+                        'end': min(span['end'], offset + len(value)) - offset,
+                        'text': text[max(span['start'], offset):min(span['end'], offset + len(value))],
+                    }
+                    for span in facts['colored_runs']
+                    if span['start'] < offset + len(value) and span['end'] > offset
+                ]
+            row_metadata.append(facts)
+    return rows, row_metadata
+
+
+NUMBERED_ANSWER_ROW_RE = re.compile(
+    r"^\s*(?P<number>\d+)\s*[.．、）)](?!\d)\s*(?P<text>.+)$"
+)
+
+
+def answer_rows(values):
+    """Read numbered rows and keep slash alternatives inside their own row."""
+
+    rows = []
+    for value in values:
+        for raw_line in str(value or '').splitlines():
+            line = raw_line.strip()
+            if not line or not re.search(r"[A-Za-z]", line):
+                continue
+            match = NUMBERED_ANSWER_ROW_RE.match(line)
+            if match:
+                number = int(match['number'])
+                body = match['text']
+            else:
+                number, body = None, line
+            answers = [answer for part in body.split('/') if (answer := sanitize(part))]
+            if answers:
+                rows.append((number, answers))
+    return rows
+
+
 def listening_play_count(text: Any) -> int | None:
     """Read an explicit recording repeat count, excluding student reading."""
 
@@ -605,7 +672,7 @@ def _build_document_blocks(document):
                     index=block_index,
                     text='\n'.join(fragments),
                     fragments=fragments,
-                    metadata={'table_index': table_index},
+                    metadata={'table_index': table_index, 'paragraph_index': paragraph_index - 1},
                 ))
                 block_index += 1
             table_index += 1
