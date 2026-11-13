@@ -142,7 +142,8 @@ class DesktopServerSecurityTests(unittest.TestCase):
             calls.append(force_refresh)
             return local_catalog
 
-        with mock.patch.object(server, "_load_voice_catalog_sync", side_effect=load_catalog):
+        with mock.patch.dict(os.environ, {"WORDTTS_ENABLE_REAL_PROVIDER": "1"}), \
+                mock.patch.object(server, "_load_voice_catalog_sync", side_effect=load_catalog):
             result = asyncio.run(server.get_config())
 
         self.assertEqual(calls, [True])

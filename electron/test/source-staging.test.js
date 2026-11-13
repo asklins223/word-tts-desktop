@@ -191,31 +191,37 @@ test('openStagedHandle 抛错时也会关闭句柄并清理暂存文件', async 
     assert.equal(staging.activeCount, 0);
 });
 
-test('abort 与 TTL 过期都会删除暂存文件', async () => {
-    // Windows CI can spend tens of milliseconds opening the second exclusive
-    // handle. Keep the TTL short enough to test expiry without allowing the
-    // first session to expire before the test reaches its explicit abort.
-    const { staging, stagingDir } = await makeStaging({ chunkSize: 4, ttlMs: 250 });
-    const aborted = await beginDocx(staging, 4);
-    const expired = await beginDocx(staging, 4);
-    await staging.write({ uploadId: aborted.uploadId, offset: 0, bytes: new Uint8Array([1, 2, 3, 4]) }, SENDER);
+test('abort 删除已部分写入的暂存文件', async () => {
+    const { staging, stagingDir } = await makeStaging({ chunkSize: 4 });
+    const { uploadId } = await beginDocx(staging, 8);
+    const stagedPath = path.join(stagingDir, `${uploadId}.docx`);
+    await staging.write({ uploadId, offset: 0, bytes: new Uint8Array([1, 2, 3, 4]) }, SENDER);
+    assert.ok(fs.existsSync(stagedPath));
 
-    await staging.abort({ uploadId: aborted.uploadId });
-    assert.equal(fs.existsSync(path.join(stagingDir, `${aborted.uploadId}.docx`)), false);
+    await staging.abort({ uploadId });
+    assert.equal(fs.existsSync(stagedPath), false);
+});
 
-    // The TTL sweep is an unref'd timer plus async unlink; under a loaded
-    // event loop (full test suite) both can drift past any fixed sleep.
-    // Poll for the deletion instead of assuming it lands within 500ms.
-    const expiredPath = path.join(stagingDir, `${expired.uploadId}.docx`);
-    const sweepDeadline = Date.now() + 5000;
-    while (fs.existsSync(expiredPath) && Date.now() < sweepDeadline) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal(fs.existsSync(expiredPath), false);
+test('TTL 到期后会话失效并删除暂存文件', { timeout: 10_000 }, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const ttlMs = 250;
+    // Advancing the timer starts cleanup; the log signals that disk I/O finished.
+    const cleanup = Promise.withResolvers();
+    const { staging, stagingDir } = await makeStaging({ ttlMs, logger: { debug: cleanup.resolve } });
+    const { uploadId } = await beginDocx(staging, 4);
+    const stagedPath = path.join(stagingDir, `${uploadId}.docx`);
+
+    t.mock.timers.tick(ttlMs - 1);
+    assert.equal(staging.activeCount, 1);
+    assert.ok(fs.existsSync(stagedPath));
+
+    t.mock.timers.tick(1);
     await assert.rejects(
-        () => staging.write({ uploadId: expired.uploadId, offset: 0, bytes: new Uint8Array([1]) }, SENDER),
+        () => staging.write({ uploadId, offset: 0, bytes: new Uint8Array([1]) }, SENDER),
         /missing or expired/,
     );
+    await cleanup.promise;
+    assert.equal(fs.existsSync(stagedPath), false);
 });
 
 test('其他 sender 不能读写他人的上传会话', async () => {
